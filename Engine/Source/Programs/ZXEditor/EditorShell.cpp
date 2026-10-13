@@ -502,6 +502,7 @@ void DrawShell(Editor& ed)
     DrawScriptEditorPanel(ed);
     DrawAbout(ed);
     DrawSaveChangesDialog(ed);
+    DrawProgress(ed);
     DrawCommandPalette(ed);
 }
 

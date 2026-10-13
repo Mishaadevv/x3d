@@ -236,8 +236,11 @@ void AssetManager::Load(AssetId id)
 void AssetManager::StartEntryLoad(Entry& e)
 {
     m_inFlight.fetch_add(1, std::memory_order_acq_rel);
+    m_jobsStarted.fetch_add(1, std::memory_order_relaxed);
     RunJob([this, &e] {
+        SetWork(e.origin == EntryOrigin::TextureFile ? StringView(Path::FileName(e.file)) : e.name.View());
         LoadEntry(e);
+        m_jobsFinished.fetch_add(1, std::memory_order_relaxed);
         m_inFlight.fetch_sub(1, std::memory_order_acq_rel);
     });
 }
@@ -248,10 +251,27 @@ void AssetManager::StartSourceCook(Source& s)
     if (!s.state.compare_exchange_strong(expected, 1))
         return;
     m_inFlight.fetch_add(1, std::memory_order_acq_rel);
+    m_jobsStarted.fetch_add(1, std::memory_order_relaxed);
     RunJob([this, &s] {
+        SetWork(Path::FileName(s.path));
         CookSource(s);
+        m_jobsFinished.fetch_add(1, std::memory_order_relaxed);
         m_inFlight.fetch_sub(1, std::memory_order_acq_rel);
     });
+}
+
+void AssetManager::SetWork(StringView work)
+{
+    ScopedLock lock(m_workMutex);
+    m_currentWork = work;
+}
+
+String AssetManager::CurrentWork() const
+{
+    if (IsIdle())
+        return String();
+    ScopedLock lock(m_workMutex);
+    return m_currentWork;
 }
 
 void AssetManager::Fail(Entry& e, StringView message)
@@ -407,6 +427,7 @@ void AssetManager::CookSource(Source& s)
             }
         Array<ManifestItem> textureItems;
         textureItems.Resize(scene.textures.Size());
+        SetWork(String::Format("{}: textures", Path::FileName(s.path)));
         jobs::ParallelFor(u32(scene.textures.Size()), 1, [&](u32 begin, u32 end) {
             for (u32 t = begin; t < end; ++t) {
                 const ImportedTexture& src = scene.textures[t];
@@ -484,6 +505,7 @@ void AssetManager::CookSource(Source& s)
         slotMaterials.Resize(scene.meshes.Size());
         Array<ManifestItem> meshItems;
         meshItems.Resize(scene.meshes.Size());
+        SetWork(String::Format("{}: optimizing meshes, building LODs", Path::FileName(s.path)));
         jobs::ParallelFor(u32(scene.meshes.Size()), 1, [&](u32 begin, u32 end) {
             for (u32 m = begin; m < end; ++m) {
                 CookedMesh cooked = CookMesh(scene.meshes[m], m_settings.generateMeshLods);
@@ -724,6 +746,8 @@ AssetManager::Stats AssetManager::GetStats() const
         s.failed += st == AssetState::Failed ? 1 : 0;
     }
     s.inFlight = m_inFlight.load(std::memory_order_acquire);
+    s.jobsStarted = m_jobsStarted.load(std::memory_order_relaxed);
+    s.jobsFinished = m_jobsFinished.load(std::memory_order_relaxed);
     s.cookedThisSession = m_cooked.load(std::memory_order_relaxed);
     s.ddcHits = m_ddcHits.load(std::memory_order_relaxed);
     return s;

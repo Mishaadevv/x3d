@@ -246,6 +246,7 @@ bool Editor::Initialize()
     StringView screenshot;
     if (CommandLine::GetValue("screenshot", screenshot))
         m_screenshotPath = screenshot;
+    m_screenshotEarly = CommandLine::HasFlag("screenshotnow");
     m_undoTest = CommandLine::HasFlag("undotest");
     m_pieTest = CommandLine::HasFlag("pietest");
     m_materialTest = CommandLine::HasFlag("materialtest");
@@ -1976,6 +1977,7 @@ bool Editor::OpenScene(StringView physicalPath)
     sceneName = Path::Stem(physicalPath);
     undo.Clear();
     UpdateStartupScene(physicalPath);
+    waitForAssets = true; // the progress window waits for its assets
     ZX_LOG_INFO(LogEditor, "Opened scene '{}' ({} entities)", physicalPath, world.EntityCount());
     return true;
 }
@@ -2404,7 +2406,7 @@ void Editor::RenderFrame()
                             });
     }
     const bool capture = !m_screenshotPath.Empty() && !m_screenshotBuffer && m_autotestFrames && frameIndex + 1 >= m_autotestFrames &&
-                         assets->IsIdle() && pendingImports.Empty();
+                         (m_screenshotEarly || (assets->IsIdle() && pendingImports.Empty()));
     const RGTexture backBuffer =
         graph.ImportTexture(swapChain->GetCurrentBackBuffer(), capture ? ResourceState::CopySource : ResourceState::Present);
     graph.AddPass(

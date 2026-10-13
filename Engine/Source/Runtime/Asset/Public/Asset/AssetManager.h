@@ -82,8 +82,12 @@ public:
         u32 inFlight = 0;
         u32 cookedThisSession = 0; // DDC misses
         u32 ddcHits = 0;
+        u32 jobsStarted = 0; // loads + cooks ever started / finished (progress of a batch = finished delta / started delta)
+        u32 jobsFinished = 0;
     };
     Stats GetStats() const;
+    /// What a background job is working on right now ("Sponza.gltf"), for progress UI; empty when idle.
+    String CurrentWork() const;
 
 private:
     struct Entry;
@@ -105,6 +109,11 @@ private:
     std::atomic<u32> m_inFlight{0};
     std::atomic<u32> m_cooked{0};
     std::atomic<u32> m_ddcHits{0};
+    std::atomic<u32> m_jobsStarted{0};
+    std::atomic<u32> m_jobsFinished{0};
+    mutable Mutex m_workMutex;
+    String m_currentWork;
+    void SetWork(StringView work);
 };
 
 } // namespace zx::asset

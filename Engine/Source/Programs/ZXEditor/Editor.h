@@ -247,6 +247,7 @@ public:
     String sceneName = "Untitled";
     String scenePath;          // physical .zscene path; empty until saved
     bool sceneDirty = false;   // = undo.IsDirty(), refreshed every frame
+    bool waitForAssets = false; // a scene is opening: the progress window blocks until its assets are loaded
     SceneAction pendingAction = SceneAction::None; // waiting for the save-changes dialog
     String pendingOpenPath;
     Array<PendingImport> pendingImports;
@@ -461,6 +462,7 @@ private:
     u64 m_autotestFrames = 0;
     String m_layoutPath;
     String m_screenshotPath;
+    bool m_screenshotEarly = false; // -screenshotnow: capture at the autotest frame even while loading
     String m_saveScenePath; // -savescene=<path>: save the scene when an autotest run ends
     f64 m_timeUi = 0.0, m_timeRender = 0.0, m_timePresent = 0.0;
     u64 m_timedFrames = 0;
@@ -473,6 +475,9 @@ private:
 void DrawShell(Editor& ed);           // title bar, toolbar, dock space, status bar
 void DrawProjectBrowser(Editor& ed, const Rect& area);
 void DrawViewportPanel(Editor& ed);
+/// Progress of loading work: a modal "Hold On" window while the user has to wait (imports, opening scenes), a small
+/// panel above the status bar for background work (cooking, shader and C++ compiles).
+void DrawProgress(Editor& ed);
 void DrawOutlinerPanel(Editor& ed);
 void DrawDetailsPanel(Editor& ed);
 void DrawContentBrowserPanel(Editor& ed);

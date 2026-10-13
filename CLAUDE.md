@@ -49,6 +49,9 @@ RHI.BlockCompressionMatchesHardwareDecoder). Cooker: HDR -> box mips + BC6H + Hd
 sun), alpha textures -> BC7; .zmeta "compression". HDRI Sky component (Engine/SceneRendering.h, ViewportRenderer::
 ResolveHdriSky, Sky.hlsl SkyViewFromHdriCS, Shaders/Sky/Hdri.hlsli), -hdritest, console hdri.info / hdri.set,
 create hdrisky <panorama>, camera x y z yaw pitch (pitch < 0 looks up). ManualExr.* benchmark: ZX_EXR_FILE=<path>.
+Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
+AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
+-materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).
 ForwardPBR PSMain writes normal+roughness only with ZX_NORMAL_OUTPUT (MRT pipeline variants; graph materials compile both).
 Reflection meta used by Details: Meta::Category (section headers), Meta::EditCondition("boolField") (override checkbox).
 Audio: Runtime/Audio (AudioEngine.cpp mixer, Wasapi.cpp, Wav.cpp, Vorbis.cpp, Dsp.cpp; tests ZXTests Audio.*; Vorbis
