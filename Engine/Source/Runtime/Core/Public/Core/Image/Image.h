@@ -1,7 +1,7 @@
 #pragma once
 
 // CPU-side images and codecs (own implementations): PNG, JPEG (baseline + progressive), TGA, BMP,
-// Radiance HDR.
+// Radiance HDR, OpenEXR.
 // Decoders return RGBA8 (LDR) or RGBA32F (HDR). Mip generation and BCn compression live in TextureTools.h.
 
 #include "Core/Containers/Array.h"
@@ -47,7 +47,8 @@ enum class ImageFileType : u8
     Jpeg,
     Tga,
     Bmp,
-    Hdr
+    Hdr,
+    Exr
 };
 
 /// Detects the type from the first bytes (falls back to the extension for TGA which has no magic).
@@ -60,6 +61,9 @@ Result<Image> DecodeTga(ByteSpan data);
 /// BMP: 1/4/8-bit palette (incl. RLE4/RLE8), 16/24/32-bit (incl. BI_BITFIELDS with alpha), V3-V5 headers, top-down.
 Result<Image> DecodeBmp(ByteSpan data);
 Result<Image> DecodeHdr(ByteSpan data);
+/// OpenEXR: single-part scanline/tiled (level 0), NONE/RLE/ZIPS/ZIP/PIZ/PXR24, half/float/uint channels.
+/// RGBA32F from R/G/B(/A) or Y; a layer ("beauty.R") is used when there are no plain channels.
+Result<Image> DecodeExr(ByteSpan data);
 
 /// Loads through the virtual file system.
 Result<Image> LoadImageFile(StringView path);

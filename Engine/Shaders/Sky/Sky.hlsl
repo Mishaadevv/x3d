@@ -2,6 +2,7 @@
 
 #include "Common/Bindless.hlsli"
 #include "Sky/Atmosphere.hlsli"
+#include "Sky/Hdri.hlsli"
 
 struct SkyParams
 {
@@ -17,7 +18,14 @@ struct SkyParams
     uint skyViewLut;        // SRV
     uint outputUav;         // compute target
     float cameraAltitude;   // km above ground
-    float3 pad;
+    uint hdri;              // SRV of the HDRI panorama (ZX_INVALID_INDEX = physical sky)
+    float hdriRotation;     // radians around +Y
+    float hdriLod;          // background mip
+    float3 hdriClampDir;    // sun cone clamped in the sky lighting
+    float hdriClampCos;
+    float hdriClampLum;
+    float hdriLutLod;       // mip resampled into the sky-view LUT
+    float2 pad;
 };
 ZX_PASS_CONSTANTS(SkyParams, g_Sky);
 
@@ -148,6 +156,19 @@ void SkyViewCS(uint2 id : SV_DispatchThreadID)
     GetRWTexture2D(g_Sky.outputUav)[id] = float4(L, 1);
 }
 
+// HDRI sky: the panorama (sun clamped) resampled into the sky-view LUT; sunIlluminance carries the intensity.
+[numthreads(8, 8, 1)]
+void SkyViewFromHdriCS(uint2 id : SV_DispatchThreadID)
+{
+    if (id.x >= SKYVIEW_LUT_W || id.y >= SKYVIEW_LUT_H)
+        return;
+    const float2 uv = (float2(id) + 0.5) / float2(SKYVIEW_LUT_W, SKYVIEW_LUT_H);
+    const float3 dir = SkyViewDir(uv);
+    float3 L = SampleHdri(g_Sky.hdri, dir, g_Sky.hdriRotation, g_Sky.hdriLutLod);
+    L = ClampHdriSun(L, dir, g_Sky.hdriClampDir, g_Sky.hdriClampCos, g_Sky.hdriClampLum);
+    GetRWTexture2D(g_Sky.outputUav)[id] = float4(max(L, 0.0), 1);
+}
+
 // --- Sky pass ----------------------------------------------------------------------------------------------------
 
 struct VSOutput
@@ -169,6 +190,10 @@ float4 SkyPS(VSOutput i) : SV_Target0
 {
     const float4 p = mul(g_Sky.invViewProj, float4(i.ndc, 1.0, 1.0));
     const float3 dir = normalize(p.xyz / p.w - g_Sky.cameraPosition);
+    if (g_Sky.hdri != ZX_INVALID_INDEX) {
+        const float3 H = SampleHdri(g_Sky.hdri, dir, g_Sky.hdriRotation, g_Sky.hdriLod);
+        return float4(min(max(H, 0.0) * (g_Sky.sunIlluminance * g_Sky.exposure), 60000.0), 1.0);
+    }
     float3 L = GetTexture2D(g_Sky.skyViewLut).SampleLevel(g_LinearClamp, SkyViewUV(dir), 0).rgb;
     // Sun disk with limb darkening, attenuated by the atmosphere.
     const float cosSun = dot(dir, g_Sky.sunDirection);
@@ -222,7 +247,7 @@ void SkyIrradianceCS(uint tid : SV_GroupIndex)
         const float latB = asin(clamp(SkyViewDir(float2(uv.x, uv.y + 0.5 / SKYVIEW_LUT_H)).y, -1.0, 1.0));
         float dOmega = sqrt(max(1.0 - dir.y * dir.y, 0.0)) * abs(latA - latB) * dLon;
         float3 L = lut.Load(int3(p, 0)).rgb;
-        if (dir.y < 0.0) // below the horizon: ground bounce, approximated from the horizon radiance
+        if (dir.y < 0.0 && g_Sky.hdri == ZX_INVALID_INDEX) // below the horizon: ground bounce from the horizon radiance
             L = ATM_GROUND_ALBEDO * lut.Load(int3(p.x, SKYVIEW_LUT_H / 2 - 1, 0)).rgb;
         float y[9];
         SHBasis(dir, y);

@@ -1,7 +1,7 @@
 #pragma once
 
-// Loads textures from image files (PNG/JPEG/TGA/HDR) or DDS into GPU textures, with optional mip generation and
-// BCn compression. (The asset pipeline will cook these offline; this is the direct runtime path.)
+// Loads textures from image files (PNG/JPEG/TGA/HDR/EXR) or DDS into GPU textures, with optional mip generation and
+// BCn compression (HDR images: BC6H). The asset pipeline cooks textures offline; this is the direct runtime path.
 
 #include "Core/Image/TextureTools.h"
 #include "RHI/RHI.h"
@@ -10,12 +10,13 @@ namespace zx::render {
 
 enum class TextureCompression : u8
 {
-    None,  // RGBA8
-    Auto,  // BC1 if opaque, BC3 if transparent (color); BC5 for normal maps
+    None,  // RGBA8 (HDR: RGBA16F)
+    Auto,  // BC1 if opaque, BC7 if transparent (color); BC5 for normal maps; HDR: BC6H
     BC1,
     BC3,
     BC4,
     BC5,
+    BC7,
 };
 
 struct TextureLoadOptions

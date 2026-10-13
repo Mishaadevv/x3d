@@ -1,6 +1,7 @@
 #include "Core/Image/TextureTools.h"
 #include "Core/Jobs/JobSystem.h"
 #include "Core/Math/Color.h"
+#include "Core/Math/Packing.h"
 
 #include <cmath>
 
@@ -25,6 +26,10 @@ FloatImage ToFloat(const Image& img, bool srgb)
     f.w = img.width;
     f.h = img.height;
     f.data.ResizeUninitialized(usize(f.w) * f.h * 4);
+    if (img.format == ImageFormat::RGBA32F) {
+        MemCopy(f.data.Data(), img.pixels.Data(), f.data.Size() * sizeof(f32));
+        return f;
+    }
     for (usize i = 0; i < usize(f.w) * f.h; ++i)
         for (u32 c = 0; c < 4; ++c) {
             const u8 v = img.pixels[i * 4 + c];
@@ -33,8 +38,13 @@ FloatImage ToFloat(const Image& img, bool srgb)
     return f;
 }
 
-Image ToImage(const FloatImage& f, bool srgb)
+Image ToImage(const FloatImage& f, bool srgb, bool hdr)
 {
+    if (hdr) {
+        Image img = Image::Create(f.w, f.h, ImageFormat::RGBA32F);
+        MemCopy(img.pixels.Data(), f.data.Data(), f.data.Size() * sizeof(f32));
+        return img;
+    }
     Image img = Image::Create(f.w, f.h, ImageFormat::RGBA8);
     for (usize i = 0; i < usize(f.w) * f.h; ++i)
         for (u32 c = 0; c < 4; ++c) {
@@ -164,20 +174,21 @@ void RenormalizeNormals(FloatImage& img)
 
 Array<Image> GenerateMips(const Image& source, const MipOptions& options)
 {
-    ZX_ASSERT(source.format == ImageFormat::RGBA8, "GenerateMips expects RGBA8");
+    ZX_ASSERT(source.format == ImageFormat::RGBA8 || source.format == ImageFormat::RGBA32F, "GenerateMips expects RGBA8/RGBA32F");
     Array<Image> mips;
     mips.PushBack(source);
-    const bool srgb = options.srgb && !options.normalMap;
+    const bool hdr = source.format == ImageFormat::RGBA32F;
+    const bool srgb = options.srgb && !options.normalMap && !hdr;
     FloatImage current = ToFloat(source, srgb);
     const f32 coverage = options.preserveAlphaCoverage ? AlphaCoverage(current, options.alphaCutoff, 1.0f) : 0.0f;
     while (current.w > 1 || current.h > 1) {
         FloatImage next = Downsample(current, options.filter);
-        if (options.normalMap)
+        if (options.normalMap && !hdr)
             RenormalizeNormals(next);
         FloatImage stored = next;
         if (options.preserveAlphaCoverage)
             ScaleToCoverage(stored, options.alphaCutoff, coverage);
-        mips.PushBack(ToImage(stored, srgb));
+        mips.PushBack(ToImage(stored, srgb, hdr));
         current = move(next); // keep filtering from unscaled data
     }
     return mips;
@@ -396,21 +407,35 @@ void DecodeColorBlock(const u8* in, u8 out[16][4], bool bc1)
 
 Array<u8> CompressBlocks(const Image& image, BlockFormat format)
 {
-    ZX_ASSERT(image.format == ImageFormat::RGBA8, "CompressBlocks expects RGBA8");
+    const bool hdr = format == BlockFormat::BC6H;
+    ZX_ASSERT(image.format == (hdr ? ImageFormat::RGBA32F : ImageFormat::RGBA8), "CompressBlocks: BC6H expects RGBA32F, others RGBA8");
     const u32 bw = (image.width + 3) / 4, bh = (image.height + 3) / 4;
     const u32 blockBytes = BlockBytes(format);
     Array<u8> out;
     out.ResizeZeroed(usize(bw) * bh * blockBytes);
     auto encodeRow = [&](u32 by) {
         for (u32 bx = 0; bx < bw; ++bx) {
+            u8* block = &out[(usize(by) * bw + bx) * blockBytes];
+            if (hdr) {
+                f32 rgb[16][3];
+                for (u32 i = 0; i < 16; ++i) {
+                    const u32 x = Min(bx * 4 + (i & 3), image.width - 1);
+                    const u32 y = Min(by * 4 + (i >> 2), image.height - 1);
+                    MemCopy(rgb[i], image.Row(y) + usize(x) * 16, 12);
+                }
+                EncodeBC6HBlock(rgb, block);
+                continue;
+            }
             u8 rgba[16][4];
             for (u32 i = 0; i < 16; ++i) {
                 const u32 x = Min(bx * 4 + (i & 3), image.width - 1);
                 const u32 y = Min(by * 4 + (i >> 2), image.height - 1);
                 MemCopy(rgba[i], image.Row(y) + usize(x) * 4, 4);
             }
-            u8* dst = &out[(usize(by) * bw + bx) * blockBytes];
+            u8* dst = block;
             switch (format) {
+            case BlockFormat::BC7: EncodeBC7Block(rgba, dst); break;
+            case BlockFormat::BC6H: break;
             case BlockFormat::BC1:
             case BlockFormat::BC3: {
                 Vec3 texels[16];
@@ -446,7 +471,7 @@ Array<u8> CompressBlocks(const Image& image, BlockFormat format)
             }
         }
     };
-    jobs::ParallelFor(bh, 8, [&](u32 begin, u32 end) {
+    jobs::ParallelFor(bh, (format == BlockFormat::BC6H || format == BlockFormat::BC7) ? 1 : 8, [&](u32 begin, u32 end) {
         for (u32 by = begin; by < end; ++by)
             encodeRow(by);
     });
@@ -455,14 +480,31 @@ Array<u8> CompressBlocks(const Image& image, BlockFormat format)
 
 Image DecompressBlocks(ByteSpan blocks, u32 width, u32 height, BlockFormat format)
 {
-    Image img = Image::Create(width, height, ImageFormat::RGBA8);
+    const bool hdr = format == BlockFormat::BC6H;
+    Image img = Image::Create(width, height, hdr ? ImageFormat::RGBA32F : ImageFormat::RGBA8);
     const u32 bw = (width + 3) / 4, bh = (height + 3) / 4;
     const u32 blockBytes = BlockBytes(format);
     for (u32 by = 0; by < bh; ++by)
         for (u32 bx = 0; bx < bw; ++bx) {
             const u8* src = blocks.Data() + (usize(by) * bw + bx) * blockBytes;
+            if (hdr) {
+                u16 half[16][3];
+                DecodeBC6HBlock(src, half);
+                for (u32 i = 0; i < 16; ++i) {
+                    const u32 x = bx * 4 + (i & 3), y = by * 4 + (i >> 2);
+                    if (x >= width || y >= height)
+                        continue;
+                    f32* p = reinterpret_cast<f32*>(img.Row(y) + usize(x) * 16);
+                    for (u32 c = 0; c < 3; ++c)
+                        p[c] = HalfToFloat(half[i][c]);
+                    p[3] = 1.0f;
+                }
+                continue;
+            }
             u8 rgba[16][4] = {};
             switch (format) {
+            case BlockFormat::BC7: DecodeBC7Block(src, rgba); break;
+            case BlockFormat::BC6H: break;
             case BlockFormat::BC1: DecodeColorBlock(src, rgba, true); break;
             case BlockFormat::BC3: {
                 DecodeColorBlock(src + 8, rgba, false);

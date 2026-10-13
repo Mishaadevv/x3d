@@ -89,8 +89,9 @@ bool ReflectionRenderer::Init()
     }
     for (Buffer*& b : m_probeBuffers)
         b = m_device.CreateBuffer(BufferDesc{u64(MaxGpuProbes) * sizeof(GpuProbe), BufferUsage::ShaderResource, MemoryType::Upload, 0, "ReflectionProbes"});
-    m_skyRaw = CreateCube(SkyResolution, 1, "SkyCubeRaw");
-    m_skyCube = CreateCube(SkyResolution, MipCount(SkyResolution), "SkyCube");
+    m_skySize = ReflectionSettings().skyResolution;
+    m_skyRaw = CreateCube(m_skySize, 1, "SkyCubeRaw");
+    m_skyCube = CreateCube(m_skySize, MipCount(m_skySize), "SkyCube");
     return m_skyRaw && m_skyCube && m_probeBuffers[0];
 }
 
@@ -127,6 +128,23 @@ void ReflectionRenderer::Prepare(Span<const ReflectionProbeDesc> probes, const R
 {
     ++m_frame;
     m_settings = settings;
+    const u32 skySize = Clamp(settings.skyResolution, 16u, 512u);
+    if (skySize != m_skySize) {
+        Texture* raw = CreateCube(skySize, 1, "SkyCubeRaw");
+        Texture* cube = CreateCube(skySize, MipCount(skySize), "SkyCube");
+        if (raw && cube) {
+            m_device.Destroy(m_skyRaw);
+            m_device.Destroy(m_skyCube);
+            m_skyRaw = raw;
+            m_skyCube = cube;
+            m_skySize = skySize;
+            m_skyValid = false;
+            m_skyDirty = true;
+        } else {
+            m_device.Destroy(raw);
+            m_device.Destroy(cube);
+        }
+    }
     if (environmentKey != m_environmentKey) {
         m_environmentKey = environmentKey;
         m_skyDirty = true;
@@ -242,7 +260,7 @@ void ReflectionRenderer::Prepare(Span<const ReflectionProbeDesc> probes, const R
 
     // --- Bindings ---
     lighting.skyCube = settings.sky && m_skyValid ? m_skyCube->GetSrvIndex() : InvalidDescriptor;
-    lighting.skyCubeMips = f32(MipCount(SkyResolution) - 1);
+    lighting.skyCubeMips = f32(MipCount(m_skySize) - 1);
     lighting.probeBuffer = count ? buffer->GetSrvIndex() : InvalidDescriptor;
     lighting.probeCount = count;
     lighting.reflectionExposure = exposure / ReferenceExposure();
@@ -358,7 +376,8 @@ void ReflectionRenderer::AddPrefilterPasses(RenderGraph& graph, RGTexture source
     }
 }
 
-void ReflectionRenderer::AddUpdatePasses(RenderGraph& graph, RGTexture skyLut, Vec3 skyScale, RGTexture faceColor, RGTexture faceDepth, f32 exposure)
+void ReflectionRenderer::AddUpdatePasses(RenderGraph& graph, RGTexture skyLut, Vec3 skyScale, RGTexture faceColor, RGTexture faceDepth, f32 exposure,
+                                         const HdriSkySettings* hdri)
 {
     // Sky-view LUT values times skyScale are pre-exposed with `exposure`: store them at the reference exposure.
     const Vec3 skyRef = skyScale * (ReferenceExposure() / Max(exposure, 1e-12f));
@@ -367,8 +386,27 @@ void ReflectionRenderer::AddUpdatePasses(RenderGraph& graph, RGTexture skyLut, V
         const RGTexture raw = graph.ImportTexture(m_skyRaw, ResourceState::ShaderResource);
         const RGTexture cube = graph.ImportTexture(m_skyCube, ResourceState::ShaderResource);
         Params p = {};
-        p.size = SkyResolution;
+        p.size = m_skySize;
         p.skyScale = skyRef;
+        // HDRI: sample the panorama itself (about one texel per cube texel), the sun clamped like in the LUT.
+        struct HdriPush
+        {
+            u32 texture;
+            f32 rotation;
+            f32 lod;
+            f32 clampCos;
+            Vec3 clampDir;
+            f32 clampLuminance;
+        } hp = {InvalidDescriptor, 0.0f, 0.0f, 2.0f, Vec3(0, 1, 0), 0.0f};
+        if (hdri && hdri->IsActive()) {
+            hp.texture = hdri->texture;
+            hp.rotation = hdri->rotation;
+            hp.lod = Max(0.0f, Log2(f32(Max(hdri->width, 1u)) / f32(4 * m_skySize)));
+            hp.clampCos = hdri->clampCos;
+            hp.clampDir = hdri->clampDirection;
+            hp.clampLuminance = hdri->clampLuminance;
+            p.skyScale = Vec3(hdri->intensity * ReferenceExposure());
+        }
         graph.AddPass(
             "SkyToCube", PassType::Compute,
             [skyLut, raw](PassBuilder& b) {
@@ -376,13 +414,14 @@ void ReflectionRenderer::AddUpdatePasses(RenderGraph& graph, RGTexture skyLut, V
                 b.WriteTexture(raw);
                 b.SideEffects();
             },
-            [this, p, skyLut](PassContext& ctx) {
+            [this, p, hp, skyLut](PassContext& ctx) {
                 Params q = p;
                 q.input = ctx.Texture(skyLut)->GetSrvIndex();
                 q.output = m_skyRaw->GetUavIndex(0);
                 ctx.cmd.SetPipeline(m_skyToCube);
                 ctx.cmd.SetConstants(0, &q, sizeof(q));
-                ctx.cmd.Dispatch((SkyResolution + 7) / 8, (SkyResolution + 7) / 8, 6);
+                ctx.cmd.SetPushConstants(hp);
+                ctx.cmd.Dispatch((q.size + 7) / 8, (q.size + 7) / 8, 6);
             });
         AddPrefilterPasses(graph, raw, cube, m_skyCube, "SkyCubePrefilter");
         m_skyDirty = false;

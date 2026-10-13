@@ -242,7 +242,7 @@ bool Inflate(ByteSpan input, Array<u8>& out, usize expectedSize, usize maxOutput
             u32 n = 0;
             while (n < hlit + hdist) {
                 const i32 sym = DecodeSymbol(br, clHuff);
-                if (sym < 0)
+                if (sym < 0 || br.Overrun())
                     return false;
                 if (sym < 16) {
                     lengths[n++] = u8(sym);
@@ -277,9 +277,12 @@ bool Inflate(ByteSpan input, Array<u8>& out, usize expectedSize, usize maxOutput
 
         for (;;) {
             const i32 sym = DecodeSymbol(br, *lit);
-            if (sym < 0)
+            // Corrupt streams can decode the zero padding past the end as literals forever: stop at the overrun.
+            if (sym < 0 || br.Overrun())
                 return false;
             if (sym < 256) {
+                if (out.Size() - outStart >= maxOutput)
+                    return false;
                 out.PushBack(u8(sym));
                 continue;
             }

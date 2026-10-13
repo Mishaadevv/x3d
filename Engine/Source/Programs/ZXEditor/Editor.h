@@ -340,6 +340,8 @@ public:
     void CreatePostProcessVolume(Vec3 position, ecs::Entity parent = {});
     void CreateReflectionProbe(Vec3 position, ecs::Entity parent = {});
     void CreateDecal(Vec3 position, ecs::Entity parent = {}); // on the surface under / in front of the point
+    /// Sets the scene's HDRI Sky to the Content-relative panorama (creates the entity when there is none; undoable).
+    void UseHdriSky(StringView texture);
     /// The listener while playing: the game camera when it is shown, else the editor camera.
     ListenerPose CurrentListener();
     void CreateShape(BuiltinShape shape, Vec3 position, ecs::Entity parent = {});
@@ -438,6 +440,13 @@ private:
     u32 m_decalTestStage = 0;
     u64 m_decalTestFrame = 0;
     void RunDecalSelfTest();
+    // -hdritest: a generated .exr panorama with a sun becomes the HDRI Sky; its sun drives the directional light and
+    // follows the rotation; Sun = None turns it off.
+    u32 m_hdriTestStage = 0;
+    u64 m_hdriTestFrame = 0;
+    u64 m_lastHdriKey = 0; // logs the HDRI Sky (hdri.info) when it changes
+    String m_hdriTestFile;
+    void RunHdriSelfTest();
 
 public:
     bool CppSelfTestRunning() const { return m_cppTestStage != 0; }

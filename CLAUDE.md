@@ -43,6 +43,12 @@ Reflections: Render/Reflections.h (sky cube, probes, SSR; Shaders/Lighting/Refle
 Decals: Decal component (Engine/SceneRendering.h, GatherDecals; ApplyDecals in ForwardPBR.hlsl), -decaltest.
 ZTSR: TemporalAA UpscaleCS (history at output size when renderScale < 1), r.TSR; dynamic resolution
 (NextDynamicResolutionScale, r.DynamicResolution*).
+Images: Core/Image (ExrReader.cpp = OpenEXR decoder + exr::Encode, tests Exr.* against Tests/Data/Images/exr_* from
+Tools/gen_exr_testdata.py; TextureBC67.cpp = BC6H/BC7 encoders+decoders, bit layouts verified on WARP by
+RHI.BlockCompressionMatchesHardwareDecoder). Cooker: HDR -> box mips + BC6H + HdrInfo (AnalyzeHdrEnvironment: average,
+sun), alpha textures -> BC7; .zmeta "compression". HDRI Sky component (Engine/SceneRendering.h, ViewportRenderer::
+ResolveHdriSky, Sky.hlsl SkyViewFromHdriCS, Shaders/Sky/Hdri.hlsli), -hdritest, console hdri.info / hdri.set,
+create hdrisky <panorama>, camera x y z yaw pitch (pitch < 0 looks up). ManualExr.* benchmark: ZX_EXR_FILE=<path>.
 ForwardPBR PSMain writes normal+roughness only with ZX_NORMAL_OUTPUT (MRT pipeline variants; graph materials compile both).
 Reflection meta used by Details: Meta::Category (section headers), Meta::EditCondition("boolField") (override checkbox).
 Audio: Runtime/Audio (AudioEngine.cpp mixer, Wasapi.cpp, Wav.cpp, Vorbis.cpp, Dsp.cpp; tests ZXTests Audio.*; Vorbis
@@ -74,6 +80,8 @@ UI headless interaction tests: `ZXTests.exe UI.*` (synthetic mouse/keys drive re
 - If whole-frame times suddenly jump to ~130 ms while GPU timers stay low, the screen is locked/occluded and DWM throttles
   Present - judge by the per-pass GPU timers then.
 - Bash heredocs choke on some Python patch scripts: write the script to the scratchpad and run it instead.
+- Git Bash rewrites exe arguments: `/Saved/x.png` becomes `C:/Program Files/Git/Saved/x.png` and `$(pwd)` is `/c/...`
+  (the editor then creates `C:/c/...`). Use `MSYS_NO_PATHCONV=1` and `$(cygpath -m "$(pwd)")` for path arguments.
 - Commas inside template arguments break test macros: `ZX_EXPECT_EQ((w.Query<A, B>().Count()), 1u)`.
 - ZUI GPU cost is fill-bound on UHD 620 (~0.5-1 Gpix/s blended): keep overlapping layers few; border-only rects and
   shadows are drawn hollow automatically. Lucide icons: macros in UI/Icons.h (regenerate with Tools/gen_lucide_icons.py).

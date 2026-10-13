@@ -12,6 +12,7 @@
 
 #include "Render/RenderGraph.h"
 #include "Render/SceneRenderer.h"
+#include "Render/Sky.h"
 
 namespace zx::render {
 
@@ -30,6 +31,7 @@ struct ReflectionProbeDesc
 struct ReflectionSettings
 {
     bool sky = true;             // sky cube for specular ambient (else the SH sky along the reflection)
+    u32 skyResolution = 64;      // sky cube face size (HDRI skies: 128, they have detail worth reflecting)
     bool probes = true;
     u32 probeResolution = 128;   // per cube face
     u32 maxProbes = 16;
@@ -44,7 +46,6 @@ struct ReflectionSettings
 class ReflectionRenderer
 {
 public:
-    static constexpr u32 SkyResolution = 64;
 
     explicit ReflectionRenderer(rhi::Device& device);
     ~ReflectionRenderer();
@@ -63,7 +64,9 @@ public:
     void AddSsrPass(RenderGraph& graph, RGTexture color, RGTexture depth, RGTexture normals, const RenderView& view);
     /// Sky cube update, the captured face (faceColor/faceDepth, rendered with `exposure`) into the probe, prefiltering.
     /// Call after every pass that reads the cubes. skyLut may be invalid (no sky: the probes see black around them).
-    void AddUpdatePasses(RenderGraph& graph, RGTexture skyLut, Vec3 skyScale, RGTexture faceColor, RGTexture faceDepth, f32 exposure);
+    /// An active `hdri` builds the sky cube straight from the panorama (sun clamped) instead of the LUT.
+    void AddUpdatePasses(RenderGraph& graph, RGTexture skyLut, Vec3 skyScale, RGTexture faceColor, RGTexture faceDepth, f32 exposure,
+                         const HdriSkySettings* hdri = nullptr);
 
     /// Recapture every probe (scene content changed).
     void RecaptureAll();
@@ -127,6 +130,7 @@ private:
     // Sky.
     rhi::Texture* m_skyRaw = nullptr;
     rhi::Texture* m_skyCube = nullptr;
+    u32 m_skySize = 0;
     bool m_skyValid = false;
     bool m_skyDirty = true;
     u64 m_environmentKey = 0;

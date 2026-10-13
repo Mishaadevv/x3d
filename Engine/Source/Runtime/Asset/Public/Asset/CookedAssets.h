@@ -109,6 +109,9 @@ enum class TextureFormat : u8
     BC5,
     RGBA16F,
     RGBA32F,
+    BC6H,     // unsigned half-float RGB (HDR)
+    BC7,
+    BC7_SRGB,
 };
 
 u32 TextureFormatBlockBytes(TextureFormat f); // bytes per 4x4 block (BCn) or per pixel (uncompressed)
@@ -117,13 +120,37 @@ u64 TextureMipSize(TextureFormat f, u32 width, u32 height);
 
 enum class TextureCompression : u8
 {
-    None,
-    Auto, // BC1 opaque / BC3 alpha (color), BC5 normal maps
+    None, // RGBA8 (HDR: RGBA16F)
+    Auto, // BC1 opaque / BC7 with alpha (color), BC5 normal maps; HDR sources: BC6H
     BC1,
     BC3,
     BC4,
     BC5,
+    BC7, // high quality color (opaque or alpha), 8 bpp
 };
+
+/// Name used in .zmeta files ("Auto", "BC7", "None"...) and back (unknown names -> Auto).
+StringView TextureCompressionName(TextureCompression c);
+TextureCompression ParseTextureCompression(StringView name);
+
+/// What the cooker measured on an HDR image, read as a lat-long environment (u = 0.5 looks along +Z, v = 0 is +Y up).
+/// Values are in the image's units (scale them by the sky intensity).
+struct HdrInfo
+{
+    bool valid = false;
+    Vec3 average;              // mean radiance over the sphere
+    bool hasSun = false;       // a distinct sun disk was found
+    Vec3 sunDirection = Vec3(0, 1, 0);
+    Vec3 sunIlluminance;       // integral of the sun's radiance above sunClamp (RGB): lights the scene as a directional light
+    f32 sunCosRadius = 1.0f;   // cone around sunDirection that holds the sun
+    f32 sunClamp = 0.0f;       // luminance the sky lighting is clamped to inside the cone (the rest is the directional light)
+};
+
+/// Lat-long direction of texture coordinate (u, v) and back (see HdrInfo).
+Vec3 LatLongDirection(f32 u, f32 v);
+Vec2 LatLongUV(Vec3 direction);
+/// Measures an RGBA32F lat-long environment (average radiance, sun).
+HdrInfo AnalyzeHdrEnvironment(const Image& image);
 
 struct TextureCookOptions
 {
@@ -148,6 +175,7 @@ struct CookedTexture
     TextureWrap wrapU = TextureWrap::Repeat;
     TextureWrap wrapV = TextureWrap::Repeat;
     Array<Array<u8>> mips;
+    HdrInfo hdr; // HDR sources only
 
     u64 MemorySize() const;
 };
@@ -217,6 +245,6 @@ bool Deserialize(ByteSpan data, MaterialAsset& out);
 bool Deserialize(ByteSpan data, PrefabAsset& out);
 
 /// Bump when any cooked format or cooker output changes (part of every DDC key).
-inline constexpr u32 CookerVersion = 2;
+inline constexpr u32 CookerVersion = 3;
 
 } // namespace zx::asset

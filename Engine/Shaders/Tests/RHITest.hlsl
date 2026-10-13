@@ -35,3 +35,22 @@ float4 TrianglePS() : SV_Target0
 {
     return g_Triangle.color;
 }
+
+// Texture -> float4 buffer (checks block-compressed formats against the CPU decoders).
+struct LoadPush
+{
+    uint textureIndex;
+    uint bufferIndex;
+    uint width;
+    uint height;
+};
+ZX_PUSH_CONSTANTS(LoadPush, g_Load);
+
+[numthreads(8, 8, 1)]
+void LoadTextureCS(uint2 id : SV_DispatchThreadID)
+{
+    if (id.x >= g_Load.width || id.y >= g_Load.height)
+        return;
+    const float4 v = GetTexture2D(g_Load.textureIndex).Load(int3(id, 0));
+    GetRWBuffer(g_Load.bufferIndex).Store4((id.y * g_Load.width + id.x) * 16, asuint(v));
+}

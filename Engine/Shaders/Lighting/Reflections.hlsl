@@ -4,6 +4,7 @@
 
 #include "Common/Bindless.hlsli"
 #include "Sky/Atmosphere.hlsli"
+#include "Sky/Hdri.hlsli"
 
 struct ReflectionParams
 {
@@ -57,14 +58,33 @@ float3 SkyRadiance(float3 dir)
     return GetTexture2D(g_Refl.input).SampleLevel(g_LinearClamp, SkyViewUV(dir), 0).rgb * g_Refl.skyScale;
 }
 
-// Sky-view LUT -> cube mip 0 (dispatch: size/8, size/8, 6).
+// HDRI sky source of SkyToCubeCS (texture = ZX_INVALID_INDEX: the sky-view LUT).
+struct HdriSource
+{
+    uint texture;
+    float rotation;
+    float lod;
+    float clampCos;
+    float3 clampDir;
+    float clampLuminance;
+};
+ZX_PUSH_CONSTANTS(HdriSource, g_Hdri);
+
+// Sky-view LUT (or the HDRI panorama) -> cube mip 0 (dispatch: size/8, size/8, 6).
 [numthreads(8, 8, 1)]
 void SkyToCubeCS(uint3 id : SV_DispatchThreadID)
 {
     if (any(id.xy >= g_Refl.size))
         return;
     const float3 dir = CubeDirection(id.z, (float2(id.xy) + 0.5) / float(g_Refl.size));
-    GetRWTexture2DArray(g_Refl.output)[id] = float4(min(SkyRadiance(dir), MaxHalf), 1);
+    float3 L;
+    if (g_Hdri.texture != ZX_INVALID_INDEX) {
+        L = SampleHdri(g_Hdri.texture, dir, g_Hdri.rotation, g_Hdri.lod);
+        L = ClampHdriSun(max(L, 0.0), dir, g_Hdri.clampDir, g_Hdri.clampCos, g_Hdri.clampLuminance) * g_Refl.skyScale;
+    } else {
+        L = SkyRadiance(dir);
+    }
+    GetRWTexture2DArray(g_Refl.output)[id] = float4(min(L, MaxHalf), 1);
 }
 
 // One captured face -> the raw capture cube; where nothing was drawn (depth 0) the sky fills in.

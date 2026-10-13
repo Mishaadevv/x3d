@@ -8,7 +8,7 @@
 //   if (const PrefabAsset* p = assets.GetPrefab(sponza)) { ...instantiate... }
 //   assets.Load(meshId); const CookedMesh* m = assets.GetMesh(meshId);
 //
-// Sources: .gltf/.glb/.obj (main asset = Prefab; sub-assets: meshes, materials, textures), .png/.jpg/.tga/.bmp/.hdr
+// Sources: .gltf/.glb/.obj (main asset = Prefab; sub-assets: meshes, materials, textures), .png/.jpg/.tga/.bmp/.hdr/.exr
 // (main asset = Texture). A source's .zmeta holds its GUID; sub-asset ids are derived: Guid::FromName(source, "mesh/3").
 // DDC keys hash the source bytes, the cook settings and CookerVersion, so edits and cooker changes re-cook.
 

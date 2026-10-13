@@ -49,6 +49,19 @@ ZX_REFLECT_STRUCT_BEGIN(Decal)
     ZX_FIELD(sortOrder, Meta::Tooltip("Higher values are drawn over lower ones"))
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_ENUM_BEGIN(HdriSunMode)
+    ZX_ENUM_VALUE(FromHDRI)
+    ZX_ENUM_VALUE(SceneSun)
+    ZX_ENUM_VALUE(None)
+ZX_REFLECT_ENUM_END()
+
+ZX_REFLECT_STRUCT_BEGIN(HdriSky)
+    ZX_FIELD(texture, Meta::AssetType("Texture"), Meta::Tooltip("HDR panorama (.hdr / .exr, lat-long). Drop one from the Content Browser"))
+    ZX_FIELD(intensity, Meta::Range(0, 100000), Meta::Units("nits"), Meta::Tooltip("Luminance (cd/m2) of a pixel value of 1"))
+    ZX_FIELD(rotation, Meta::Range(-180, 180), Meta::Units("deg"), Meta::Tooltip("Turns the panorama (and its sun) around the vertical axis"))
+    ZX_FIELD(sun, Meta::Tooltip("Directional light: the sun found in the panorama, the scene's sun, or none"))
+ZX_REFLECT_STRUCT_END()
+
 ZX_REFLECT_STRUCT_BEGIN(PointLight)
     ZX_FIELD(color, Meta::Color())
     ZX_FIELD(lumens, Meta::Range(0, 200000), Meta::Units("lm"), Meta::Tooltip("Luminous power"))
@@ -171,6 +184,16 @@ void GatherReflectionProbes(World& world, Array<render::ReflectionProbeDesc>& ou
         d.key = HashBytes(h, &half, sizeof(half));
         out.PushBack(d);
     });
+}
+
+const HdriSky* FindHdriSky(World& world)
+{
+    const HdriSky* found = nullptr;
+    world.Query<const HdriSky>().Each([&](const HdriSky& s) {
+        if (!found)
+            found = &s;
+    });
+    return found;
 }
 
 void GatherDecals(World& world, Array<render::DecalDesc>& out, const Function<u32(StringView, bool)>& texture)

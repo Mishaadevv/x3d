@@ -78,6 +78,27 @@ struct ReflectionProbe
 };
 ZX_DECLARE_TYPE(ReflectionProbe);
 
+/// Where the directional light comes from while an HDRI Sky is active.
+enum class HdriSunMode : u8
+{
+    FromHDRI, // found in the panorama: direction, color and brightness (removed from the sky lighting)
+    SceneSun, // the scene's sun settings (Sun popup), as with the physical sky
+    None,     // no directional light: the panorama lights everything
+};
+
+/// HDRI Sky: an HDR panorama (.hdr / .exr, lat-long) replaces the physical sky - the background, the sky lighting,
+/// fog color, water and reflections; its sun becomes the directional light. One per scene (the first one wins); the
+/// entity's transform is ignored (use `rotation`).
+struct HdriSky
+{
+    String texture;                       // Content-relative .hdr / .exr
+    f32 intensity = 5000.0f;              // luminance (cd/m2) of a texel value of 1
+    f32 rotation = 0.0f;                  // degrees around +Y
+    HdriSunMode sun = HdriSunMode::FromHDRI;
+};
+ZX_DECLARE_ENUM(HdriSunMode);
+ZX_DECLARE_TYPE(HdriSky);
+
 /// Decal: projects an image (and optionally a normal map) onto whatever is inside its box - along the entity's -Y,
 /// so with no rotation it paints the ground below. Lit like the surface it lands on.
 struct Decal
@@ -113,6 +134,8 @@ void GatherReflectionProbes(ecs::World& world, Array<render::ReflectionProbeDesc
 /// Appends a DecalDesc per Decal entity; `texture` turns a Content-relative path (normal map flag) into a texture SRV
 /// (invalid while it loads). Null = solid-color decals.
 void GatherDecals(ecs::World& world, Array<render::DecalDesc>& out, const Function<u32(StringView path, bool normalMap)>& texture);
+/// The scene's HDRI Sky (first one found); null when there is none.
+const HdriSky* FindHdriSky(ecs::World& world);
 /// Hash of what reflection captures see (mesh instances and lights): a change recaptures the probes.
 u64 SceneContentKey(Span<const render::RenderInstance> instances, Span<const render::LightDesc> lights);
 

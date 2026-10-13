@@ -198,6 +198,7 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.decal", "Create Decal", "Create", ZX_ICON_STAMP, "", [spawn](Editor& e) { e.CreateDecal(spawn(e)); });
     Add(ed, "create.reflectionProbe", "Create Reflection Probe", "Create", ZX_ICON_CIRCLE_DOT, "",
         [spawn](Editor& e) { e.CreateReflectionProbe(spawn(e)); });
+    Add(ed, "create.hdriSky", "Create HDRI Sky", "Create", ZX_ICON_CLOUD_SUN, "", [](Editor& e) { e.UseHdriSky(""); });
     Add(ed, "view.recaptureReflections", "Recapture Reflections", "View", ZX_ICON_REFRESH_CW, "",
         [](Editor& e) { e.viewport->Reflections().RecaptureAll(); });
     Add(ed, "create.postProcessVolume", "Create Post Process Volume", "Create", ZX_ICON_APERTURE, "",

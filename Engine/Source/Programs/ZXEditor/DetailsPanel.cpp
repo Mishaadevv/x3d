@@ -159,7 +159,8 @@ bool EditValue(const FieldInfo* field, const TypeInfo& type, void* p, const Stri
             bool changed = ui::InputText(id, *s, ui::InputTextFlags::None, "Drop an image here");
             if (const void* payload = ui::AcceptDragDropPayload("asset")) {
                 const StringView path(static_cast<const char*>(payload));
-                for (StringView ext : {StringView(".png"), StringView(".jpg"), StringView(".jpeg"), StringView(".tga"), StringView(".dds")})
+                for (StringView ext : {StringView(".png"), StringView(".jpg"), StringView(".jpeg"), StringView(".tga"), StringView(".bmp"),
+                                       StringView(".dds"), StringView(".hdr"), StringView(".exr")})
                     if (Path::HasExtension(path, ext)) {
                         *s = Path::MakeRelative(path, g_editor->contentRoot);
                         changed = true;

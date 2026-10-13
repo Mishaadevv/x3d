@@ -6,6 +6,7 @@
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
 #include "Core/HAL/PlatformMisc.h"
+#include "Core/Image/Exr.h"
 #include "Core/Image/Png.h"
 #include "Core/Profiler/Profiler.h"
 #include "Core/String/Parse.h"
@@ -253,6 +254,7 @@ bool Editor::Initialize()
     m_postTestStage = CommandLine::HasFlag("posttest") ? 1u : 0u;
     m_reflTestStage = CommandLine::HasFlag("reflectiontest") ? 1u : 0u;
     m_decalTestStage = CommandLine::HasFlag("decaltest") ? 1u : 0u;
+    m_hdriTestStage = CommandLine::HasFlag("hdritest") ? 1u : 0u;
     m_toolTest = CommandLine::HasFlag("tooltest") ? 300u : 0u;
     m_audioTestStage = CommandLine::HasFlag("audiotest") ? 1u : 0u;
     StringView execArg;
@@ -771,6 +773,28 @@ void Editor::CreateDecal(Vec3 position, ecs::Entity parent)
     const ecs::Entity e = CreateEntity("Decal", Transform(position), parent);
     world.Add(e, Decal{});
     CommitCreated(e, "Create Decal");
+}
+
+void Editor::UseHdriSky(StringView texture)
+{
+    ecs::Entity existing;
+    world.Query<const HdriSky>().Each([&](ecs::Entity e, const HdriSky&) {
+        if (existing.IsNull())
+            existing = e;
+    });
+    if (existing) {
+        undo.Begin("Set HDRI Sky");
+        undo.Record(existing);
+        world.Get<HdriSky>(existing)->texture = texture;
+        undo.End();
+        Select(existing);
+        return;
+    }
+    const ecs::Entity e = CreateEntity("HDRI Sky", Transform(Vec3(0, 0, 0)));
+    HdriSky sky;
+    sky.texture = texture;
+    world.Add(e, move(sky));
+    CommitCreated(e, "Create HDRI Sky");
 }
 
 void Editor::CreateReflectionProbe(Vec3 position, ecs::Entity parent)
@@ -1296,6 +1320,82 @@ void Editor::StepFrame()
         BeginPlay();
     playState = PlayState::Paused;
     m_pieStep = true;
+}
+
+void Editor::RunHdriSelfTest()
+{
+    auto fail = [this](StringView why) {
+        ZX_LOG_ERROR(LogEditor, "HDRI self-test FAILED: {}", why);
+        selfTestFailed = true;
+        m_hdriTestStage = 0;
+    };
+    // The panorama's sun: 30 degrees up, towards panorama +X (u = 0.75).
+    const Vec3 sunPanorama = asset::LatLongDirection(0.75f, 1.0f / 3.0f);
+    auto sunMatches = [this](Vec3 expected) {
+        const render::SceneLighting& l = viewport->Lighting();
+        return l.sunIlluminance > 0.0f && Dot(-l.sunDirection, Normalize(expected)) > Cos(DegToRad(3.0f));
+    };
+    HdriSky* sky = nullptr;
+    world.Query<HdriSky>().Each([&](HdriSky& s) { sky = &s; });
+    switch (m_hdriTestStage) {
+    case 1: {
+        // Sky gradient, darker ground, a small very bright sun disk.
+        constexpr u32 W = 256, H = 128;
+        Image img = Image::Create(W, H, ImageFormat::RGBA32F);
+        for (u32 y = 0; y < H; ++y)
+            for (u32 x = 0; x < W; ++x) {
+                const Vec3 d = asset::LatLongDirection((f32(x) + 0.5f) / W, (f32(y) + 0.5f) / H);
+                Vec3 c = d.y > 0.0f ? Lerp(Vec3(0.8f, 0.9f, 1.0f), Vec3(0.25f, 0.45f, 0.9f), d.y) : Vec3(0.12f, 0.1f, 0.08f);
+                if (Dot(d, sunPanorama) > Cos(DegToRad(2.0f)))
+                    c = Vec3(20000.0f, 19000.0f, 17000.0f);
+                f32* p = reinterpret_cast<f32*>(img.Row(y) + x * 16);
+                p[0] = c.x;
+                p[1] = c.y;
+                p[2] = c.z;
+                p[3] = 1.0f;
+            }
+        m_hdriTestFile = contentRoot + "/HdriSelfTest.exr";
+        const Array<u8> file = exr::Encode(img);
+        if (!fs::WriteFile(m_hdriTestFile, file.View()))
+            return fail("can't write the test panorama");
+        UseHdriSky("HdriSelfTest.exr");
+        m_hdriTestStage = 2;
+        break;
+    }
+    case 2: // the panorama is resident: its sun is the directional light
+        if (viewport->LastHdri().IsActive() && sunMatches(render::HdriToWorld(sunPanorama, 0.0f))) {
+            if (!viewport->HdriSunFound())
+                return fail("no sun found in the panorama");
+            ZX_LOG_INFO(LogEditor, "HDRI self-test: sun found ({:.0f} lx)", viewport->Lighting().sunIlluminance);
+            sky->rotation = 90.0f;
+            m_hdriTestStage = 3;
+            break;
+        }
+        if (frameIndex > m_hdriTestFrame + 600)
+            return fail(String::Format("panorama not applied (active {}, sun {:.0f} lx)", viewport->LastHdri().IsActive(),
+                                       viewport->Lighting().sunIlluminance));
+        return;
+    case 3: // rotating the sky turns its sun
+        if (sunMatches(render::HdriToWorld(sunPanorama, DegToRad(90.0f)))) {
+            sky->sun = HdriSunMode::None;
+            m_hdriTestStage = 4;
+            break;
+        }
+        if (frameIndex > m_hdriTestFrame + 120)
+            return fail("the sun did not follow the rotation");
+        return;
+    case 4: // Sun = None: no directional light
+        if (viewport->Lighting().sunIlluminance == 0.0f) {
+            ZX_LOG_INFO(LogEditor, "HDRI self-test passed (the sun follows the rotation and the sun mode)");
+            m_hdriTestStage = 0;
+            return;
+        }
+        if (frameIndex > m_hdriTestFrame + 120)
+            return fail("Sun = None still lights the scene");
+        return;
+    default: m_hdriTestStage = 0; return;
+    }
+    m_hdriTestFrame = frameIndex;
 }
 
 void Editor::RunDecalSelfTest()
@@ -2160,6 +2260,8 @@ bool Editor::Frame()
         RunReflectionSelfTest();
     if (m_decalTestStage && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle())
         RunDecalSelfTest();
+    if (m_hdriTestStage && frameIndex > 5 && pendingImports.Empty())
+        RunHdriSelfTest();
     if (m_scriptTest && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle()) {
         m_scriptTest = false;
         selfTestFailed |= !RunScriptSelfTest();
@@ -2183,6 +2285,11 @@ bool Editor::Frame()
         ui::FocusDockedWindow(LogTitle);
     }
     sceneDirty = undo.IsDirty();
+    if (viewport->LastHdri().key != m_lastHdriKey) {
+        m_lastHdriKey = viewport->LastHdri().key;
+        if (viewport->LastHdri().IsActive())
+            Console::Execute("hdri.info");
+    }
     scene::UpdateWorldTransforms(world);
     sw.Restart();
     RenderFrame();
@@ -2190,7 +2297,7 @@ bool Editor::Frame()
     ++m_timedFrames;
 
     ++frameIndex;
-    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !m_cppTestStage && !m_postTestStage && !m_reflTestStage && !m_decalTestStage &&
+    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !m_cppTestStage && !m_postTestStage && !m_reflTestStage && !m_decalTestStage && !m_hdriTestStage &&
         (m_screenshotPath.Empty() || m_screenshotBuffer)) {
         if (!m_saveScenePath.Empty() && SaveSceneFile(m_saveScenePath, world, SceneIO(), SceneSettings()))
             ZX_LOG_INFO(LogEditor, "Saved scene '{}'", m_saveScenePath);
@@ -2380,6 +2487,10 @@ void Editor::Shutdown()
     for (const String& f : m_reflTestFiles)
         platform::DeleteFileAt(f);
     m_reflTestFiles.Reset();
+    if (!m_hdriTestFile.Empty()) {
+        platform::DeleteFileAt(m_hdriTestFile);
+        platform::DeleteFileAt(m_hdriTestFile + ".zmeta");
+    }
     prefabs.Reset();
     viewport.Reset();
     renderAssets.Reset();

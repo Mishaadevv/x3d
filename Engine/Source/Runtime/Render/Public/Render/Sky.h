@@ -3,6 +3,8 @@
 // Physical sky (Hillaire 2020): transmittance + multiple-scattering LUTs (computed once), sky-view LUT (per frame),
 // sky and sun disk drawn behind the scene. The same atmosphere model runs on the CPU to color the sun light that
 // reaches the ground (sunsets turn the direct light orange).
+// HDRI sky: a lat-long HDR panorama replaces the atmosphere - drawn behind the scene at full resolution and resampled
+// into the sky-view LUT (sun clamped), so the sky lighting (SH), fog, water and reflections use it unchanged.
 
 #include "Render/RenderGraph.h"
 #include "Render/SceneRenderer.h"
@@ -27,6 +29,24 @@ struct FogSettings
     f32 sunAnisotropy = 0.6f; // Henyey-Greenstein g
 };
 
+/// HDR panorama replacing the physical sky (see HdriSky in Engine/SceneRendering.h).
+struct HdriSkySettings
+{
+    u32 texture = rhi::InvalidDescriptor; // SRV of the lat-long texture; invalid = physical sky
+    u32 width = 0;                        // texture width in texels (mip selection)
+    f32 intensity = 1.0f;                 // luminance (cd/m2) of a texel value of 1
+    f32 rotation = 0.0f;                  // radians around +Y (panorama +Z turns towards +X)
+    Vec3 clampDirection = Vec3(0, 1, 0);  // world direction of the sun cone the sky lighting clamps
+    f32 clampCos = 2.0f;                  // cos of the cone radius (> 1 = no clamp)
+    f32 clampLuminance = 0.0f;            // texel luminance allowed inside the cone
+    u64 key = 0;                          // must change whenever anything above changes
+
+    bool IsActive() const { return texture != rhi::InvalidDescriptor; }
+};
+
+/// Panorama direction (asset::LatLongDirection) -> world for a sky rotated by `rotation` radians around +Y.
+Vec3 HdriToWorld(Vec3 panoramaDirection, f32 rotation);
+
 struct SkySettings
 {
     f32 sunIlluminanceTop = 120000.0f; // lux outside the atmosphere
@@ -34,6 +54,7 @@ struct SkySettings
     f32 sunAngularRadius = 0.0093f;     // radians (2x the real sun, reads better on screen)
     f32 cameraAltitude = 0.2f;          // km above the ground at world y = 0
     FogSettings fog;
+    HdriSkySettings hdri;
 };
 
 class SkyRenderer
@@ -62,7 +83,9 @@ public:
     /// This frame's sky-view LUT in the graph (valid after AddPrePasses) and the factor turning its values into
     /// pre-exposed radiance (sun color x illuminance x exposure); used by reflections.
     RGTexture SkyViewTexture() const { return m_rgSkyView; }
-    Vec3 SkyRadianceScale() const { return m_params.sunColor * (m_params.sunIlluminance * m_params.exposure); }
+    Vec3 SkyRadianceScale() const { return m_radianceScale * m_params.exposure; }
+    /// The HDRI sky of the last AddPrePasses (inactive = physical sky).
+    const HdriSkySettings& Hdri() const { return m_hdri; }
 
 private:
     struct Params
@@ -79,11 +102,22 @@ private:
         u32 skyViewLut;
         u32 outputUav;
         f32 cameraAltitude;
-        f32 pad[3];
+        u32 hdri;
+        f32 hdriRotation;
+        f32 hdriLod;      // background mip
+        Vec3 hdriClampDir;
+        f32 hdriClampCos;
+        f32 hdriClampLum;
+        f32 hdriLutLod;   // sky-view LUT resampling mip
+        f32 pad[2];
     };
 
     rhi::Device& m_device;
-    rhi::ShaderBytecode m_transmittanceCS, m_multiScatterCS, m_skyViewCS, m_irradianceCS, m_skyVS, m_skyPS, m_fogPS;
+    rhi::ShaderBytecode m_transmittanceCS, m_multiScatterCS, m_skyViewCS, m_hdriViewCS, m_irradianceCS, m_skyVS, m_skyPS, m_fogPS;
+    rhi::Pipeline* m_hdriViewPipeline = nullptr;
+    HdriSkySettings m_hdri;
+    Vec3 m_radianceScale = Vec3(1, 1, 1); // sky-view LUT value -> radiance (before exposure)
+    u64 m_lastHdriKey = 0;
     rhi::Pipeline* m_fogPipeline = nullptr;
     rhi::Pipeline* m_irradiancePipeline = nullptr;
     rhi::Buffer* m_irradianceSH = nullptr; // 9 x float4

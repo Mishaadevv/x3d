@@ -1,6 +1,7 @@
 #include "Render/TextureLoader.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/Math/MathCommon.h"
+#include "Core/Math/Packing.h"
 #include "Core/String/Path.h"
 
 namespace zx::render {
@@ -17,10 +18,30 @@ Result<TextureData> PrepareTexture(const Image& source, const TextureLoadOptions
     out.desc.usage = TextureUsage::ShaderResource;
 
     if (source.format == ImageFormat::RGBA32F) {
-        // HDR: keep float data (BC6H arrives in M10), no mips for now beyond level 0.
-        out.desc.format = Format::R32G32B32A32_FLOAT;
-        out.desc.mipLevels = 1;
-        out.mips.PushBack(source.pixels);
+        // HDR: box-filtered mips, BC6H when the size allows, else half floats.
+        Array<Image> levels;
+        if (options.generateMips) {
+            texture::MipOptions mo;
+            mo.filter = texture::MipFilter::Box;
+            levels = texture::GenerateMips(source, mo);
+        } else {
+            levels.PushBack(source);
+        }
+        const bool bc6 = options.compression != TextureCompression::None && source.width % 4 == 0 && source.height % 4 == 0;
+        out.desc.format = bc6 ? Format::BC6H_UF16 : Format::R16G16B16A16_FLOAT;
+        out.desc.mipLevels = u32(levels.Size());
+        for (const Image& level : levels) {
+            if (bc6) {
+                out.mips.PushBack(texture::CompressBlocks(level, texture::BlockFormat::BC6H));
+                continue;
+            }
+            Array<u8>& mip = out.mips.AddDefaulted();
+            const usize count = usize(level.width) * level.height * 4;
+            mip.ResizeUninitialized(count * 2);
+            const f32* src = reinterpret_cast<const f32*>(level.pixels.Data());
+            for (usize i = 0; i < count; ++i)
+                reinterpret_cast<u16*>(mip.Data())[i] = FloatToHalf(src[i]);
+        }
         return out;
     }
     Image rgba8 = source;
@@ -40,7 +61,7 @@ Result<TextureData> PrepareTexture(const Image& source, const TextureLoadOptions
     TextureCompression compression = options.compression;
     if (compression == TextureCompression::Auto)
         compression = options.normalMap ? TextureCompression::BC5
-                                        : (levels[0].HasTransparency() ? TextureCompression::BC3 : TextureCompression::BC1);
+                                        : (levels[0].HasTransparency() ? TextureCompression::BC7 : TextureCompression::BC1);
     // Block-compressed textures need 4-aligned top-level dimensions in D3D12.
     if (compression != TextureCompression::None && (source.width % 4 != 0 || source.height % 4 != 0))
         compression = TextureCompression::None;
@@ -50,6 +71,7 @@ Result<TextureData> PrepareTexture(const Image& source, const TextureLoadOptions
     case TextureCompression::BC3: out.desc.format = options.srgb ? Format::BC3_SRGB : Format::BC3_UNORM; break;
     case TextureCompression::BC4: out.desc.format = Format::BC4_UNORM; break;
     case TextureCompression::BC5: out.desc.format = Format::BC5_UNORM; break;
+    case TextureCompression::BC7: out.desc.format = options.srgb ? Format::BC7_SRGB : Format::BC7_UNORM; break;
     default: out.desc.format = options.srgb ? Format::R8G8B8A8_SRGB : Format::R8G8B8A8_UNORM; break;
     }
     out.desc.mipLevels = u32(levels.Size());
@@ -59,6 +81,7 @@ Result<TextureData> PrepareTexture(const Image& source, const TextureLoadOptions
         case TextureCompression::BC3: out.mips.PushBack(texture::CompressBlocks(level, texture::BlockFormat::BC3)); break;
         case TextureCompression::BC4: out.mips.PushBack(texture::CompressBlocks(level, texture::BlockFormat::BC4)); break;
         case TextureCompression::BC5: out.mips.PushBack(texture::CompressBlocks(level, texture::BlockFormat::BC5)); break;
+        case TextureCompression::BC7: out.mips.PushBack(texture::CompressBlocks(level, texture::BlockFormat::BC7)); break;
         default: out.mips.PushBack(level.pixels); break;
         }
     }

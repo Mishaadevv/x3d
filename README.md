@@ -4,16 +4,19 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12 — par
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a Unity URP / Unreal Engine 5 style workflow that runs
 well on everyday hardware (the development machine is a laptop with Intel UHD 620 graphics).
 
-**Version 0.9.4** · zero third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md)
+**Version 0.10.0** · zero third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md)
 
 ![Water template](docs/images/water.jpg)
 
 ## What's inside
 
 - **Renderer** — Direct3D 12 with bindless resources and a render graph; clustered forward+ PBR, cascaded and local
-  shadows, GTAO, physical sky with height fog, sky and reflection-probe image-based lighting, screen-space reflections,
-  decals, TAA with ZTSR temporal upscaling and dynamic resolution, bloom, auto exposure, ACES tonemapping, depth of
-  field, camera motion blur, blended Post Process Volumes; Lite/Full profiles chosen by hardware.
+  shadows, GTAO, physical sky with height fog or an HDRI sky (its sun becomes the directional light), sky and
+  reflection-probe image-based lighting, screen-space reflections, decals, TAA with ZTSR temporal upscaling and dynamic
+  resolution, bloom, auto exposure, ACES tonemapping, depth of field, camera motion blur, blended Post Process Volumes;
+  Lite/Full profiles chosen by hardware.
+- **Assets** — own importers for glTF/GLB, OBJ, PNG, JPEG, TGA, BMP, Radiance HDR, OpenEXR (PIZ/ZIP/RLE/PXR24, scanline
+  and tiled), DDS, WAV, Ogg Vorbis, TTF/WOFF, SVG; own BC1/BC3/BC4/BC5, BC7 and BC6H (HDR) encoders; cooked data cache.
 - **Realistic water** — Gerstner waves, Fresnel sky reflection, sun glints, refraction, depth absorption and foam.
 - **Audio** — own 48 kHz mixer on WASAPI with buses, ducking, snapshots, reverb and a limiter; 3D sound with
   attenuation, panning, cones, Doppler and raycast occlusion; own WAV/ADPCM and Ogg Vorbis decoders, streamed music.
@@ -36,6 +39,8 @@ well on everyday hardware (the development machine is a laptop with Intel UHD 62
 | ![Script Editor](docs/images/script-editor.jpg) | ![Project Browser](docs/images/project-browser.jpg) |
 | **Third Person template** | **Brush tool** |
 | ![Third Person](docs/images/third-person.jpg) | ![Brush](docs/images/brush-tool.jpg) |
+| **HDRI Sky (OpenEXR panorama, its sun casts the shadows)** | **HDRI Sky over Sponza** |
+| ![HDRI Sky](docs/images/hdri-sky.jpg) | ![HDRI Sky in Sponza](docs/images/hdri-sponza.jpg) |
 
 ## Building
 
@@ -44,7 +49,7 @@ Requirements: Windows 10/11, Visual Studio 2022 Build Tools (C++ workload, CMake
 ```powershell
 powershell -ExecutionPolicy Bypass -File Tools/build.ps1 -Config Development        # build
 powershell -ExecutionPolicy Bypass -File Tools/build.ps1 -Config Debug -Test         # build + tests
-powershell -ExecutionPolicy Bypass -File Tools/fetch_samples.ps1                     # optional sample models (Sponza, ...)
+powershell -ExecutionPolicy Bypass -File Tools/fetch_samples.ps1                     # optional samples (Sponza, an HDRI, ...)
 ```
 
 Binaries go to `Binaries/Win64/<Debug|Development|Shipping>/`: `ZXEditor.exe` (the editor), `ZXTests.exe` (tests),

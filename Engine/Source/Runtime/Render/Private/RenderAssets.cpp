@@ -28,6 +28,9 @@ Format ToRhiFormat(asset::TextureFormat f)
     case asset::TextureFormat::BC5: return Format::BC5_UNORM;
     case asset::TextureFormat::RGBA16F: return Format::R16G16B16A16_FLOAT;
     case asset::TextureFormat::RGBA32F: return Format::R32G32B32A32_FLOAT;
+    case asset::TextureFormat::BC6H: return Format::BC6H_UF16;
+    case asset::TextureFormat::BC7: return Format::BC7_UNORM;
+    case asset::TextureFormat::BC7_SRGB: return Format::BC7_SRGB;
     }
     return Format::Unknown;
 }
@@ -111,6 +114,14 @@ rhi::Texture* RenderAssets::GetTexture(AssetId id)
     if (GetTextureSrv(id) == InvalidDescriptor)
         return nullptr;
     return m_textures.Find(id)->texture;
+}
+
+const asset::HdrInfo* RenderAssets::GetTextureHdrInfo(AssetId id)
+{
+    if (GetTextureSrv(id) == InvalidDescriptor)
+        return nullptr;
+    const TextureEntry* e = m_textures.Find(id);
+    return e->hdr.valid ? &e->hdr : nullptr;
 }
 
 void RenderAssets::WriteMaterialRow(u32 index, const asset::MaterialAsset& m, bool& texturesPending)
@@ -350,6 +361,7 @@ bool RenderAssets::TryUploadTexture(AssetId id, TextureEntry& e, u64& budget)
         subresources.PushBack(SubresourceData{t->mips[m].Data(), GetRowPitch(desc.format, Max(1u, desc.width >> m)), 0});
     e.texture = m_device.CreateTexture(desc, subresources.View());
     e.bytes = bytes;
+    e.hdr = t->hdr;
     e.failed = e.texture == nullptr;
     m_assets.ReleaseCpuData(id);
     return true;

@@ -1,5 +1,5 @@
 // Editor thumbnails: copies a texture asset into a small sRGB-encoded UNORM thumbnail (aspect-fit, alpha over a dark
-// checkerboard, linear -> sRGB for color textures).
+// checkerboard, linear -> sRGB for color textures, exposure + tonemap for HDR images).
 
 #include "Common/Bindless.hlsli"
 #include "Common/Color.hlsli"
@@ -7,8 +7,9 @@
 struct ThumbnailPush
 {
     uint source;
-    uint encodeSRGB; // 1 when the source samples as linear color (sRGB formats)
+    uint encodeSRGB; // 1 when the source samples as linear color (sRGB formats), 2 = HDR (exposure + tonemap)
     float2 scale;    // aspect fit: uv = (uv - 0.5) * scale + 0.5
+    float exposure;  // HDR
 };
 ZX_PUSH_CONSTANTS(ThumbnailPush, g_Push);
 
@@ -34,7 +35,12 @@ float4 BlitPS(VSOutput i) : SV_Target0
     if (any(uv < 0.0) || any(uv > 1.0))
         return float4(0.11, 0.11, 0.11, 1.0);
     float4 c = GetTexture2D(g_Push.source).Sample(g_LinearClamp, uv);
-    if (g_Push.encodeSRGB != 0)
+    if (g_Push.encodeSRGB == 2) {
+        c.rgb *= g_Push.exposure;
+        c.rgb = LinearToSRGB(saturate(c.rgb / (1.0 + c.rgb)) * 1.6);
+        c.a = 1.0;
+    } else if (g_Push.encodeSRGB != 0) {
         c.rgb = LinearToSRGB(saturate(c.rgb));
+    }
     return float4(lerp(checker, c.rgb, saturate(c.a)), 1.0);
 }

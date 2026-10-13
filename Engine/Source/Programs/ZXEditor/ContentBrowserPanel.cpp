@@ -30,8 +30,10 @@ FileKind KindOf(const FileItem& item)
     if (ext.EqualsIgnoreCase(".gltf") || ext.EqualsIgnoreCase(".glb") || ext.EqualsIgnoreCase(".obj"))
         return {ZX_ICON_BOX, Color(0x5A, 0xA0, 0xF5), "Model"};
     if (ext.EqualsIgnoreCase(".png") || ext.EqualsIgnoreCase(".jpg") || ext.EqualsIgnoreCase(".jpeg") || ext.EqualsIgnoreCase(".bmp") ||
-        ext.EqualsIgnoreCase(".ktx2") || ext.EqualsIgnoreCase(".dds"))
+        ext.EqualsIgnoreCase(".tga") || ext.EqualsIgnoreCase(".ktx2") || ext.EqualsIgnoreCase(".dds"))
         return {ZX_ICON_IMAGE, Color(0x6C, 0xC8, 0x6A), "Texture"};
+    if (ext.EqualsIgnoreCase(".hdr") || ext.EqualsIgnoreCase(".exr"))
+        return {ZX_ICON_SUNRISE, Color(0xF0, 0xB8, 0x4A), "HDR Image"};
     if (ext.EqualsIgnoreCase(".wav") || ext.EqualsIgnoreCase(".ogg") || ext.EqualsIgnoreCase(".mp3"))
         return {ZX_ICON_FILE_AUDIO, Color(0xB0, 0x7C, 0xF0), "Audio"};
     if (ext.EqualsIgnoreCase(".zmat"))
@@ -50,6 +52,9 @@ FileKind KindOf(const FileItem& item)
         return {ZX_ICON_FILE_CODE, Color(0xA8, 0xA8, 0xA8), "Text"};
     return {ZX_ICON_FILE, Color(0x9A, 0x9A, 0x9A), "File"};
 }
+
+/// HDR panorama: double click / drag into the viewport makes it the HDRI Sky.
+bool IsHdrImage(StringView path) { return Path::HasExtension(path, ".hdr") || Path::HasExtension(path, ".exr"); }
 
 /// Can be placed in the scene (double click / drag into the viewport).
 bool IsModel(StringView path)
@@ -210,6 +215,8 @@ void DrawContentBrowserPanel(Editor& ed)
                     b.browserCurrent = item.path;
                 else if (IsModel(item.path))
                     ed.ImportAsset(item.path, ed.camera.position + ed.camera.Forward() * 5.0f);
+                else if (IsHdrImage(item.path) && !ed.IsPlaying())
+                    ed.UseHdriSky(Path::MakeRelative(item.path, ed.contentRoot));
                 else if (Path::HasExtension(item.path, ".zscene"))
                     ed.RequestSceneAction(SceneAction::Open, item.path);
                 else if (Path::HasExtension(item.path, ".zs"))
@@ -281,6 +288,8 @@ void DrawContentBrowserPanel(Editor& ed)
                         ed.undo.End();
                     }
                 }
+                if (IsHdrImage(item.path) && ui::MenuItem(ZX_ICON_CLOUD_SUN "  Use as HDRI Sky", {}, false, !ed.IsPlaying()))
+                    ed.UseHdriSky(Path::MakeRelative(item.path, ed.contentRoot));
                 if (Path::HasExtension(item.path, ".zs")) {
                     if (ui::MenuItem(ZX_ICON_PENCIL "  Edit"))
                         OpenScriptEditor(ed, item.path);

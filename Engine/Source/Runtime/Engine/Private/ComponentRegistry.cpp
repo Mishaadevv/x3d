@@ -51,6 +51,7 @@ void RegisterEngineComponents()
     RegisterComponent<Water>("Water", "\xEE\x82\xB5");                                // droplets
     RegisterComponent<Decal>("Decal", "\xEE\x8E\xBB");                                 // stamp
     RegisterComponent<ReflectionProbe>("Reflection Probe", "\xEE\x8D\x85");           // circle-dot
+    RegisterComponent<HdriSky>("HDRI Sky", "\xEE\x88\x96");                          // cloud-sun
     RegisterComponent<PostProcessVolume>("Post Process Volume", "\xEE\x81\x80");      // aperture
     RegisterComponent<Camera>("Camera", "\xEE\x86\xA5");                              // video
     RegisterComponent<CharacterController>("Character Controller", "\xEE\x88\x9E");  // person-standing

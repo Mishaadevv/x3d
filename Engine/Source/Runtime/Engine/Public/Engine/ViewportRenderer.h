@@ -114,15 +114,19 @@ public:
     const render::PostSettings& LastPostSettings() const { return m_lastPost; }
     void ResetHistory() { m_taa.Reset(); }
     render::ReflectionRenderer& Reflections() { return m_reflections; }
-    /// Content-relative texture path (+ normal map flag) -> texture asset, for decals (the editor resolves it through the
-    /// project's material library). Unset = solid-color decals.
+    /// Content-relative texture path (+ normal map flag) -> texture asset, for decals and the HDRI Sky (the editor resolves
+    /// it through the project's material library). Unset = solid-color decals, no HDRI sky.
     Function<asset::AssetId(StringView path, bool normalMap)> decalTextures;
+    /// The HDRI sky of the last frame (inactive = physical sky) and whether its sun lights the scene.
+    const render::HdriSkySettings& LastHdri() const { return m_sky.Hdri(); }
+    bool HdriSunFound() const { return m_hdriHasSun; }
 
     /// Entities whose meshes get the selection outline (editor). Pass the selected entity and its descendants.
     void SetOutlinedEntities(Span<const ecs::Entity> entities) { m_outlined.Clear(); m_outlined.Append(entities); }
     render::OutlineSettings& Outline() { return m_outlineSettings; }
 
 private:
+    void ResolveHdriSky(ecs::World& world);
     void ApplyEnvironment(const ViewportEnvironment& env);
 
     rhi::Device& m_device;
@@ -150,6 +154,10 @@ private:
     Mat4 m_viewProjNoJitter = Mat4::Identity();
     render::PostSettings m_lastPost;
     f32 m_lastScale = 1.0f;
+    // HDRI Sky of this frame (resolved before the environment: its sun is the directional light).
+    asset::HdrInfo m_hdriInfo;
+    HdriSunMode m_hdriSun = HdriSunMode::SceneSun;
+    bool m_hdriHasSun = false;
     f32 m_dynamicTimer = 0.0f;
     Array<render::RenderInstance> m_instances;
     Array<render::LightDesc> m_lights;

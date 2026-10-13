@@ -89,6 +89,8 @@ public:
     u32 GetTextureSrv(AssetId id);
     /// The resident texture (requests the load like GetTextureSrv); null until uploaded.
     rhi::Texture* GetTexture(AssetId id);
+    /// What the cooker measured on an HDR texture (environment average, sun); null until resident or for LDR textures.
+    const asset::HdrInfo* GetTextureHdrInfo(AssetId id);
 
     rhi::Buffer* GetMaterialBuffer() const { return m_materialBuffer; }
 
@@ -121,6 +123,7 @@ private:
         bool requested = false;
         bool failed = false;
         u64 bytes = 0;
+        asset::HdrInfo hdr;
     };
     struct MaterialEntry
     {

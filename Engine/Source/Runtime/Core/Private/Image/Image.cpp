@@ -75,6 +75,8 @@ ImageFileType DetectImageType(ByteSpan d, StringView hint)
         return ImageFileType::Jpeg;
     if (d.Size() >= 10 && (MemCompare(d.Data(), "#?RADIANCE", 10) == 0 || MemCompare(d.Data(), "#?RGBE", 6) == 0))
         return ImageFileType::Hdr;
+    if (d.Size() >= 8 && d[0] == 0x76 && d[1] == 0x2F && d[2] == 0x31 && d[3] == 0x01)
+        return ImageFileType::Exr;
     if (d.Size() >= 26 && d[0] == 'B' && d[1] == 'M')
         return ImageFileType::Bmp;
     if (Path::HasExtension(hint, "tga"))
@@ -90,6 +92,7 @@ Result<Image> DecodeImage(ByteSpan data, StringView hint)
     case ImageFileType::Tga: return DecodeTga(data);
     case ImageFileType::Bmp: return DecodeBmp(data);
     case ImageFileType::Hdr: return DecodeHdr(data);
+    case ImageFileType::Exr: return DecodeExr(data);
     default: return Error::Make(ErrorCode::Unsupported, "Unknown image format '{}'", hint);
     }
 }

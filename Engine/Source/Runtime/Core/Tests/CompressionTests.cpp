@@ -89,6 +89,24 @@ ZX_TEST(Compression, InflateRejectsGarbage)
     ZX_EXPECT(accepted < 200);
 }
 
+ZX_TEST(Compression, InflateCorruptStreamTerminates)
+{
+    // Bit flips in a real stream used to make the decoder emit literals from the zero padding forever.
+    Random rng(11);
+    Array<u8> text;
+    for (u32 i = 0; i < 20000; ++i)
+        text.PushBack(u8('a' + (rng.NextU32() % 7)));
+    const Array<u8> packed = compression::ZlibCompress(text.View(), 6);
+    for (u32 trial = 0; trial < 300; ++trial) {
+        Array<u8> bad = packed;
+        for (u32 k = 0; k < 4; ++k)
+            bad[2 + usize(rng.NextU32()) % (bad.Size() - 6)] ^= u8(1u << (rng.NextU32() & 7));
+        Array<u8> out;
+        (void)compression::ZlibDecompress(bad.View(), out, text.Size());
+        ZX_EXPECT(out.Size() < text.Size() * 4);
+    }
+}
+
 ZX_TEST(Compression, ZlzRoundTrip)
 {
     for (usize size : {usize(0), usize(3), usize(12), usize(1000), usize(65536 * 3 + 17)}) {

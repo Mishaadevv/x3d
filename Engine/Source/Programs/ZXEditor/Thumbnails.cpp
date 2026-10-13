@@ -17,8 +17,9 @@ namespace {
 struct BlitPush
 {
     u32 source;
-    u32 encodeSRGB;
+    u32 encodeSRGB; // 0 = as is, 1 = linear -> sRGB, 2 = HDR (exposed, tonemapped)
     Vec2 scale;
+    f32 exposure;
 };
 
 bool IsMaterialPath(StringView p) { return Path::HasExtension(p, ".zmat") || Path::HasExtension(p, ".zmati"); }
@@ -32,7 +33,8 @@ bool IsModelPath(StringView p)
 bool IsImagePath(StringView p)
 {
     return Path::HasExtension(p, ".png") || Path::HasExtension(p, ".jpg") || Path::HasExtension(p, ".jpeg") ||
-           Path::HasExtension(p, ".tga") || Path::HasExtension(p, ".bmp") || Path::HasExtension(p, ".hdr");
+           Path::HasExtension(p, ".tga") || Path::HasExtension(p, ".bmp") || Path::HasExtension(p, ".hdr") ||
+           Path::HasExtension(p, ".exr");
 }
 
 bool IsSrgbFormat(Format f)
@@ -154,7 +156,13 @@ bool ThumbnailCache::UpdateImage(RenderGraph& graph, Array<RGTexture>& sampled, 
     if (!source || !EnsureTexture(e))
         return false;
     const TextureDesc& sd = source->GetDesc();
-    BlitPush push{source->GetSrvIndex(), IsSrgbFormat(sd.format) ? 1u : 0u, Vec2(1.0f)};
+    BlitPush push{source->GetSrvIndex(), IsSrgbFormat(sd.format) ? 1u : 0u, Vec2(1.0f), 1.0f};
+    if (const asset::HdrInfo* hdr = m_renderAssets.GetTextureHdrInfo(e.id)) {
+        // HDR: expose the average to mid grey, then tonemap.
+        const f32 average = 0.2126f * hdr->average.x + 0.7152f * hdr->average.y + 0.0722f * hdr->average.z;
+        push.encodeSRGB = 2;
+        push.exposure = 0.18f / Max(average, 1e-6f);
+    }
     // Aspect fit inside the square.
     if (sd.width > sd.height)
         push.scale.y = f32(sd.width) / f32(Max(sd.height, 1u));

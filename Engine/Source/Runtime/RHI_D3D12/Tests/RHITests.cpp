@@ -2,6 +2,9 @@
 
 #include "Core/CoreInit.h"
 #include "Core/FileSystem/FileSystem.h"
+#include "Core/Image/TextureTools.h"
+#include "Core/Math/Packing.h"
+#include "Core/Math/Random.h"
 #include "Core/Testing/Test.h"
 #include "Core/Threading/Thread.h"
 #include "RHI/ShaderCompiler.h"
@@ -230,4 +233,132 @@ ZX_TEST(RHI, ShaderErrorsAndCache)
     ZX_EXPECT(CompileTestShader("FillCS", ShaderStage::Compute).IsOk());
     const ShaderCompiler::Stats after = ShaderCompiler::GetStats();
     ZX_EXPECT(after.cacheHits >= before.cacheHits + 1);
+}
+
+namespace {
+
+/// Uploads `blocks` (width x height texels of `format`) and reads every texel back through a shader Load.
+Array<Vec4> DecodeOnGpu(Device& dev, Pipeline* pipeline, Format format, u32 width, u32 height, const Array<u8>& blocks)
+{
+    const SubresourceData data[] = {{blocks.Data(), (width / 4) * 16, 0}};
+    TextureDesc td;
+    td.width = width;
+    td.height = height;
+    td.format = format;
+    td.usage = TextureUsage::ShaderResource;
+    Texture* tex = dev.CreateTexture(td, Span<const SubresourceData>(data));
+    const u32 bytes = width * height * 16;
+    Buffer* gpu = dev.CreateBuffer(BufferDesc{bytes, BufferUsage::UnorderedAccess | BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, "Decoded"});
+    Buffer* readback = dev.CreateBuffer(BufferDesc{bytes, BufferUsage::CopyDest, MemoryType::Readback, 0, "DecodedReadback"});
+    Array<Vec4> out;
+    if (!tex || !gpu || !readback)
+        return out;
+    dev.BeginFrame();
+    CommandList* cmd = dev.BeginCommandList();
+    cmd->Barrier(gpu, ResourceState::UnorderedAccess);
+    cmd->SetPipeline(pipeline);
+    struct
+    {
+        u32 texture, buffer, width, height;
+    } push = {tex->GetSrvIndex(), gpu->GetUavIndex(), width, height};
+    cmd->SetPushConstants(push);
+    cmd->Dispatch((width + 7) / 8, (height + 7) / 8);
+    cmd->CopyBuffer(readback, 0, gpu, 0, bytes);
+    dev.Submit(cmd);
+    dev.EndFrame();
+    dev.WaitIdle();
+    out.ResizeUninitialized(width * height);
+    MemCopy(out.Data(), readback->GetMappedData(), bytes);
+    dev.Destroy(tex);
+    dev.Destroy(gpu);
+    dev.Destroy(readback);
+    return out;
+}
+
+} // namespace
+
+ZX_TEST(RHI, BlockCompressionMatchesHardwareDecoder)
+{
+    // Every BC6H mode and the BC7 modes the encoder writes: the GPU (WARP, reference decoder) must decode our blocks
+    // exactly like the CPU decoders, which proves the bit layouts.
+    GpuTestScope scope;
+    ZX_REQUIRE(scope.device);
+    Device& dev = *scope.device;
+    Result<ShaderBytecode> cs = CompileTestShader("LoadTextureCS", ShaderStage::Compute);
+    if (!cs)
+        test::ReportFailure(__FILE__, __LINE__, cs.GetError().message);
+    ZX_REQUIRE(cs.IsOk());
+    Pipeline* pipeline = dev.CreateComputePipeline(ComputePipelineDesc{&*cs, "LoadTextureCS"});
+    ZX_REQUIRE(pipeline);
+
+    constexpr u32 Size = 32; // 8 x 8 blocks with varied content
+    Random rng(1234);
+    auto blockTexels = [&](u32 b, f32 rgb[16][3], f32 scale) {
+        const Vec3 c0(rng.NextFloat(), rng.NextFloat(), rng.NextFloat()), c1(rng.NextFloat(), rng.NextFloat(), rng.NextFloat());
+        for (u32 t = 0; t < 16; ++t) {
+            const f32 g = f32((t & 3) + (t >> 2)) / 6.0f;
+            const bool edge = (b % 3 == 0) && ((t & 3) >= 2); // two-region content in every third block
+            const Vec3 c = edge ? c1 * 3.0f : Lerp(c0, c1, g);
+            rgb[t][0] = c.x * scale;
+            rgb[t][1] = c.y * scale;
+            rgb[t][2] = c.z * scale;
+        }
+    };
+    for (i32 mode = 0; mode < 14; ++mode) {
+        Array<u8> blocks;
+        blocks.ResizeZeroed((Size / 4) * (Size / 4) * 16);
+        for (u32 b = 0; b < (Size / 4) * (Size / 4); ++b) {
+            f32 rgb[16][3];
+            blockTexels(b, rgb, b % 2 ? 40.0f : 0.8f);
+            texture::EncodeBC6HBlock(rgb, &blocks[b * 16], mode);
+        }
+        const Array<Vec4> gpu = DecodeOnGpu(dev, pipeline, Format::BC6H_UF16, Size, Size, blocks);
+        ZX_REQUIRE(gpu.Size() == Size * Size);
+        u32 mismatches = 0;
+        for (u32 b = 0; b < (Size / 4) * (Size / 4); ++b) {
+            u16 half[16][3];
+            texture::DecodeBC6HBlock(&blocks[b * 16], half);
+            const u32 bx = b % (Size / 4), by = b / (Size / 4);
+            for (u32 t = 0; t < 16; ++t) {
+                const Vec4& g = gpu[(by * 4 + t / 4) * Size + bx * 4 + t % 4];
+                for (u32 c = 0; c < 3; ++c)
+                    mismatches += (&g.x)[c] != HalfToFloat(half[t][c]) ? 1 : 0;
+            }
+        }
+        if (mismatches)
+            test::ReportFailure(__FILE__, __LINE__, String::Format("BC6H mode {}: {} values differ from the GPU", mode + 1, mismatches));
+    }
+    for (i32 mode : {1, 4, 5, 6}) {
+        Array<u8> blocks;
+        blocks.ResizeZeroed((Size / 4) * (Size / 4) * 16);
+        for (u32 b = 0; b < (Size / 4) * (Size / 4); ++b) {
+            f32 rgb[16][3];
+            blockTexels(b, rgb, 1.0f);
+            u8 rgba[16][4];
+            for (u32 t = 0; t < 16; ++t) {
+                for (u32 c = 0; c < 3; ++c)
+                    rgba[t][c] = u8(Clamp(rgb[t][c], 0.0f, 1.0f) * 255.0f);
+                rgba[t][3] = mode == 1 ? 255 : u8(rng.NextU32());
+            }
+            texture::EncodeBC7Block(rgba, &blocks[b * 16], mode);
+        }
+        const Array<Vec4> gpu = DecodeOnGpu(dev, pipeline, Format::BC7_UNORM, Size, Size, blocks);
+        ZX_REQUIRE(gpu.Size() == Size * Size);
+        u32 mismatches = 0;
+        for (u32 b = 0; b < (Size / 4) * (Size / 4); ++b) {
+            u8 rgba[16][4];
+            ZX_EXPECT(texture::DecodeBC7Block(&blocks[b * 16], rgba));
+            const u32 bx = b % (Size / 4), by = b / (Size / 4);
+            for (u32 t = 0; t < 16; ++t) {
+                const Vec4& g = gpu[(by * 4 + t / 4) * Size + bx * 4 + t % 4];
+                for (u32 c = 0; c < 4; ++c)
+                    mismatches += u32((&g.x)[c] * 255.0f + 0.5f) != rgba[t][c] ? 1 : 0;
+            }
+        }
+        if (mismatches)
+            test::ReportFailure(__FILE__, __LINE__, String::Format("BC7 mode {}: {} values differ from the GPU", mode, mismatches));
+    }
+    dev.Destroy(pipeline);
+    dev.WaitIdle();
+    ZX_EXPECT_EQ(d3d12::GetDebugLayerErrorCount(dev), 0u);
 }

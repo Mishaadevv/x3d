@@ -142,14 +142,142 @@ u32 TextureFormatBlockBytes(TextureFormat f)
     case TextureFormat::BC4: return 8;
     case TextureFormat::BC3:
     case TextureFormat::BC3_SRGB:
-    case TextureFormat::BC5: return 16;
+    case TextureFormat::BC5:
+    case TextureFormat::BC6H:
+    case TextureFormat::BC7:
+    case TextureFormat::BC7_SRGB: return 16;
     case TextureFormat::RGBA16F: return 8;
     case TextureFormat::RGBA32F: return 16;
     default: return 4;
     }
 }
 
-bool IsBlockCompressed(TextureFormat f) { return f >= TextureFormat::BC1 && f <= TextureFormat::BC5; }
+bool IsBlockCompressed(TextureFormat f)
+{
+    return (f >= TextureFormat::BC1 && f <= TextureFormat::BC5) || (f >= TextureFormat::BC6H && f <= TextureFormat::BC7_SRGB);
+}
+
+namespace {
+constexpr StringView CompressionNames[] = {"None", "Auto", "BC1", "BC3", "BC4", "BC5", "BC7"};
+} // namespace
+
+StringView TextureCompressionName(TextureCompression c)
+{
+    return u32(c) < sizeof(CompressionNames) / sizeof(CompressionNames[0]) ? CompressionNames[u32(c)] : StringView("Auto");
+}
+
+TextureCompression ParseTextureCompression(StringView name)
+{
+    for (u32 i = 0; i < sizeof(CompressionNames) / sizeof(CompressionNames[0]); ++i)
+        if (name.EqualsIgnoreCase(CompressionNames[i]))
+            return TextureCompression(i);
+    return TextureCompression::Auto;
+}
+
+Vec3 LatLongDirection(f32 u, f32 v)
+{
+    const f32 theta = v * Pi, phi = (u - 0.5f) * 2.0f * Pi;
+    return Vec3(Sin(theta) * Sin(phi), Cos(theta), Sin(theta) * Cos(phi));
+}
+
+Vec2 LatLongUV(Vec3 d)
+{
+    const f32 phi = std::atan2(d.x, d.z);
+    const f32 theta = std::acos(Clamp(d.y, -1.0f, 1.0f));
+    return Vec2(phi / (2.0f * Pi) + 0.5f, theta / Pi);
+}
+
+HdrInfo AnalyzeHdrEnvironment(const Image& source)
+{
+    HdrInfo info;
+    if (source.format != ImageFormat::RGBA32F || !source.IsValid())
+        return info;
+    // Work on an energy-preserving box-downsampled copy (<= 512 wide): enough to find the sun, fast to cook.
+    u32 factor = 1;
+    while (source.width / factor > 512 && source.height / (factor * 2) >= 4)
+        factor *= 2;
+    const u32 w = Max(1u, source.width / factor), h = Max(1u, source.height / factor);
+    Array<Vec3> px;
+    px.ResizeZeroed(usize(w) * h);
+    for (u32 y = 0; y < h * factor && y < source.height; ++y) {
+        const f32* row = reinterpret_cast<const f32*>(source.Row(y));
+        for (u32 x = 0; x < w * factor && x < source.width; ++x) {
+            Vec3 c(row[x * 4], row[x * 4 + 1], row[x * 4 + 2]);
+            if (!(c.x == c.x) || !(c.y == c.y) || !(c.z == c.z))
+                c = Vec3(0, 0, 0);
+            px[usize(y / factor) * w + x / factor] += Max(c, Vec3(0, 0, 0)) / f32(factor * factor);
+        }
+    }
+    auto lum = [](Vec3 c) { return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z; };
+    const f32 dPhi = 2.0f * Pi / f32(w), dTheta = Pi / f32(h);
+    Vec3 sum;
+    f32 peak = 0.0f;
+    usize peakIndex = 0;
+    Array<f32> upper;
+    for (u32 y = 0; y < h; ++y) {
+        const f32 v = (f32(y) + 0.5f) / f32(h);
+        const f32 dOmega = Sin(v * Pi) * dPhi * dTheta;
+        for (u32 x = 0; x < w; ++x) {
+            const Vec3 c = px[usize(y) * w + x];
+            sum += c * dOmega;
+            if (v < 0.52f) { // sky hemisphere (a little below the horizon for sunsets)
+                const f32 l = lum(c);
+                upper.PushBack(l);
+                if (l > peak) {
+                    peak = l;
+                    peakIndex = usize(y) * w + x;
+                }
+            }
+        }
+    }
+    info.valid = true;
+    info.average = sum / (4.0f * Pi);
+    if (upper.Empty() || peak <= 0.0f)
+        return info;
+    // Median sky luminance (nth element by partial selection on a copy).
+    Array<f32> sorted = upper;
+    const usize mid = sorted.Size() / 2;
+    for (usize i = 0; i <= mid; ++i)
+        for (usize j = i + 1; j < sorted.Size(); ++j)
+            if (sorted[j] < sorted[i])
+                swap(sorted[i], sorted[j]);
+    const f32 median = sorted[mid];
+    // A sun is a small region far brighter than the sky around it.
+    if (peak < 50.0f * Max(median, 1e-6f))
+        return info;
+    const f32 threshold = Max(peak * 0.02f, median * 20.0f);
+    const Vec3 peakDir = LatLongDirection((f32(peakIndex % w) + 0.5f) / f32(w), (f32(peakIndex / w) + 0.5f) / f32(h));
+    const f32 searchCos = Cos(DegToRad(10.0f));
+    Vec3 irradiance, weightedDir;
+    f32 minCos = 1.0f;
+    for (u32 y = 0; y < h; ++y) {
+        const f32 v = (f32(y) + 0.5f) / f32(h);
+        const f32 dOmega = Sin(v * Pi) * dPhi * dTheta;
+        for (u32 x = 0; x < w; ++x) {
+            const Vec3 c = px[usize(y) * w + x];
+            const f32 l = lum(c);
+            if (l <= threshold)
+                continue;
+            const Vec3 d = LatLongDirection((f32(x) + 0.5f) / f32(w), v);
+            const f32 cosAngle = Dot(d, peakDir);
+            if (cosAngle < searchCos)
+                continue;
+            const Vec3 excess = c * ((l - threshold) / l) * dOmega;
+            irradiance += excess;
+            weightedDir += d * lum(excess);
+            minCos = Min(minCos, cosAngle);
+        }
+    }
+    if (lum(irradiance) <= 0.0f)
+        return info;
+    info.hasSun = true;
+    info.sunDirection = SafeNormalize(weightedDir, peakDir);
+    info.sunIlluminance = irradiance;
+    // Cone: the farthest bright texel plus a texel of margin.
+    info.sunCosRadius = Cos(Min(std::acos(Clamp(minCos, -1.0f, 1.0f)) + dTheta * 1.5f, DegToRad(15.0f)));
+    info.sunClamp = threshold;
+    return info;
+}
 
 u64 TextureMipSize(TextureFormat f, u32 width, u32 height)
 {
@@ -172,16 +300,38 @@ Result<CookedTexture> CookTexture(const Image& source, const TextureCookOptions&
         return Error::Make(ErrorCode::InvalidArgument, "CookTexture: empty image");
     CookedTexture out;
     if (source.format == ImageFormat::RGBA32F) {
-        // HDR: half floats, single mip until BC6H arrives (M10).
-        out.format = TextureFormat::RGBA16F;
-        out.width = source.width;
-        out.height = source.height;
-        Array<u8>& mip = out.mips.AddDefaulted();
-        mip.ResizeUninitialized(usize(source.width) * source.height * 8);
-        const f32* src = reinterpret_cast<const f32*>(source.pixels.Data());
-        u16* dst = reinterpret_cast<u16*>(mip.Data());
-        for (usize i = 0; i < usize(source.width) * source.height * 4; ++i)
-            dst[i] = FloatToHalf(src[i]);
+        // HDR: box-filtered mips (Kaiser lobes ring around the sun), BC6H when the size allows, else half floats.
+        out.hdr = AnalyzeHdrEnvironment(source);
+        Array<Image> levels;
+        if (options.generateMips || (options.maxSize && Max(source.width, source.height) > options.maxSize)) {
+            texture::MipOptions mo;
+            mo.filter = texture::MipFilter::Box;
+            levels = texture::GenerateMips(source, mo);
+        } else {
+            levels.PushBack(source);
+        }
+        u32 first = 0;
+        while (options.maxSize && first + 1 < levels.Size() && Max(levels[first].width, levels[first].height) > options.maxSize)
+            ++first;
+        if (!options.generateMips)
+            levels.Resize(first + 1);
+        const bool bc6 = options.compression != TextureCompression::None && levels[first].width % 4 == 0 && levels[first].height % 4 == 0;
+        out.format = bc6 ? TextureFormat::BC6H : TextureFormat::RGBA16F;
+        out.width = levels[first].width;
+        out.height = levels[first].height;
+        for (usize l = first; l < levels.Size(); ++l) {
+            if (bc6) {
+                out.mips.PushBack(texture::CompressBlocks(levels[l], texture::BlockFormat::BC6H));
+                continue;
+            }
+            Array<u8>& mip = out.mips.AddDefaulted();
+            const usize count = usize(levels[l].width) * levels[l].height * 4;
+            mip.ResizeUninitialized(count * 2);
+            const f32* src = reinterpret_cast<const f32*>(levels[l].pixels.Data());
+            u16* dst = reinterpret_cast<u16*>(mip.Data());
+            for (usize i = 0; i < count; ++i)
+                dst[i] = FloatToHalf(src[i]);
+        }
         return out;
     }
     Image rgba8 = source;
@@ -210,7 +360,7 @@ Result<CookedTexture> CookTexture(const Image& source, const TextureCookOptions&
     TextureCompression c = options.compression;
     if (c == TextureCompression::Auto)
         c = options.normalMap ? TextureCompression::BC5
-                              : (levels[first].HasTransparency() ? TextureCompression::BC3 : TextureCompression::BC1);
+                              : (levels[first].HasTransparency() ? TextureCompression::BC7 : TextureCompression::BC1);
     // D3D12 requires block-aligned top-level dimensions for BCn.
     if (c != TextureCompression::None && (levels[first].width % 4 != 0 || levels[first].height % 4 != 0))
         c = TextureCompression::None;
@@ -231,6 +381,10 @@ Result<CookedTexture> CookTexture(const Image& source, const TextureCookOptions&
     case TextureCompression::BC5:
         out.format = TextureFormat::BC5;
         block = texture::BlockFormat::BC5;
+        break;
+    case TextureCompression::BC7:
+        out.format = options.srgb ? TextureFormat::BC7_SRGB : TextureFormat::BC7;
+        block = texture::BlockFormat::BC7;
         break;
     default: out.format = options.srgb ? TextureFormat::RGBA8_SRGB : TextureFormat::RGBA8; break;
     }
@@ -357,6 +511,15 @@ void Serialize(const CookedTexture& t, Array<u8>& out)
     w.Write<u32>(u32(t.mips.Size()));
     for (const Array<u8>& mip : t.mips)
         w.WriteArray(mip.View());
+    w.WriteBool(t.hdr.valid);
+    if (t.hdr.valid) {
+        WritePod(w, t.hdr.average);
+        w.WriteBool(t.hdr.hasSun);
+        WritePod(w, t.hdr.sunDirection);
+        WritePod(w, t.hdr.sunIlluminance);
+        w.Write<f32>(t.hdr.sunCosRadius);
+        w.Write<f32>(t.hdr.sunClamp);
+    }
 }
 
 bool Deserialize(ByteSpan data, CookedTexture& t)
@@ -371,7 +534,7 @@ bool Deserialize(ByteSpan data, CookedTexture& t)
     t.wrapU = TextureWrap(r.Read<u8>());
     t.wrapV = TextureWrap(r.Read<u8>());
     const u32 mipCount = r.Read<u32>();
-    if (r.HasError() || mipCount > 16 || t.format > TextureFormat::RGBA32F)
+    if (r.HasError() || mipCount > 16 || t.format > TextureFormat::BC7_SRGB)
         return false;
     t.mips.Clear();
     for (u32 m = 0; m < mipCount; ++m) {
@@ -379,6 +542,16 @@ bool Deserialize(ByteSpan data, CookedTexture& t)
         r.ReadArray(mip);
         if (mip.Size() != TextureMipSize(t.format, Max(1u, t.width >> m), Max(1u, t.height >> m)))
             return false;
+    }
+    t.hdr = HdrInfo();
+    t.hdr.valid = r.ReadBool();
+    if (t.hdr.valid) {
+        ReadPod(r, t.hdr.average);
+        t.hdr.hasSun = r.ReadBool();
+        ReadPod(r, t.hdr.sunDirection);
+        ReadPod(r, t.hdr.sunIlluminance);
+        t.hdr.sunCosRadius = r.Read<f32>();
+        t.hdr.sunClamp = r.Read<f32>();
     }
     return !r.HasError();
 }

@@ -386,6 +386,9 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
     if (ui::Button(ZX_ICON_SUNRISE "  Sun##sun"))
         ui::OpenPopup("##sun");
     if (ui::BeginPopup("##sun")) {
+        if (ed.viewport->LastHdri().IsActive())
+            ui::TextDisabled(ed.viewport->HdriSunFound() ? "HDRI Sky active: its sun lights the scene\n(turn it with Rotation in Details)"
+                                                         : "HDRI Sky active: these apply with Sun = Scene Sun");
         f32 elevation = RadToDeg(ed.environment.sunElevation), azimuth = RadToDeg(ed.environment.sunAzimuth);
         ui::SetNextItemWidth(160.0f);
         if (ui::SliderFloat("Elevation", &elevation, -5.0f, 89.0f, "{:.0f}°"))
@@ -456,6 +459,8 @@ void DrawViewportPanel(Editor& ed)
                 ed.AssignMaterial(target, guid);
                 ed.Select(target);
             }
+        } else if ((Path::HasExtension(path, ".hdr") || Path::HasExtension(path, ".exr")) && !ed.IsPlaying()) {
+            ed.UseHdriSky(Path::MakeRelative(path, ed.contentRoot)); // panoramas become the sky
         } else {
             f32 t;
             Vec3 pos = ed.camera.position + ed.camera.Forward() * 5.0f;

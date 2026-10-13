@@ -58,11 +58,18 @@ Vec3 SunDirection(f32 elevation, f32 azimuth)
 
 } // namespace atmosphere
 
+Vec3 HdriToWorld(Vec3 d, f32 rotation)
+{
+    const f32 s = Sin(rotation), c = Cos(rotation);
+    return Vec3(d.x * c + d.z * s, d.y, -d.x * s + d.z * c);
+}
+
 SkyRenderer::SkyRenderer(Device& device) : m_device(device) {}
 
 SkyRenderer::~SkyRenderer()
 {
-    for (Pipeline* p : {m_transmittancePipeline, m_multiScatterPipeline, m_skyViewPipeline, m_irradiancePipeline, m_skyPipeline, m_fogPipeline})
+    for (Pipeline* p : {m_transmittancePipeline, m_multiScatterPipeline, m_skyViewPipeline, m_hdriViewPipeline, m_irradiancePipeline, m_skyPipeline,
+                        m_fogPipeline})
         m_device.Destroy(p);
     m_device.Destroy(m_irradianceSH);
     for (Texture* t : {m_transmittance, m_multiScatter, m_skyView})
@@ -80,6 +87,7 @@ bool SkyRenderer::Init(Format colorFormat, Format depthFormat)
         {&m_transmittanceCS, "TransmittanceCS", ShaderStage::Compute},
         {&m_multiScatterCS, "MultiScatterCS", ShaderStage::Compute},
         {&m_skyViewCS, "SkyViewCS", ShaderStage::Compute},
+        {&m_hdriViewCS, "SkyViewFromHdriCS", ShaderStage::Compute},
         {&m_irradianceCS, "SkyIrradianceCS", ShaderStage::Compute},
         {&m_skyVS, "SkyVS", ShaderStage::Vertex},
         {&m_skyPS, "SkyPS", ShaderStage::Pixel},
@@ -106,6 +114,7 @@ bool SkyRenderer::Init(Format colorFormat, Format depthFormat)
     m_transmittancePipeline = compute(m_transmittanceCS, "Sky.Transmittance");
     m_multiScatterPipeline = compute(m_multiScatterCS, "Sky.MultiScatter");
     m_skyViewPipeline = compute(m_skyViewCS, "Sky.SkyView");
+    m_hdriViewPipeline = compute(m_hdriViewCS, "Sky.SkyViewFromHdri");
     m_irradiancePipeline = compute(m_irradianceCS, "Sky.Irradiance");
     m_irradianceSH = m_device.CreateBuffer(BufferDesc{256, BufferUsage::Constant | BufferUsage::ShaderResource | BufferUsage::UnorderedAccess,
                                                       MemoryType::GpuOnly, 0, "SkyIrradianceSH"});
@@ -148,7 +157,8 @@ bool SkyRenderer::Init(Format colorFormat, Format depthFormat)
     m_transmittance = lut(256, 64, "TransmittanceLUT");
     m_multiScatter = lut(32, 32, "MultiScatterLUT");
     m_skyView = lut(192, 108, "SkyViewLUT");
-    return m_fogPipeline && m_transmittancePipeline && m_multiScatterPipeline && m_skyViewPipeline && m_irradiancePipeline && m_irradianceSH &&
+    return m_fogPipeline && m_transmittancePipeline && m_multiScatterPipeline && m_skyViewPipeline && m_hdriViewPipeline && m_irradiancePipeline &&
+           m_irradianceSH &&
            m_skyPipeline && m_transmittance &&
            m_multiScatter && m_skyView;
 }
@@ -181,6 +191,26 @@ void SkyRenderer::AddPrePasses(RenderGraph& graph, const RenderView& view, Vec3 
     p.multiScatterLut = m_multiScatter->GetSrvIndex();
     p.skyViewLut = m_skyView->GetSrvIndex();
     p.cameraAltitude = settings.cameraAltitude + Max(view.position.y, 0.0f) * 1e-3f;
+    // HDRI sky: the panorama scaled by its intensity replaces the atmosphere (sunColor x sunIlluminance = scale).
+    m_hdri = settings.hdri;
+    const bool hdri = m_hdri.IsActive();
+    p.hdri = hdri ? m_hdri.texture : InvalidDescriptor;
+    m_radianceScale = hdri ? Vec3(m_hdri.intensity) : settings.sunColor * settings.sunIlluminanceTop;
+    if (hdri) {
+        p.sunColor = Vec3(1, 1, 1);
+        p.sunIlluminance = m_hdri.intensity;
+        p.hdriRotation = m_hdri.rotation;
+        const f32 width = f32(Max(m_hdri.width, 1u));
+        // Background: about one texel per pixel; LUT: one texel per LUT column.
+        const f32 pixelAngle = view.fovY / f32(Max(view.height, 1u));
+        p.hdriLod = Max(0.0f, Log2((2.0f * Pi / width) > 0.0f ? pixelAngle / (2.0f * Pi / width) : 1.0f));
+        p.hdriLutLod = Max(0.0f, Log2(width / 192.0f));
+        // The resampled sun spreads over ~2 LUT texels: widen the clamp cone accordingly.
+        const f32 lutTexel = 2.0f * Pi / 192.0f;
+        p.hdriClampDir = m_hdri.clampDirection;
+        p.hdriClampCos = m_hdri.clampCos > 1.0f ? 2.0f : Cos(Min(std::acos(Clamp(m_hdri.clampCos, -1.0f, 1.0f)) + 2.0f * lutTexel, Pi));
+        p.hdriClampLum = m_hdri.clampLuminance;
+    }
 
     const RGTexture transmittance = graph.ImportTexture(m_transmittance, ResourceState::ShaderResource);
     const RGTexture multiScatter = graph.ImportTexture(m_multiScatter, ResourceState::ShaderResource);
@@ -221,24 +251,26 @@ void SkyRenderer::AddPrePasses(RenderGraph& graph, const RenderView& view, Vec3 
             });
     }
     // The sky-view LUT and its SH only depend on the sun direction and the camera altitude: refresh on change.
-    const bool skyChanged = !m_skyValid || LengthSq(p.sunDirection - m_lastSunDirection) > 1e-10f ||
-                            Abs(p.cameraAltitude - m_lastAltitude) > 0.01f;
+    const u64 hdriKey = hdri ? (m_hdri.key | 1u) : 0u;
+    const bool skyChanged = !m_skyValid || hdriKey != m_lastHdriKey ||
+                            (!hdri && (LengthSq(p.sunDirection - m_lastSunDirection) > 1e-10f || Abs(p.cameraAltitude - m_lastAltitude) > 0.01f));
     m_skyValid = true;
     m_lastSunDirection = p.sunDirection;
     m_lastAltitude = p.cameraAltitude;
+    m_lastHdriKey = hdriKey;
     if (skyChanged) {
     graph.AddPass(
-        "SkyViewLUT", PassType::Compute,
+        hdri ? "SkyViewFromHdri" : "SkyViewLUT", PassType::Compute,
         [transmittance, multiScatter, skyView](PassBuilder& b) {
             b.ReadTexture(transmittance);
             b.ReadTexture(multiScatter);
             b.WriteTexture(skyView);
             b.SideEffects();
         },
-        [this](PassContext& ctx) {
+        [this, hdri](PassContext& ctx) {
             Params q = m_params;
             q.outputUav = m_skyView->GetUavIndex();
-            ctx.cmd.SetPipeline(m_skyViewPipeline);
+            ctx.cmd.SetPipeline(hdri ? m_hdriViewPipeline : m_skyViewPipeline);
             ctx.cmd.SetConstants(0, &q, sizeof(q));
             ctx.cmd.Dispatch((192 + 7) / 8, (108 + 7) / 8);
         });
@@ -258,7 +290,7 @@ void SkyRenderer::AddPrePasses(RenderGraph& graph, const RenderView& view, Vec3 
         });
     }
     lighting.skyIrradianceBuffer = m_irradianceSH;
-    lighting.skyIrradianceScale = settings.sunColor * (settings.sunIlluminanceTop * exposure);
+    lighting.skyIrradianceScale = m_radianceScale * exposure;
 }
 
 void SkyRenderer::AddSkyPass(RenderGraph& graph, RGTexture color, RGTexture depth)

@@ -31,7 +31,7 @@ bool IsSceneExtension(StringView path)
 
 bool IsImageExtension(StringView path)
 {
-    for (StringView ext : {"png", "jpg", "jpeg", "tga", "bmp", "hdr", "dds"})
+    for (StringView ext : {"png", "jpg", "jpeg", "tga", "bmp", "hdr", "exr", "dds"})
         if (Path::HasExtension(path, ext))
             return true;
     return false;
@@ -51,6 +51,7 @@ struct TextureSettings
     bool normalMap = false;
     bool alphaCoverage = false;
     f32 alphaCutoff = 0.5f;
+    TextureCompression compression = TextureCompression::Auto;
     TextureWrap wrapU = TextureWrap::Repeat;
     TextureWrap wrapV = TextureWrap::Repeat;
 };
@@ -151,6 +152,7 @@ Result<AssetId> AssetManager::RegisterSource(StringView pathIn)
         const JsonValue& s = meta.Get("settings");
         texSettings.srgb = s.Get("srgb").AsBool(true);
         texSettings.normalMap = s.Get("normalMap").AsBool(false);
+        texSettings.compression = ParseTextureCompression(s.Get("compression").AsString());
     }
     if (!id.IsValid()) {
         if (m_settings.writeMetaFiles) {
@@ -583,6 +585,7 @@ void AssetManager::LoadEntry(Entry& e)
         h.UpdateValue(e.texture.normalMap);
         h.UpdateValue(e.texture.alphaCoverage);
         h.UpdateValue(e.texture.alphaCutoff);
+        h.UpdateValue(e.texture.compression);
         h.UpdateValue(m_settings.textureMaxSize);
         const String cookedPath = DdcPath(h.Digest(), ".ztex");
         Array<u8> cookedBytes;
@@ -598,6 +601,7 @@ void AssetManager::LoadEntry(Entry& e)
             o.normalMap = e.texture.normalMap;
             o.preserveAlphaCoverage = e.texture.alphaCoverage;
             o.alphaCutoff = e.texture.alphaCutoff;
+            o.compression = e.texture.compression;
             o.maxSize = m_settings.textureMaxSize;
             Result<CookedTexture> cooked = CookTexture(*img, o);
             if (!cooked)

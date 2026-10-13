@@ -48,6 +48,39 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
            m_taa.Init() && m_outline.Init(outputFormat) && m_water.Init(m_hdrFormat, DepthFormat(), lite);
 }
 
+void ViewportRenderer::ResolveHdriSky(ecs::World& world)
+{
+    render::HdriSkySettings& h = m_settings.sky.hdri;
+    h = render::HdriSkySettings();
+    m_hdriInfo = asset::HdrInfo();
+    m_hdriHasSun = false;
+    const HdriSky* sky = m_settings.useSky && decalTextures ? FindHdriSky(world) : nullptr;
+    if (!sky || sky->texture.Empty())
+        return;
+    const asset::AssetId id = decalTextures(sky->texture, false);
+    Texture* texture = m_assets.GetTexture(id);
+    if (!texture)
+        return; // loading: the physical sky until the panorama is resident
+    if (const asset::HdrInfo* info = m_assets.GetTextureHdrInfo(id))
+        m_hdriInfo = *info;
+    h.texture = texture->GetSrvIndex();
+    h.width = texture->GetDesc().width;
+    h.intensity = Max(sky->intensity, 0.0f);
+    h.rotation = DegToRad(sky->rotation);
+    m_hdriSun = sky->sun;
+    m_hdriHasSun = m_hdriInfo.hasSun && sky->sun == HdriSunMode::FromHDRI;
+    if (m_hdriHasSun) {
+        // The sun leaves the sky lighting and becomes the directional light.
+        h.clampDirection = HdriToWorld(m_hdriInfo.sunDirection, h.rotation);
+        h.clampCos = m_hdriInfo.sunCosRadius;
+        h.clampLuminance = m_hdriInfo.sunClamp;
+    }
+    u64 key = 0x48445249u;
+    for (u64 v : {u64(h.texture), u64(h.width), u64(std::bit_cast<u32>(h.intensity)), u64(std::bit_cast<u32>(h.rotation)), u64(sky->sun)})
+        key = key * 0x100000001B3ull ^ v;
+    h.key = key;
+}
+
 void ViewportRenderer::ApplyEnvironment(const ViewportEnvironment& env)
 {
     SceneLighting& l = m_lighting;
@@ -66,6 +99,24 @@ void ViewportRenderer::ApplyEnvironment(const ViewportEnvironment& env)
         const f32 day = Saturate(Sin(env.sunElevation) * 2.0f);
         l.skyLuminance = 300.0f + 13700.0f * day;
         l.exposureEV100 = 9.0f + 4.5f * day;
+    }
+    const render::HdriSkySettings& hdri = m_settings.sky.hdri;
+    if (hdri.IsActive()) {
+        // Ambient and manual exposure from the panorama's average; the directional light per the sun mode.
+        auto luminance = [](Vec3 c) { return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z; };
+        const f32 average = m_hdriInfo.valid ? luminance(m_hdriInfo.average) : 1.0f;
+        l.skyLuminance = average * hdri.intensity;
+        l.skyColor = m_hdriInfo.valid && average > 0.0f ? m_hdriInfo.average / average : Vec3(1, 1, 1);
+        l.exposureEV100 = Log2(Max(l.skyLuminance, 1e-4f) * 8.0f); // EV100 = log2(L * 100 / 12.5)
+        if (m_hdriHasSun) {
+            m_dirToSun = HdriToWorld(m_hdriInfo.sunDirection, hdri.rotation);
+            const f32 sun = luminance(m_hdriInfo.sunIlluminance);
+            l.sunDirection = -m_dirToSun;
+            l.sunIlluminance = sun * hdri.intensity;
+            l.sunColor = sun > 0.0f ? m_hdriInfo.sunIlluminance / sun : Vec3(1, 1, 1);
+        } else if (m_hdriSun != HdriSunMode::SceneSun) {
+            l.sunIlluminance = 0.0f; // None, or no distinct sun in the panorama
+        }
     }
     m_settings.post.autoExposure = env.autoExposure;
     if (env.autoExposure && m_post.HasAutoExposure())
@@ -102,6 +153,8 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     m_settings.scene.normalOutput = m_settings.reflections.ssr;
     if (camera.cut)
         m_taa.Reset();
+    ResolveHdriSky(world);
+    m_settings.reflections.skyResolution = m_settings.sky.hdri.IsActive() ? 128u : 64u;
     ApplyEnvironment(env);
     m_lights.Clear();
     GatherLights(world, m_lights);
@@ -136,7 +189,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     // Reflections: probes are recaptured when the scene content, the sun or the sky changes.
     m_probes.Clear();
     GatherReflectionProbes(world, m_probes, SceneContentKey(m_instances.View(), m_lights.View()) ^ (m_assets.ContentVersion() * 0x9E3779B97F4A7C15ull));
-    u64 environmentKey = m_settings.useSky ? 1u : 2u;
+    u64 environmentKey = (m_settings.useSky ? 1u : 2u) ^ m_settings.sky.hdri.key;
     for (f32 c : {m_dirToSun.x, m_dirToSun.y, m_dirToSun.z, env.night ? 1.0f : 0.0f})
         environmentKey = environmentKey * 31u + u64(i64(c * 1000.0f));
     m_reflections.Prepare(m_probes.View(), view, exposure, m_settings.reflections, environmentKey, m_lighting);
@@ -207,7 +260,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         m_sky.AddFogPass(graph, sceneColor, sceneDepth, m_lighting, m_settings.sky);
     // After every pass that samples the cubes: sky cube update, the probe face, prefiltering.
     m_reflections.AddUpdatePasses(graph, m_settings.useSky ? m_sky.SkyViewTexture() : RGTexture(), m_sky.SkyRadianceScale(), faceColor,
-                                  faceDepth, exposure);
+                                  faceDepth, exposure, m_settings.useSky ? &m_settings.sky.hdri : nullptr);
     if (overlay) {
         graph.AddPass(
             "Overlay", PassType::Graphics,

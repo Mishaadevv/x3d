@@ -150,6 +150,66 @@ ConCommand CmdAudioStats("audio.stats", "Prints the audio device and mixer state
                 s.deviceOpen ? s.deviceName : String("none"), s.voices, s.audible, s.virtualVoices, s.streams, s.underruns, s.mixCpuMs);
 });
 
+ConCommand CmdCamera("camera", "Moves the editor camera: camera <x> <y> <z> [yaw deg] [pitch deg] (no arguments: prints it)",
+                     [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed)
+        return;
+    if (args.Size() >= 3) {
+        ed->camera.position = Vec3(ParseFloat(args[0]).ValueOr(0.0f), ParseFloat(args[1]).ValueOr(0.0f), ParseFloat(args[2]).ValueOr(0.0f));
+        if (args.Size() >= 4)
+            ed->camera.yaw = DegToRad(ParseFloat(args[3]).ValueOr(0.0f));
+        if (args.Size() >= 5)
+            ed->camera.pitch = DegToRad(ParseFloat(args[4]).ValueOr(0.0f));
+        ed->viewport->ResetHistory();
+    }
+    ZX_LOG_INFO(LogCmd, "camera {:.2f} {:.2f} {:.2f} {:.1f} {:.1f}", ed->camera.position.x, ed->camera.position.y, ed->camera.position.z,
+                RadToDeg(ed->camera.yaw), RadToDeg(ed->camera.pitch));
+});
+
+ConCommand CmdHdriInfo("hdri.info", "HDRI Sky: panorama, intensity, the sun it lights the scene with", [](Span<const StringView>) {
+    Editor* ed = Ed();
+    if (!ed)
+        return;
+    const render::HdriSkySettings& h = ed->viewport->LastHdri();
+    if (!h.IsActive()) {
+        ZX_LOG_INFO(LogCmd, "HDRI Sky: inactive (physical sky)");
+        return;
+    }
+    const render::SceneLighting& l = ed->viewport->Lighting();
+    ZX_LOG_INFO(LogCmd,
+                "HDRI Sky: {} px wide, {:.0f} nits per unit, rotation {:.1f} deg; sky {:.0f} nits average; sun {}{:.0f} lx, color ({:.2f}, {:.2f}, "
+                "{:.2f}), from ({:.2f}, {:.2f}, {:.2f})",
+                h.width, h.intensity, RadToDeg(h.rotation), l.skyLuminance, ed->viewport->HdriSunFound() ? "found, " : "", l.sunIlluminance,
+                l.sunColor.x, l.sunColor.y, l.sunColor.z, -l.sunDirection.x, -l.sunDirection.y, -l.sunDirection.z);
+});
+
+ConCommand CmdHdriSet("hdri.set", "Edits the HDRI Sky: hdri.set rotation|intensity <value>, hdri.set sun FromHDRI|SceneSun|None",
+                      [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || args.Size() < 2)
+        return;
+    HdriSky* sky = nullptr;
+    ed->world.Query<HdriSky>().Each([&](HdriSky& s) {
+        if (!sky)
+            sky = &s;
+    });
+    if (!sky) {
+        ZX_LOG_WARN(LogCmd, "No HDRI Sky in the scene (create hdrisky <panorama>)");
+        return;
+    }
+    if (args[0].EqualsIgnoreCase("rotation"))
+        sky->rotation = ParseFloat(args[1]).ValueOr(sky->rotation);
+    else if (args[0].EqualsIgnoreCase("intensity"))
+        sky->intensity = ParseFloat(args[1]).ValueOr(sky->intensity);
+    else if (args[0].EqualsIgnoreCase("sun"))
+        sky->sun = args[1].EqualsIgnoreCase("None") ? HdriSunMode::None
+                   : args[1].EqualsIgnoreCase("SceneSun") ? HdriSunMode::SceneSun
+                                                            : HdriSunMode::FromHDRI;
+    else
+        ZX_LOG_WARN(LogCmd, "Unknown HDRI Sky field '{}' (rotation, intensity, sun)", args[0]);
+});
+
 ConCommand CmdRecapture("reflections.recapture", "Recaptures every reflection probe", [](Span<const StringView>) {
     if (Editor* ed = Ed())
         ed->viewport->Reflections().RecaptureAll();
@@ -210,6 +270,8 @@ ConCommand CmdCreate("create", "Creates an object in front of the camera: create
         ed->CreateReflectionProbe(at);
     else if (kind.EqualsIgnoreCase("decal"))
         ed->CreateDecal(at);
+    else if (kind.EqualsIgnoreCase("hdrisky") || kind.EqualsIgnoreCase("hdri"))
+        ed->UseHdriSky(args.Size() > 1 ? args[1] : StringView());
     else if (kind.EqualsIgnoreCase("entity"))
         ed->CreateEmpty(at);
     else if (kind.EqualsIgnoreCase("cube"))
