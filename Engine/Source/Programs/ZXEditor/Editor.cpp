@@ -213,6 +213,14 @@ bool Editor::Initialize()
         else
             ZX_LOG_INFO(LogScript, "{}", message);
     };
+    game.Reset(new GameModuleSystem());
+    game->onLog = [](StringView message, bool isError) {
+        if (isError)
+            ZX_LOG_ERROR(LogScript, "{}", message);
+        else
+            ZX_LOG_INFO(LogScript, "{}", message);
+    };
+    inputActions = InputActionMap::Defaults();
     viewport.Reset(new ViewportRenderer(*device, *renderAssets));
     debugDraw.Reset(new DebugDraw(*device));
     pool.Reset(new TransientResourcePool(*device));
@@ -237,6 +245,7 @@ bool Editor::Initialize()
     m_pieTest = CommandLine::HasFlag("pietest");
     m_materialTest = CommandLine::HasFlag("materialtest");
     m_scriptTest = CommandLine::HasFlag("scripttest");
+    m_cppTestStage = CommandLine::HasFlag("cpptest") ? 1u : 0u;
     m_toolTest = CommandLine::HasFlag("tooltest") ? 300u : 0u;
     m_audioTestStage = CommandLine::HasFlag("audiotest") ? 1u : 0u;
     StringView execArg;
@@ -269,6 +278,12 @@ bool Editor::Initialize()
         options.starterContent = CommandLine::HasFlag("starter");
         options.documentation = !CommandLine::HasFlag("nodocs");
         options.gitRepository = CommandLine::HasFlag("git");
+        StringView languageArg;
+        if (CommandLine::GetValue("language", languageArg) && languageArg.EqualsIgnoreCase("cpp"))
+            options.language = ProjectLanguage::Cpp;
+        // -cpptest starts from a fresh test project each time (only under Saved/TestProjects).
+        if (m_cppTestStage && Path::Normalize(newProjectArg).Contains("Saved/TestProjects/"))
+            platform::DeleteDirectoryTree(newProjectArg);
         if (!CreateAndOpenProject(Path::Parent(newProjectArg), Path::FileName(newProjectArg), options)) {
             ZX_LOG_ERROR(LogEditor, "Can't create project {}: {}", newProjectArg, browser.error);
             ShowProjectBrowser();
@@ -293,6 +308,7 @@ void Editor::ShowProjectBrowser()
 {
     NewScene();
     project = ProjectInfo();
+    SetupGameModule(*this);
     mode = EditorMode::ProjectBrowser;
     browser.recentLoaded = false;
     browser.error.Clear();
@@ -319,6 +335,7 @@ bool Editor::OpenProject(StringView descriptorPath)
         scripts->SetContentRoot(contentRoot);
     if (audio)
         audio->SetContentRoot(contentRoot);
+    SetupGameModule(*this);
     scriptEditor.open = false;
     panels.browserCurrent = contentRoot;
     panels.browserListedDir.Clear();
@@ -354,6 +371,12 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
                                    options.templ == ProjectTemplate::Water;
     if (characterTemplate)
         WriteGameplayScripts(created->contentDir);
+    if (options.language == ProjectLanguage::Cpp) {
+        // Source/<Name>: built in the background as soon as the project opens.
+        const String module = GameModuleName(created.Value());
+        if (WriteGameModuleSource(created->root, module, engineRoot))
+            ZX_LOG_INFO(LogEditor, "C++ game module: Source/{}/{}.cpp", module, module);
+    }
     if (options.documentation)
         ZX_LOG_INFO(LogEditor, "Documentation: {} files (README.md, Docs/, AGENTS.md)", WriteProjectDocs(created.Value()));
     if (options.gitRepository) {
@@ -1119,6 +1142,9 @@ void Editor::BeginPlay()
     m_pieStep = false;
     if (scripts)
         scripts->Begin(world);
+    if (game)
+        game->Begin(world);
+    inputActionState = InputActionState();
     if (audio)
         audio->Begin(world);
     gameCameraEjected = false;
@@ -1136,6 +1162,8 @@ void Editor::EndPlay()
     }
     if (scripts)
         scripts->End();
+    if (game)
+        game->End();
     if (audio)
         audio->End();
     if (audioEngine)
@@ -1321,7 +1349,7 @@ bool Editor::RunAudioSelfTest()
 {
     // 64 looping 3D sources around the camera play through the real device for ~2 s: every source becomes a voice,
     // at most 64 are mixed, the device never runs dry; Stop silences everything.
-    static Array<ecs::Entity> s_sources;
+    Array<ecs::Entity>& s_sources = m_audioTestSources; // a member: freed even when the editor exits mid-test
     const String file = contentRoot + "/AudioSelfTest.wav";
     if (m_audioTestStage == 1) {
         audio::PcmData tone;
@@ -1793,11 +1821,23 @@ bool Editor::Frame()
 
     // --- Scene ---
     UpdateImports();
+    UpdateGameModule(*this);
     if (playState == PlayState::Playing || m_pieStep) {
         const f32 gameDt = m_pieStep ? 1.0f / 60.0f : dt;
         TickGameplay(world, gameDt);
-        if (scripts && FeatureEnabled("scripts"))
-            scripts->Tick(world, gameDt, gameInputCaptured ? &input : nullptr);
+        const InputState* gameInput = gameInputCaptured ? &input : nullptr;
+        inputActionState.Update(inputActions, gameInput);
+        if (scripts && FeatureEnabled("scripts")) {
+            scripts->actions = &inputActionState;
+            scripts->Tick(world, gameDt, gameInput);
+        }
+        if (game) {
+            GameTickContext context;
+            context.input = gameInput;
+            context.actions = &inputActionState;
+            context.audio = audio.Get();
+            game->Tick(world, gameDt, context);
+        }
         // Characters move after the scripts asked them to (character.move / jump).
         scene::UpdateWorldTransforms(world);
         if (audio && !m_pieStep)
@@ -1832,6 +1872,8 @@ bool Editor::Frame()
             m_toolTest = 0;
         }
     }
+    if (m_cppTestStage && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle())
+        RunCppSelfTest();
     if (m_scriptTest && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle()) {
         m_scriptTest = false;
         selfTestFailed |= !RunScriptSelfTest();
@@ -1862,13 +1904,13 @@ bool Editor::Frame()
     ++m_timedFrames;
 
     ++frameIndex;
-    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() &&
+    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !m_cppTestStage &&
         (m_screenshotPath.Empty() || m_screenshotBuffer)) {
         if (!m_saveScenePath.Empty() && SaveSceneFile(m_saveScenePath, world, SceneIO(), SceneSettings()))
             ZX_LOG_INFO(LogEditor, "Saved scene '{}'", m_saveScenePath);
         return false;
     }
-    if (m_autotestFrames && frameIndex > m_autotestFrames + 3000)
+    if (m_autotestFrames && frameIndex > m_autotestFrames + 3000 && !m_cppTestStage) // -cpptest has its own timeout
         return false;
     return true;
 }
@@ -2003,6 +2045,7 @@ void Editor::Shutdown()
     debugDraw.Reset();
     thumbnails.Reset();
     materials.Reset();
+    game.Reset(); // stops running components while the world and audio still exist
     scripts.Reset();
     audio.Reset();
     audioEngine.Reset();

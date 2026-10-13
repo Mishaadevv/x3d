@@ -558,8 +558,11 @@ void DrawNewProjectPage(Editor& ed)
                       o.language == ProjectLanguage::ZeqouScript, true, Color(0x4E, 0xC9, 0xB0)))
             o.language = ProjectLanguage::ZeqouScript;
         ui::ItemTooltip("Simple, readable scripts attached to entities (docs/ZeqouScript.md)");
-        ChoiceRow("##lang_cpp", ZX_ICON_BRACES, "C++", "Native gameplay modules - coming in M10", o.language == ProjectLanguage::Cpp, false,
-                  Color(0x5A, 0xA0, 0xF5));
+        if (ChoiceRow("##lang_cpp", ZX_ICON_BRACES, "C++", "Native game module, hot reload while playing", o.language == ProjectLanguage::Cpp,
+                      true, Color(0x5A, 0xA0, 0xF5)))
+            o.language = ProjectLanguage::Cpp;
+        ui::ItemTooltip("Source/<Name>: C++ components built by the editor (Compile, F7) with Visual Studio 2022 Build Tools.\n"
+                        "ZeqouScript works in C++ projects too.");
         ChoiceRow("##lang_vs", ZX_ICON_WORKFLOW, "Visual Script", "Node graphs (ZGraph) - coming in M14", o.language == ProjectLanguage::VisualScript,
                   false, Color(0xB0, 0x7C, 0xF0));
         ui::Spacing();

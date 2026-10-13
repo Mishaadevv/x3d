@@ -23,6 +23,7 @@
 namespace zx {
 
 class InputState;
+class InputActionState;
 class AudioSystem;
 
 /// Runs a .zs file on the entity. `properties` holds the values of the script's `prop` fields that differ from the
@@ -70,6 +71,8 @@ public:
 
     /// Sound for scripts (audio.play, entity.playSound); null = scripts play nothing.
     AudioSystem* audio = nullptr;
+    /// The project's Input Actions for input.action / actionPressed / actionReleased / axis (null = all released).
+    const InputActionState* actions = nullptr;
 
     /// log()/print() output and errors (file:line: message).
     Function<void(StringView message, bool isError)> onLog;

@@ -196,6 +196,15 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.audioSource", "Create Audio Source", "Create", ZX_ICON_VOLUME_2, "", [spawn](Editor& e) { e.CreateAudioSource(spawn(e)); });
     Add(ed, "create.reverbZone", "Create Reverb Zone", "Create", ZX_ICON_AUDIO_LINES, "", [spawn](Editor& e) { e.CreateReverbZone(spawn(e)); });
     Add(ed, "window.audioMixer", "Audio Mixer", "Window", ZX_ICON_SLIDERS_VERTICAL, "", [](Editor& e) { e.showMixer = !e.showMixer; });
+    Add(ed, "window.inputActions", "Input Actions", "Window", ZX_ICON_GAMEPAD_2, "", [](Editor& e) { e.showInputActions = !e.showInputActions; });
+    // Game code
+    auto hasProject = [](Editor& e) { return !e.project.descriptorPath.Empty(); };
+    Add(ed, "game.compile", "Compile Game Code", "Game", ZX_ICON_HAMMER, "F7", [](Editor& e) { CompileGameCode(e); },
+        [](Editor& e) { return !e.project.descriptorPath.Empty() && e.gameBuildState != GameBuildState::Building; });
+    Add(ed, "game.createModule", "Create C++ Game Module", "Game", ZX_ICON_FOLDER_CODE, "", [](Editor& e) { CreateGameModule(e); }, hasProject);
+    Add(ed, "game.openSource", "Open Game Source Folder", "Game", ZX_ICON_FOLDER_OPEN, "", [](Editor& e) {
+        platform::OpenUrl(Path::Join(e.project.root, String::Format("Source/{}", GameModuleName(e.project))));
+    }, [](Editor& e) { return !e.project.descriptorPath.Empty() && HasGameModuleSource(e.project.root, GameModuleName(e.project)); });
     Add(ed, "create.material", "Create Material", "Create", ZX_ICON_PALETTE, "", [](Editor& e) {
         String dir = e.panels.browserCurrent.Empty() ? e.contentRoot : e.panels.browserCurrent;
         String path = Path::Join(dir, "NewMaterial.zmat");

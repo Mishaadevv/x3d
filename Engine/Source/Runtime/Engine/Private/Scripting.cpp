@@ -4,6 +4,7 @@
 #include "Core/Log/Log.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/Gameplay.h"
+#include "Engine/InputActions.h"
 #include "Platform/Input.h"
 #include "Scene/Hierarchy.h"
 
@@ -462,6 +463,22 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             if (k == Key::Unknown)
                 return v.Fail(String::Format("Unknown key '{}' (examples: \"W\", \"Space\", \"Shift\", \"Escape\", \"F1\")", a[0].AsString()));
             out = Value(in && KeyState(*in, k, keyMode));
+            return true;
+        }
+        if (m == "action" || m == "actionPressed" || m == "actionReleased" || m == "axis") {
+            // Input Actions (Window > Input Actions): action("Jump"), axis("MoveForward").
+            if (a.Size() != 1 || a[0].Type() != ValueType::String)
+                return v.Fail(String::Format("input.{}(\"Name\") takes an Input Action name", m));
+            const InputActionState* actions = SystemOf(o).actions;
+            const StringView name = a[0].AsString();
+            if (m == "axis")
+                out = Value(actions ? actions->Axis(name) : 0.0f);
+            else if (m == "action")
+                out = Value(actions && actions->Down(name));
+            else if (m == "actionPressed")
+                out = Value(actions && actions->Pressed(name));
+            else
+                out = Value(actions && actions->Released(name));
             return true;
         }
         if (m == "mouse" || m == "mousePressed") {

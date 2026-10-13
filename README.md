@@ -4,7 +4,7 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12 — par
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a Unity URP / Unreal Engine 5 style workflow that runs
 well on everyday hardware (the development machine is a laptop with Intel UHD 620 graphics).
 
-**Version 0.9.0** · zero third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md)
+**Version 0.9.1** · zero third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md)
 
 ![Water template](docs/images/water.jpg)
 
@@ -23,6 +23,9 @@ well on everyday hardware (the development machine is a laptop with Intel UHD 62
 - **ZeqouScript** — the engine's own scripting language: compiled to bytecode, hot reload while playing, `prop` fields
   edited per entity in the Details panel, built-in Script Editor with syntax colors and live errors.
   Reference: [docs/ZeqouScript.md](docs/ZeqouScript.md).
+- **C++ gameplay** — a project's game module (`Source/<Name>`) built in the background and hot-reloaded while the
+  game is playing (props kept); components from a single-header Game SDK, edited per entity in Details.
+- **Input Actions** — named buttons and axes bound to keyboard, mouse and gamepad, used by scripts and C++.
 - **Gameplay** — Play-in-Editor with the game camera and input capture, Character Controller (walking, stairs, jumping),
   prefabs with overrides, material graphs with a node editor.
 - **Tools** — Brush (paint models onto surfaces), Measure, Drop to Ground, per-project Features toggles.

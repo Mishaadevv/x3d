@@ -10,6 +10,8 @@
 #include "Engine/AudioSystem.h"
 #include "Engine/BuiltinAssets.h"
 #include "Engine/FlyCamera.h"
+#include "Engine/GameModule.h"
+#include "Engine/InputActions.h"
 #include "Engine/Materials.h"
 #include "Engine/Prefab.h"
 #include "Engine/Project.h"
@@ -223,6 +225,11 @@ public:
     UniquePtr<ScriptSystem> scripts;      // ZeqouScript programs of the open project; runs them while playing
     UniquePtr<audio::AudioEngine> audioEngine; // WASAPI output (-noaudio: null backend)
     UniquePtr<AudioSystem> audio;         // Audio Sources of the scene while playing, previews
+    UniquePtr<GameModuleSystem> game;     // C++ game module of the open project (Source/<Name>), hot-reloaded
+    i64 gameDllTime = 0;                  // modification time of the loaded Binaries/<Name>.dll
+    GameBuildState gameBuildState = GameBuildState::Idle;
+    InputActionMap inputActions;          // Config/Input.json of the open project
+    InputActionState inputActionState;    // evaluated once per game frame
     UniquePtr<ThumbnailCache> thumbnails;
     UniquePtr<render::DebugDraw> debugDraw;
     UniquePtr<render::TransientResourcePool> pool;
@@ -287,6 +294,7 @@ public:
     bool showOutliner = true, showDetails = true, showContent = true, showLog = true, showViewport = true, showStats = false;
     bool showAbout = false;
     bool showMixer = false; // Window > Audio Mixer
+    bool showInputActions = false; // Window > Input Actions
     bool requestResetLayout = false;
     bool quit = false;
 
@@ -395,11 +403,25 @@ private:
     u32 m_toolTest = 0; // -tooltest: frames left to wait for the test meshes (0 = off)
     u32 m_audioTestStage = 0; // -audiotest: 1 = start, 2 = playing, 3 = stopped, 0 = off
     u64 m_audioTestFrame = 0, m_audioTestUnderruns = 0;
+    Array<ecs::Entity> m_audioTestSources;
     bool RunAudioSelfTest(); // returns false while still running; sets selfTestFailed on failure
     bool RunToolSelfTest(bool& retry);
     f64 m_scriptCheckTimer = 0.0;
     String m_scriptTestFile; // -scripttest: deleted on shutdown
     bool RunPieSelfTest();
+    // -cpptest: build a C++ game module, run it in PIE, change the code, hot-reload while playing (EditorGameCode.cpp).
+    u32 m_cppTestStage = 0;
+    u64 m_cppTestFrame = 0;
+    f64 m_cppTestStart = 0.0;
+    u32 m_cppTestGeneration = 0;
+    f32 m_cppTestY = 0.0f;
+    Quat m_cppTestRotation;
+    void RunCppSelfTest();
+
+public:
+    bool CppSelfTestRunning() const { return m_cppTestStage != 0; }
+
+private:
     String m_saveAfterImports; // new-project template: save the startup scene once its imports are placed
     void UpdateStartupScene(StringView savedScene);
     /// Copies a source from outside the project into Content/<Name>/ (with its dependencies); returns the copy.
@@ -431,6 +453,13 @@ void BuildDefaultLayout(ui::ID root);
 bool PropertyEditor(const TypeInfo& type, void* object, StringView idPrefix = {});
 /// Audio (EditorAudio.cpp).
 void DrawAudioMixerPanel(Editor& ed);
+/// C++ game code (EditorGameCode.cpp).
+String GameModuleName(const ProjectInfo& project); // the project name as a C++ identifier
+void SetupGameModule(Editor& ed);  // after a project opened: load the DLL, rebuild in the background
+void UpdateGameModule(Editor& ed); // every frame: build results, hot reload
+bool CompileGameCode(Editor& ed);  // F7: background build, hot reload when it succeeds
+bool CreateGameModule(Editor& ed); // writes Source/<Name> (sample components) and builds it
+void DrawInputActionsPanel(Editor& ed);
 bool EditAudioSourceClip(Editor& ed, AudioSource& source);
 
 /// Console variables/commands of the editor (EditorConsole.cpp).
@@ -445,5 +474,6 @@ inline constexpr StringView ContentTitle = ZX_ICON_FOLDER_OPEN "  Content Browse
 inline constexpr StringView LogTitle = ZX_ICON_SQUARE_TERMINAL "  Output Log";
 inline constexpr StringView StatsTitle = ZX_ICON_GAUGE "  Statistics";
 inline constexpr StringView AudioMixerTitle = ZX_ICON_SLIDERS_VERTICAL "  Audio Mixer";
+inline constexpr StringView InputActionsTitle = ZX_ICON_GAMEPAD_2 "  Input Actions";
 
 } // namespace zx::editor

@@ -1,6 +1,7 @@
 #include "Engine/ComponentRegistry.h"
 #include "Core/Memory/Memory.h"
 #include "Engine/AudioSystem.h"
+#include "Engine/GameModule.h"
 #include "Engine/Gameplay.h"
 #include "Engine/Prefab.h"
 #include "Engine/SceneRendering.h"
@@ -51,6 +52,7 @@ void RegisterEngineComponents()
     RegisterComponent<CharacterController>("Character Controller", "\xEE\x88\x9E");  // person-standing
     RegisterComponent<PaintedInstance>("Painted Instance", "\xEE\x8B\xA7", false, true, true); // paintbrush (Brush tool marker)
     RegisterComponent<Script>("Script", "\xEE\x83\x83");                              // file-code
+    RegisterComponent<NativeScript>("C++ Script", "\xEE\x8D\xAA");                  // braces
     RegisterComponent<PrefabInstance>("Prefab", "\xEE\x84\xA9", false, false, true);  // package (shown in the prefab bar)
     RegisterComponent<PrefabLink>("Prefab Link", "\xEE\x84\xA9", false, false, true);
 }

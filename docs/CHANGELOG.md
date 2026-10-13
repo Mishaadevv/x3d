@@ -5,6 +5,27 @@
 одном месте — `project(ZeqouX3D VERSION ...)` в корневом CMakeLists.txt (оттуда его берут `Core/Version.h`, ресурс
 версии ZXEditor.exe, About и лог).
 
+## 0.9.1 — C++ game module, hot reload, Input Actions (2026-10-13)
+- **C++ геймплей**: модуль игры проекта (`Source/<Name>/`) собирается в `Binaries/<Name>.dll` и подгружается
+  редактором; компоненты — наследники `ScriptComponent` из однофайлового Game SDK (`Engine/Source/GameSDK/ZeqouGame.h`),
+  регистрация макросами `ZX_GAME_COMPONENT` / `ZX_GAME_PROP` (float, int, bool, Vec3 с диапазоном и подсказкой)
+- **Hot reload в PIE**: кнопка Compile (молоток у Play, F7) собирает модуль в фоне (`Tools/build_game.ps1`: MSVC + CMake +
+  Ninja, окружение vcvars кешируется — пересборка ~1 с); после сборки работающие компоненты пересоздаются на новом коде
+  с теми же props и получают `OnReloaded()`, игра не останавливается. Ошибки компилятора — в Output Log
+- Компонент **C++ Script** (NativeScript): выбор класса и props в Details (только отличия от умолчаний сохраняются
+  в сцене), сообщение о несобранном модуле с кнопками Create / Compile
+- Host API для C++: сущности (Find, Spawn фигур, Destroy, позиция/поворот/масштаб), ввод (клавиши, Input Actions, мышь),
+  время, Character Controller, звук, лог
+- **Input Actions**: именованные кнопки и оси (Jump, Sprint, Crouch, Interact, Fire, Aim, Pause; MoveForward, MoveRight,
+  LookX, LookY) с привязками к клавиатуре, мыши и геймпаду; окно Window > Input Actions, файл `Config/Input.json`;
+  ZeqouScript: `input.action/actionPressed/actionReleased/axis`
+- Project Browser: язык **C++** доступен при создании проекта (пишет `Source/<Name>` с примерами Spinner, Bouncer,
+  PlayerController и сразу собирает); Tools > Create C++ Game Module / Open Game Source Folder для существующих проектов
+- Документация проекта: `Docs/CppGameCode.md`, Input Actions в README / Getting Started / AGENTS.md
+- Самопроверка `-cpptest` (с `-newproject=... -language=cpp`): сборка модуля, Spinner в PIE, правка исходника,
+  пересборка и hot reload во время игры, проверка нового поведения и сохранённого prop, Stop восстанавливает сцену
+- Исправлено: утечка памяти при выходе из редактора посреди `-audiotest`
+
 ## 0.9.0 — M9: звук (2026-10-13)
 - Свой звуковой движок: микшер 48 кГц на отдельном потоке, вывод WASAPI, шины Master/Music/SFX/UI/Voice с громкостью,
   mute и метрами, ducking, снапшоты, реверб, лимитер; DSP: фильтры, Freeverb, задержка, компрессор

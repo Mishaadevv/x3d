@@ -32,10 +32,13 @@ ZXEditor.exe -project="{descriptor}"
 | `Content/Scenes/` | Levels (`.zscene`, JSON) |
 | `Content/Scripts/` | Gameplay scripts in ZeqouScript (`.zs`) |
 | `Content/StarterContent/` | Example materials and scripts (if added) |
+| `Source/<Name>/` | C++ game code (if the project has a game module), built to `Binaries/` |
+| `Config/Input.json` | Input Actions (Jump, MoveForward, ...) - edit in Window > Input Actions |
 | `Docs/` | This documentation |
 | `Saved/` | Editor layout, logs, caches - not meant for version control |
 
-More: [Getting started](Docs/GettingStarted.md), [ZeqouScript reference](Docs/ZeqouScript.md).
+More: [Getting started](Docs/GettingStarted.md), [ZeqouScript reference](Docs/ZeqouScript.md),
+[C++ game code](Docs/CppGameCode.md).
 )md";
 
 const char* const GettingStarted = R"md(# Getting started
@@ -72,6 +75,82 @@ See [ZeqouScript.md](ZeqouScript.md) for the language.
 Add a **Character Controller** and a script that calls `character.move(velocity)` / `character.jump(speed)`.
 The First/Third Person templates (and Starter Content) include ready controllers. Collision uses the boxes of meshes
 with **Collision** enabled in their Mesh Renderer.
+
+## Input Actions
+
+**Window > Input Actions** names the controls of the game: buttons (`Jump`, `Fire`, ...) and axes (`MoveForward`,
+`LookX`, ...) bound to keys, mouse and gamepad. Scripts read them with `input.action("Jump")`,
+`input.actionPressed("Jump")` and `input.axis("MoveForward")`, C++ with `host->ActionDown("Jump")` / `host->Axis(...)`.
+They are saved in `Config/Input.json`.
+
+## C++
+
+Tools > **Create C++ Game Module** adds `Source/<Name>/` with example components; **Compile** (F7, the hammer next to
+Play) builds it in the background and reloads it - also while the game is playing. See [CppGameCode.md](CppGameCode.md).
+)md";
+
+const char* const CppReference = R"md(# C++ game code
+
+A project can have a **game module**: C++ components in `Source/<Name>/`, built into `Binaries/<Name>.dll` and loaded
+by the editor. Every `.cpp` / `.h` in that folder is part of it.
+
+Requirements: Visual Studio 2022 or its Build Tools with the C++ workload (CMake and Ninja come with it).
+
+## A component
+
+```cpp
+#include "ZeqouGame.h"
+using namespace zx::game;
+
+class Spinner : public ScriptComponent
+{
+public:
+    float speed = 90.0f;                 // a prop: edited per entity in Details
+    Vec3 axis = Vec3(0, 1, 0);
+
+    void OnStart() override {}           // once, when the game starts
+    void OnUpdate(float dt) override     // every frame
+    {
+        SetRotation(Rotation() * Quat::AxisAngle(axis, speed * dt));
+    }
+};
+ZX_GAME_COMPONENT(Spinner, "Spins the entity")
+    ZX_GAME_PROP(speed, -720, 720, "Degrees per second")
+    ZX_GAME_PROP(axis, 0, 0, "Rotation axis")
+ZX_GAME_COMPONENT_END()
+
+ZX_IMPLEMENT_GAME_MODULE("{name}")   // once per module
+```
+
+Attach it with **Add Component > C++ Script** and pick the class. Props can be `float`, `int`, `bool` or `Vec3`
+(min = max means no range).
+
+## Compile and hot reload
+
+Press **F7** (or the hammer next to Play). The build runs in the background; when it succeeds the new code is loaded.
+While playing, running components are recreated on the new code: props keep their values, `OnReloaded()` is called
+instead of `OnStart()`, other members start from their defaults. Errors appear in the Output Log
+(full output: `Saved/Logs/GameBuild.log`).
+
+## What a component can use
+
+Members: `entity`, `host`; helpers `Position() SetPosition() Rotation() SetRotation() Forward() Right() Rotate(euler)
+Translate(local) Name() Log(text)`.
+
+`host->` (the engine):
+| Area | Functions |
+|---|---|
+| Entities | `Find("Name")`, `IsAlive(e)`, `Destroy(e)`, `Spawn("Cube" / "Sphere" / "Cylinder" / "Plane" / "", position)`, `GetName(e)`, `Get/SetPosition`, `Get/SetRotation`, `Get/SetScale` |
+| Input | `KeyDown("W")`, `KeyPressed("Space")`, `ActionDown("Jump")`, `ActionPressed("Jump")`, `Axis("MoveForward")`, `MouseDelta()` |
+| Time | `DeltaTime()`, `Time()` |
+| Character | `CharacterMove(e, velocity)`, `CharacterJump(e, speed)`, `CharacterGrounded(e)` (needs a Character Controller) |
+| Sound | `PlaySound("Sounds/x.wav", volume, spatial, position)` -> voice, `StopSound(voice)` |
+| Log | `Log(text, isError)` |
+
+Math: `Vec3` (`+ - * /`, `Length() Normalized()`, `Dot Cross Distance Lerp`), `Quat` (`Euler(pitch, yaw, roll)` in
+degrees, `AxisAngle(axis, degrees)`, `q * q`, `q * v`).
+
+Code runs inside the editor: a crash in a component takes the editor down, so save your scene before experimenting.
 )md";
 
 const char* const ScriptReference = R"md(# ZeqouScript reference
@@ -122,7 +201,7 @@ vec3/quat are values (copied); lists and strings are references.
 | `entity` / `transform` | `name position rotation scale forward right up alive parent`; `rotate(eulerDeg)`, `rotate(axis, deg)`, `translate(v[, world])`, `lookAt(point)`, `child("Name")`, `destroy()` |
 | `find("Name")` | another entity (or `nil`) |
 | `character` | the Character Controller: `move(velocity)`, `jump(speed)`, `grounded`, `velocity` |
-| `input` | `key("W")`, `pressed("Space")`, `released(...)`, `mouse("left")`, `mousePressed(...)`, `move` (WASD/stick vec3), `look`, `mouseDelta`, `mousePosition`, `wheel` |
+| `input` | `key("W")`, `pressed("Space")`, `released(...)`, `mouse("left")`, `mousePressed(...)`, `move` (WASD/stick vec3), `look`, `mouseDelta`, `mousePosition`, `wheel`; Input Actions: `action("Jump")`, `actionPressed(...)`, `actionReleased(...)`, `axis("MoveForward")` |
 | `time` | `dt elapsed frame` |
 | `audio` | `play(file[, volume])`, `playAt(file, position[, volume])`, `stop(id)`, `setVolume(bus, volume)`; `entity.playSound()` / `stopSound()` with an Audio Source |
 
@@ -146,14 +225,20 @@ This is a game project for the **ZeqouX3D** engine ({version}). Read this before
 - `{name}.zproj` - project descriptor (JSON). Don't rename it.
 - `Content/Scenes/*.zscene` - scenes as JSON: `entities[]` with a `guid`, optional `parent`, and one object per
   component (`Transform`, `MeshRenderer`, `PointLight`, `SpotLight`, `Camera`, `CharacterController`, `Water`, `Script`,
-  `AudioSource`, `AudioListener`, `ReverbZone`,
+  `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`,
   `Rotator`, `Oscillator`, ...). Prefer editing scenes in the editor; when editing JSON keep guids unique and stable.
 - `Content/Scripts/*.zs` - gameplay code in **ZeqouScript** (see `Docs/ZeqouScript.md`). This is where most work happens.
 - `Content/**/*.zmat` / `.zmati` - material graphs / instances (JSON node graphs). `.zprefab` - prefabs.
-- `Saved/` - generated; never commit or edit.
+- `Source/<Name>/` - C++ game module, if the project has one (see `Docs/CppGameCode.md`).
+- `Config/Input.json` - Input Actions (named buttons and axes).
+- `Saved/`, `Intermediate/`, `Binaries/` - generated; never commit or edit.
 
 ## Writing gameplay code
-- Gameplay is ZeqouScript only (C++ modules arrive in a later engine version). One `script Name { }` per `.zs` file.
+- Gameplay is ZeqouScript (`.zs`, one `script Name { }` per file) and, in projects with a game module, C++ components
+  (`Source/<Name>/`, `ScriptComponent` subclasses registered with `ZX_GAME_COMPONENT`; build with
+  `powershell -ExecutionPolicy Bypass -File <engine>/Tools/build_game.ps1 -Project <project dir> -Name <Name>`).
+- Read player input through Input Actions (`input.action("Jump")`, `input.axis("MoveForward")`; C++ `host->ActionDown`,
+  `host->Axis`) rather than hard-coded keys.
 - Expose tunables as `prop` with `@range`/`@tooltip`; keep per-instance state in `var` fields.
 - Use the engine objects exactly as documented in `Docs/ZeqouScript.md` (`entity`, `character`, `input`, `time`,
   `find`). There are no other globals; unknown names are runtime errors.
@@ -191,6 +276,7 @@ u32 WriteProjectDocs(const ProjectInfo& project)
     write("README.md", ReadmeTemplate);
     write("Docs/GettingStarted.md", GettingStarted);
     write("Docs/ZeqouScript.md", ScriptReference);
+    write("Docs/CppGameCode.md", CppReference);
     write("AGENTS.md", AgentsTemplate);
     write("CLAUDE.md", "# Claude Code\n\nSee [AGENTS.md](AGENTS.md) - the instructions for AI assistants working on this project.\n");
     return written;

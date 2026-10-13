@@ -444,6 +444,132 @@ bool EditScript(Editor& ed, Script& s)
     return changed;
 }
 
+/// C++ Script component: the game module's component class and its props (ZX_GAME_PROP), like the Script component.
+bool EditNativeScript(Editor& ed, NativeScript& s)
+{
+    bool changed = false;
+    GameModuleSystem* game = ed.game.Get();
+    const bool hasSource = !ed.project.descriptorPath.Empty() && HasGameModuleSource(ed.project.root, GameModuleName(ed.project));
+    PropertyLabel("Class", "The C++ component (a ScriptComponent in the project's game module) this entity runs.");
+    if (!game || !game->IsLoaded()) {
+        String shown = s.className.Empty() ? String("None") : s.className;
+        ui::SetNextItemWidth(-1.0f);
+        ui::InputText("##native_class", shown, ui::InputTextFlags::ReadOnly);
+        ui::PushTextColor(Color(0xE8, 0xB8, 0x4A));
+        if (!hasSource)
+            ui::TextWrapped(ZX_ICON_TRIANGLE_ALERT "  This project has no C++ game module yet.");
+        else if (ed.gameBuildState == GameBuildState::Building)
+            ui::TextWrapped(ZX_ICON_LOADER_CIRCLE "  Compiling game code...");
+        else
+            ui::TextWrapped(ZX_ICON_TRIANGLE_ALERT "  The game module is not loaded - compile it (F7).");
+        ui::PopTextColor();
+        if (!hasSource && ui::Button(ZX_ICON_FOLDER_CODE "  Create C++ Game Module"))
+            CreateGameModule(ed);
+        else if (hasSource && ed.gameBuildState != GameBuildState::Building && ui::Button(ZX_ICON_HAMMER "  Compile"))
+            CompileGameCode(ed);
+        return false;
+    }
+    const Array<const game::ComponentDesc*> classes = game->Components();
+    Array<StringView> names;
+    names.PushBack("None");
+    i32 current = 0;
+    for (usize i = 0; i < classes.Size(); ++i) {
+        names.PushBack(classes[i]->name);
+        if (s.className == classes[i]->name)
+            current = i32(i + 1);
+    }
+    if (current == 0 && !s.className.Empty()) {
+        names.PushBack(s.className); // missing from the module: keep showing it
+        current = i32(names.Size() - 1);
+    }
+    ui::SetNextItemWidth(-(ui::GetFrameHeight() / ui::GetCurrentContext()->GetScale() + 4.0f));
+    if (ui::Combo("##native_class", &current, names.View())) {
+        const String picked = current == 0 ? String() : String(names[usize(current)]);
+        if (picked != s.className) {
+            s.className = picked;
+            s.properties.Clear();
+            changed = true;
+        }
+    }
+    ui::SameLine(0.0f, 4.0f);
+    ui::BeginDisabled(ed.gameBuildState == GameBuildState::Building);
+    if (ui::IconButton(ed.gameBuildState == GameBuildState::Building ? ZX_ICON_LOADER_CIRCLE : ZX_ICON_HAMMER, "Compile game code (F7)"))
+        CompileGameCode(ed);
+    ui::EndDisabled();
+    if (s.className.Empty())
+        return changed;
+    const game::ComponentDesc* desc = game->FindComponent(s.className);
+    if (!desc) {
+        ui::PushTextColor(Color(0xF0, 0x60, 0x60));
+        ui::TextWrapped(String::Format(ZX_ICON_CIRCLE_X "  The game module has no component '{}'", s.className));
+        ui::PopTextColor();
+        return changed;
+    }
+    if (desc->description && *desc->description)
+        ui::TextDisabled(desc->description);
+    if (!desc->propCount) {
+        ui::TextDisabled("No props - add ZX_GAME_PROP(member, min, max, \"tooltip\") to edit values here");
+        return changed;
+    }
+    // Props: the component's defaults, overridden per entity (bold).
+    const JsonValue defaults = GameModuleSystem::DefaultProps(*desc);
+    const JsonValue stored = ParseNativeScriptProperties(s);
+    for (u32 i = 0; i < desc->propCount; ++i) {
+        const game::PropDesc& prop = desc->props[i];
+        ui::PushID(prop.name);
+        const JsonValue* over = stored.Find(prop.name);
+        JsonValue v = over ? *over : defaults.Get(prop.name);
+        PropertyLabel(PrettyName(prop.name), prop.tooltip ? StringView(prop.tooltip) : StringView(), over != nullptr);
+        bool edited = false;
+        switch (prop.type) {
+        case game::PropType::Float: {
+            f32 f = v.AsFloat();
+            edited = prop.max > prop.min ? ui::SliderFloat("##v", &f, prop.min, prop.max, "{:.2f}") : ui::DragFloat("##v", &f, 0.05f);
+            if (edited)
+                v = JsonValue(f);
+            break;
+        }
+        case game::PropType::Int: {
+            i32 n = i32(v.AsInt());
+            edited = ui::DragInt("##v", &n, 0.1f, i32(prop.min), i32(prop.max));
+            if (edited)
+                v = JsonValue(n);
+            break;
+        }
+        case game::PropType::Bool: {
+            bool b = v.AsBool();
+            edited = ui::Checkbox("##v", &b);
+            if (edited)
+                v = JsonValue(b);
+            break;
+        }
+        case game::PropType::Vec3: {
+            f32 x[3] = {v.Size() == 3 ? v[0].AsFloat() : 0.0f, v.Size() == 3 ? v[1].AsFloat() : 0.0f, v.Size() == 3 ? v[2].AsFloat() : 0.0f};
+            edited = ui::DragFloat3("##v", x, 0.01f);
+            if (edited) {
+                v = JsonValue::MakeArray();
+                for (f32 c : x)
+                    v.PushBack(c);
+            }
+            break;
+        }
+        }
+        if (ui::BeginPopupContextItem("##prop_menu")) {
+            if (ui::MenuItem(ZX_ICON_ROTATE_CCW "  Reset to Default", {}, false, over != nullptr)) {
+                v = defaults.Get(prop.name);
+                edited = true;
+            }
+            ui::EndPopup();
+        }
+        if (edited) {
+            SetNativeScriptProperty(s, *desc, prop.name, v);
+            changed = true;
+        }
+        ui::PopID();
+    }
+    return changed;
+}
+
 bool IsInlineStruct(const TypeInfo& t)
 {
     if (t.kind != TypeKind::Struct)
@@ -605,6 +731,8 @@ void DrawDetailsPanel(Editor& ed)
             bool edited = false;
             if (ct.type == &TypeOf<Script>())
                 edited = EditScript(ed, *static_cast<Script*>(data));
+            else if (ct.type == &TypeOf<NativeScript>())
+                edited = EditNativeScript(ed, *static_cast<NativeScript*>(data));
             else if (ct.type == &TypeOf<AudioSource>())
                 edited = EditAudioSourceClip(ed, *static_cast<AudioSource*>(data)) | PropertyEditor(*ct.type, data);
             else

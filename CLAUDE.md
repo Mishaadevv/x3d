@@ -29,6 +29,12 @@ with texture + params, structural edit < 1 s, value edit without recompiling). -
 hot reload keeps state, Stop restores; writes Content/ScriptSelfTest.zs, deleted on exit), -tooltest (triangle picking,
 Drop to Ground, Brush paint/undo/redo/erase, Features toggles). Tools: EditorTools.cpp (Brush/Measure/Features), Engine/Raycast.h.
 -audiotest (64 looping 3D sources on the real device: 0 underruns, Stop silences), -noaudio (null audio backend).
+-cpptest with `-newproject=<engine>/Saved/TestProjects/CppTest -language=cpp -nodocs -autotest=30`: builds the C++ game
+module, runs Spinner in PIE, edits the source, rebuilds + hot-reloads while playing (the TestProjects dir is recreated).
+C++ gameplay: Engine/Source/GameSDK/ZeqouGame.h (header-only SDK, Host interface, ZX_GAME_COMPONENT/ZX_GAME_PROP),
+Engine/GameModule.h (NativeScript = "C++ Script" component, GameModuleSystem: build via Tools/build_game.ps1, copy-load,
+hot reload carrying props), editor EditorGameCode.cpp (Compile F7, Input Actions window, -cpptest); tests ZXTests
+GameModule.*. Input Actions: Engine/InputActions.h (Config/Input.json; tests InputActions.*).
 Audio: Runtime/Audio (AudioEngine.cpp mixer, Wasapi.cpp, Wav.cpp, Vorbis.cpp, Dsp.cpp; tests ZXTests Audio.*; Vorbis
 references Tests/Data/Audio from Tools/gen_audio_testdata.py), Engine/AudioSystem.h (components, PIE), EditorAudio.cpp.
 ZeqouScript (own language, docs/ZeqouScript.md): Runtime/Script (Compiler.cpp = lexer/parser/codegen, VM.cpp = values,

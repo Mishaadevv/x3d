@@ -135,6 +135,11 @@ void DrawMenus(Editor& ed)
         ActionMenuItem(ed, "tool.measure", ed.tools.active == EditorTool::Measure);
         ActionMenuItem(ed, "edit.dropToGround");
         ui::Separator();
+        ActionMenuItem(ed, "game.compile");
+        ActionMenuItem(ed, "game.createModule");
+        ActionMenuItem(ed, "game.openSource");
+        ActionMenuItem(ed, "window.inputActions", ed.showInputActions);
+        ui::Separator();
         ActionMenuItem(ed, "window.features", ed.showFeatures);
         ui::EndMenu();
     }
@@ -146,6 +151,7 @@ void DrawMenus(Editor& ed)
         ui::MenuItem(LogTitle, {}, &ed.showLog);
         ui::MenuItem(StatsTitle, {}, &ed.showStats);
         ui::MenuItem(AudioMixerTitle, {}, &ed.showMixer);
+        ui::MenuItem(InputActionsTitle, {}, &ed.showInputActions);
         ui::Separator();
         ActionMenuItem(ed, "window.resetLayout");
         ActionMenuItem(ed, "view.fullscreen");
@@ -277,9 +283,30 @@ void DrawToolbar(Editor& ed, const Rect& r)
     if (ToolButton(ZX_ICON_ARROW_DOWN_TO_LINE, "Drop selection to the ground (End)", false))
         DropSelectedToGround(ed);
 
-    // Play controls, centered.
+    // Play controls, centered (with Compile in front of them when the project has C++ game code).
     const f32 bw = fh;
     const f32 groupW = bw * 3.0f + 4.0f * s;
+    const bool hasGameCode = !ed.project.descriptorPath.Empty() && ed.game && !ed.game->ProjectRoot().Empty() &&
+                             HasGameModuleSource(ed.project.root, GameModuleName(ed.project));
+    if (hasGameCode) {
+        ui::SetCursorPos(Vec2(Round(r.Center().x - groupW * 0.5f - bw - 10.0f * s), Round(r.Center().y - fh * 0.5f)));
+        const bool building = ed.gameBuildState == GameBuildState::Building;
+        const String tip = building ? String("Compiling game code...")
+                           : ed.gameBuildState == GameBuildState::Failed
+                               ? String("Compile game code (F7) - the last build FAILED, see the Output Log")
+                               : String::Format("Compile game code (F7) - hot-reloads while playing{}",
+                                                ed.game->IsLoaded() ? String::Format(" (loaded: generation {})", ed.game->Generation()) : String());
+        ui::BeginDisabled(building);
+        if (ToolButton(building ? ZX_ICON_LOADER_CIRCLE : ZX_ICON_HAMMER, tip, false))
+            CompileGameCode(ed);
+        ui::EndDisabled();
+        if (ed.gameBuildState == GameBuildState::Failed || ed.gameBuildState == GameBuildState::Succeeded) {
+            // Small status dot on the button.
+            const Rect br = ui::GetItemRect();
+            const Color dot = ed.gameBuildState == GameBuildState::Failed ? Color(0xE5, 0x48, 0x4D) : Color(0x4C, 0xC3, 0x7A);
+            dl.AddCircle(Vec2(br.max.x - 4.0f * s, br.min.y + 4.0f * s), 3.0f * s, dot);
+        }
+    }
     ui::SetCursorPos(Vec2(Round(r.Center().x - groupW * 0.5f), Round(r.Center().y - fh * 0.5f)));
     const bool playing = ed.IsPlaying();
     if (ToolButton(playing ? ZX_ICON_SQUARE : ZX_ICON_PLAY, playing ? "Stop (F5 / Esc)" : "Play (F5)", playing)) {
@@ -467,6 +494,7 @@ void DrawShell(Editor& ed)
     DrawToolPanel(ed);
     DrawFeaturesPanel(ed);
     DrawAudioMixerPanel(ed);
+    DrawInputActionsPanel(ed);
     DrawScriptEditorPanel(ed);
     DrawAbout(ed);
     DrawSaveChangesDialog(ed);
