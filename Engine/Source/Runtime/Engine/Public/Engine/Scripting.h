@@ -1,0 +1,104 @@
+#pragma once
+
+// ZeqouScript in the engine: the Script component and the system that runs scripts while the game plays.
+//
+//   ScriptSystem scripts;
+//   scripts.SetContentRoot(projectContentDir);           // Script::file is relative to it ('/' separators)
+//   scripts.Begin(world);                                // Play: one instance per Script component, start()
+//   scripts.Tick(world, dt, &input);                     // every frame: update(dt), hot reload of changed files
+//   scripts.End();                                       // Stop
+//
+// Globals a script sees: entity / transform (its own entity), character (its CharacterController), input, time,
+// find(name), plus the standard library.
+// Language reference: docs/ZeqouScript.md.
+
+#include "Core/Containers/Function.h"
+#include "Core/Containers/HashMap.h"
+#include "Core/Memory/Pointers.h"
+#include "Core/Reflection/Reflection.h"
+#include "Core/Serialization/Json.h"
+#include "Scene/ECS/World.h"
+#include "Script/ZeqouScript.h"
+
+namespace zx {
+
+class InputState;
+
+/// Runs a .zs file on the entity. `properties` holds the values of the script's `prop` fields that differ from the
+/// defaults, as a JSON object ({"speed": 120, "tint": [1, 0, 0]}).
+struct Script
+{
+    String file;
+    String properties;
+};
+ZX_DECLARE_TYPE(Script);
+
+/// Property values of a Script component (the defaults, overridden by Script::properties).
+JsonValue ParseScriptProperties(const Script& script);
+/// Stores `value` for `name` (removed again when it equals the default).
+void SetScriptProperty(Script& script, const script::Property& prop, const script::Value& value);
+script::Value JsonToScriptValue(const JsonValue& json, const script::Property& prop);
+JsonValue ScriptValueToJson(const script::Value& value);
+
+/// A starter file for "New Script" (a class named after the file, a speed prop, start/update).
+String ScriptTemplate(StringView name);
+
+class ScriptSystem
+{
+public:
+    ScriptSystem();
+    ~ScriptSystem();
+    ZX_NON_COPYABLE(ScriptSystem)
+
+    void SetContentRoot(StringView physicalDir);
+    StringView ContentRoot() const { return m_contentRoot.View(); }
+
+    /// The compiled script for a content-relative file (cached; recompiled when the file changes on disk).
+    /// nullptr when it can't be read or doesn't compile (error says why, with line:column).
+    const script::Program* GetProgram(StringView file, String* error = nullptr);
+    /// Re-checks file times now (otherwise twice per second while ticking).
+    void CheckForChanges();
+
+    void Begin(ecs::World& world);
+    /// Starts scripts added since the last tick, calls update(dt) on all running ones, applies deferred destroys.
+    void Tick(ecs::World& world, f32 dt, const InputState* input);
+    void End();
+    bool IsRunning() const { return m_running; }
+    u32 InstanceCount() const { return u32(m_instances.Size()); }
+    script::VM& GetVM() { return *m_vm; }
+
+    /// log()/print() output and errors (file:line: message).
+    Function<void(StringView message, bool isError)> onLog;
+
+private:
+    struct CachedProgram;
+    struct RunningScript;
+    CachedProgram* Load(StringView file);
+    void Report(StringView message, bool isError);
+    void StartInstances(ecs::World& world);
+    void RebindGlobals(RunningScript& rs);
+
+    String m_contentRoot;
+    UniquePtr<script::VM> m_vm;
+    script::NativeType* m_entityType = nullptr;
+    script::NativeType* m_characterType = nullptr;
+    HashMap<String, UniquePtr<CachedProgram>> m_programs;
+    Array<UniquePtr<RunningScript>> m_instances;
+    Array<script::Program*> m_retired; // replaced by hot reload, freed when no instance uses them
+    f64 m_checkTimer = 0.0;
+    bool m_running = false;
+
+public:
+    // State the native bindings read (valid during Tick).
+    struct Context
+    {
+        ecs::World* world = nullptr;
+        const InputState* input = nullptr;
+        f32 dt = 0.0f;
+        f64 elapsed = 0.0;
+        u64 frame = 0;
+        Array<ecs::Entity> destroyQueue;
+    } context;
+};
+
+} // namespace zx

@@ -1,0 +1,7 @@
+newmtl Red
+Kd 0.8 0.1 0.1
+Ns 250
+map_Kd -bm 1 -o 0 0 0 textures/red diffuse.png
+newmtl Blue
+Kd 0.1 0.1 0.8
+d 0.5

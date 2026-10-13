@@ -1,0 +1,1843 @@
+#include "Editor.h"
+#include "Thumbnails.h"
+#include "Core/Console/Console.h"
+#include "Core/Containers/Algorithm.h"
+#include "Core/CoreInit.h"
+#include "Core/FileSystem/FileSystem.h"
+#include "Core/HAL/PlatformFile.h"
+#include "Core/HAL/PlatformMisc.h"
+#include "Core/Image/Png.h"
+#include "Core/Profiler/Profiler.h"
+#include "Core/String/Parse.h"
+#include "Core/String/Path.h"
+#include "Core/Threading/Thread.h"
+#include "Core/Version.h"
+#include "Render/TextureLoader.h"
+#include "Engine/ComponentRegistry.h"
+#include "Engine/Gameplay.h"
+#include "Engine/Raycast.h"
+#include "Engine/SceneSerialization.h"
+#include "Platform/Platform.h"
+#include "RHI/EngineProfile.h"
+#include "RHI_D3D12/D3D12Backend.h"
+
+ZX_DEFINE_LOG_CATEGORY_STATIC(LogEditor, Info);
+ZX_DEFINE_LOG_CATEGORY_STATIC(LogScript, Info);
+
+namespace zx::editor {
+
+using namespace rhi;
+using namespace render;
+
+// --- Log sink -------------------------------------------------------------------------------------------------------------
+
+void EditorLogSink::Write(const LogMessage& message)
+{
+    ScopedLock lock(m_mutex);
+    if (m_entries.Size() >= 20000)
+        m_entries.RemoveAt(0, 5000);
+    m_entries.PushBack(Entry{message.level, String(message.category ? message.category->name : "Log"), String(message.text),
+                             message.timeSeconds});
+    m_counts[u32(message.level) & 7]++;
+    ++m_version;
+}
+
+usize EditorLogSink::Count() const
+{
+    ScopedLock lock(m_mutex);
+    return m_entries.Size();
+}
+
+void EditorLogSink::Clear()
+{
+    ScopedLock lock(m_mutex);
+    m_entries.Clear();
+    for (u32& c : m_counts)
+        c = 0;
+    ++m_version;
+}
+
+u32 EditorLogSink::Counts(LogLevel level) const
+{
+    ScopedLock lock(m_mutex);
+    return m_counts[u32(level) & 7];
+}
+
+String EditorLogSink::LastMessage() const
+{
+    ScopedLock lock(m_mutex);
+    return m_entries.Empty() ? String() : m_entries.Back().text;
+}
+
+// --- Editor -------------------------------------------------------------------------------------------------------------
+
+Editor::Editor() = default;
+Editor::~Editor() = default;
+
+bool Editor::Initialize()
+{
+    engineRoot = FindEngineRootDirectory();
+    contentRoot = engineRoot + "/Samples/Content";
+    m_layoutPath = "/Saved/Config/EditorLayout.ini";
+    RegisterEngineComponents();
+    scene::InstallHierarchyHooks(world);
+    RegisterEditorActions(*this);
+    {
+        UniquePtr<EditorLogSink> sink(new EditorLogSink());
+        log = sink.Get();
+        Log::AddSink(move(sink));
+    }
+
+    WindowDesc wd;
+    wd.title = "ZeqouX3D Editor";
+    wd.width = 1600;
+    wd.height = 900;
+    wd.customTitleBar = true;
+    window.Reset(Window::Create(wd));
+    if (!window)
+        return false;
+    StringView resolution;
+    if (CommandLine::GetValue("resolution", resolution)) {
+        StringView w, h;
+        if (resolution.Split('x', w, h))
+            window->SetClientSize(u32(ParseInt(w).ValueOr(1600)), u32(ParseInt(h).ValueOr(900)));
+    } else if (!CommandLine::HasFlag("autotest")) {
+        window->Maximize();
+    }
+    window->SetHitTestCallback([this](IVec2 p) -> HitTestResult {
+        const Vec2 pt(f32(p.x), f32(p.y));
+        if (closeRect.Contains(pt))
+            return HitTestResult::CloseButton;
+        if (maximizeRect.Contains(pt))
+            return HitTestResult::MaximizeButton;
+        if (minimizeRect.Contains(pt))
+            return HitTestResult::MinimizeButton;
+        const f32 border = 5.0f * window->GetDpiScale();
+        const UVec2 size = window->GetClientSize();
+        if (!window->IsMaximized()) {
+            const bool left = pt.x < border, right = pt.x >= f32(size.x) - border, top = pt.y < border,
+                       bottom = pt.y >= f32(size.y) - border;
+            if (top && left) return HitTestResult::ResizeTopLeft;
+            if (top && right) return HitTestResult::ResizeTopRight;
+            if (bottom && left) return HitTestResult::ResizeBottomLeft;
+            if (bottom && right) return HitTestResult::ResizeBottomRight;
+            if (left) return HitTestResult::ResizeLeft;
+            if (right) return HitTestResult::ResizeRight;
+            if (top) return HitTestResult::ResizeTop;
+            if (bottom) return HitTestResult::ResizeBottom;
+        }
+        if (titleBarRect.Contains(pt)) {
+            for (const Rect& r : titleInteractive)
+                if (r.Contains(pt))
+                    return HitTestResult::Client;
+            return HitTestResult::Caption;
+        }
+        return HitTestResult::Client;
+    });
+
+    DeviceDesc dd;
+    dd.enableDebugLayer = ZX_BUILD_DEBUG || CommandLine::HasFlag("debuglayer");
+    dd.useWarp = CommandLine::HasFlag("warp");
+    device = d3d12::CreateD3D12Device(dd);
+    if (!device) {
+        platform::ShowErrorMessageBox("ZeqouX3D", "Failed to create a Direct3D 12 device.");
+        return false;
+    }
+    lite = SelectEngineProfile(device->GetCaps()) == EngineProfile::Lite;
+    const UVec2 size = window->GetClientSize();
+    swapChain = device->CreateSwapChain(SwapChainDesc{window->GetNativeHandle(), Max(size.x, 1u), Max(size.y, 1u), 3,
+                                                      Format::R8G8B8A8_UNORM, !CommandLine::HasFlag("novsync")});
+    if (!swapChain)
+        return false;
+
+    ui.Reset(new ui::Context(fonts));
+    if (!ui->LoadDefaultFonts()) {
+        platform::ShowErrorMessageBox("ZeqouX3D", "Failed to load the editor fonts (Engine/Content/Fonts).");
+        return false;
+    }
+    ui::SetCurrentContext(ui.Get());
+    {
+        render::TextureLoadOptions brand;
+        brand.compression = render::TextureCompression::None; // crisp edges at small sizes
+        if (Result<rhi::Texture*> t = render::LoadTexture(*device, "/Engine/Branding/ZeqouX3D_Icon.png", brand))
+            appIcon = t.Value();
+        if (Result<rhi::Texture*> t = render::LoadTexture(*device, "/Engine/Branding/ZeqouX3D_Logo.png", brand))
+            appLogo = t.Value();
+    }
+    if (Result<ui::SvgImage> svg = ui::LoadSvg("/Engine/Icons/ZeqouLogo.svg"))
+        logo = move(svg.Value());
+    else
+        ZX_LOG_WARN(LogEditor, "{}", svg.GetError().message);
+    ui::Style& style = ui->GetStyle();
+    style.windowPadding = Vec2(8.0f, 8.0f);
+    style.frameRounding = 3.0f;
+    style.windowRounding = 6.0f;
+    style.itemSpacing = Vec2(6.0f, 5.0f);
+    style.fontSize = 13.0f;
+    uiRenderer.Reset(new ui::UIRenderer(*device));
+    if (!uiRenderer->Init(swapChain->GetFormat()))
+        return false;
+
+    asset::AssetManagerSettings as;
+    as.ddcDirectory = engineRoot + "/Intermediate/DDC";
+    as.textureMaxSize = lite ? 1024 : 0;
+    assets.Reset(new asset::AssetManager(as));
+    RegisterBuiltinAssets(*assets);
+    renderAssets.Reset(new RenderAssets(*device, *assets));
+    prefabs.Reset(new PrefabLibrary(assets.Get(), contentRoot));
+    materials.Reset(new MaterialLibrary(*assets, *renderAssets, contentRoot));
+    scripts.Reset(new ScriptSystem());
+    scripts->SetContentRoot(contentRoot);
+    scripts->onLog = [](StringView message, bool isError) {
+        if (isError)
+            ZX_LOG_ERROR(LogScript, "{}", message);
+        else
+            ZX_LOG_INFO(LogScript, "{}", message);
+    };
+    viewport.Reset(new ViewportRenderer(*device, *renderAssets));
+    debugDraw.Reset(new DebugDraw(*device));
+    pool.Reset(new TransientResourcePool(*device));
+    if (!renderAssets->Init() || !viewport->Init(lite, Format::R8G8B8A8_UNORM) ||
+        !debugDraw->Init(viewport->HdrFormat(), viewport->DepthFormat()))
+        return false;
+    viewport->Settings().renderScale = 1.0f; // the viewport is smaller than the screen; keep it crisp
+    RegisterEditorConsole(*this);
+    thumbnails.Reset(new ThumbnailCache(*device, *assets, *renderAssets));
+    if (!thumbnails->Init())
+        ZX_LOG_WARN(LogEditor, "Thumbnail renderer unavailable");
+    thumbnails->SetMaterialLibrary(materials.Get());
+
+    String layout;
+    if (fs::ReadTextFile(m_layoutPath, layout) && !CommandLine::HasFlag("resetlayout"))
+        ui::LoadDockLayout(layout);
+
+    StringView screenshot;
+    if (CommandLine::GetValue("screenshot", screenshot))
+        m_screenshotPath = screenshot;
+    m_undoTest = CommandLine::HasFlag("undotest");
+    m_pieTest = CommandLine::HasFlag("pietest");
+    m_materialTest = CommandLine::HasFlag("materialtest");
+    m_scriptTest = CommandLine::HasFlag("scripttest");
+    m_toolTest = CommandLine::HasFlag("tooltest") ? 300u : 0u;
+    StringView execArg;
+    if (CommandLine::GetValue("exec", execArg))
+        m_execCommands = execArg;
+    StringView saveScene;
+    if (CommandLine::GetValue("savescene", saveScene))
+        m_saveScenePath = saveScene;
+    StringView autotest;
+    if (CommandLine::GetValue("autotest", autotest))
+        m_autotestFrames = u64(Max<i64>(1, ParseInt(autotest).ValueOr(120)));
+    else if (CommandLine::HasFlag("autotest"))
+        m_autotestFrames = 120;
+
+    ZX_LOG_INFO(LogEditor, "ZeqouX3D Editor {} ({}) on {} [{}]", EngineVersionString, BuildConfigurationName,
+                device->GetCaps().adapter.name, lite ? "Lite" : "Full");
+    // Startup: -project opens a project; -scene / autotests use the Samples project; otherwise the Project Browser.
+    StringView projectArg, sceneArg, newProjectArg, templateArg, recentArg, pageArg;
+    if (CommandLine::GetValue("recentfile", recentArg))
+        recentProjectsFile = recentArg;
+    browser.newProjectPage = CommandLine::GetValue("browserpage", pageArg) && pageArg == "new";
+    if (CommandLine::GetValue("newproject", newProjectArg)) {
+        CommandLine::GetValue("template", templateArg);
+        NewProjectOptions options;
+        options.templ = templateArg == "sample"        ? ProjectTemplate::Sample
+                        : templateArg == "firstperson" ? ProjectTemplate::FirstPerson
+                        : templateArg == "thirdperson" ? ProjectTemplate::ThirdPerson
+                        : templateArg == "water"       ? ProjectTemplate::Water
+                                                       : ProjectTemplate::Blank;
+        options.starterContent = CommandLine::HasFlag("starter");
+        options.documentation = !CommandLine::HasFlag("nodocs");
+        options.gitRepository = CommandLine::HasFlag("git");
+        if (!CreateAndOpenProject(Path::Parent(newProjectArg), Path::FileName(newProjectArg), options)) {
+            ZX_LOG_ERROR(LogEditor, "Can't create project {}: {}", newProjectArg, browser.error);
+            ShowProjectBrowser();
+        }
+    } else if (CommandLine::GetValue("project", projectArg)) {
+        if (!OpenProject(projectArg))
+            ShowProjectBrowser();
+    } else if (CommandLine::HasFlag("projectbrowser") || (!CommandLine::GetValue("scene", sceneArg) && !m_autotestFrames)) {
+        ShowProjectBrowser();
+    } else if (!OpenProject(engineRoot + "/Samples/Samples.zproj")) {
+        BuildDefaultScene();
+    }
+    StringView browseArg;
+    if (CommandLine::GetValue("browse", browseArg) && mode == EditorMode::Editing)
+        panels.browserCurrent = Path::Join(contentRoot, browseArg); // -browse=<dir under Content> (screenshots/tests)
+    return true;
+}
+
+// --- Projects -----------------------------------------------------------------------------------------------------------
+
+void Editor::ShowProjectBrowser()
+{
+    NewScene();
+    project = ProjectInfo();
+    mode = EditorMode::ProjectBrowser;
+    browser.recentLoaded = false;
+    browser.error.Clear();
+    window->SetTitle("ZeqouX3D Project Browser");
+}
+
+bool Editor::OpenProject(StringView descriptorPath)
+{
+    Result<ProjectInfo> loaded = LoadProject(descriptorPath);
+    if (!loaded) {
+        browser.error = loaded.GetError().message;
+        ZX_LOG_ERROR(LogEditor, "Can't open project: {}", browser.error);
+        return false;
+    }
+    NewScene();
+    project = move(loaded.Value());
+    contentRoot = project.contentDir;
+    platform::CreateDirectoryTree(contentRoot);
+    prefabs.Reset(new PrefabLibrary(assets.Get(), contentRoot));
+    materials.Reset(new MaterialLibrary(*assets, *renderAssets, contentRoot));
+    if (thumbnails)
+        thumbnails->SetMaterialLibrary(materials.Get());
+    if (scripts)
+        scripts->SetContentRoot(contentRoot);
+    scriptEditor.open = false;
+    panels.browserCurrent = contentRoot;
+    panels.browserListedDir.Clear();
+    materials->ScanContent();
+    mode = EditorMode::Editing;
+    if (!m_autotestFrames || !recentProjectsFile.Empty())
+        TouchRecentProject(project, recentProjectsFile);
+    window->SetTitle(String::Format("{} - ZeqouX3D Editor", project.descriptor.name));
+    ZX_LOG_INFO(LogEditor, "Opened project '{}' ({})", project.descriptor.name, project.root);
+
+    StringView sceneArg;
+    const String startup = project.descriptor.startupScene.Empty() ? String() : Path::Join(project.root, project.descriptor.startupScene);
+    if (CommandLine::GetValue("scene", sceneArg) || Path::Normalize(project.root) == Path::Normalize(engineRoot + "/Samples"))
+        BuildDefaultScene(); // sample content (Sponza) or the scene given on the command line
+    else if (!startup.Empty() && platform::FileExists(startup))
+        OpenScene(startup);
+    return true;
+}
+
+bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, const NewProjectOptions& options)
+{
+    ProjectDescriptor settings;
+    settings.language = ProjectLanguageName(options.language);
+    Result<ProjectInfo> created = CreateProject(parentDirectory, name, settings);
+    if (!created) {
+        browser.error = created.GetError().message;
+        return false;
+    }
+    // The Water template builds its island from the Starter Content materials.
+    if (options.starterContent || options.templ == ProjectTemplate::Water)
+        ZX_LOG_INFO(LogEditor, "Starter Content: {} files", WriteStarterContent(created->contentDir));
+    const bool characterTemplate = options.templ == ProjectTemplate::FirstPerson || options.templ == ProjectTemplate::ThirdPerson ||
+                                   options.templ == ProjectTemplate::Water;
+    if (characterTemplate)
+        WriteGameplayScripts(created->contentDir);
+    if (options.documentation)
+        ZX_LOG_INFO(LogEditor, "Documentation: {} files (README.md, Docs/, AGENTS.md)", WriteProjectDocs(created.Value()));
+    if (options.gitRepository) {
+        fs::WriteTextFile(created->root + "/.gitattributes",
+                          "* text=auto\n*.zs text eol=lf\n*.zscene text\n*.zmat text\n*.zproj text\n"
+                          "*.png binary\n*.jpg binary\n*.glb binary\n*.bin binary\n*.dds binary\n");
+        i32 code = -1;
+        const bool started = platform::RunProcess("git init -b main", created->root, &code);
+        if (!started || code != 0) {
+            ZX_LOG_WARN(LogEditor, "Git: 'git init' failed - is Git installed and on PATH?");
+        } else {
+            // The first commit needs a git identity; without one the repository simply starts empty.
+            platform::RunProcess("git add -A", created->root, &code);
+            platform::RunProcess("git commit -q -m \"Create project\"", created->root, &code);
+            ZX_LOG_INFO(LogEditor, code == 0 ? "Git: repository created with an initial commit"
+                                             : "Git: repository created (no commit: set user.name / user.email to commit)");
+        }
+    }
+    String helmet;
+    if (options.templ == ProjectTemplate::Sample) {
+        Result<String> copy = CopySourceWithDependencies(engineRoot + "/Samples/Content/DamagedHelmet/DamagedHelmet.gltf",
+                                                         created->contentDir + "/DamagedHelmet");
+        if (copy)
+            helmet = copy.Value();
+        else
+            ZX_LOG_WARN(LogEditor, "Sample template: {}", copy.GetError().message);
+    }
+    if (!OpenProject(created->descriptorPath))
+        return false;
+    const String mainScene = ScenesDirectory() + "/Main.zscene";
+    if (!helmet.Empty()) {
+        ImportAsset(helmet, Vec3(0.0f, 1.2f, 0.0f), false);
+        const Vec3 positions[2] = {Vec3(-2.0f, 2.5f, 1.5f), Vec3(2.0f, 1.5f, 2.0f)};
+        for (u32 i = 0; i < 2; ++i) {
+            const ecs::Entity e = CreateEntity(String::Format("Point Light {}", i + 1), Transform(positions[i]));
+            PointLight l;
+            l.lumens = 4000.0f;
+            l.color = i == 0 ? Vec3(1.0f, 0.85f, 0.7f) : Vec3(0.6f, 0.75f, 1.0f);
+            world.Add(e, l);
+        }
+        camera.position = Vec3(0.0f, 1.6f, 4.0f);
+        camera.LookAt(Vec3(0.0f, 1.2f, 0.0f));
+        m_saveAfterImports = mainScene;
+    } else {
+        if (options.templ == ProjectTemplate::Water)
+            BuildWaterLevel();
+        else if (characterTemplate)
+            BuildCharacterLevel(options.templ == ProjectTemplate::ThirdPerson);
+        else if (options.starterContent)
+            BuildStarterShowcase();
+        SaveSceneTo(mainScene);
+    }
+    return true;
+}
+
+void Editor::BuildCharacterLevel(bool thirdPerson)
+{
+    // A small playground (outside the undo history): floor, stairs, jumpable platforms, crates and walls, plus the
+    // player set up for the template. Materials come from the Starter Content when it was added.
+    auto material = [&](StringView name) {
+        const String path = String::Format("{}/StarterContent/Materials/{}.zmat", contentRoot, name);
+        if (!platform::FileExists(path) || !materials)
+            return Guid();
+        const MaterialLibrary::Material* m = materials->FindByPath(path);
+        return m ? m->guid : materials->LoadFile(path);
+    };
+    auto block = [&](StringView label, BuiltinShape shape, Vec3 min, Vec3 max, StringView mat, ecs::Entity parent = {}) {
+        Transform t((min + max) * 0.5f);
+        t.scale = max - min;
+        const ecs::Entity e = CreateEntity(label, t, parent);
+        MeshRenderer mr;
+        mr.mesh = builtin::Mesh(shape);
+        if (const Guid g = material(mat); g.IsValid())
+            mr.materials.PushBack(g);
+        world.Add(e, mr);
+        EnsureEntityGuid(world, e);
+        return e;
+    };
+    // Ground and boundary walls.
+    {
+        Transform t(Vec3(0.0f));
+        t.scale = Vec3(40.0f, 1.0f, 40.0f);
+        const ecs::Entity floor = CreateEntity("Floor", t);
+        MeshRenderer mr;
+        mr.mesh = builtin::Mesh(BuiltinShape::Plane);
+        if (const Guid g = material("M_Concrete"); g.IsValid())
+            mr.materials.PushBack(g);
+        world.Add(floor, mr);
+        EnsureEntityGuid(world, floor);
+    }
+    block("Wall North", BuiltinShape::Cube, Vec3(-20, 0, 19.5f), Vec3(20, 3, 20), "M_Plastic_White");
+    block("Wall South", BuiltinShape::Cube, Vec3(-20, 0, -20), Vec3(20, 3, -19.5f), "M_Plastic_White");
+    block("Wall East", BuiltinShape::Cube, Vec3(19.5f, 0, -19.5f), Vec3(20, 3, 19.5f), "M_Plastic_White");
+    block("Wall West", BuiltinShape::Cube, Vec3(-20, 0, -19.5f), Vec3(-19.5f, 3, 19.5f), "M_Plastic_White");
+    // Stairs up to a platform.
+    for (u32 i = 0; i < 8; ++i)
+        block(String::Format("Stair {}", i + 1), BuiltinShape::Cube, Vec3(4, 0, 2 + f32(i) * 0.5f), Vec3(7, 0.25f * f32(i + 1), 2.5f + f32(i) * 0.5f),
+              "M_Concrete");
+    block("Upper Platform", BuiltinShape::Cube, Vec3(4, 0, 6), Vec3(10, 2, 10), "M_Concrete");
+    // Jumpable platforms.
+    block("Platform A", BuiltinShape::Cube, Vec3(-6, 0, 3), Vec3(-3, 0.8f, 6), "M_Wood");
+    block("Platform B", BuiltinShape::Cube, Vec3(-9, 0, 7), Vec3(-6, 1.6f, 10), "M_Wood");
+    block("Platform C", BuiltinShape::Cube, Vec3(-12, 0, 11), Vec3(-9, 2.4f, 14), "M_Wood");
+    // Crates.
+    block("Crate 1", BuiltinShape::Cube, Vec3(-2, 0, 10), Vec3(-1, 1, 11), "M_Wood");
+    block("Crate 2", BuiltinShape::Cube, Vec3(-1, 0, 10), Vec3(0, 1, 11), "M_Wood");
+    block("Crate 3", BuiltinShape::Cube, Vec3(-1.5f, 1, 10), Vec3(-0.5f, 2, 11), "M_Wood");
+    block("Pillar", BuiltinShape::Cylinder, Vec3(10, 0, -6), Vec3(11.5f, 4, -4.5f), "M_Metal_Steel");
+    block("Gold Sphere", BuiltinShape::Sphere, Vec3(-0.5f, 0, -8), Vec3(0.5f, 1, -7), "M_Metal_Gold");
+
+    // Player: feet at the entity, a Character Controller and the template's controller script.
+    const ecs::Entity player = CreateEntity("Player", Transform(Vec3(0, 0, -4)));
+    world.Add(player, CharacterController{});
+    EnsureEntityGuid(world, player);
+    if (!thirdPerson) {
+        world.Add(player, Script{String("Scripts/FirstPersonController.zs"), String()});
+        const ecs::Entity cam = CreateEntity("Camera", Transform(Vec3(0, 1.65f, 0)), player);
+        world.Add(cam, Camera{});
+        EnsureEntityGuid(world, cam);
+        camera.position = Vec3(0.0f, 6.0f, -14.0f);
+    } else {
+        world.Add(player, Script{String("Scripts/ThirdPersonController.zs"), String()});
+        // Visible body (part of the player, so it doesn't block it): a capsule-like cylinder and a "nose" for facing.
+        block("Body", BuiltinShape::Cylinder, Vec3(-0.35f, 0, -0.35f), Vec3(0.35f, 1.8f, 0.35f), "M_Plastic_Red", player);
+        block("Visor", BuiltinShape::Cube, Vec3(-0.2f, 1.35f, 0.25f), Vec3(0.2f, 1.55f, 0.45f), "M_Rubber_Black", player);
+        const ecs::Entity cam = CreateEntity("Camera", Transform(Vec3(0, 3, -9)));
+        world.Add(cam, Camera{});
+        world.Add(cam, Script{String("Scripts/ThirdPersonCamera.zs"), String()});
+        EnsureEntityGuid(world, cam);
+        camera.position = Vec3(0.0f, 8.0f, -16.0f);
+    }
+    camera.LookAt(Vec3(0.0f, 0.0f, 4.0f));
+}
+
+void Editor::BuildWaterLevel()
+{
+    // An island in the sea (outside the undo history): sea floor, beach and grass terraces, rocks, a pier, the water
+    // surface and a first-person player to walk around with.
+    auto material = [&](StringView name) {
+        const String path = String::Format("{}/StarterContent/Materials/{}.zmat", contentRoot, name);
+        if (!platform::FileExists(path) || !materials)
+            return Guid();
+        const MaterialLibrary::Material* m = materials->FindByPath(path);
+        return m ? m->guid : materials->LoadFile(path);
+    };
+    auto block = [&](StringView label, BuiltinShape shape, Vec3 min, Vec3 max, StringView mat, ecs::Entity parent = {}) {
+        Transform t((min + max) * 0.5f);
+        t.scale = max - min;
+        const ecs::Entity e = CreateEntity(label, t, parent);
+        MeshRenderer mr;
+        mr.mesh = builtin::Mesh(shape);
+        if (const Guid g = material(mat); g.IsValid())
+            mr.materials.PushBack(g);
+        world.Add(e, mr);
+        EnsureEntityGuid(world, e);
+        return e;
+    };
+    block("Sea Floor", BuiltinShape::Cube, Vec3(-150, -7, -150), Vec3(150, -6, 150), "M_Sand");
+    block("Shallows", BuiltinShape::Cube, Vec3(-26, -6, -20), Vec3(26, -1.2f, 20), "M_Sand");
+    block("Beach", BuiltinShape::Cube, Vec3(-20, -6, -14), Vec3(20, 0.3f, 14), "M_Sand");
+    block("Meadow", BuiltinShape::Cube, Vec3(-13, 0.3f, -8), Vec3(13, 0.9f, 8), "M_Grass");
+    block("Hill", BuiltinShape::Cube, Vec3(-6, 0.9f, -4), Vec3(6, 1.6f, 4), "M_Grass");
+    block("Rock 1", BuiltinShape::Sphere, Vec3(14, -0.5f, 6), Vec3(18, 2.5f, 9), "M_Rock");
+    block("Rock 2", BuiltinShape::Sphere, Vec3(-19, -1.0f, -11), Vec3(-15, 1.8f, -7), "M_Rock");
+    block("Rock 3", BuiltinShape::Sphere, Vec3(22, -2.5f, -14), Vec3(25, 0.8f, -11), "M_Rock");
+    // Pier towards the open sea (+Z).
+    block("Pier", BuiltinShape::Cube, Vec3(-1.5f, 0.55f, 13), Vec3(1.5f, 0.75f, 34), "M_Wood");
+    for (u32 i = 0; i < 6; ++i) {
+        const f32 z = 15.0f + f32(i) * 3.8f;
+        block(String::Format("Pier Post {}", i * 2 + 1), BuiltinShape::Cylinder, Vec3(-1.6f, -6, z), Vec3(-1.2f, 0.9f, z + 0.4f), "M_Wood");
+        block(String::Format("Pier Post {}", i * 2 + 2), BuiltinShape::Cylinder, Vec3(1.2f, -6, z), Vec3(1.6f, 0.9f, z + 0.4f), "M_Wood");
+    }
+    block("Hut", BuiltinShape::Cube, Vec3(-11, 0.9f, -6), Vec3(-7, 3.4f, -3), "M_Wood");
+
+    // The sea: level at y = 0.
+    const ecs::Entity sea = CreateEntity("Sea", Transform(Vec3(0, 0, 0)));
+    Water w;
+    w.size = Vec2(300.0f, 300.0f);
+    world.Add(sea, w);
+    EnsureEntityGuid(world, sea);
+
+    // Player on the pier, looking at the open sea.
+    const ecs::Entity player = CreateEntity("Player", Transform(Vec3(0, 0.8f, 16)));
+    world.Add(player, CharacterController{});
+    world.Add(player, Script{String("Scripts/FirstPersonController.zs"), String()});
+    EnsureEntityGuid(world, player);
+    const ecs::Entity cam = CreateEntity("Camera", Transform(Vec3(0, 1.65f, 0)), player);
+    world.Add(cam, Camera{});
+    EnsureEntityGuid(world, cam);
+
+    // Low sun over the sea for a glitter path.
+    environment.sunElevation = DegToRad(18.0f);
+    environment.sunAzimuth = DegToRad(38.0f);
+    camera.position = Vec3(-6.0f, 5.0f, 6.0f);
+    camera.LookAt(Vec3(4.0f, 0.0f, 40.0f));
+}
+
+void Editor::BuildStarterShowcase()
+{
+    // A floor and a few shapes using the Starter Content materials and scripts (outside the undo history).
+    auto material = [&](StringView name) {
+        const String path = String::Format("{}/StarterContent/Materials/{}.zmat", contentRoot, name);
+        const MaterialLibrary::Material* m = materials ? materials->FindByPath(path) : nullptr;
+        return m ? m->guid : (materials ? materials->LoadFile(path) : Guid());
+    };
+    auto shape = [&](BuiltinShape s, StringView label, Vec3 pos, Vec3 scale, StringView mat, StringView script, StringView props) {
+        Transform t(pos);
+        t.scale = scale;
+        const ecs::Entity e = CreateEntity(label, t);
+        MeshRenderer mr;
+        mr.mesh = builtin::Mesh(s);
+        const Guid g = material(mat);
+        if (g.IsValid())
+            mr.materials.PushBack(g);
+        world.Add(e, mr);
+        if (!script.Empty())
+            world.Add(e, Script{String::Format("StarterContent/Scripts/{}", script), String(props)});
+        EnsureEntityGuid(world, e);
+        return e;
+    };
+    shape(BuiltinShape::Plane, "Floor", Vec3(0, 0, 0), Vec3(12, 1, 12), "M_Concrete", {}, {});
+    shape(BuiltinShape::Cube, "Spinning Cube", Vec3(-2.5f, 0.75f, 0), Vec3(1), "M_Plastic_Red", "Rotator.zs", {});
+    shape(BuiltinShape::Sphere, "Floating Sphere", Vec3(0, 1.0f, 0), Vec3(1), "M_Metal_Gold", "Bobbing.zs", {});
+    shape(BuiltinShape::Cylinder, "Player (WASD)", Vec3(2.5f, 0.5f, 0), Vec3(0.8f, 1, 0.8f), "M_Metal_Steel", "SimpleMover.zs", {});
+    shape(BuiltinShape::Cube, "Watcher", Vec3(0, 0.5f, -3), Vec3(0.6f), "M_Emissive_Cyan", "LookAt.zs", R"json({"target":"Player (WASD)"})json");
+    camera.position = Vec3(0.0f, 3.0f, 7.0f);
+    camera.LookAt(Vec3(0.0f, 0.6f, 0.0f));
+}
+
+void Editor::UpdateStartupScene(StringView savedScene)
+{
+    if (project.descriptorPath.Empty())
+        return;
+    const String rel = Path::MakeRelative(savedScene, project.root);
+    if (rel.Empty() || rel == project.descriptor.startupScene)
+        return;
+    project.descriptor.startupScene = rel;
+    SaveProjectDescriptor(project.descriptorPath, project.descriptor);
+}
+
+String Editor::CopyIntoProject(StringView physicalPath)
+{
+    const String path = Path::Normalize(physicalPath);
+    if (project.descriptorPath.Empty() || Path::IsUnder(path, contentRoot))
+        return path;
+    // Content/<Stem>/, or <Stem>_2, _3... if a different asset already uses that name.
+    String dest = Path::Join(contentRoot, Path::Stem(path));
+    for (u32 n = 2; platform::FileExists(Path::Join(dest, Path::FileName(path))); ++n)
+        dest = Path::Join(contentRoot, String::Format("{}_{}", Path::Stem(path), n));
+    Result<String> copy = CopySourceWithDependencies(path, dest);
+    if (!copy) {
+        ZX_LOG_ERROR(LogEditor, "Import: {}", copy.GetError().message);
+        return {};
+    }
+    ZX_LOG_INFO(LogEditor, "Copied '{}' into {}", Path::FileName(path), Path::MakeRelative(dest, project.root));
+    panels.browserListedDir.Clear(); // refresh the Content Browser
+    return copy.Value();
+}
+
+void Editor::BuildDefaultScene()
+{
+    camera.position = Vec3(-9.0f, 2.2f, -0.6f);
+    camera.LookAt(Vec3(5.0f, 2.8f, 0.0f));
+    camera.moveSpeed = 4.0f;
+    StringView sceneArg;
+    const String path = CommandLine::GetValue("scene", sceneArg) ? String(sceneArg) : contentRoot + "/Sponza/Sponza.gltf";
+    if (Path::HasExtension(path, ".zscene")) {
+        if (!OpenScene(path))
+            ZX_LOG_ERROR(LogEditor, "Failed to open scene {}", path);
+        return;
+    }
+    if (platform::FileExists(path)) {
+        ImportAsset(path, Vec3::Zero(), false);
+        sceneName = Path::Stem(path);
+    } else {
+        ZX_LOG_WARN(LogEditor, "Sample scene not found ({}). Run Tools/fetch_samples.ps1 or drop a .gltf into the Content Browser.", path);
+    }
+    const ecs::Entity lights = CreateEntity("Lights", Transform::Identity());
+    const Vec3 positions[4] = {Vec3(-6.0f, 1.6f, 2.4f), Vec3(-6.0f, 1.6f, -2.4f), Vec3(6.0f, 1.6f, 2.4f), Vec3(6.0f, 1.6f, -2.4f)};
+    for (u32 i = 0; i < 4; ++i) {
+        const ecs::Entity e = CreateEntity(String::Format("Point Light {}", i + 1), Transform(positions[i]), lights);
+        PointLight l;
+        l.color = Vec3(1.0f, 0.62f, 0.32f);
+        l.lumens = 2500.0f;
+        l.range = 8.0f;
+        world.Add(e, l);
+    }
+    undo.Clear();
+}
+
+ecs::Entity Editor::CreateEntity(StringView name, const Transform& t, ecs::Entity parent)
+{
+    return scene::CreateNode(world, name, t, parent);
+}
+
+void Editor::CreateEmpty(Vec3 position, ecs::Entity parent)
+{
+    CommitCreated(CreateEntity("Entity", Transform(position), parent), "Create Entity");
+}
+
+void Editor::CreatePointLight(Vec3 position, ecs::Entity parent)
+{
+    const ecs::Entity e = CreateEntity("Point Light", Transform(position), parent);
+    world.Add(e, PointLight{});
+    CommitCreated(e, "Create Point Light");
+}
+
+void Editor::CreateSpotLight(Vec3 position, ecs::Entity parent)
+{
+    const ecs::Entity e = CreateEntity("Spot Light", Transform(position, Quat::FromEuler(DegToRad(60.0f), 0.0f, 0.0f)), parent);
+    world.Add(e, SpotLight{});
+    CommitCreated(e, "Create Spot Light");
+}
+
+void Editor::CreateWater(Vec3 position, ecs::Entity parent)
+{
+    const ecs::Entity e = CreateEntity("Water", Transform(Vec3(position.x, 0.0f, position.z)), parent);
+    world.Add(e, Water{});
+    CommitCreated(e, "Create Water");
+}
+
+void Editor::CreateShape(BuiltinShape shape, Vec3 position, ecs::Entity parent)
+{
+    // Shapes rest on the spawn point (pivot at the center, so lift by half the height); the plane lies on it.
+    const Vec3 lift = shape == BuiltinShape::Plane ? Vec3::Zero() : Vec3(0, 0.5f, 0);
+    const ecs::Entity e = CreateEntity(builtin::ShapeName(shape), Transform(position + lift), parent);
+    MeshRenderer mr;
+    mr.mesh = builtin::Mesh(shape);
+    world.Add(e, mr);
+    CommitCreated(e, String::Format("Create {}", builtin::ShapeName(shape)));
+}
+
+bool Editor::Reparent(ecs::Entity child, ecs::Entity parent)
+{
+    if (!world.IsAlive(child) || child == parent || (parent && scene::IsAncestorOf(world, child, parent)))
+        return false;
+    undo.Begin(parent ? "Attach" : "Detach");
+    undo.Record(child);
+    const bool ok = scene::SetParent(world, child, parent, true);
+    undo.End();
+    return ok;
+}
+
+void Editor::CommitCreated(ecs::Entity e, StringView label)
+{
+    undo.Begin(label);
+    undo.RecordCreatedHierarchy(e);
+    undo.End();
+    Select(e);
+}
+
+void Editor::BeginContinuousEdit(StringView label, ecs::Entity e, const JsonValue* before)
+{
+    if (!m_continuousEdit) {
+        undo.Begin(label);
+        m_continuousEdit = true;
+    }
+    if (before)
+        undo.RecordState(EnsureEntityGuid(world, e), *before);
+    else
+        undo.Record(e);
+}
+
+void Editor::ApplySelectionAfterUndo(const Array<ecs::Entity>& affected)
+{
+    if (!affected.Empty())
+        selected = affected[0];
+    else if (!world.IsAlive(selected))
+        selected = ecs::NullEntity;
+}
+
+void Editor::Undo()
+{
+    if (m_continuousEdit)
+        return;
+    const String label(undo.UndoLabel());
+    Array<ecs::Entity> affected;
+    if (undo.Undo(&affected)) {
+        ApplySelectionAfterUndo(affected);
+        ZX_LOG_INFO(LogEditor, "Undo: {}", label);
+    }
+}
+
+void Editor::Redo()
+{
+    if (m_continuousEdit)
+        return;
+    const String label(undo.RedoLabel());
+    Array<ecs::Entity> affected;
+    if (undo.Redo(&affected)) {
+        ApplySelectionAfterUndo(affected);
+        ZX_LOG_INFO(LogEditor, "Redo: {}", label);
+    }
+}
+
+ecs::Entity Editor::FindByName(StringView name)
+{
+    ecs::Entity found;
+    world.Query<const scene::EntityName>().Each([&](ecs::Entity e, const scene::EntityName& n) {
+        if (n.value == name)
+            found = e;
+    });
+    return found;
+}
+
+String Editor::CanonicalScene()
+{
+    Array<ecs::Entity> roots, all;
+    CollectRoots(world, roots);
+    for (ecs::Entity r : roots)
+        CollectHierarchy(world, r, all);
+    Array<String> lines;
+    for (ecs::Entity e : all)
+        lines.PushBack(ToJsonString(SerializeEntity(world, e), JsonWriteOptions{false}));
+    Sort(lines, [](const String& a, const String& b) { return a.View().Compare(b.View()) < 0; });
+    String out;
+    for (const String& l : lines)
+        out += l + "\n";
+    return out;
+}
+
+bool Editor::RunUndoSelfTest()
+{
+    // Works on any scene: a "Lights" group is added (outside the history) if the scene has none.
+    ecs::Entity lights = FindByName("Lights");
+    if (!lights)
+        lights = CreateEntity("Lights", Transform::Identity());
+    undo.Clear();
+    Array<String> states;
+    states.PushBack(CanonicalScene());
+    CreatePointLight(Vec3(1, 2, 3));
+    states.PushBack(CanonicalScene());
+    const ecs::Entity light = selected;
+    BeginContinuousEdit("Move", light);
+    world.Get<Transform>(light)->position = Vec3(4, 5, 6);
+    world.Get<PointLight>(light)->lumens = 99.0f;
+    undo.End();
+    m_continuousEdit = false;
+    states.PushBack(CanonicalScene());
+    Reparent(light, lights);
+    states.PushBack(CanonicalScene());
+    Select(lights);
+    DuplicateSelected();
+    states.PushBack(CanonicalScene());
+    ecs::Entity model = FindByName("Sponza");
+    if (!model)
+        world.Query<const MeshRenderer>().Each([&](ecs::Entity e, const MeshRenderer&) { model = e; });
+    if (model) {
+        Select(model);
+        DeleteSelected();
+        states.PushBack(CanonicalScene());
+    }
+    undo.Begin("Add Spot Light");
+    undo.Record(light);
+    world.Add(light, SpotLight{});
+    world.Remove<PointLight>(light);
+    undo.End();
+    states.PushBack(CanonicalScene());
+
+    const usize steps = states.Size() - 1;
+    bool ok = undo.Count() == steps;
+    for (usize i = steps; i > 0 && ok; --i) {
+        Undo();
+        ok = CanonicalScene() == states[i - 1];
+        if (!ok)
+            ZX_LOG_ERROR(LogEditor, "Undo self-test: undo of step {} did not restore the previous state", i);
+    }
+    for (usize i = 1; i <= steps && ok; ++i) {
+        Redo();
+        ok = CanonicalScene() == states[i];
+        if (!ok)
+            ZX_LOG_ERROR(LogEditor, "Undo self-test: redo of step {} did not reproduce its state", i);
+    }
+    while (ok && undo.CanUndo())
+        Undo();
+    ok = ok && CanonicalScene() == states[0];
+    if (ok)
+        ZX_LOG_INFO(LogEditor, "Undo self-test passed ({} steps)", steps);
+    else
+        ZX_LOG_ERROR(LogEditor, "Undo self-test FAILED");
+    undo.Clear();
+    return ok;
+}
+
+// --- Prefabs --------------------------------------------------------------------------------------------------------------
+
+void Editor::CreatePrefabFrom(ecs::Entity e)
+{
+    if (!world.IsAlive(e) || !prefabs)
+        return;
+    if (world.Has<PrefabInstance>(e)) {
+        ZX_LOG_WARN(LogEditor, "'{}' is already a prefab instance (prefab variants are not supported yet)", EntityLabel(e));
+        return;
+    }
+    static const platform::FileDialogFilter Filters[] = {{"ZeqouX3D prefab", "*.zprefab"}};
+    const String folder = contentRoot + "/Prefabs";
+    platform::CreateDirectoryTree(folder);
+    String path = platform::SaveFileDialog(window.Get(), "Create Prefab", Span<const platform::FileDialogFilter>(Filters, 1),
+                                           Path::SanitizeFileName(EntityLabel(e)) + ".zprefab", folder);
+    if (path.Empty())
+        return;
+    CreatePrefabAt(e, path);
+}
+
+bool Editor::CreatePrefabAt(ecs::Entity e, StringView physicalPath)
+{
+    if (!world.IsAlive(e) || !prefabs || world.Has<PrefabInstance>(e))
+        return false;
+    String path(physicalPath);
+    if (!Path::HasExtension(path, ".zprefab"))
+        path += ".zprefab";
+    if (!Path::IsUnder(path, contentRoot)) {
+        ZX_LOG_ERROR(LogEditor, "Prefabs must be saved inside the project's Content folder");
+        return false;
+    }
+    const Guid guid = EnsureEntityGuid(world, e);
+    undo.Begin("Create Prefab");
+    undo.RecordHierarchy(e);
+    const bool ok = CreatePrefabFromEntity(world, e, prefabs->RelativePath(path), *prefabs, assets.Get());
+    const ecs::Entity root = FindEntityByGuid(world, guid);
+    undo.RecordCreatedHierarchy(root);
+    undo.End();
+    Select(root);
+    panels.browserListedDir.Clear();
+    if (ok)
+        ZX_LOG_INFO(LogEditor, "Created prefab {}", prefabs->RelativePath(path));
+    return ok;
+}
+
+void Editor::InstantiatePrefab(StringView physicalPath, Vec3 position)
+{
+    if (!prefabs)
+        return;
+    const ecs::Entity e = InstantiatePrefabFile(world, *prefabs, prefabs->RelativePath(physicalPath), Transform(position));
+    if (!e) {
+        ZX_LOG_ERROR(LogEditor, "Can't instantiate prefab '{}'", physicalPath);
+        return;
+    }
+    CommitCreated(e, String::Format("Place {}", Path::Stem(physicalPath)));
+}
+
+void Editor::ApplyPrefab(ecs::Entity e)
+{
+    const ecs::Entity root = FindPrefabInstanceRoot(world, e);
+    if (!root || !prefabs)
+        return;
+    const String path = world.Get<const PrefabInstance>(root)->prefab;
+    const Guid selectedGuid = GetEntityGuid(world, selected);
+    // Every instance of the prefab changes: record them all.
+    Array<Guid> roots;
+    world.Query<const PrefabInstance>().Each([&](ecs::Entity r, const PrefabInstance& p) {
+        if (p.prefab == path)
+            roots.PushBack(EnsureEntityGuid(world, r));
+    });
+    undo.Begin(String::Format("Apply {}", Path::Stem(path)));
+    for (const Guid& g : roots)
+        undo.RecordHierarchy(FindEntityByGuid(world, g));
+    const bool ok = ApplyPrefabInstance(world, root, *prefabs, assets.Get());
+    for (const Guid& g : roots)
+        undo.RecordCreatedHierarchy(FindEntityByGuid(world, g));
+    undo.End();
+    selected = FindEntityByGuid(world, selectedGuid);
+    if (!ok)
+        ZX_LOG_ERROR(LogEditor, "Applying to '{}' failed", path);
+}
+
+void Editor::RevertPrefab(ecs::Entity e)
+{
+    const ecs::Entity root = FindPrefabInstanceRoot(world, e);
+    if (!root || !prefabs)
+        return;
+    const Guid guid = GetEntityGuid(world, root);
+    const Guid selectedGuid = GetEntityGuid(world, selected);
+    undo.Begin("Revert to Prefab");
+    undo.RecordHierarchy(root);
+    const ecs::Entity rebuilt = RefreshPrefabInstance(world, root, *prefabs, true);
+    undo.RecordCreatedHierarchy(rebuilt);
+    undo.End();
+    selected = FindEntityByGuid(world, selectedGuid);
+    if (!selected)
+        selected = FindEntityByGuid(world, guid);
+}
+
+void Editor::UnpackPrefab(ecs::Entity e)
+{
+    const ecs::Entity root = FindPrefabInstanceRoot(world, e);
+    if (!root)
+        return;
+    const Guid guid = GetEntityGuid(world, root);
+    Array<ecs::Entity> all;
+    CollectHierarchy(world, root, all);
+    undo.Begin("Unpack Prefab");
+    undo.RecordHierarchy(root);
+    world.Remove<PrefabInstance>(root);
+    for (ecs::Entity m : all)
+        if (const PrefabLink* link = world.Get<const PrefabLink>(m); link && link->instance == guid)
+            world.Remove<PrefabLink>(m);
+    undo.End();
+}
+
+// --- Materials ------------------------------------------------------------------------------------------------------------
+
+Guid Editor::CreateMaterial(StringView physicalPath)
+{
+    if (!materials)
+        return {};
+    String path(physicalPath);
+    if (!Path::HasExtension(path, ".zmat"))
+        path += ".zmat";
+    const Guid guid = materials->Create(path);
+    panels.browserListedDir.Clear();
+    if (guid.IsValid())
+        ZX_LOG_INFO(LogEditor, "Created material {}", Path::MakeRelative(path, contentRoot));
+    return guid;
+}
+
+void Editor::AssignMaterial(ecs::Entity e, const Guid& material)
+{
+    MeshRenderer* mr = world.Get<MeshRenderer>(e);
+    if (!mr)
+        return;
+    const render::GpuMesh* mesh = renderAssets->GetMesh(mr->mesh);
+    const usize slots = Max<usize>(mesh ? mesh->materialSlots : 1, Max<usize>(mr->materials.Size(), 1));
+    undo.Begin("Assign Material");
+    undo.Record(e);
+    mr = world.Get<MeshRenderer>(e);
+    mr->materials.Resize(slots);
+    for (asset::AssetId& m : mr->materials)
+        m = material;
+    undo.End();
+}
+
+bool Editor::RunMaterialSelfTest()
+{
+    // M8 acceptance: a material with a texture and parameters is built from nodes, and edits reach the viewport in
+    // under a second (structural: shader compile; values: no compile at all).
+    const String path = contentRoot + "/Materials/SelfTest.zmat";
+    const Guid guid = CreateMaterial(path);
+    MaterialLibrary::Material* m = materials ? materials->Find(guid) : nullptr;
+    if (!m) {
+        ZX_LOG_ERROR(LogEditor, "Material self-test: can't create a material");
+        return false;
+    }
+    // Pick any image in the project for the texture.
+    String texture;
+    Array<String> dirs{contentRoot};
+    while (!dirs.Empty() && texture.Empty()) {
+        const String dir = dirs.PopBackValue();
+        Array<platform::DirectoryEntry> entries;
+        platform::ListDirectory(dir, entries);
+        for (const platform::DirectoryEntry& e : entries) {
+            if (e.isDirectory)
+                dirs.PushBack(Path::Join(dir, e.name));
+            else if (texture.Empty() && (Path::HasExtension(e.name, ".png") || Path::HasExtension(e.name, ".jpg")))
+                texture = Path::MakeRelative(Path::Join(dir, e.name), contentRoot);
+        }
+    }
+    // Shape + material on it.
+    CreateShape(BuiltinShape::Sphere, camera.position + camera.Forward() * 4.0f);
+    AssignMaterial(selected, guid);
+
+    // Structural edit: Texture Sample * Tint (+ Roughness parameter).
+    render::MaterialGraph& g = m->graph;
+    const u32 out = g.OutputNode();
+    const u32 tex = g.AddNode("TextureSample", Vec2(-300, 0))->id;
+    g.FindNode(tex)->texture = texture;
+    g.FindNode(tex)->name = "Albedo";
+    const u32 tint = g.nodes[1].id; // the default "Base Color" parameter
+    const u32 mul = g.AddNode("Multiply", Vec2(0, 0))->id;
+    g.Connect(tex, 0, mul, 0);
+    g.Connect(tint, 0, mul, 1);
+    g.Connect(mul, 0, out, 0);
+    MaterialGraphNode* rough = g.AddNode("Scalar", Vec2(0, 200));
+    rough->name = "Roughness";
+    rough->value.x = 0.3f;
+    g.Connect(rough->id, 0, out, 2);
+    Stopwatch sw;
+    materials->Apply(guid);
+    while (materials->ShaderState(guid) == render::MaterialShaderCache::State::Compiling && sw.ElapsedMilliseconds() < 5000.0)
+        Thread::SleepMs(1);
+    const f64 structuralMs = sw.ElapsedMilliseconds();
+    const bool compiled = materials->ShaderState(guid) == render::MaterialShaderCache::State::Ready && m->compiled.Ok();
+
+    // Value edit: same shader, new parameter block.
+    const u32 shaderBefore = m->shader;
+    g.FindNode(tint)->value = Vec4(1.0f, 0.3f, 0.1f, 1.0f);
+    sw.Restart();
+    materials->Apply(guid);
+    const f64 valueMs = sw.ElapsedMilliseconds();
+    const bool sameShader = m->shader == shaderBefore;
+    materials->Save(guid);
+
+    const bool ok = compiled && structuralMs < 1000.0 && sameShader && !texture.Empty();
+    if (ok)
+        ZX_LOG_INFO(LogEditor, "Material self-test passed: structural edit {:.0f} ms, value edit {:.2f} ms (no recompile), texture {}",
+                    structuralMs, valueMs, texture);
+    else
+        ZX_LOG_ERROR(LogEditor, "Material self-test FAILED: compiled {}, structural {:.0f} ms, same shader {}, texture '{}'", compiled,
+                     structuralMs, sameShader, texture);
+    return ok;
+}
+
+// --- Play-in-Editor -----------------------------------------------------------------------------------------------------
+
+void Editor::BeginPlay()
+{
+    if (IsPlaying())
+        return;
+    if (m_continuousEdit) {
+        undo.End();
+        m_continuousEdit = false;
+    }
+    m_pieSnapshot = zx::SaveScene(world, SceneIOOptions{});
+    m_pieSelection = GetEntityGuid(world, selected);
+    if (GameplayClock* clock = world.GetSingleton<GameplayClock>())
+        *clock = GameplayClock{};
+    undo.SetSuspended(true);
+    playState = PlayState::Playing;
+    m_pieStep = false;
+    if (scripts)
+        scripts->Begin(world);
+    gameCameraEjected = false;
+    SetGameInputCaptured(FindGameCamera(world) != ecs::NullEntity && m_autotestFrames == 0); // tests keep the cursor free
+    ZX_LOG_INFO(LogEditor, "Play-in-Editor started ({} entities)", m_pieSnapshot.Get("entities").Size());
+}
+
+void Editor::EndPlay()
+{
+    if (!IsPlaying())
+        return;
+    if (m_continuousEdit) {
+        undo.End();
+        m_continuousEdit = false;
+    }
+    if (scripts)
+        scripts->End();
+    SetGameInputCaptured(false);
+    gameCameraEjected = false;
+    // Restore the edit-time world: same entities and guids, so the undo history stays valid.
+    ClearScene(world);
+    zx::LoadScene(m_pieSnapshot, world, SceneIOOptions{});
+    m_pieSnapshot = JsonValue();
+    selected = FindEntityByGuid(world, m_pieSelection);
+    undo.SetSuspended(false);
+    playState = PlayState::Editing;
+    viewport->ResetHistory();
+    ZX_LOG_INFO(LogEditor, "Play-in-Editor stopped, scene restored");
+}
+
+void Editor::SetFeatureEnabled(StringView id, bool enabled)
+{
+    Array<String>& off = project.descriptor.disabledFeatures;
+    off.RemoveIf([&](const String& f) { return f == id; });
+    if (!enabled)
+        off.PushBack(String(id));
+    if (!project.descriptorPath.Empty())
+        SaveProjectDescriptor(project.descriptorPath, project.descriptor);
+    if ((!FeatureEnabled("brush") && tools.active == EditorTool::Brush) || (!FeatureEnabled("measure") && tools.active == EditorTool::Measure))
+        tools.active = EditorTool::None;
+    ZX_LOG_INFO(LogEditor, "Feature '{}' {}", id, enabled ? "enabled" : "disabled");
+}
+
+bool Editor::UsingGameCamera()
+{
+    return IsPlaying() && !gameCameraEjected && FindGameCamera(world) != ecs::NullEntity;
+}
+
+void Editor::SetGameInputCaptured(bool captured)
+{
+    gameInputCaptured = captured && IsPlaying();
+    if (gameInputCaptured)
+        flying = false;
+}
+
+void Editor::ToggleEject()
+{
+    if (!IsPlaying())
+        return;
+    gameCameraEjected = !gameCameraEjected;
+    SetGameInputCaptured(!gameCameraEjected && FindGameCamera(world) != ecs::NullEntity);
+    ZX_LOG_INFO(LogEditor, gameCameraEjected ? "Ejected: editor camera (F8 to possess the game camera again)" : "Possessed the game camera");
+}
+
+void Editor::TogglePause()
+{
+    if (IsPlaying())
+        playState = playState == PlayState::Paused ? PlayState::Playing : PlayState::Paused;
+}
+
+void Editor::StepFrame()
+{
+    if (!IsPlaying())
+        BeginPlay();
+    playState = PlayState::Paused;
+    m_pieStep = true;
+}
+
+bool Editor::RunPieSelfTest()
+{
+    // Give the scene something to animate (outside the undo history), remember it, play, mutate, stop, compare.
+    ecs::Entity target = FindByName("Lights");
+    if (!target)
+        target = CreateEntity("Lights", Transform::Identity());
+    world.Add(target, Rotator{});
+    world.Add(target, Oscillator{});
+    const String before = CanonicalScene();
+    const usize undoSteps = undo.Count();
+    const Quat startRotation = world.Get<Transform>(target)->rotation;
+
+    BeginPlay();
+    for (u32 i = 0; i < 30; ++i)
+        TickGameplay(world, 1.0f / 30.0f);
+    const ecs::Entity playTarget = FindByName("Lights");
+    const bool animated = playTarget && Abs(Dot(world.Get<Transform>(playTarget)->rotation, startRotation)) < 0.999f;
+    // Edits while playing must not survive: delete something, create something, try to record an undo step.
+    if (const ecs::Entity any = FindByName("Point Light 1"))
+        scene::DestroyHierarchy(world, any);
+    CreatePointLight(Vec3(1, 1, 1));
+    EndPlay();
+
+    const bool restored = CanonicalScene() == before;
+    const bool historyKept = undo.Count() == undoSteps;
+    const bool ok = animated && restored && historyKept;
+    if (ok)
+        ZX_LOG_INFO(LogEditor, "PIE self-test passed");
+    else
+        ZX_LOG_ERROR(LogEditor, "PIE self-test FAILED (animated {}, restored {}, history kept {})", animated, restored, historyKept);
+    world.Remove<Rotator>(FindByName("Lights"));
+    world.Remove<Oscillator>(FindByName("Lights"));
+    return ok;
+}
+
+bool Editor::RunToolSelfTest(bool& retry)
+{
+    // Picking, Drop to Ground, Brush paint / undo / redo / erase and feature toggles on built-in shapes.
+    static ecs::Entity s_floor, s_box;
+    retry = false;
+    if (!s_box) {
+        Transform ft(Vec3(0, 0, 50));
+        ft.scale = Vec3(20.0f, 1.0f, 20.0f);
+        s_floor = CreateEntity("Tool Test Floor", ft);
+        MeshRenderer fm;
+        fm.mesh = builtin::Mesh(BuiltinShape::Plane);
+        world.Add(s_floor, fm);
+        s_box = CreateEntity("Tool Test Box", Transform(Vec3(0, 3, 50)));
+        MeshRenderer bm;
+        bm.mesh = builtin::Mesh(BuiltinShape::Cube);
+        world.Add(s_box, bm);
+        scene::UpdateWorldTransforms(world);
+    }
+    if (!renderAssets->GetMesh(builtin::Mesh(BuiltinShape::Plane)) || !renderAssets->GetMesh(builtin::Mesh(BuiltinShape::Cube))) {
+        retry = true; // meshes still uploading
+        return true;
+    }
+    scene::UpdateWorldTransforms(world);
+    RaycastHit hit;
+    const bool picked = RaycastMeshes(world, *renderAssets, Ray(Vec3(0.2f, 10, 50.1f), Vec3(0, -1, 0)), hit) && hit.entity == s_box &&
+                        Abs(hit.point.y - 3.5f) < 1e-3f && hit.normal.y > 0.99f;
+    Select(s_box);
+    const usize undoBefore = undo.Count();
+    const bool dropped = DropSelectedToGround(*this) && Abs(world.Get<Transform>(s_box)->position.y - 0.5f) < 1e-3f;
+    // Brush: the box as the model, paint around (0, 0, 55), undo, redo, erase.
+    tools.items.Clear();
+    tools.brush = BrushSettings{};
+    tools.brush.density = 6.0f;
+    tools.brush.spacing = 0.8f;
+    AddSelectedBrushItem(*this);
+    const u32 painted = BrushStrokeAt(*this, Vec3(0, 0, 55), Vec3::Up(), false);
+    bool onFloor = painted > 0;
+    world.Query<const PaintedInstance, const Transform>().Each([&](const PaintedInstance&, const Transform& t) {
+        onFloor &= Abs(t.position.y) < 0.05f && Abs(t.position.z - 55.0f) <= tools.brush.radius + 0.01f;
+    });
+    Undo();
+    u32 afterUndo = 0;
+    world.Query<const PaintedInstance>().Each([&](const PaintedInstance&) { ++afterUndo; });
+    Redo();
+    u32 afterRedo = 0;
+    world.Query<const PaintedInstance>().Each([&](const PaintedInstance&) { ++afterRedo; });
+    const u32 afterErase = BrushStrokeAt(*this, Vec3(0, 0, 55), Vec3::Up(), true);
+    // Features: off -> viewport mask off, back on; stored in the descriptor.
+    SetFeatureEnabled("water", false);
+    const bool featureOff = !FeatureEnabled("water") && project.descriptor.disabledFeatures.Size() == 1;
+    SetFeatureEnabled("water", true);
+    const bool featureOn = FeatureEnabled("water") && project.descriptor.disabledFeatures.Empty();
+    const bool history = undo.Count() > undoBefore;
+    const bool ok = picked && dropped && onFloor && afterUndo == 0 && afterRedo == painted && afterErase == 0 && featureOff && featureOn && history;
+    if (ok)
+        ZX_LOG_INFO(LogEditor, "Tool self-test passed ({} instances painted)", painted);
+    else
+        ZX_LOG_ERROR(LogEditor,
+                     "Tool self-test FAILED (picked {}, dropped {}, painted {} on floor {}, undo {}, redo {}, erase {}, features {}/{})",
+                     picked, dropped, painted, onFloor, afterUndo, afterRedo, afterErase, featureOff, featureOn);
+    tools.items.Clear();
+    return ok;
+}
+
+bool Editor::RunScriptSelfTest()
+{
+    // A script on an entity: props from the component, start/update while playing, hot reload keeps the state,
+    // Stop restores the scene. The file lives in Content until the editor exits (the Details panel shows it).
+    m_scriptTestFile = contentRoot + "/ScriptSelfTest.zs";
+    const StringView v1 = "script SelfTest {\n"
+                          "    @range(0, 360) @tooltip(\"Degrees per second\") prop speed = 30.0\n"
+                          "    @color prop tint = vec3(1, 0.5, 0.2)\n"
+                          "    prop label = \"spinner\"\n"
+                          "    var ticks = 0\n"
+                          "    fn start() { log(\"SelfTest started on \" + entity.name + \" (\" + label + \")\") }\n"
+                          "    fn update(dt) {\n"
+                          "        ticks += 1\n"
+                          "        entity.rotate(vec3(0, speed * dt, 0))\n"
+                          "        entity.position.y = ticks\n"
+                          "    }\n"
+                          "}\n";
+    if (!fs::WriteTextFile(m_scriptTestFile, v1))
+        return false;
+    const u32 errorsBefore = log ? log->Counts(LogLevel::Error) : 0;
+    const ecs::Entity e = CreateEntity("Script Test", Transform::Identity());
+    undo.Begin("Add Script");
+    undo.Record(e);
+    world.Add(e, Script{String("ScriptSelfTest.zs"), String(R"({"speed":90})")});
+    undo.End();
+    Select(e);
+    OpenScriptEditor(*this, m_scriptTestFile);
+
+    BeginPlay();
+    for (u32 i = 0; i < 10; ++i)
+        scripts->Tick(world, 1.0f / 30.0f, nullptr);
+    const ecs::Entity playing = FindByName("Script Test");
+    const Transform* t = playing ? world.Get<const Transform>(playing) : nullptr;
+    const bool ran = t && Abs(t->position.y - 10.0f) < 1e-4f && Abs(t->rotation.ToEulerDegrees().y - 30.0f) < 0.05f;
+
+    // Hot reload: the new code continues from the running `ticks`.
+    Thread::SleepMs(20);
+    String v2(v1);
+    v2.ReplaceAll("entity.position.y = ticks", "entity.position.y = ticks + 100");
+    fs::WriteTextFile(m_scriptTestFile, v2);
+    scripts->CheckForChanges();
+    scripts->Tick(world, 1.0f / 30.0f, nullptr);
+    const bool reloaded = playing && Abs(world.Get<const Transform>(playing)->position.y - 111.0f) < 1e-4f;
+    EndPlay();
+
+    const ecs::Entity restored = FindByName("Script Test");
+    const bool reset = restored && world.Get<const Transform>(restored)->position.y == 0.0f && world.Has<Script>(restored);
+    const bool clean = (log ? log->Counts(LogLevel::Error) : 0) == errorsBefore;
+    const bool ok = ran && reloaded && reset && clean;
+    if (ok)
+        ZX_LOG_INFO(LogEditor, "Script self-test passed");
+    else
+        ZX_LOG_ERROR(LogEditor, "Script self-test FAILED (ran {}, reloaded {}, restored {}, no errors {})", ran, reloaded, reset, clean);
+    fs::WriteTextFile(m_scriptTestFile, v1);
+    return ok;
+}
+
+// --- Scene files -------------------------------------------------------------------------------------------------------
+
+namespace {
+/// Degrees rounded to 1e-4 so saving a loaded scene again writes identical text.
+f32 SettingDegrees(f32 radians) { return Round(RadToDeg(radians) * 1e4f) / 1e4f; }
+} // namespace
+
+JsonValue Editor::SceneSettings() const
+{
+    JsonValue env = JsonValue::MakeObject();
+    env.Set("night", environment.night);
+    env.Set("sunElevation", SettingDegrees(environment.sunElevation));
+    env.Set("sunAzimuth", SettingDegrees(environment.sunAzimuth));
+    env.Set("autoExposure", environment.autoExposure);
+    JsonValue cam = JsonValue::MakeObject();
+    JsonValue pos = JsonValue::MakeArray();
+    pos.PushBack(camera.position.x);
+    pos.PushBack(camera.position.y);
+    pos.PushBack(camera.position.z);
+    cam.Set("position", move(pos));
+    cam.Set("yaw", SettingDegrees(camera.yaw));
+    cam.Set("pitch", SettingDegrees(camera.pitch));
+    cam.Set("speed", camera.moveSpeed);
+    JsonValue s = JsonValue::MakeObject();
+    s.Set("environment", move(env));
+    s.Set("editorCamera", move(cam));
+    return s;
+}
+
+void Editor::ApplySceneSettings(const JsonValue& settings)
+{
+    const JsonValue& env = settings.Get("environment");
+    if (env.IsObject()) {
+        environment.night = env.Get("night").AsBool(environment.night);
+        environment.sunElevation = DegToRad(env.Get("sunElevation").AsFloat(RadToDeg(environment.sunElevation)));
+        environment.sunAzimuth = DegToRad(env.Get("sunAzimuth").AsFloat(RadToDeg(environment.sunAzimuth)));
+        environment.autoExposure = env.Get("autoExposure").AsBool(environment.autoExposure);
+    }
+    const JsonValue& cam = settings.Get("editorCamera");
+    if (cam.IsObject()) {
+        const JsonValue& p = cam.Get("position");
+        if (p.Size() == 3)
+            camera.position = Vec3(p[0].AsFloat(), p[1].AsFloat(), p[2].AsFloat());
+        camera.yaw = DegToRad(cam.Get("yaw").AsFloat(RadToDeg(camera.yaw)));
+        camera.pitch = DegToRad(cam.Get("pitch").AsFloat(RadToDeg(camera.pitch)));
+        camera.moveSpeed = cam.Get("speed").AsFloat(camera.moveSpeed);
+    }
+    viewport->ResetHistory();
+}
+
+String Editor::BrowseForScene(bool save)
+{
+    static const platform::FileDialogFilter Filters[] = {{"ZeqouX3D scene", "*.zscene"}, {"All files", "*.*"}};
+    const Span<const platform::FileDialogFilter> filters(Filters, 2);
+    platform::CreateDirectoryTree(ScenesDirectory());
+    const String initial = scenePath.Empty() ? ScenesDirectory() : String(Path::Parent(scenePath));
+    if (save) {
+        String path = platform::SaveFileDialog(window.Get(), "Save Scene As", filters, sceneName + ".zscene", initial);
+        if (!path.Empty() && !Path::HasExtension(path, ".zscene"))
+            path += ".zscene";
+        return path;
+    }
+    const Array<String> paths = platform::OpenFileDialog(window.Get(), "Open Scene", filters, false, initial);
+    return paths.Empty() ? String() : paths[0];
+}
+
+void Editor::RequestSceneAction(SceneAction action, StringView path)
+{
+    EndPlay(); // scene actions always act on the edit-time scene
+    if (action == SceneAction::Open) {
+        pendingOpenPath = path.Empty() ? BrowseForScene(false) : String(path);
+        if (pendingOpenPath.Empty())
+            return;
+    }
+    if (undo.IsDirty())
+        pendingAction = action; // the shell shows the save-changes dialog
+    else
+        RunSceneAction(action);
+}
+
+void Editor::RunSceneAction(SceneAction action)
+{
+    pendingAction = SceneAction::None;
+    switch (action) {
+    case SceneAction::New: NewScene(); break;
+    case SceneAction::Open: OpenScene(pendingOpenPath); break;
+    case SceneAction::CloseProject: ShowProjectBrowser(); break;
+    case SceneAction::Quit: quit = true; break;
+    case SceneAction::None: break;
+    }
+}
+
+void Editor::NewScene()
+{
+    if (m_continuousEdit) {
+        undo.Discard();
+        m_continuousEdit = false;
+    }
+    ClearScene(world);
+    pendingImports.Clear();
+    undo.Clear();
+    selected = ecs::NullEntity;
+    sceneName = "Untitled";
+    scenePath.Clear();
+    environment = ViewportEnvironment();
+    camera.position = Vec3(0.0f, 2.0f, -6.0f);
+    camera.LookAt(Vec3(0.0f, 0.5f, 0.0f));
+    viewport->ResetHistory();
+    ZX_LOG_INFO(LogEditor, "New scene");
+}
+
+bool Editor::OpenScene(StringView physicalPath)
+{
+    NewScene();
+    JsonValue settings;
+    if (!LoadSceneFile(physicalPath, world, SceneIO(), &settings))
+        return false;
+    ApplySceneSettings(settings);
+    scenePath = physicalPath;
+    sceneName = Path::Stem(physicalPath);
+    undo.Clear();
+    UpdateStartupScene(physicalPath);
+    ZX_LOG_INFO(LogEditor, "Opened scene '{}' ({} entities)", physicalPath, world.EntityCount());
+    return true;
+}
+
+bool Editor::SaveScene(bool saveAs)
+{
+    EndPlay(); // never save the play state
+    String path = scenePath;
+    if (saveAs || path.Empty())
+        path = BrowseForScene(true);
+    return !path.Empty() && SaveSceneTo(path);
+}
+
+bool Editor::SaveSceneTo(StringView physicalPath)
+{
+    platform::CreateDirectoryTree(Path::Parent(physicalPath));
+    if (!SaveSceneFile(physicalPath, world, SceneIO(), SceneSettings()))
+        return false;
+    scenePath = physicalPath;
+    sceneName = Path::Stem(physicalPath);
+    undo.MarkSaved();
+    UpdateStartupScene(physicalPath);
+    ZX_LOG_INFO(LogEditor, "Saved scene '{}'", physicalPath);
+    return true;
+}
+
+void Editor::Select(ecs::Entity e) { selected = world.IsAlive(e) ? e : ecs::NullEntity; }
+
+String Editor::EntityLabel(ecs::Entity e) const
+{
+    if (const scene::EntityName* n = world.Get<scene::EntityName>(e); n && !n->value.Empty())
+        return n->value;
+    return String::Format("Entity {}", e.index);
+}
+
+void Editor::DeleteSelected()
+{
+    if (!world.IsAlive(selected))
+        return;
+    ZX_LOG_INFO(LogEditor, "Deleted '{}'", EntityLabel(selected));
+    undo.Begin("Delete");
+    undo.RecordHierarchy(selected);
+    scene::DestroyHierarchy(world, selected);
+    undo.End();
+    selected = ecs::NullEntity;
+}
+
+void Editor::DuplicateSelected()
+{
+    if (!world.IsAlive(selected))
+        return;
+    // Snapshot the hierarchy, give every entity a new guid (parents remapped) and re-create it next to the original.
+    Array<ecs::Entity> all;
+    CollectHierarchy(world, selected, all);
+    HashMap<Guid, Guid> remap;
+    for (ecs::Entity e : all)
+        remap.InsertOrAssign(EnsureEntityGuid(world, e), Guid::New());
+    Array<EntitySnapshot> snapshots;
+    for (ecs::Entity e : all) {
+        JsonValue s = SerializeEntity(world, e);
+        const Guid guid = *remap.Find(GetEntityGuid(world, e));
+        s.Set("guid", String::Format("{}", guid));
+        if (const JsonValue* p = s.Find("parent"))
+            if (const Optional<Guid> pg = Guid::Parse(p->AsString()); pg && remap.Find(*pg))
+                s.Set("parent", String::Format("{}", *remap.Find(*pg)));
+        if (e == selected) {
+            s.Set("index", s.Get("index").AsInt() + 1);
+            if (JsonValue* name = s["components"].Find("EntityName"))
+                name->Set("value", String::Format("{} (Copy)", name->Get("value").AsString()));
+        }
+        snapshots.PushBack(EntitySnapshot{guid, move(s)});
+    }
+    undo.Begin("Duplicate");
+    const Array<ecs::Entity> created = ApplyEntitySnapshots(world, snapshots.View());
+    for (ecs::Entity e : created)
+        undo.RecordCreated(e);
+    undo.End();
+    if (!created.Empty())
+        selected = created[0];
+}
+
+void Editor::FocusSelected()
+{
+    if (!world.IsAlive(selected))
+        return;
+    const Vec3 target = scene::ComputeWorldMatrix(world, selected).GetTranslation();
+    camera.position = target - camera.Forward() * 6.0f;
+}
+
+void Editor::ImportAsset(StringView physicalPathIn, Vec3 position, bool undoable)
+{
+    if (Path::HasExtension(physicalPathIn, ".zprefab")) {
+        InstantiatePrefab(physicalPathIn, position);
+        return;
+    }
+    const String physicalPath = CopyIntoProject(physicalPathIn);
+    if (physicalPath.Empty())
+        return;
+    const asset::AssetId id = assets->LoadPath(physicalPath);
+    if (!id.IsValid()) {
+        ZX_LOG_ERROR(LogEditor, "Cannot import '{}'", physicalPath);
+        return;
+    }
+    pendingImports.PushBack(PendingImport{id, Transform(position), String(Path::Stem(physicalPath)), undoable});
+    ZX_LOG_INFO(LogEditor, "Importing '{}'...", Path::FileName(physicalPath));
+}
+
+void Editor::UpdateImports()
+{
+    for (usize i = 0; i < pendingImports.Size();) {
+        PendingImport& p = pendingImports[i];
+        if (const asset::PrefabAsset* prefab = assets->GetPrefab(p.id)) {
+            const ecs::Entity root = zx::InstantiatePrefab(world, *prefab, p.transform);
+            if (scene::EntityName* n = world.Get<scene::EntityName>(root))
+                n->value = p.name;
+            if (p.undoable)
+                CommitCreated(root, String::Format("Import {}", p.name));
+            selected = root;
+            ZX_LOG_INFO(LogEditor, "Placed '{}' ({} nodes)", p.name, prefab->nodes.Size());
+            pendingImports.RemoveAt(i);
+        } else if (assets->GetState(p.id) == asset::AssetState::Failed) {
+            ZX_LOG_ERROR(LogEditor, "Import of '{}' failed: {}", p.name, assets->GetErrorMessage(p.id));
+            pendingImports.RemoveAt(i);
+        } else {
+            ++i;
+        }
+    }
+}
+
+void Editor::ProcessShortcuts()
+{
+    if (ui->WantsKeyboard() || flying || mode != EditorMode::Editing || materialEditor.capturesKeys || scriptEditor.capturesKeys || palette.open)
+        return;
+    const KeyModifiers mods = input.Modifiers() & (KeyModifiers::Control | KeyModifiers::Shift | KeyModifiers::Alt);
+    for (const WindowEvent& e : m_events) {
+        if (e.type != WindowEventType::KeyDown)
+            continue;
+        // While the game has the input only the play controls (F keys) work; everything else is game input.
+        if (gameInputCaptured && !(e.key >= Key::F1 && e.key <= Key::F12) && e.key != Key::Escape)
+            continue;
+        // Escape depends on the state: stop playing, otherwise clear the selection.
+        if (e.key == Key::Escape && mods == KeyModifiers::None) {
+            if (!e.repeat) {
+                if (tools.active != EditorTool::None && !IsPlaying())
+                    tools.active = EditorTool::None;
+                else if (IsPlaying())
+                    EndPlay();
+                else
+                    selected = ecs::NullEntity;
+            }
+            continue;
+        }
+        DispatchShortcut(*this, e.key, mods, e.repeat);
+    }
+}
+
+void Editor::EnsureViewportTexture(UVec2 size)
+{
+    size = UVec2(Max(size.x, 16u), Max(size.y, 16u));
+    if (viewportTexture && viewportSize == size)
+        return;
+    device->Destroy(viewportTexture);
+    TextureDesc td;
+    td.width = size.x;
+    td.height = size.y;
+    td.format = Format::R8G8B8A8_UNORM;
+    td.usage = TextureUsage::RenderTarget | TextureUsage::ShaderResource;
+    td.debugName = "EditorViewport";
+    viewportTexture = device->CreateTexture(td);
+    viewportSize = size;
+    viewport->ResetHistory();
+}
+
+bool Editor::Frame()
+{
+    if (!platform::PumpMessages() || device->IsDeviceLost() || quit)
+        return false;
+    if (window->ShouldClose() && (m_autotestFrames || !undo.IsDirty()))
+        return false;
+    profiler::BeginFrame();
+    dt = timer.Tick();
+    m_events.Clear();
+    platform::UpdateInput(*window, input, m_events);
+    const UVec2 client = window->GetClientSize();
+    if (client.x == 0 || client.y == 0 || window->IsMinimized()) {
+        Thread::SleepMs(16);
+        return true;
+    }
+    if (client != swapChain->GetSize())
+        swapChain->Resize(client.x, client.y);
+
+    // --- UI ---
+    ui::FrameInput fi;
+    fi.displaySize = Vec2(f32(client.x), f32(client.y));
+    fi.deltaTime = dt;
+    fi.dpiScale = window->GetDpiScale();
+    fi.input = flying ? nullptr : &input;
+    fi.events = m_events.View();
+    fi.hasFocus = window->IsFocused() || m_autotestFrames > 0;
+    Stopwatch sw;
+    ui->BeginFrame(fi);
+    DrawShell(*this);
+    ui->EndFrame();
+    m_timeUi += sw.ElapsedMilliseconds();
+    // A drag/edit step ends once nothing is held any more.
+    if (m_continuousEdit && !input.IsMouseDown(MouseButton::Left) && !ui->IsAnyItemActive()) {
+        undo.End();
+        m_continuousEdit = false;
+    }
+    if (window->ShouldClose() && !quit) {
+        window->CancelClose();
+        RequestSceneAction(SceneAction::Quit);
+    }
+    if (!flying)
+        window->SetCursorShape(ui->GetCursorShape());
+    window->SetCursorLocked(flying || gameInputCaptured);
+    ProcessShortcuts();
+
+    // --- Scene ---
+    UpdateImports();
+    if (playState == PlayState::Playing || m_pieStep) {
+        const f32 gameDt = m_pieStep ? 1.0f / 60.0f : dt;
+        TickGameplay(world, gameDt);
+        if (scripts && FeatureEnabled("scripts"))
+            scripts->Tick(world, gameDt, gameInputCaptured ? &input : nullptr);
+        // Characters move after the scripts asked them to (character.move / jump).
+        scene::UpdateWorldTransforms(world);
+        if (FeatureEnabled("characters"))
+            TickCharacters(world, gameDt, [this](asset::AssetId id, AABB& out) {
+            const render::GpuMesh* mesh = renderAssets->GetMesh(id);
+            if (!mesh)
+                return false;
+            out = mesh->bounds;
+            return true;
+        });
+        m_pieStep = false;
+    } else if (scripts && (m_scriptCheckTimer += dt) > 0.5) {
+        m_scriptCheckTimer = 0.0; // edit mode: keep the Details panel in sync with files edited elsewhere
+        scripts->CheckForChanges();
+    }
+    if (!m_saveAfterImports.Empty() && pendingImports.Empty()) {
+        SaveSceneTo(m_saveAfterImports);
+        m_saveAfterImports.Clear();
+    }
+    if (m_toolTest && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle()) {
+        bool retry = false;
+        const bool ok = RunToolSelfTest(retry);
+        if (!retry || --m_toolTest == 0) {
+            selfTestFailed |= !ok || retry;
+            m_toolTest = 0;
+        }
+    }
+    if (m_scriptTest && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle()) {
+        m_scriptTest = false;
+        selfTestFailed |= !RunScriptSelfTest();
+    }
+    if (m_materialTest && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle()) {
+        m_materialTest = false;
+        selfTestFailed |= !RunMaterialSelfTest();
+    }
+    if (m_pieTest && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle()) {
+        m_pieTest = false;
+        selfTestFailed |= !RunPieSelfTest();
+    }
+    if (m_undoTest && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle()) {
+        m_undoTest = false;
+        selfTestFailed |= !RunUndoSelfTest();
+    }
+    if (!m_execCommands.Empty() && frameIndex >= 2 && pendingImports.Empty()) {
+        ZX_LOG_INFO(LogEditor, "> {}", m_execCommands);
+        Console::Execute(m_execCommands);
+        m_execCommands.Clear();
+        ui::FocusDockedWindow(LogTitle);
+    }
+    sceneDirty = undo.IsDirty();
+    scene::UpdateWorldTransforms(world);
+    sw.Restart();
+    RenderFrame();
+    m_timeRender += sw.ElapsedMilliseconds();
+    ++m_timedFrames;
+
+    ++frameIndex;
+    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() &&
+        (m_screenshotPath.Empty() || m_screenshotBuffer)) {
+        if (!m_saveScenePath.Empty() && SaveSceneFile(m_saveScenePath, world, SceneIO(), SceneSettings()))
+            ZX_LOG_INFO(LogEditor, "Saved scene '{}'", m_saveScenePath);
+        return false;
+    }
+    if (m_autotestFrames && frameIndex > m_autotestFrames + 3000)
+        return false;
+    return true;
+}
+
+void Editor::RenderFrame()
+{
+    const UVec2 size = swapChain->GetSize();
+    device->BeginFrame();
+    CommandList* cmd = device->BeginCommandList();
+    cmd->BeginTimer("Frame");
+    renderAssets->Update(*cmd);
+    RenderGraph graph(*device, *pool);
+    Array<RGTexture> sampled;
+    if (viewportTexture && showViewport && !viewportRect.IsEmpty() && mode == EditorMode::Editing) {
+        const RGTexture vp = graph.ImportTexture(viewportTexture, ResourceState::ShaderResource);
+        sampled.PushBack(vp);
+        ViewportFeatures& vf = viewport->features;
+        vf.shadows = FeatureEnabled("shadows");
+        vf.ambientOcclusion = FeatureEnabled("ambientOcclusion");
+        vf.sky = FeatureEnabled("sky");
+        vf.bloom = FeatureEnabled("bloom");
+        vf.temporalAA = FeatureEnabled("temporalAA");
+        vf.water = FeatureEnabled("water");
+        ViewportCamera cam{camera.ViewMatrix(), camera.position, camera.fovY, camera.nearPlane};
+        if (UsingGameCamera()) {
+            // Game view: the Camera entity's world position and orientation (+Z forward), scale ignored.
+            const ecs::Entity ge = FindGameCamera(world);
+            const scene::WorldTransform* wt = world.Get<const scene::WorldTransform>(ge);
+            const Camera* gc = world.Get<const Camera>(ge);
+            if (wt && gc) {
+                const Vec3 pos = wt->GetPosition();
+                const Vec3 fwd = SafeNormalize(wt->matrix.TransformVector(Vec3::Forward()), Vec3::Forward());
+                const Vec3 up = SafeNormalize(wt->matrix.TransformVector(Vec3::Up()), Vec3::Up());
+                cam = ViewportCamera{Mat4::LookAt(pos, pos + fwd, up), pos, DegToRad(gc->fieldOfView), Max(gc->nearPlane, 0.001f)};
+            }
+        }
+        Array<ecs::Entity> outlined;
+        CollectHierarchy(world, selected, outlined);
+        viewport->SetOutlinedEntities(outlined.View());
+        viewport->Outline().thickness = 2.0f * window->GetDpiScale();
+        viewport->AddPasses(graph, world, cam, environment, vp, viewportSize, dt,
+                            [this](CommandList& c, const RenderView& view, f32) {
+                                if (showGrid) {
+                                    debugDraw->Grid(Vec3::Zero(), 40.0f, 40, Color(58, 58, 58));
+                                    debugDraw->Line(Vec3(-20, 0.002f, 0), Vec3(20, 0.002f, 0), Color(150, 50, 50));
+                                    debugDraw->Line(Vec3(0, 0.002f, -20), Vec3(0, 0.002f, 20), Color(50, 80, 160));
+                                }
+                                DrawToolOverlay(*this, *debugDraw);
+                                if (world.IsAlive(selected)) {
+                                    const Mat4 m = scene::ComputeWorldMatrix(world, selected);
+                                    if (const PointLight* pl = world.Get<PointLight>(selected))
+                                        debugDraw->Sphere(m.GetTranslation(), pl->range, Color(255, 200, 80), 32);
+                                }
+                                debugDraw->Render(c, view.viewProj);
+                            });
+    }
+    const bool capture = !m_screenshotPath.Empty() && !m_screenshotBuffer && m_autotestFrames && frameIndex + 1 >= m_autotestFrames &&
+                         assets->IsIdle() && pendingImports.Empty();
+    const RGTexture backBuffer =
+        graph.ImportTexture(swapChain->GetCurrentBackBuffer(), capture ? ResourceState::CopySource : ResourceState::Present);
+    graph.AddPass(
+        "Clear", PassType::Graphics,
+        [&](PassBuilder& b) { b.RenderTarget(backBuffer, LoadOp::Clear, LinearColor(0.008f, 0.008f, 0.008f, 1)); },
+        [](PassContext&) {});
+    if (mode == EditorMode::Editing && thumbnails)
+        thumbnails->Update(graph, sampled);
+    if (mode == EditorMode::Editing)
+        RenderMaterialPreview(*this, graph, sampled);
+    uiRenderer->Prepare(*cmd, fonts, ui->GetDrawLists());
+    uiRenderer->AddPass(graph, backBuffer, size, sampled.View());
+    graph.Execute(*cmd);
+    if (capture) {
+        m_screenshotSize = size;
+        m_screenshotBuffer = device->CreateBuffer(BufferDesc{AlignUp(u64(size.x) * 4, u64(256)) * size.y, BufferUsage::CopyDest,
+                                                             MemoryType::Readback, 0, "Screenshot"});
+        m_screenshotPitch = cmd->CopyTextureToBuffer(m_screenshotBuffer, 0, swapChain->GetCurrentBackBuffer());
+        cmd->Barrier(swapChain->GetCurrentBackBuffer(), ResourceState::Present);
+    }
+    cmd->EndTimer();
+    device->Submit(cmd);
+    Stopwatch present;
+    swapChain->Present();
+    device->EndFrame();
+    m_timePresent += present.ElapsedMilliseconds();
+    for (const GpuTiming& t : device->GetGpuTimings())
+        if (StringView(t.name) == "Frame")
+            gpuFrameMs = t.milliseconds;
+}
+
+void Editor::Shutdown()
+{
+    if (!device)
+        return;
+    device->WaitIdle();
+    if (m_screenshotBuffer) {
+        const bool ok = png::WriteFile(m_screenshotPath, static_cast<const u8*>(m_screenshotBuffer->GetMappedData()), m_screenshotSize.x,
+                                       m_screenshotSize.y, 4, usize(m_screenshotPitch));
+        ZX_LOG_INFO(LogEditor, "Screenshot {} -> {}", ok ? "saved" : "FAILED", m_screenshotPath);
+        device->Destroy(m_screenshotBuffer);
+        m_screenshotBuffer = nullptr;
+    }
+    for (const PendingImport& p : pendingImports)
+        ZX_LOG_WARN(LogEditor, "Import of '{}' did not finish (asset state {}, {})", p.name, u32(assets->GetState(p.id)),
+                    assets->GetSourcePath(p.id));
+    if (ui) {
+        fs::WriteTextFile(m_layoutPath, ui::SaveDockLayout());
+        ui::SetCurrentContext(nullptr);
+    }
+    for (const GpuTiming& t : device->GetGpuTimings())
+        ZX_LOG_INFO(LogEditor, "  GPU {:<20} {:.3f} ms", t.name, t.milliseconds);
+    ZX_LOG_INFO(LogEditor, "Average frame {:.2f} ms; CPU: UI {:.2f} ms, render {:.2f} ms (present {:.2f} ms)",
+                timer.SmoothedDeltaSeconds() * 1000.0f, m_timeUi / f64(Max<u64>(m_timedFrames, 1)),
+                m_timeRender / f64(Max<u64>(m_timedFrames, 1)), m_timePresent / f64(Max<u64>(m_timedFrames, 1)));
+    debugLayerErrors = d3d12::GetDebugLayerErrorCount(*device);
+    ZX_LOG_INFO(LogEditor, "Exited after {} frames, debug layer errors: {}", frameIndex, debugLayerErrors);
+    device->Destroy(viewportTexture);
+    viewportTexture = nullptr;
+    device->Destroy(appIcon);
+    device->Destroy(appLogo);
+    appIcon = appLogo = nullptr;
+    pool->Clear();
+    UnregisterEditorConsole();
+    materialEditor.preview.Reset();
+    debugDraw.Reset();
+    thumbnails.Reset();
+    materials.Reset();
+    scripts.Reset();
+    if (!m_scriptTestFile.Empty())
+        platform::DeleteFileAt(m_scriptTestFile);
+    prefabs.Reset();
+    viewport.Reset();
+    renderAssets.Reset();
+    assets.Reset();
+    uiRenderer.Reset();
+    ui.Reset();
+    swapChain.Reset();
+    device.Reset();
+    window.Reset();
+    if (log) {
+        Log::RemoveSink(log);
+        log = nullptr;
+    }
+}
+
+} // namespace zx::editor

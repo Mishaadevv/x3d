@@ -1,0 +1,122 @@
+// Reflection registration for Core math types.
+
+#include "Core/Math/Math.h"
+#include "Core/Reflection/Reflection.h"
+
+namespace zx {
+
+#define ZX_COMPACT ZX_TYPE_META(Meta::Custom("Compact"))
+
+ZX_REFLECT_STRUCT_BEGIN(Vec2)
+    ZX_COMPACT
+    ZX_FIELD(x)
+    ZX_FIELD(y)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(Vec3)
+    ZX_COMPACT
+    ZX_FIELD(x)
+    ZX_FIELD(y)
+    ZX_FIELD(z)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(Vec4)
+    ZX_COMPACT
+    ZX_FIELD(x)
+    ZX_FIELD(y)
+    ZX_FIELD(z)
+    ZX_FIELD(w)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(IVec2)
+    ZX_COMPACT
+    ZX_FIELD(x)
+    ZX_FIELD(y)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(IVec3)
+    ZX_COMPACT
+    ZX_FIELD(x)
+    ZX_FIELD(y)
+    ZX_FIELD(z)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(IVec4)
+    ZX_COMPACT
+    ZX_FIELD(x)
+    ZX_FIELD(y)
+    ZX_FIELD(z)
+    ZX_FIELD(w)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(UVec2)
+    ZX_COMPACT
+    ZX_FIELD(x)
+    ZX_FIELD(y)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(UVec3)
+    ZX_COMPACT
+    ZX_FIELD(x)
+    ZX_FIELD(y)
+    ZX_FIELD(z)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(UVec4)
+    ZX_COMPACT
+    ZX_FIELD(x)
+    ZX_FIELD(y)
+    ZX_FIELD(z)
+    ZX_FIELD(w)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(Quat)
+    ZX_COMPACT
+    ZX_FIELD(x)
+    ZX_FIELD(y)
+    ZX_FIELD(z)
+    ZX_FIELD(w)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(Transform)
+    ZX_FIELD(position)
+    ZX_FIELD(rotation)
+    ZX_FIELD(scale)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(LinearColor)
+    ZX_COMPACT
+    ZX_TYPE_META(Meta::Color())
+    ZX_FIELD(r)
+    ZX_FIELD(g)
+    ZX_FIELD(b)
+    ZX_FIELD(a)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(Color)
+    ZX_COMPACT
+    ZX_TYPE_META(Meta::Color())
+    ZX_FIELD(r)
+    ZX_FIELD(g)
+    ZX_FIELD(b)
+    ZX_FIELD(a)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(AABB)
+    ZX_FIELD(min)
+    ZX_FIELD(max)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(Sphere)
+    ZX_FIELD(center)
+    ZX_FIELD(radius)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(Rect)
+    ZX_FIELD(min)
+    ZX_FIELD(max)
+ZX_REFLECT_STRUCT_END()
+
+#undef ZX_COMPACT
+
+} // namespace zx

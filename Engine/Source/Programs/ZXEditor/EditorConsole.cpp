@@ -1,0 +1,402 @@
+// Editor console variables and commands (typed into the Output Log prompt; `help` lists them).
+// Render CVars push their value into the viewport settings when set from the console; the viewport toolbar keeps
+// editing the settings directly.
+
+#include "Editor.h"
+#include "Core/Console/Console.h"
+#include "Core/String/Parse.h"
+#include "Core/String/Path.h"
+
+ZX_DEFINE_LOG_CATEGORY_STATIC(LogCmd, Info);
+
+namespace zx::editor {
+
+namespace {
+
+Editor* g_editor = nullptr;
+
+CVar<f32> CVarScreenPercentage("r.ScreenPercentage", 100.0f, "Viewport render resolution in percent (25..200)");
+CVar<bool> CVarTAA("r.TAA", true, "Temporal anti-aliasing (FXAA when off)");
+CVar<bool> CVarAO("r.AO", true, "Ground-truth ambient occlusion");
+CVar<bool> CVarShadows("r.Shadows", true, "Sun cascaded shadows");
+CVar<bool> CVarSky("r.Sky", true, "Physical sky and height fog");
+CVar<bool> CVarBloom("r.Bloom", true, "Bloom");
+CVar<f32> CVarExposure("r.ExposureCompensation", 1.0f, "Exposure compensation in EV (+ = brighter)");
+CVar<i32> CVarViewMode("r.ViewMode", 0, "0 lit, 1 base color, 2 normals, 3 roughness/metallic, 4 LODs, 5 cascades, 6 clusters, 7 AO");
+CVar<i32> CVarForceLod("r.ForceLOD", -1, "Force a mesh LOD (-1 = automatic)");
+CVar<f32> CVarCameraSpeed("editor.CameraSpeed", 4.0f, "Viewport fly speed (m/s)");
+CVar<bool> CVarShowGrid("editor.ShowGrid", true, "Viewport grid");
+
+Editor* Ed()
+{
+    return g_editor;
+}
+
+ecs::Entity FindNamed(StringView name)
+{
+    ecs::Entity found;
+    if (Editor* ed = Ed())
+        ed->world.Query<const scene::EntityName>().Each([&](ecs::Entity e, const scene::EntityName& n) {
+            if (!found && n.value.View().EqualsIgnoreCase(name))
+                found = e;
+        });
+    return found;
+}
+
+ConCommand CmdClear("clear", "Clears the Output Log", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->log->Clear();
+});
+
+ConCommand CmdQuit("quit", "Closes the editor (asks to save changes)", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->RequestSceneAction(SceneAction::Quit);
+});
+
+ConCommand CmdStatGpu("stat.gpu", "Prints the GPU time of every render pass of the last frame", [](Span<const StringView>) {
+    if (!Ed())
+        return;
+    for (const rhi::GpuTiming& t : Ed()->device->GetGpuTimings())
+        ZX_LOG_INFO(LogCmd, "  {:<22} {:.3f} ms", t.name, t.milliseconds);
+});
+
+ConCommand CmdStatScene("stat.scene", "Prints viewport and scene statistics", [](Span<const StringView>) {
+    Editor* ed = Ed();
+    if (!ed)
+        return;
+    const render::SceneRenderer::Stats& st = ed->viewport->Scene().GetStats();
+    const render::RenderAssets::Stats ra = ed->renderAssets->GetStats();
+    ZX_LOG_INFO(LogCmd, "  Viewport {}x{} (render {}x{}), {} entities", ed->viewportSize.x, ed->viewportSize.y,
+                ed->viewport->RenderSize().x, ed->viewport->RenderSize().y, ed->world.EntityCount());
+    ZX_LOG_INFO(LogCmd, "  Draws {} (+{} shadow), {:.0f}k triangles", st.draws, st.shadowDraws, f64(st.triangles) / 1000.0);
+    ZX_LOG_INFO(LogCmd, "  GPU assets: {} meshes ({:.1f} MB), {} textures ({:.1f} MB), {} materials", ra.meshes,
+                f64(ra.meshBytes) / (1024.0 * 1024.0), ra.textures, f64(ra.textureBytes) / (1024.0 * 1024.0), ra.materials);
+});
+
+ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->Undo();
+});
+
+ConCommand CmdRedo("redo", "Redoes the last undone scene edit", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->Redo();
+});
+
+ConCommand CmdSave("scene.save", "Saves the current scene", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->SaveScene(false);
+});
+
+ConCommand CmdNew("scene.new", "Starts a new scene (asks to save changes)", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->RequestSceneAction(SceneAction::New);
+});
+
+ConCommand CmdOpen("scene.open", "Opens a scene: scene.open <path relative to Content or absolute>", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed)
+        return;
+    if (args.Empty()) {
+        ed->RequestSceneAction(SceneAction::Open);
+        return;
+    }
+    ed->RequestSceneAction(SceneAction::Open, Path::IsAbsolute(args[0]) ? String(args[0]) : Path::Join(ed->contentRoot, args[0]));
+});
+
+ConCommand CmdSelect("select", "Selects an entity by name: select <name>", [](Span<const StringView> args) {
+    if (!Ed() || args.Empty())
+        return;
+    const ecs::Entity e = FindNamed(args[0]);
+    if (!e)
+        ZX_LOG_WARN(LogCmd, "No entity named '{}'", args[0]);
+    Ed()->Select(e);
+});
+
+ConCommand CmdFocus("focus", "Moves the camera to the selection (or to: focus <name>)", [](Span<const StringView> args) {
+    if (!Ed())
+        return;
+    if (!args.Empty())
+        Ed()->Select(FindNamed(args[0]));
+    Ed()->FocusSelected();
+});
+
+ConCommand CmdImport("import", "Imports a model into the project and places it in front of the camera: import <path>",
+                     [](Span<const StringView> args) {
+                         Editor* ed = Ed();
+                         if (!ed || args.Empty())
+                             return;
+                         ed->ImportAsset(args[0], ed->camera.position + ed->camera.Forward() * 5.0f);
+                     });
+
+ConCommand CmdFeatures("features", "Opens the Features window (engine features and tools per project)", [](Span<const StringView>) {
+    if (Editor* ed = Ed())
+        ed->showFeatures = true;
+});
+
+ConCommand CmdTool("tool", "Activates an editor tool: tool <brush|measure|none>; tool drop = Drop to Ground", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || args.Empty())
+        return;
+    if (args[0].EqualsIgnoreCase("drop")) {
+        DropSelectedToGround(*ed);
+        return;
+    }
+    const EditorTool tool = args[0].EqualsIgnoreCase("brush") ? EditorTool::Brush : args[0].EqualsIgnoreCase("measure") ? EditorTool::Measure : EditorTool::None;
+    ed->tools.active = EditorTool::None;
+    if (tool != EditorTool::None)
+        SetActiveTool(*ed, tool);
+});
+
+ConCommand CmdCreate("create", "Creates an object in front of the camera: create <entity|pointlight|spotlight|water|cube|sphere|cylinder|plane>",
+                     [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed)
+        return;
+    const StringView kind = args.Empty() ? StringView("entity") : args[0];
+    const Vec3 at = ed->camera.position + ed->camera.Forward() * 5.0f;
+    if (kind.EqualsIgnoreCase("pointlight"))
+        ed->CreatePointLight(at);
+    else if (kind.EqualsIgnoreCase("spotlight"))
+        ed->CreateSpotLight(at);
+    else if (kind.EqualsIgnoreCase("water"))
+        ed->CreateWater(at);
+    else if (kind.EqualsIgnoreCase("entity"))
+        ed->CreateEmpty(at);
+    else if (kind.EqualsIgnoreCase("cube"))
+        ed->CreateShape(BuiltinShape::Cube, at);
+    else if (kind.EqualsIgnoreCase("sphere"))
+        ed->CreateShape(BuiltinShape::Sphere, at);
+    else if (kind.EqualsIgnoreCase("cylinder"))
+        ed->CreateShape(BuiltinShape::Cylinder, at);
+    else if (kind.EqualsIgnoreCase("plane"))
+        ed->CreateShape(BuiltinShape::Plane, at);
+    else
+        ZX_LOG_WARN(LogCmd, "Unknown object type '{}' (entity, pointlight, spotlight)", kind);
+});
+
+ConCommand CmdPlay("play", "Starts Play-in-Editor", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->BeginPlay();
+});
+
+ConCommand CmdStop("stop", "Stops Play-in-Editor and restores the scene", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->EndPlay();
+});
+
+ConCommand CmdPause("pause", "Pauses / resumes Play-in-Editor", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->TogglePause();
+});
+
+ConCommand CmdStep("step", "Advances the game by one frame (starts paused play if needed)", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->StepFrame();
+});
+
+ConCommand CmdPrefabCreate("prefab.create", "Makes the selection a prefab: prefab.create <name> (saved to Content/Prefabs)",
+                            [](Span<const StringView> args) {
+                                Editor* ed = Ed();
+                                if (!ed || args.Empty() || !ed->world.IsAlive(ed->selected))
+                                    return;
+                                ed->CreatePrefabAt(ed->selected, String::Format("{}/Prefabs/{}.zprefab", ed->contentRoot, args[0]));
+                            });
+
+ConCommand CmdPrefabPlace("prefab.place", "Places a prefab in front of the camera: prefab.place <path under Content>",
+                           [](Span<const StringView> args) {
+                               Editor* ed = Ed();
+                               if (!ed || args.Empty())
+                                   return;
+                               ed->InstantiatePrefab(Path::Join(ed->contentRoot, args[0]), ed->camera.position + ed->camera.Forward() * 5.0f);
+                           });
+
+ConCommand CmdPrefabApply("prefab.apply", "Applies the selected instance's overrides to its prefab", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->ApplyPrefab(Ed()->selected);
+});
+
+ConCommand CmdPrefabRevert("prefab.revert", "Reverts the selected instance to its prefab", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->RevertPrefab(Ed()->selected);
+});
+
+ConCommand CmdPrefabUnpack("prefab.unpack", "Turns the selected instance back into plain entities", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->UnpackPrefab(Ed()->selected);
+});
+
+ConCommand CmdMove("move", "Sets the selection's local position: move <x> <y> <z>", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || args.Size() < 3 || !ed->world.Has<Transform>(ed->selected))
+        return;
+    ed->undo.Begin("Move");
+    ed->undo.Record(ed->selected);
+    ed->world.Get<Transform>(ed->selected)->position =
+        Vec3(ParseFloat(args[0]).ValueOr(0.0f), ParseFloat(args[1]).ValueOr(0.0f), ParseFloat(args[2]).ValueOr(0.0f));
+    ed->undo.End();
+});
+
+MaterialLibrary::Material* FindMaterial(StringView name)
+{
+    if (!Ed() || !Ed()->materials)
+        return nullptr;
+    for (const UniquePtr<MaterialLibrary::Material>& m : Ed()->materials->All())
+        if (Path::Stem(m->path).EqualsIgnoreCase(name))
+            return m.Get();
+    ZX_LOG_WARN(LogCmd, "No material named '{}'", name);
+    return nullptr;
+}
+
+ConCommand CmdMaterialCreate("material.create", "Creates a material graph: material.create <name> (Content/Materials)",
+                              [](Span<const StringView> args) {
+                                  if (Ed() && !args.Empty())
+                                      Ed()->CreateMaterial(String::Format("{}/Materials/{}.zmat", Ed()->contentRoot, args[0]));
+                              });
+
+ConCommand CmdMaterialAssign("material.assign", "Assigns a material to the selected mesh: material.assign <name>",
+                              [](Span<const StringView> args) {
+                                  if (args.Empty())
+                                      return;
+                                  if (MaterialLibrary::Material* m = FindMaterial(args[0]))
+                                      Ed()->AssignMaterial(Ed()->selected, m->guid);
+                              });
+
+ConCommand CmdMaterialInstance("material.instance", "Creates an instance of a material: material.instance <parent> <name>",
+                                [](Span<const StringView> args) {
+                                    if (args.Size() < 2)
+                                        return;
+                                    if (MaterialLibrary::Material* m = FindMaterial(args[0]))
+                                        Ed()->materials->CreateInstance(
+                                            m->guid, String::Format("{}/Materials/{}.zmati", Ed()->contentRoot, args[1]));
+                                });
+
+ConCommand CmdMaterialEdit("material.edit", "Opens a material in the Material Editor: material.edit <name>", [](Span<const StringView> args) {
+    if (args.Empty())
+        return;
+    if (MaterialLibrary::Material* m = FindMaterial(args[0]))
+        OpenMaterialEditor(*Ed(), m->guid);
+});
+
+ConCommand CmdMaterialCode("material.code", "Prints the HLSL generated for a material graph: material.code <name>",
+                            [](Span<const StringView> args) {
+                                if (args.Empty())
+                                    return;
+                                if (MaterialLibrary::Material* m = FindMaterial(args[0])) {
+                                    StringView rest = m->compiled.code.View();
+                                    while (!rest.Empty()) {
+                                        StringView line;
+                                        rest.Split('\n', line, rest);
+                                        ZX_LOG_INFO(LogCmd, "{}", line);
+                                    }
+                                }
+                            });
+
+ConCommand CmdMaterialSet("material.set", "Sets a named value node: material.set <material> <node name> <x> [y z w]",
+                           [](Span<const StringView> args) {
+                               if (args.Size() < 3)
+                                   return;
+                               MaterialLibrary::Material* m = FindMaterial(args[0]);
+                               if (!m)
+                                   return;
+                               auto squash = [](StringView v) {
+                                   String out;
+                                   for (char c : v)
+                                       if (c != ' ' && c != '_')
+                                           out += c;
+                                   return out;
+                               };
+                               for (render::MaterialGraphNode& n : m->graph.nodes)
+                                   if (!n.name.Empty() && squash(n.name).View().EqualsIgnoreCase(squash(args[1]))) {
+                                       f32 v[4] = {n.value.x, n.value.y, n.value.z, n.value.w};
+                                       for (usize i = 2; i < args.Size() && i < 6; ++i)
+                                           v[i - 2] = ParseFloat(args[i]).ValueOr(v[i - 2]);
+                                       n.value = Vec4(v[0], v[1], v[2], v[3]);
+                                       m->dirty = true;
+                                       if (m->IsInstance()) {
+                                           JsonValue o = JsonValue::MakeObject();
+                                           JsonValue a = JsonValue::MakeArray();
+                                           for (f32 x : v)
+                                               a.PushBack(x);
+                                           o.Set("value", move(a));
+                                           m->overrides.Set(n.name, move(o));
+                                       }
+                                       Ed()->materials->Apply(m->guid);
+                                       return;
+                                   }
+                               ZX_LOG_WARN(LogCmd, "Material '{}' has no node named '{}'", args[0], args[1]);
+                           });
+
+ConCommand CmdPalette("palette", "Opens the command palette: palette [query]", [](Span<const StringView> args) {
+    if (!Ed())
+        return;
+    OpenCommandPalette(*Ed(), false);
+    for (usize i = 0; i < args.Size(); ++i)
+        Ed()->palette.query += i ? String::Format(" {}", args[i]) : String(args[i]);
+});
+
+ConCommand CmdResetLayout("editor.ResetLayout", "Restores the default panel layout", [](Span<const StringView>) {
+    if (Ed())
+        Ed()->requestResetLayout = true;
+});
+
+ConCommand CmdProject("project.info", "Prints the open project's paths", [](Span<const StringView>) {
+    Editor* ed = Ed();
+    if (!ed)
+        return;
+    ZX_LOG_INFO(LogCmd, "  Project {} ({})", ed->project.descriptor.name, ed->project.descriptorPath);
+    ZX_LOG_INFO(LogCmd, "  Content {}", ed->contentRoot);
+    ZX_LOG_INFO(LogCmd, "  Scene   {}", ed->scenePath.Empty() ? String("(unsaved)") : ed->scenePath);
+});
+
+/// Initializes the CVar from the current setting, then forwards console changes to `apply`. A value set with a higher
+/// priority before (e.g. +r.TAA=0 on the command line) wins and is applied right away.
+template <typename T>
+void Bind(CVar<T>& cvar, T current, void (*apply)(T))
+{
+    cvar.SetOnChanged(nullptr);
+    if (!cvar.Set(current, CVarSetBy::Code))
+        apply(cvar.Get());
+    cvar.SetOnChanged([&cvar, apply](CVarBase&) {
+        if (Ed())
+            apply(cvar.Get());
+    });
+}
+
+} // namespace
+
+void RegisterEditorConsole(Editor& ed)
+{
+    g_editor = &ed;
+    ViewportSettings& s = ed.viewport->Settings();
+    Bind<f32>(CVarScreenPercentage, s.renderScale * 100.0f, [](f32 v) {
+        Ed()->viewport->Settings().renderScale = Clamp(v, 25.0f, 200.0f) / 100.0f;
+        Ed()->viewport->ResetHistory();
+    });
+    Bind<bool>(CVarTAA, s.taa.enabled, [](bool v) {
+        Ed()->viewport->Settings().taa.enabled = v;
+        Ed()->viewport->ResetHistory();
+    });
+    Bind<bool>(CVarAO, s.scene.ao.enabled, [](bool v) { Ed()->viewport->Settings().scene.ao.enabled = v; });
+    Bind<bool>(CVarShadows, s.scene.shadows.enabled, [](bool v) { Ed()->viewport->Settings().scene.shadows.enabled = v; });
+    Bind<bool>(CVarSky, s.useSky, [](bool v) { Ed()->viewport->Settings().useSky = v; });
+    Bind<bool>(CVarBloom, s.post.bloom, [](bool v) { Ed()->viewport->Settings().post.bloom = v; });
+    Bind<f32>(CVarExposure, s.post.exposureCompensation, [](f32 v) { Ed()->viewport->Settings().post.exposureCompensation = v; });
+    Bind<i32>(CVarViewMode, i32(s.scene.debugMode), [](i32 v) { Ed()->viewport->Settings().scene.debugMode = u32(Clamp(v, 0, 7)); });
+    Bind<i32>(CVarForceLod, s.scene.forcedLod, [](i32 v) { Ed()->viewport->Settings().scene.forcedLod = v; });
+    Bind<f32>(CVarCameraSpeed, ed.camera.moveSpeed, [](f32 v) { Ed()->camera.moveSpeed = Clamp(v, 0.1f, 500.0f); });
+    Bind<bool>(CVarShowGrid, ed.showGrid, [](bool v) { Ed()->showGrid = v; });
+}
+
+void UnregisterEditorConsole()
+{
+    g_editor = nullptr;
+    for (CVarBase* c : {static_cast<CVarBase*>(&CVarScreenPercentage), static_cast<CVarBase*>(&CVarTAA), static_cast<CVarBase*>(&CVarAO),
+                        static_cast<CVarBase*>(&CVarShadows), static_cast<CVarBase*>(&CVarSky), static_cast<CVarBase*>(&CVarBloom),
+                        static_cast<CVarBase*>(&CVarExposure), static_cast<CVarBase*>(&CVarViewMode),
+                        static_cast<CVarBase*>(&CVarForceLod), static_cast<CVarBase*>(&CVarCameraSpeed),
+                        static_cast<CVarBase*>(&CVarShowGrid)})
+        c->SetOnChanged(nullptr);
+}
+
+} // namespace zx::editor

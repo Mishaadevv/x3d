@@ -1,0 +1,9 @@
+{
+  "format": "zproj",
+  "version": 1,
+  "name": "Samples",
+  "engineVersion": "0.8.0",
+  "startupScene": "",
+  "description": "Engine sample content (Samples/Content, fetched by Tools/fetch_samples.ps1).",
+  "language": "ZeqouScript"
+}

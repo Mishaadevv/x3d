@@ -1,0 +1,21 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "win64",
+      "displayName": "Windows x64 (MSVC, Ninja Multi-Config)",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/Build/win64",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "cl.exe"
+      },
+      "architecture": { "value": "x64", "strategy": "external" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "win64-debug", "configurePreset": "win64", "configuration": "Debug" },
+    { "name": "win64-dev", "configurePreset": "win64", "configuration": "Development" },
+    { "name": "win64-shipping", "configurePreset": "win64", "configuration": "Shipping" }
+  ]
+}

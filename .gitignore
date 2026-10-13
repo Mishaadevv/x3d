@@ -1,0 +1,10 @@
+/Build/
+/Binaries/
+/Intermediate/
+/Saved/
+*.zip
+.vs/
+.vscode/
+.idea/
+*.user
+/Samples/Content/

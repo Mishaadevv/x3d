@@ -1,0 +1,222 @@
+#pragma once
+
+// Cooked (runtime-ready) asset formats and the cookers that produce them from imported data.
+//
+//   Mesh     -> CookedMesh     (packed 36-byte vertices, 16/32-bit indices, LODs, sections, bounds)
+//   Texture  -> CookedTexture  (mips, BCn compressed, optional size cap for the Lite profile)
+//   Material -> MaterialAsset  (PBR parameters + texture asset ids)
+//   Scene    -> PrefabAsset    (node hierarchy referencing mesh/material assets)
+//
+// All cooked formats serialize to a small binary container: magic + type + version + payload.
+
+#include "Asset/SceneImport.h"
+#include "Core/Hash/Guid.h"
+#include "Core/Image/TextureTools.h"
+
+namespace zx::asset {
+
+using AssetId = Guid;
+
+enum class AssetType : u8
+{
+    Unknown,
+    Texture,
+    Mesh,
+    Material,
+    Prefab,
+    Count
+};
+
+const char* AssetTypeName(AssetType type);
+
+// --- Mesh -------------------------------------------------------------------------------------------------------------
+
+/// GPU vertex layout (read with ByteAddressBuffer in shaders, see Shaders/Common/Mesh.hlsli).
+struct PackedVertex
+{
+    Vec3 position;
+    u32 normal;  // octahedral snorm16x2
+    u32 tangent; // octahedral snorm16x2, bitangent sign in bit 0
+    Vec2 uv0;    // f32 (tiling UVs need the precision)
+    u32 uv1;     // half2
+    u32 color;   // RGBA8 linear
+};
+static_assert(sizeof(PackedVertex) == 36);
+
+PackedVertex PackVertex(const MeshVertex& v);
+MeshVertex UnpackVertex(const PackedVertex& p);
+
+/// One level of a section's LOD chain.
+struct CookedSectionLod
+{
+    u32 indexOffset = 0; // into the whole index buffer
+    u32 indexCount = 0;
+    /// Used when the section's projected radius / view height is below this (1 for LOD0).
+    f32 screenSize = 1.0f;
+    f32 error = 0.0f; // meters
+};
+
+/// A spatial chunk drawn with one material, with its own bounds and LOD chain.
+struct CookedMeshSection
+{
+    AABB bounds;
+    u32 materialSlot = 0;
+    u32 firstLod = 0; // into CookedMesh::sectionLods
+    u32 lodCount = 1;
+    u32 pad = 0;
+};
+
+struct CookedMesh
+{
+    String name;
+    Array<PackedVertex> vertices;
+    Array<u8> indexData; // u16 or u32 indices of all LODs
+    bool index16 = false;
+    Array<CookedMeshSection> sections;
+    Array<CookedSectionLod> sectionLods;
+    u32 lodCount = 1; // longest chain
+    AABB bounds;
+    u32 materialSlotCount = 0;
+    /// Source (importer) material index per slot.
+    Array<u32> slotSourceMaterial;
+
+    u32 IndexCount() const { return u32(indexData.Size() / (index16 ? 2 : 4)); }
+    u32 Index(u32 i) const;
+    /// Triangles drawn when every section uses `lod` (clamped to its chain).
+    u32 TriangleCount(u32 lod) const;
+    const CookedSectionLod& SectionLod(const CookedMeshSection& s, u32 lod) const
+    {
+        return sectionLods[s.firstLod + Min(lod, s.lodCount - 1)];
+    }
+    u64 MemorySize() const { return vertices.SizeBytes() + indexData.Size(); }
+};
+
+/// Splits large sections into chunks and generates LODs (optional), optimizes for the vertex cache/fetch and
+/// packs. `mesh` is modified.
+CookedMesh CookMesh(MeshData& mesh, bool generateLods = true);
+
+// --- Texture ----------------------------------------------------------------------------------------------------------
+
+enum class TextureFormat : u8
+{
+    RGBA8,
+    RGBA8_SRGB,
+    BC1,
+    BC1_SRGB,
+    BC3,
+    BC3_SRGB,
+    BC4,
+    BC5,
+    RGBA16F,
+    RGBA32F,
+};
+
+u32 TextureFormatBlockBytes(TextureFormat f); // bytes per 4x4 block (BCn) or per pixel (uncompressed)
+bool IsBlockCompressed(TextureFormat f);
+u64 TextureMipSize(TextureFormat f, u32 width, u32 height);
+
+enum class TextureCompression : u8
+{
+    None,
+    Auto, // BC1 opaque / BC3 alpha (color), BC5 normal maps
+    BC1,
+    BC3,
+    BC4,
+    BC5,
+};
+
+struct TextureCookOptions
+{
+    bool srgb = true;
+    bool normalMap = false;
+    bool generateMips = true;
+    TextureCompression compression = TextureCompression::Auto;
+    texture::MipFilter mipFilter = texture::MipFilter::Kaiser;
+    /// Largest allowed dimension (0 = unlimited); bigger sources drop their top mips (Lite profile uses 1024).
+    u32 maxSize = 0;
+    /// Alpha-tested textures: keep alpha coverage constant across mips.
+    bool preserveAlphaCoverage = false;
+    f32 alphaCutoff = 0.5f;
+};
+
+struct CookedTexture
+{
+    String name;
+    TextureFormat format = TextureFormat::RGBA8;
+    u32 width = 0;
+    u32 height = 0;
+    TextureWrap wrapU = TextureWrap::Repeat;
+    TextureWrap wrapV = TextureWrap::Repeat;
+    Array<Array<u8>> mips;
+
+    u64 MemorySize() const;
+};
+
+Result<CookedTexture> CookTexture(const Image& image, const TextureCookOptions& options);
+
+// --- Material ---------------------------------------------------------------------------------------------------------
+
+enum class ShadingModel : u8
+{
+    DefaultLit,
+    Unlit,
+};
+
+struct MaterialAsset
+{
+    String name;
+    ShadingModel shadingModel = ShadingModel::DefaultLit;
+    AlphaMode alphaMode = AlphaMode::Opaque;
+    f32 alphaCutoff = 0.5f;
+    bool doubleSided = false;
+    Vec4 baseColor = Vec4(1, 1, 1, 1);
+    f32 metallic = 0.0f;
+    f32 roughness = 0.5f;
+    Vec3 emissive = Vec3(0, 0, 0);
+    f32 normalScale = 1.0f;
+    f32 occlusionStrength = 1.0f;
+    /// UV transform applied to all textures (KHR_texture_transform of the base color texture).
+    Vec2 uvScale = Vec2(1, 1);
+    Vec2 uvOffset = Vec2(0, 0);
+    f32 uvRotation = 0.0f;
+    AssetId baseColorTexture;
+    AssetId metallicRoughnessTexture;
+    AssetId normalTexture;
+    AssetId occlusionTexture;
+    AssetId emissiveTexture;
+};
+
+// --- Prefab -----------------------------------------------------------------------------------------------------------
+
+struct PrefabNode
+{
+    String name;
+    Transform local;
+    i32 parent = -1;
+    AssetId mesh;
+    Array<AssetId> materials; // one per mesh material slot
+};
+
+struct PrefabAsset
+{
+    String name;
+    Array<PrefabNode> nodes; // parents always precede children
+};
+
+// --- Serialization ----------------------------------------------------------------------------------------------------
+
+void Serialize(const CookedMesh& mesh, Array<u8>& out);
+void Serialize(const CookedTexture& texture, Array<u8>& out);
+void Serialize(const MaterialAsset& material, Array<u8>& out);
+void Serialize(const PrefabAsset& prefab, Array<u8>& out);
+/// Reads the container header; returns Unknown for invalid data.
+AssetType PeekAssetType(ByteSpan data);
+bool Deserialize(ByteSpan data, CookedMesh& out);
+bool Deserialize(ByteSpan data, CookedTexture& out);
+bool Deserialize(ByteSpan data, MaterialAsset& out);
+bool Deserialize(ByteSpan data, PrefabAsset& out);
+
+/// Bump when any cooked format or cooker output changes (part of every DDC key).
+inline constexpr u32 CookerVersion = 2;
+
+} // namespace zx::asset
