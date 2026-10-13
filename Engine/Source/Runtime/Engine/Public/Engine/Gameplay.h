@@ -37,16 +37,20 @@ struct Camera
     bool active = true;
 };
 
-/// A walking character: moved by scripts (character.move / jump), pushed by gravity, blocked by the boxes of
-/// MeshRenderers with collision (simple axis-separated collision until the physics milestone M11).
+/// A walking character: moved by scripts (character.move / jump) and gravity. With physics (the usual case while
+/// playing) its body is a capsule swept through the physics world: it slides along walls, climbs steps up to
+/// stepHeight and slopes up to maxSlope, rides moving platforms and pushes rigid bodies according to their mass.
+/// Without physics it falls back to the boxes of MeshRenderers with collision.
 /// The entity's position is the bottom center of its body (its feet); keep the entity at the root of the hierarchy.
 struct CharacterController
 {
     f32 height = 1.8f;      // meters
-    f32 radius = 0.35f;     // meters (the body is a box of 2 * radius x height x 2 * radius)
+    f32 radius = 0.35f;     // meters
     f32 stepHeight = 0.35f; // obstacles up to this height are climbed (stairs)
+    f32 maxSlope = 50.0f;   // degrees: steeper surfaces are walls
     f32 gravity = 18.0f;    // m/s^2 (games feel better above 9.81)
     f32 maxFallSpeed = 40.0f;
+    f32 pushMass = 80.0f;   // kg: how hard the character pushes rigid bodies (a light box moves, a heavy one barely)
 };
 
 /// Runtime state of a character while playing (not saved).
@@ -58,6 +62,11 @@ struct CharacterState
     bool grounded = false;
     bool initialized = false;
     Vec3 spawn; // respawn point when falling out of the world
+    // Moving ground (physics): the body it stands on and the feet in that body's frame (rides platforms).
+    u32 groundBodyIndex = ~0u;
+    u32 groundBodyGeneration = 0;
+    Vec3 groundLocal;
+    Vec3 groundNormal = Vec3(0, 1, 0);
 };
 
 ZX_DECLARE_TYPE(Rotator);
@@ -78,6 +87,9 @@ using MeshBoundsFn = Function<bool(asset::AssetId mesh, AABB& bounds), 32>;
 /// Moves every CharacterController by its requested move, gravity and jumps; resolves collisions against the
 /// world boxes of MeshRenderers (collision = true) that are not part of the character itself.
 void TickCharacters(ecs::World& world, f32 dt, const MeshBoundsFn& meshBounds);
+class PhysicsSystem;
+/// Moves every CharacterController as a capsule swept through the running physics world (see CharacterController).
+void TickCharacters(ecs::World& world, f32 dt, PhysicsSystem& physics);
 
 /// The first active Camera (NullEntity if none).
 ecs::Entity FindGameCamera(ecs::World& world);

@@ -73,8 +73,9 @@ See [ZeqouScript.md](ZeqouScript.md) for the language.
 ## Characters
 
 Add a **Character Controller** and a script that calls `character.move(velocity)` / `character.jump(speed)`.
-The First/Third Person templates (and Starter Content) include ready controllers. Collision uses the boxes of meshes
-with **Collision** enabled in their Mesh Renderer.
+The First/Third Person templates (and Starter Content) include ready controllers. The character is a capsule moving
+through the physics world: it slides along walls, climbs steps up to **Step Height** and slopes up to **Max Slope**,
+rides moving platforms and pushes Rigid Bodies (light ones move, heavy ones don't - see **Push Mass**).
 
 ## Look of the game
 

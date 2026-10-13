@@ -2336,8 +2336,22 @@ bool Editor::Frame()
             context.physics = physics.IsRunning() ? &physics : nullptr;
             game->Tick(world, gameDt, context);
         }
-        // Physics after gameplay code moved things (kinematic bodies follow, teleports), characters after physics.
+        // Characters move as the scripts asked (character.move / jump), sweeping through the physics world; then the
+        // physics steps (their capsules and kinematic bodies follow, teleports apply).
         scene::UpdateWorldTransforms(world);
+        if (FeatureEnabled("characters")) {
+            if (physics.IsRunning())
+                TickCharacters(world, gameDt, physics);
+            else
+                TickCharacters(world, gameDt, [this](asset::AssetId id, AABB& out) {
+                    const render::GpuMesh* mesh = renderAssets->GetMesh(id);
+                    if (!mesh)
+                        return false;
+                    out = mesh->bounds;
+                    return true;
+                });
+            scene::UpdateWorldTransforms(world);
+        }
         if (physics.IsRunning()) {
             physics.Tick(world, gameDt);
             scene::UpdateWorldTransforms(world);
@@ -2349,14 +2363,6 @@ bool Editor::Frame()
         }
         if (audio && !m_pieStep)
             audio->Tick(world, gameDt, CurrentListener());
-        if (FeatureEnabled("characters"))
-            TickCharacters(world, gameDt, [this](asset::AssetId id, AABB& out) {
-            const render::GpuMesh* mesh = renderAssets->GetMesh(id);
-            if (!mesh)
-                return false;
-            out = mesh->bounds;
-            return true;
-        });
         m_pieStep = false;
     } else if (audio && !IsPlaying()) {
         audio->TickIdle(dt); // previews

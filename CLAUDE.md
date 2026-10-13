@@ -54,6 +54,9 @@ mesh BVH, PhysicsWorld.cpp = broadphase, contacts, soft-step solver, islands/sle
 ManualPhysics.Pile500Bodies (benchmark). Scene layer: Engine/PhysicsSystem.h (RigidBody, Box/Sphere/Capsule/Mesh
 Collider, implicit mesh collision of MeshRenderer.collision, PIE ticking with interpolation; tests PhysicsSystem.*),
 -physicstest, console physics.spawn / physics.stats, action <id> runs any editor action (e.g. play.eject).
+Characters on physics: Gameplay.cpp TickCharacters(world, dt, PhysicsSystem&) (capsule shape casts, step up/down,
+supportNormal under the contact for step edges, platforms, mass-based pushes); tests CharacterPhysics.*. Script/C++
+physics API + collision callbacks: Scripting.cpp (physics global, DispatchPhysicsEvents), GameModule.cpp (SDK v2).
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

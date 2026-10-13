@@ -211,7 +211,7 @@ public:
 
     // --- Queries ---
     /// Closest hit along the ray within maxDistance; layerMask selects the layers that can be hit.
-    bool Raycast(const Ray& ray, f32 maxDistance, RaycastHit& hit, u32 layerMask = ~0u) const;
+    bool Raycast(const Ray& ray, f32 maxDistance, RaycastHit& hit, u32 layerMask = ~0u, BodyId ignore = {}) const;
     /// Bodies whose bounds overlap `box`.
     void QueryAabb(const AABB& box, Array<BodyId>& out) const;
     /// Bodies a shape (sphere / box / capsule) placed at position/rotation overlaps (sensors included).

@@ -1104,7 +1104,7 @@ void PhysicsWorld::Step(f32 dt)
 
 // --- Queries -----------------------------------------------------------------------------------------------------------
 
-bool PhysicsWorld::Raycast(const Ray& ray, f32 maxDistance, RaycastHit& hit, u32 layerMask) const
+bool PhysicsWorld::Raycast(const Ray& ray, f32 maxDistance, RaycastHit& hit, u32 layerMask, BodyId ignore) const
 {
     const Impl& I = *m_impl;
     const Vec3 dir = Normalize(ray.direction);
@@ -1112,7 +1112,7 @@ bool PhysicsWorld::Raycast(const Ray& ray, f32 maxDistance, RaycastHit& hit, u32
     f32 best = maxDistance;
     auto test = [&](u32 index, f32 maxT) {
         const Body& b = I.bodies[index];
-        if (!b.alive || !((layerMask >> b.layer) & 1u))
+        if (!b.alive || !((layerMask >> b.layer) & 1u) || (ignore.IsValid() && ignore.index == index))
             return maxT;
         for (u32 s = 0; s < b.shapes.Size(); ++s) {
             f32 t;

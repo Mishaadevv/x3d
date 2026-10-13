@@ -1163,9 +1163,12 @@ Vulkan-бэкенд, HDR-вывод, плагины редактора, ZScript 
   swept sphere — если понадобится для снарядов быстрее ~150 м/с
 - [ ] Closest point, батчевые запросы, Stay-события
 - [ ] Джоинты: Fixed, Hinge (лимиты, мотор), Slider, BallSocket/Cone-twist, Distance/Spring, 6DOF
-- [ ] Character controller на физике: kinematic capsule, sweep & slide, ступеньки, склоны, платформы, push
+- [x] Character controller на физике: капсула, sweep & slide (shape cast), ступеньки (step up / step down по нормали
+  опорной грани под точкой контакта), склоны (maxSlope), съезд с крутых, движущиеся платформы, толкание тел по массе
+  (pushMass), кинематическая капсула для остальных тел; без физики — прежние AABB-коробки
 - [ ] Параллельное решение островов, debug draw контактов и островов, сэмпл PhysicsPlayground
-- [ ] Приёмка (часть 2): персонаж ходит по лестницам/склонам, рейкасты по слоям из геймплея
+- [x] Приёмка (часть 2): персонаж ходит по лестницам и склонам (тесты CharacterPhysics.*), рейкасты по слоям из
+  геймплея (тест PhysicsSystem.ScriptsGetCollisionsAndQueries)
 
 ### M12 … M20
 Чекбоксы детализируются при старте вехи (переносом задач из раздела 11).
