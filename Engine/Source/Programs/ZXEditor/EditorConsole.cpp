@@ -21,6 +21,8 @@ CVar<bool> CVarAO("r.AO", true, "Ground-truth ambient occlusion");
 CVar<bool> CVarShadows("r.Shadows", true, "Sun cascaded shadows");
 CVar<bool> CVarSky("r.Sky", true, "Physical sky and height fog");
 CVar<bool> CVarBloom("r.Bloom", true, "Bloom");
+CVar<bool> CVarSSR("r.SSR", false, "Screen-space reflections (on by default in the Full profile)");
+CVar<bool> CVarProbes("r.ReflectionProbes", true, "Reflection probes and the sky reflection cube");
 CVar<f32> CVarExposure("r.ExposureCompensation", 1.0f, "Exposure compensation in EV (+ = brighter)");
 CVar<i32> CVarViewMode("r.ViewMode", 0, "0 lit, 1 base color, 2 normals, 3 roughness/metallic, 4 LODs, 5 cascades, 6 clusters, 7 AO");
 CVar<i32> CVarForceLod("r.ForceLOD", -1, "Force a mesh LOD (-1 = automatic)");
@@ -144,6 +146,19 @@ ConCommand CmdAudioStats("audio.stats", "Prints the audio device and mixer state
                 s.deviceOpen ? s.deviceName : String("none"), s.voices, s.audible, s.virtualVoices, s.streams, s.underruns, s.mixCpuMs);
 });
 
+ConCommand CmdRecapture("reflections.recapture", "Recaptures every reflection probe", [](Span<const StringView>) {
+    if (Editor* ed = Ed())
+        ed->viewport->Reflections().RecaptureAll();
+});
+
+ConCommand CmdReflections("reflections.stats", "Reflection probes: count, captured, capture in progress", [](Span<const StringView>) {
+    if (Editor* ed = Ed()) {
+        const render::ReflectionRenderer& r = ed->viewport->Reflections();
+        ZX_LOG_INFO(LogCmd, "Reflection probes: {} ({} captured{}), SSR {}", r.ProbeCount(), r.CapturedProbes(),
+                    r.IsCapturing() ? ", capturing" : "", ed->viewport->Settings().reflections.ssr ? "on" : "off");
+    }
+});
+
 ConCommand CmdMixer("mixer", "Opens the Audio Mixer", [](Span<const StringView>) {
     if (Editor* ed = Ed())
         ed->showMixer = true;
@@ -187,6 +202,8 @@ ConCommand CmdCreate("create", "Creates an object in front of the camera: create
         ed->CreateReverbZone(at);
     else if (kind.EqualsIgnoreCase("postvolume") || kind.EqualsIgnoreCase("postprocessvolume"))
         ed->CreatePostProcessVolume(at);
+    else if (kind.EqualsIgnoreCase("reflectionprobe") || kind.EqualsIgnoreCase("probe"))
+        ed->CreateReflectionProbe(at);
     else if (kind.EqualsIgnoreCase("entity"))
         ed->CreateEmpty(at);
     else if (kind.EqualsIgnoreCase("cube"))
@@ -407,6 +424,11 @@ void RegisterEditorConsole(Editor& ed)
     Bind<bool>(CVarShadows, s.scene.shadows.enabled, [](bool v) { Ed()->viewport->Settings().scene.shadows.enabled = v; });
     Bind<bool>(CVarSky, s.useSky, [](bool v) { Ed()->viewport->Settings().useSky = v; });
     Bind<bool>(CVarBloom, s.post.bloom, [](bool v) { Ed()->viewport->Settings().post.bloom = v; });
+    Bind<bool>(CVarSSR, s.reflections.ssr, [](bool v) { Ed()->viewport->Settings().reflections.ssr = v; });
+    Bind<bool>(CVarProbes, s.reflections.probes, [](bool v) {
+        Ed()->viewport->Settings().reflections.probes = v;
+        Ed()->viewport->Settings().reflections.sky = v;
+    });
     Bind<f32>(CVarExposure, s.post.exposureCompensation, [](f32 v) { Ed()->viewport->Settings().post.exposureCompensation = v; });
     Bind<i32>(CVarViewMode, i32(s.scene.debugMode), [](i32 v) { Ed()->viewport->Settings().scene.debugMode = u32(Clamp(v, 0, 7)); });
     Bind<i32>(CVarForceLod, s.scene.forcedLod, [](i32 v) { Ed()->viewport->Settings().scene.forcedLod = v; });
@@ -418,7 +440,7 @@ void UnregisterEditorConsole()
 {
     g_editor = nullptr;
     for (CVarBase* c : {static_cast<CVarBase*>(&CVarScreenPercentage), static_cast<CVarBase*>(&CVarTAA), static_cast<CVarBase*>(&CVarAO),
-                        static_cast<CVarBase*>(&CVarShadows), static_cast<CVarBase*>(&CVarSky), static_cast<CVarBase*>(&CVarBloom),
+                        static_cast<CVarBase*>(&CVarShadows), static_cast<CVarBase*>(&CVarSky), static_cast<CVarBase*>(&CVarBloom), static_cast<CVarBase*>(&CVarSSR), static_cast<CVarBase*>(&CVarProbes),
                         static_cast<CVarBase*>(&CVarExposure), static_cast<CVarBase*>(&CVarViewMode),
                         static_cast<CVarBase*>(&CVarForceLod), static_cast<CVarBase*>(&CVarCameraSpeed),
                         static_cast<CVarBase*>(&CVarShowGrid)})

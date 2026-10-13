@@ -38,6 +38,9 @@ GameModule.*. Input Actions: Engine/InputActions.h (Config/Input.json; tests Inp
 Post: Render/PostProcess.h (DOF, motion blur, bloom, tonemap; Shaders/Post/DepthOfField.hlsl), Engine/PostProcessVolume.h
 (blending; tests PostProcessVolume.*). -posttest (volumes blend as the camera moves, DOF/motion blur render),
 -uiscale=<x> (multiplies the UI scale; tall panels in screenshots). MeshViewer: -dof=<focus m>,<f-stop>, -motionblur=<amount>.
+Reflections: Render/Reflections.h (sky cube, probes, SSR; Shaders/Lighting/Reflections.hlsl), ReflectionProbe component
+(Engine/SceneRendering.h), -reflectiontest, r.SSR / r.ReflectionProbes, reflections.recapture / reflections.stats.
+ForwardPBR PSMain writes normal+roughness only with ZX_NORMAL_OUTPUT (MRT pipeline variants; graph materials compile both).
 Reflection meta used by Details: Meta::Category (section headers), Meta::EditCondition("boolField") (override checkbox).
 Audio: Runtime/Audio (AudioEngine.cpp mixer, Wasapi.cpp, Wav.cpp, Vorbis.cpp, Dsp.cpp; tests ZXTests Audio.*; Vorbis
 references Tests/Data/Audio from Tools/gen_audio_testdata.py), Engine/AudioSystem.h (components, PIE), EditorAudio.cpp.

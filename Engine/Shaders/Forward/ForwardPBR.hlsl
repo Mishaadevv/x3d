@@ -54,6 +54,16 @@ struct ViewData
     uint localShadowFaces; // per face: 4 matrix rows + uv rect (80 bytes)
     float localAtlasTexel;
     float localNormalBias;
+    // Reflections (keep in sync with SceneRenderer::ViewConstants).
+    uint skyCube;            // prefiltered sky cube (TextureCube SRV) or invalid: SH sky along the reflection
+    float skyCubeMips;       // mip count - 1 (roughness 1)
+    uint probeBuffer;        // GpuProbe x probeCount (sorted: applied first wins)
+    uint probeCount;
+    float reflectionExposure; // current exposure / the cubes' reference exposure
+    uint ssrTexture;         // last frame's screen-space reflections (rgb, a = confidence) or invalid
+    float ssrMaxRoughness;
+    float reflectionPad;
+    float4x4 ssrViewProj;    // view-projection the SSR texture was traced with
 };
 ZX_VIEW_CONSTANTS(ViewData, g_View);
 
@@ -339,6 +349,92 @@ float3 EvaluateClusteredLights(SurfaceData s, float3 worldPos, float3 V, float4 
     return color;
 }
 
+float3 SkyIrradiance(float3 n); // below
+
+// Reflection probe (64 bytes, ReflectionRenderer::GpuProbe).
+struct GpuProbe
+{
+    float3 boxMin;
+    uint cube;
+    float3 boxMax;
+    float mips;
+    float3 position; // capture point
+    float blend;     // meters inside the box over which the probe fades in
+    float intensity;
+    uint boxProjection;
+    float2 pad;
+};
+
+GpuProbe LoadProbe(uint index)
+{
+    ByteAddressBuffer b = GetBuffer(g_View.probeBuffer);
+    const uint o = index * 64;
+    GpuProbe p;
+    p.boxMin = asfloat(b.Load3(o));
+    p.cube = b.Load(o + 12);
+    p.boxMax = asfloat(b.Load3(o + 16));
+    p.mips = asfloat(b.Load(o + 28));
+    p.position = asfloat(b.Load3(o + 32));
+    p.blend = asfloat(b.Load(o + 44));
+    p.intensity = asfloat(b.Load(o + 48));
+    p.boxProjection = b.Load(o + 52);
+    p.pad = 0;
+    return p;
+}
+
+/// Specular environment light along R (pre-exposed): reflection probes around the point (box-projected, blended
+/// by their fade margin, in priority order), the rest from the sky cube; screen-space reflections from the last
+/// frame on top where they found a hit.
+float3 SpecularEnvironment(float3 worldPos, float3 R, float roughness)
+{
+    float3 acc = 0;
+    float weight = 0;
+    for (uint k = 0; k < g_View.probeCount && weight < 0.999; ++k) {
+        const GpuProbe p = LoadProbe(k);
+        const float3 inside = min(worldPos - p.boxMin, p.boxMax - worldPos);
+        const float edge = min(inside.x, min(inside.y, inside.z));
+        if (edge <= 0.0)
+            continue;
+        const float w = saturate(edge / max(p.blend, 1e-3)) * (1.0 - weight);
+        float3 dir = R;
+        if (p.boxProjection) {
+            // Parallax correction: intersect the reflection ray with the box, look up from the capture point.
+            const float3 t1 = (p.boxMax - worldPos) / R, t2 = (p.boxMin - worldPos) / R;
+            const float3 tf = max(t1, t2);
+            const float t = min(tf.x, min(tf.y, tf.z));
+            dir = worldPos + R * t - p.position;
+        }
+        acc += GetTextureCube(p.cube).SampleLevel(g_LinearClamp, dir, roughness * p.mips).rgb * (p.intensity * g_View.reflectionExposure) * w;
+        weight += w;
+    }
+    if (weight < 0.999) {
+        float3 sky;
+        if (g_View.skyCube != ZX_INVALID_INDEX)
+            sky = GetTextureCube(g_View.skyCube).SampleLevel(g_LinearClamp, R, roughness * g_View.skyCubeMips).rgb * g_View.reflectionExposure;
+        else
+            sky = SkyIrradiance(R); // no sky cube: the SH sky (widened towards the normal by the caller)
+        acc += sky * (1.0 - weight);
+    }
+    if (g_View.ssrTexture != ZX_INVALID_INDEX && roughness < g_View.ssrMaxRoughness) {
+        const float4 prev = mul(g_View.ssrViewProj, float4(worldPos, 1.0));
+        const float2 uv = float2(prev.x / prev.w * 0.5 + 0.5, 0.5 - prev.y / prev.w * 0.5);
+        if (prev.w > 0.0 && all(uv > 0.0) && all(uv < 1.0)) {
+            const float4 ssr = GetTexture2D(g_View.ssrTexture).SampleLevel(g_LinearClamp, uv, 0);
+            acc = lerp(acc, ssr.rgb, saturate(ssr.a));
+        }
+    }
+    return acc;
+}
+
+float2 EncodeOct(float3 n)
+{
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+    float2 e = n.xy;
+    if (n.z < 0.0)
+        e = (1.0 - abs(n.yx)) * float2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    return e * 0.5 + 0.5;
+}
+
 /// Diffuse sky light / pi in direction n (pre-exposed), from SH9 or the fallback hemisphere.
 float3 SkyIrradiance(float3 n)
 {
@@ -364,7 +460,8 @@ float3 LodColor(uint lod)
     return colors[min(lod, 4u)];
 }
 
-float4 PSMain(VSOutput i, bool frontFace : SV_IsFrontFace) : SV_Target0
+// Second target (bound when screen-space reflections are on): octahedral normal, roughness, a = 1 (opaque surface).
+float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
 {
     const Material m = LoadMaterial(g_Draw.materialIndex);
     SurfaceData s;
@@ -420,6 +517,7 @@ float4 PSMain(VSOutput i, bool frontFace : SV_IsFrontFace) : SV_Target0
     }
 #endif
     s.normal = N;
+    normalRoughness = float4(EncodeOct(N), s.roughness, 1.0);
 
     uint cascade;
     const float shadow = SunShadow(i.worldPos, N, cascade);
@@ -467,13 +565,13 @@ float4 PSMain(VSOutput i, bool frontFace : SV_IsFrontFace) : SV_Target0
 
     const float3 V = normalize(g_View.cameraPosition - i.worldPos);
     float3 color = EvaluateDirectLight(s, V, -g_View.lightDirection, g_View.lightColor * (g_View.lightIntensity * shadow));
-    // Ambient: hemispherical irradiance + approximate specular from the sky color (no IBL until M5).
+    // Ambient: sky irradiance (SH9) + specular image-based lighting.
     const float3 irradiance = SkyIrradiance(N);
     const float NoV = max(dot(N, V), 1e-4);
     const float3 f0 = lerp(0.04, s.baseColor, s.metallic);
-    // Specular ambient: the SH sky seen along the reflection, widening towards the normal with roughness.
+    // Specular ambient: probes / sky cube / SSR along the reflection (bent towards the normal with roughness).
     const float3 R = normalize(lerp(reflect(-V, N), N, s.roughness * s.roughness));
-    const float3 specAmbient = EnvBRDFApprox(f0, s.roughness, NoV) * SkyIrradiance(R);
+    const float3 specAmbient = EnvBRDFApprox(f0, s.roughness, NoV) * SpecularEnvironment(i.worldPos, R, s.roughness);
     // Ambient occlusion: material AO combined with GTAO; multi-bounce for diffuse (Jimenez), specular occlusion (Lagarde).
     float ao = s.occlusion;
     if (g_View.aoTexture != ZX_INVALID_INDEX)
@@ -487,6 +585,26 @@ float4 PSMain(VSOutput i, bool frontFace : SV_IsFrontFace) : SV_Target0
     color += EvaluateClusteredLights(s, i.worldPos, V, i.position, viewDepth, clusterLights);
     color += s.emissive;
     return float4(color, s.alpha);
+}
+
+// ZX_NORMAL_OUTPUT: the opaque pass with screen-space reflections also writes normal + roughness (second target).
+struct PSOutput
+{
+    float4 color : SV_Target0;
+#ifdef ZX_NORMAL_OUTPUT
+    float4 normalRoughness : SV_Target1;
+#endif
+};
+
+PSOutput PSMain(VSOutput i, bool frontFace : SV_IsFrontFace)
+{
+    PSOutput o;
+    float4 normalRoughness = 0;
+    o.color = ShadePixel(i, frontFace, normalRoughness);
+#ifdef ZX_NORMAL_OUTPUT
+    o.normalRoughness = normalRoughness;
+#endif
+    return o;
 }
 
 #endif

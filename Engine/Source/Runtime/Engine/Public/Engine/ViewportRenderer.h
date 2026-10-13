@@ -11,6 +11,7 @@
 
 #include "Engine/SceneRendering.h"
 #include "Render/PostProcess.h"
+#include "Render/Reflections.h"
 #include "Render/RenderGraph.h"
 #include "Render/SelectionOutline.h"
 #include "Render/Sky.h"
@@ -48,6 +49,8 @@ struct ViewportFeatures
     bool postProcessVolumes = true;
     bool depthOfField = true;
     bool motionBlur = true;
+    bool reflections = true;            // sky cube + reflection probes
+    bool screenSpaceReflections = true;
 };
 
 struct ViewportSettings
@@ -56,6 +59,7 @@ struct ViewportSettings
     render::SkySettings sky;
     render::PostSettings post;
     render::TAASettings taa;
+    render::ReflectionSettings reflections;
     bool useSky = true; // physical sky + fog
     f32 renderScale = 1.0f;
 };
@@ -90,6 +94,7 @@ public:
     /// Post-processing settings of the last frame after Post Process Volumes and feature toggles.
     const render::PostSettings& LastPostSettings() const { return m_lastPost; }
     void ResetHistory() { m_taa.Reset(); }
+    render::ReflectionRenderer& Reflections() { return m_reflections; }
 
     /// Entities whose meshes get the selection outline (editor). Pass the selected entity and its descendants.
     void SetOutlinedEntities(Span<const ecs::Entity> entities) { m_outlined.Clear(); m_outlined.Append(entities); }
@@ -105,6 +110,9 @@ private:
     render::WaterRenderer m_water;
     Array<render::WaterSurface> m_waterSurfaces;
     render::TemporalAA m_taa;
+    render::ReflectionRenderer m_reflections;
+    render::SceneRenderer m_captureScene; // reflection probe faces
+    Array<render::ReflectionProbeDesc> m_probes;
     render::PostProcess m_post;
     render::SelectionOutline m_outline;
     render::OutlineSettings m_outlineSettings;

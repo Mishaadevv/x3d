@@ -338,6 +338,7 @@ public:
     void CreateAudioSource(Vec3 position, ecs::Entity parent = {});
     void CreateReverbZone(Vec3 position, ecs::Entity parent = {});
     void CreatePostProcessVolume(Vec3 position, ecs::Entity parent = {});
+    void CreateReflectionProbe(Vec3 position, ecs::Entity parent = {});
     /// The listener while playing: the game camera when it is shown, else the editor camera.
     ListenerPose CurrentListener();
     void CreateShape(BuiltinShape shape, Vec3 position, ecs::Entity parent = {});
@@ -426,6 +427,12 @@ private:
     u32 m_postTestStage = 0;
     u64 m_postTestFrame = 0;
     void RunPostSelfTest();
+    // -reflectiontest: mirror floor + emissive shapes + a Reflection Probe in open air; capture, recapture, SSR.
+    u32 m_reflTestStage = 0;
+    u64 m_reflTestFrame = 0;
+    ecs::Entity m_reflTestMover;
+    Array<String> m_reflTestFiles; // test materials, deleted on exit
+    void RunReflectionSelfTest();
 
 public:
     bool CppSelfTestRunning() const { return m_cppTestStage != 0; }

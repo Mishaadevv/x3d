@@ -125,6 +125,8 @@ void DrawLightIcons(Editor& ed, const ViewProjector& vp, DrawList& dl, f32 s)
     });
     ed.world.Query<const ReverbZone, const scene::WorldTransform>().Each(
         [&](ecs::Entity e, const ReverbZone&, const scene::WorldTransform& wt) { icon(e, wt, Vec3(0.7f, 0.5f, 1.0f), ZX_ICON_AUDIO_LINES); });
+    ed.world.Query<const ReflectionProbe, const scene::WorldTransform>().Each(
+        [&](ecs::Entity e, const ReflectionProbe&, const scene::WorldTransform& wt) { icon(e, wt, Vec3(0.45f, 0.85f, 1.0f), ZX_ICON_CIRCLE_DOT); });
     ed.world.Query<const PostProcessVolume, const scene::WorldTransform>().Each(
         [&](ecs::Entity e, const PostProcessVolume&, const scene::WorldTransform& wt) { icon(e, wt, Vec3(1.0f, 0.67f, 0.25f), ZX_ICON_APERTURE); });
 }
@@ -364,6 +366,8 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
         if (ui::MenuItem("Temporal AA", {}, &vs.taa.enabled))
             ed.viewport->ResetHistory();
         ui::MenuItem("Bloom", {}, &vs.post.bloom);
+        ui::MenuItem("Reflection Probes", {}, &vs.reflections.probes);
+        ui::MenuItem("Screen Space Reflections", {}, &vs.reflections.ssr);
         ui::MenuItem("Post Process Volumes", {}, &ed.showPostVolumes);
         ui::MenuItem("Depth of Field", {}, &ed.showDepthOfField);
         ui::MenuItem("Motion Blur (playing)", {}, &ed.showMotionBlur);

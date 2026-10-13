@@ -4,15 +4,16 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12 — par
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a Unity URP / Unreal Engine 5 style workflow that runs
 well on everyday hardware (the development machine is a laptop with Intel UHD 620 graphics).
 
-**Version 0.9.2** · zero third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md)
+**Version 0.9.3** · zero third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md)
 
 ![Water template](docs/images/water.jpg)
 
 ## What's inside
 
 - **Renderer** — Direct3D 12 with bindless resources and a render graph; clustered forward+ PBR, cascaded and local
-  shadows, GTAO, physical sky with height fog, TAA, bloom, auto exposure, ACES tonemapping, depth of field, camera
-  motion blur, blended Post Process Volumes; Lite/Full profiles chosen by hardware.
+  shadows, GTAO, physical sky with height fog, sky and reflection-probe image-based lighting, screen-space reflections,
+  TAA, bloom, auto exposure, ACES tonemapping, depth of field, camera motion blur, blended Post Process Volumes;
+  Lite/Full profiles chosen by hardware.
 - **Realistic water** — Gerstner waves, Fresnel sky reflection, sun glints, refraction, depth absorption and foam.
 - **Audio** — own 48 kHz mixer on WASAPI with buses, ducking, snapshots, reverb and a limiter; 3D sound with
   attenuation, panning, cones, Doppler and raycast occlusion; own WAV/ADPCM and Ogg Vorbis decoders, streamed music.

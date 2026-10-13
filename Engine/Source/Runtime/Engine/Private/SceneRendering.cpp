@@ -27,6 +27,14 @@ ZX_REFLECT_STRUCT_BEGIN(Water)
     ZX_FIELD(roughness, Meta::Range(0.01, 0.5), Meta::Tooltip("Sharpness of the sun glints"))
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_STRUCT_BEGIN(ReflectionProbe)
+    ZX_FIELD(extent, Meta::Tooltip("Half size of the box (meters, scaled by the transform) whose surfaces use this probe"))
+    ZX_FIELD(blendDistance, Meta::Range(0, 10), Meta::Units("m"), Meta::Tooltip("Fade-in distance inside the box"))
+    ZX_FIELD(intensity, Meta::Range(0, 4))
+    ZX_FIELD(priority, Meta::Tooltip("Higher priority probes win where boxes overlap"))
+    ZX_FIELD(boxProjection, Meta::Tooltip("Parallax-correct the reflection against the box (rooms, corridors)"))
+ZX_REFLECT_STRUCT_END()
+
 ZX_REFLECT_STRUCT_BEGIN(PointLight)
     ZX_FIELD(color, Meta::Color())
     ZX_FIELD(lumens, Meta::Range(0, 200000), Meta::Units("lm"), Meta::Tooltip("Luminous power"))
@@ -101,6 +109,53 @@ void GatherLights(World& world, Array<render::LightDesc>& out)
         d.range = l.range;
         d.innerAngle = l.innerAngle;
         d.outerAngle = l.outerAngle;
+    });
+}
+
+namespace {
+u64 HashBytes(u64 h, const void* data, usize size)
+{
+    const u8* p = static_cast<const u8*>(data);
+    for (usize i = 0; i < size; ++i)
+        h = (h ^ p[i]) * 0x100000001B3ull; // FNV-1a
+    return h;
+}
+} // namespace
+
+u64 SceneContentKey(Span<const render::RenderInstance> instances, Span<const render::LightDesc> lights)
+{
+    u64 h = 0xCBF29CE484222325ull;
+    for (const render::RenderInstance& i : instances) {
+        h = HashBytes(h, &i.world, sizeof(i.world));
+        h = HashBytes(h, &i.mesh, sizeof(i.mesh));
+        for (const asset::AssetId& m : i.materials)
+            h = HashBytes(h, &m, sizeof(m));
+    }
+    for (const render::LightDesc& l : lights) {
+        h = HashBytes(h, &l.position, sizeof(l.position));
+        h = HashBytes(h, &l.color, sizeof(l.color));
+        h = HashBytes(h, &l.intensity, sizeof(l.intensity));
+    }
+    return h;
+}
+
+void GatherReflectionProbes(World& world, Array<render::ReflectionProbeDesc>& out, u64 contentKey)
+{
+    world.Query<const WorldTransform, const ReflectionProbe>().Each([&](ecs::Entity e, const WorldTransform& wt, const ReflectionProbe& p) {
+        render::ReflectionProbeDesc d;
+        d.id = e.index + 1;
+        d.position = wt.matrix.GetTranslation();
+        const Vec3 s = wt.matrix.GetScale();
+        const Vec3 half(Abs(p.extent.x * s.x), Abs(p.extent.y * s.y), Abs(p.extent.z * s.z));
+        d.boxMin = d.position - half;
+        d.boxMax = d.position + half;
+        d.blendDistance = p.blendDistance;
+        d.intensity = p.intensity;
+        d.priority = p.priority;
+        d.boxProjection = p.boxProjection;
+        u64 h = HashBytes(contentKey ^ e.Pack(), &d.position, sizeof(d.position));
+        d.key = HashBytes(h, &half, sizeof(half));
+        out.PushBack(d);
     });
 }
 

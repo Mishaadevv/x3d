@@ -6,10 +6,12 @@
 //   renderer.Prepare(instances, view, lighting, settings);   // after RenderAssets::Update
 //   renderer.AddPasses(graph, sceneColor, sceneDepth, clearColor);
 
+#include "Core/Containers/Function.h"
 #include "Render/RenderAssets.h"
 #include "Render/RenderGraph.h"
 
 #include <cmath>
+#include <cstddef>
 
 namespace zx::render {
 
@@ -72,6 +74,15 @@ struct SceneLighting
     /// skyColor/groundColor * skyLuminance instead.
     rhi::Buffer* skyIrradianceBuffer = nullptr;
     Vec3 skyIrradianceScale = Vec3(0, 0, 0); // multiplies the SH (sun illuminance x color x exposure applied by Sky)
+    // Reflections (ReflectionRenderer::Prepare fills these): specular image-based lighting.
+    u32 skyCube = rhi::InvalidDescriptor; // prefiltered sky cube; invalid = the SH sky along the reflection
+    f32 skyCubeMips = 0.0f;               // mip count - 1
+    u32 probeBuffer = rhi::InvalidDescriptor;
+    u32 probeCount = 0;
+    f32 reflectionExposure = 1.0f;        // current exposure / the cubes' reference exposure
+    u32 ssrTexture = rhi::InvalidDescriptor; // last frame's screen-space reflections
+    Mat4 ssrViewProj = Mat4::Identity();
+    f32 ssrMaxRoughness = 0.0f;
 };
 
 inline f32 ExposureFromEV100(f32 ev100) { return 1.0f / (1.2f * std::exp2(ev100)); }
@@ -124,6 +135,8 @@ struct SceneRenderSettings
     u32 debugMode = 0;
     /// Material texture filtering: 1 = trilinear, 2..16 = anisotropic (Lite profile uses 4).
     u32 maxAnisotropy = 16;
+    /// The opaque pass also writes normal + roughness (R10G10B10A2) for screen-space reflections.
+    bool normalOutput = false;
     ShadowSettings shadows;
     AOSettings ao;
 };
@@ -143,8 +156,10 @@ public:
     void SetTime(f32 seconds) { m_time = seconds; }
     void Prepare(Span<const RenderInstance> instances, const RenderView& view, const SceneLighting& lighting,
                  const SceneRenderSettings& settings);
-    /// Shadow passes, depth pre-pass (optional), opaque/masked forward pass and translucent pass.
-    void AddPasses(RenderGraph& graph, RGTexture color, RGTexture depth, LinearColor clearColor);
+    /// Shadow passes, depth pre-pass (optional), opaque/masked forward pass and translucent pass. `afterOpaque` runs
+    /// between the opaque and translucent passes (normals: the normal + roughness target when normalOutput is set).
+    void AddPasses(RenderGraph& graph, RGTexture color, RGTexture depth, LinearColor clearColor,
+                   Function<void(RenderGraph&, RGTexture color, RGTexture depth, RGTexture normals)> afterOpaque = nullptr);
     /// Forces all shadow cascades to re-render next frame (scene content changed).
     void InvalidateShadows();
 
@@ -195,6 +210,8 @@ private:
         VariantMain,        // forward with depth write
         VariantMainNoWrite, // forward after the pre-pass
         VariantShadow,      // shadow caster (biased, two-sided)
+        VariantMainMRT,        // VariantMain + normal/roughness target
+        VariantMainNoWriteMRT, // VariantMainNoWrite + normal/roughness target
         VariantCount
     };
 
@@ -208,7 +225,7 @@ private:
     RenderAssets& m_assets;
     rhi::Format m_colorFormat = rhi::Format::Unknown;
     rhi::Format m_depthFormat = rhi::Format::Unknown;
-    rhi::ShaderBytecode m_vs, m_vsDepth, m_vsDepthAlpha, m_ps, m_psAlpha, m_psDepthAlpha;
+    rhi::ShaderBytecode m_vs, m_vsDepth, m_vsDepthAlpha, m_ps, m_psAlpha, m_psDepthAlpha, m_psNormals, m_psAlphaNormals;
     rhi::Pipeline* m_pipelines[KindCount][VariantCount] = {};
     HashMap<u64, rhi::Pipeline*> m_graphPipelines; // (shader, kind, variant) -> pipeline
     f32 m_time = 0.0f;
@@ -265,7 +282,19 @@ private:
         u32 localShadowFaces;  // SRV: per face 4 matrix rows + uv rect
         f32 localAtlasTexel;   // 1 / atlas size
         f32 localNormalBias;
+        // Reflections.
+        u32 skyCube;
+        f32 skyCubeMips;
+        u32 probeBuffer;
+        u32 probeCount;
+        f32 reflectionExposure;
+        u32 ssrTexture;
+        f32 ssrMaxRoughness;
+        f32 reflectionPad;
+        Mat4 ssrViewProj;
     } m_viewConstants = {};
+    // HLSL constant buffer packing: a matrix starts on a 16-byte boundary.
+    static_assert(offsetof(ViewConstants, ssrViewProj) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
     // Local shadow atlas state.
     struct LocalSlot
     {

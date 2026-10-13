@@ -82,6 +82,9 @@ with **Collision** enabled in their Mesh Renderer.
 (or everywhere with **Unbound**). Tick the box in front of a setting to override it; volumes blend over Blend Radius
 and higher Priority wins. Viewport **Lit > Depth of Field Focus** shows what is in focus.
 
+**Create > Reflection Probe** gives shiny surfaces inside its box real reflections of the room around them (size the
+box to the room: floors and walls then line up). Probes update by themselves when the scene changes.
+
 ## Input Actions
 
 **Window > Input Actions** names the controls of the game: buttons (`Jump`, `Fire`, ...) and axes (`MoveForward`,
@@ -231,7 +234,7 @@ This is a game project for the **ZeqouX3D** engine ({version}). Read this before
 - `{name}.zproj` - project descriptor (JSON). Don't rename it.
 - `Content/Scenes/*.zscene` - scenes as JSON: `entities[]` with a `guid`, optional `parent`, and one object per
   component (`Transform`, `MeshRenderer`, `PointLight`, `SpotLight`, `Camera`, `CharacterController`, `Water`, `Script`,
-  `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`, `PostProcessVolume`,
+  `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`, `PostProcessVolume`, `ReflectionProbe`,
   `Rotator`, `Oscillator`, ...). Prefer editing scenes in the editor; when editing JSON keep guids unique and stable.
 - `Content/Scripts/*.zs` - gameplay code in **ZeqouScript** (see `Docs/ZeqouScript.md`). This is where most work happens.
 - `Content/**/*.zmat` / `.zmati` - material graphs / instances (JSON node graphs). `.zprefab` - prefabs.

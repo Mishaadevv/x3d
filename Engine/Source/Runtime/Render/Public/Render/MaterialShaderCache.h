@@ -27,9 +27,13 @@ public:
         rhi::ShaderBytecode main;
         rhi::ShaderBytecode mainAlphaTest;
         rhi::ShaderBytecode depthAlphaTest;
+        rhi::ShaderBytecode mainNormals; // + normal/roughness target (screen-space reflections)
+        rhi::ShaderBytecode mainAlphaTestNormals;
     };
 
     MaterialShaderCache() = default;
+    /// Number of shaders compiled successfully so far.
+    u32 ReadyCount() const;
     ~MaterialShaderCache();
     ZX_NON_COPYABLE(MaterialShaderCache)
 

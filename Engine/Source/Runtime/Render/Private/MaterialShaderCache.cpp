@@ -22,13 +22,15 @@ void MaterialShaderCache::Compile(Entry& e)
     Stopwatch sw;
     const String source = e.code + "\n#include \"/Shaders/Forward/ForwardPBR.hlsl\"\n";
     const String name = String::Format("/Shaders/Generated/Material_{:016x}.hlsl", e.hash);
-    auto compile = [&](StringView entry, bool alphaTest, bool depthOnly, ShaderBytecode& out) -> bool {
-        ShaderDefine defines[3] = {{"ZX_GRAPH_MATERIAL", "1"}};
+    auto compile = [&](StringView entry, bool alphaTest, bool depthOnly, ShaderBytecode& out, bool normals = false) -> bool {
+        ShaderDefine defines[4] = {{"ZX_GRAPH_MATERIAL", "1"}};
         u32 count = 1;
         if (alphaTest)
             defines[count++] = {"ALPHA_TEST", "1"};
         if (depthOnly)
             defines[count++] = {"DEPTH_ONLY", "1"};
+        if (normals)
+            defines[count++] = {"ZX_NORMAL_OUTPUT", "1"};
         ShaderCompileDesc d;
         d.entryPoint = entry;
         d.stage = ShaderStage::Pixel;
@@ -41,8 +43,9 @@ void MaterialShaderCache::Compile(Entry& e)
         out = move(r.Value());
         return true;
     };
-    const bool ok = e.alphaTested ? compile("PSMain", true, false, e.shaders.mainAlphaTest) && compile("PSDepth", true, true, e.shaders.depthAlphaTest)
-                                  : compile("PSMain", false, false, e.shaders.main);
+    const bool ok = e.alphaTested ? compile("PSMain", true, false, e.shaders.mainAlphaTest) && compile("PSDepth", true, true, e.shaders.depthAlphaTest) &&
+                                        compile("PSMain", true, false, e.shaders.mainAlphaTestNormals, true)
+                                  : compile("PSMain", false, false, e.shaders.main) && compile("PSMain", false, false, e.shaders.mainNormals, true);
     e.compileMs = sw.ElapsedMilliseconds();
     if (ok)
         ZX_LOG_INFO(LogMaterialShaders, "Material shader {:016x} compiled in {:.0f} ms", e.hash, e.compileMs);
@@ -69,6 +72,14 @@ u32 MaterialShaderCache::Request(u64 hash, StringView code, bool alphaTested)
     else
         Compile(*raw);
     return u32(m_entries.Size());
+}
+
+u32 MaterialShaderCache::ReadyCount() const
+{
+    u32 n = 0;
+    for (const UniquePtr<Entry>& e : m_entries)
+        n += e->state.load(std::memory_order_acquire) == State::Ready ? 1u : 0u;
+    return n;
 }
 
 MaterialShaderCache::State MaterialShaderCache::GetState(u32 id) const

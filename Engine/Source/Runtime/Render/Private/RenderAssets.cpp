@@ -358,6 +358,7 @@ bool RenderAssets::TryUploadTexture(AssetId id, TextureEntry& e, u64& budget)
 void RenderAssets::Update(CommandList& cmd)
 {
     u64 budget = m_uploadBudget;
+    const usize pendingBefore = m_pendingTextures.Size() + m_pendingMeshes.Size() + m_pendingMaterials.Size();
     // Textures first (materials resolve against them), then meshes.
     for (usize i = 0; i < m_pendingTextures.Size();) {
         TextureEntry& e = *m_textures.Find(m_pendingTextures[i]);
@@ -402,6 +403,11 @@ void RenderAssets::Update(CommandList& cmd)
     for (auto& kv : m_graphs)
         if (kv.second.texturesPending)
             WriteGraphParams(kv.second);
+    const u32 readyShaders = m_shaders.ReadyCount();
+    if (m_pendingTextures.Size() + m_pendingMeshes.Size() + m_pendingMaterials.Size() != pendingBefore || readyShaders != m_readyShaders ||
+        m_paramDirtyEnd > m_paramDirtyBegin || m_dirtyEnd > m_dirtyBegin)
+        ++m_contentVersion;
+    m_readyShaders = readyShaders;
     if (m_paramDirtyEnd > m_paramDirtyBegin) {
         cmd.UploadBuffer(m_paramBuffer, m_paramDirtyBegin, m_paramBytes.Data() + m_paramDirtyBegin, m_paramDirtyEnd - m_paramDirtyBegin);
         cmd.Barrier(m_paramBuffer, ResourceState::ShaderResource);

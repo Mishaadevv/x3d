@@ -44,6 +44,8 @@ Texture3D<float4> GetTexture3D(uint index) { return g_Texture3D[index]; }
 ByteAddressBuffer GetBuffer(uint index) { return g_Buffer[index]; }
 RWTexture2D<float4> GetRWTexture2D(uint index) { return g_RWTexture2D[index]; }
 RWByteAddressBuffer GetRWBuffer(uint index) { return g_RWBuffer[index]; }
+RWTexture2DArray<float4> GetRWTexture2DArray(uint index) { return g_RWTexture2DArray[index]; }
+RWTexture3D<float4> GetRWTexture3D(uint index) { return g_RWTexture3D[index]; }
 SamplerState GetSampler(uint index) { return g_Samplers[index]; }
 
 // Divergent access: the index may differ between lanes (per-vertex/per-pixel data, GPU-driven batches).

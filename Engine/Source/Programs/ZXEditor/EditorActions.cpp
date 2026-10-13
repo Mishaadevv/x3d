@@ -195,6 +195,10 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.water", "Create Water", "Create", ZX_ICON_DROPLETS, "", [spawn](Editor& e) { e.CreateWater(spawn(e)); });
     Add(ed, "create.audioSource", "Create Audio Source", "Create", ZX_ICON_VOLUME_2, "", [spawn](Editor& e) { e.CreateAudioSource(spawn(e)); });
     Add(ed, "create.reverbZone", "Create Reverb Zone", "Create", ZX_ICON_AUDIO_LINES, "", [spawn](Editor& e) { e.CreateReverbZone(spawn(e)); });
+    Add(ed, "create.reflectionProbe", "Create Reflection Probe", "Create", ZX_ICON_CIRCLE_DOT, "",
+        [spawn](Editor& e) { e.CreateReflectionProbe(spawn(e)); });
+    Add(ed, "view.recaptureReflections", "Recapture Reflections", "View", ZX_ICON_REFRESH_CW, "",
+        [](Editor& e) { e.viewport->Reflections().RecaptureAll(); });
     Add(ed, "create.postProcessVolume", "Create Post Process Volume", "Create", ZX_ICON_APERTURE, "",
         [spawn](Editor& e) { e.CreatePostProcessVolume(spawn(e)); });
     Add(ed, "window.audioMixer", "Audio Mixer", "Window", ZX_ICON_SLIDERS_VERTICAL, "", [](Editor& e) { e.showMixer = !e.showMixer; });

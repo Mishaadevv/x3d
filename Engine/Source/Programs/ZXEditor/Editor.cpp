@@ -247,6 +247,7 @@ bool Editor::Initialize()
     m_scriptTest = CommandLine::HasFlag("scripttest");
     m_cppTestStage = CommandLine::HasFlag("cpptest") ? 1u : 0u;
     m_postTestStage = CommandLine::HasFlag("posttest") ? 1u : 0u;
+    m_reflTestStage = CommandLine::HasFlag("reflectiontest") ? 1u : 0u;
     m_toolTest = CommandLine::HasFlag("tooltest") ? 300u : 0u;
     m_audioTestStage = CommandLine::HasFlag("audiotest") ? 1u : 0u;
     StringView execArg;
@@ -456,6 +457,15 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
         EnsureEntityGuid(world, e);
         return e;
     };
+    // Reflections of the playground (floor and walls).
+    {
+        const ecs::Entity probe = CreateEntity("Playground Reflections", Transform(Vec3(0.0f, 2.0f, 0.0f)));
+        ReflectionProbe rp;
+        rp.extent = Vec3(20.0f, 6.0f, 20.0f);
+        rp.blendDistance = 2.0f;
+        world.Add(probe, rp);
+        EnsureEntityGuid(world, probe);
+    }
     // Ground and boundary walls.
     {
         Transform t(Vec3(0.0f));
@@ -579,6 +589,15 @@ void Editor::BuildWaterLevel()
         zone.roomSize = 0.4f;
         world.Add(room, zone);
         EnsureEntityGuid(world, room);
+    }
+    {
+        // Reflections inside the hut (its floor and walls line up with the box).
+        const ecs::Entity probe = CreateEntity("Hut Reflections", Transform(Vec3(-9, 1.6f, -4.5f)));
+        ReflectionProbe rp;
+        rp.extent = Vec3(2.6f, 1.8f, 2.6f);
+        rp.blendDistance = 0.5f;
+        world.Add(probe, rp);
+        EnsureEntityGuid(world, probe);
     }
     EnsureEntityGuid(world, sea);
 
@@ -734,6 +753,13 @@ void Editor::CreateAudioSource(Vec3 position, ecs::Entity parent)
     const ecs::Entity e = CreateEntity("Audio Source", Transform(position), parent);
     world.Add(e, AudioSource{});
     CommitCreated(e, "Create Audio Source");
+}
+
+void Editor::CreateReflectionProbe(Vec3 position, ecs::Entity parent)
+{
+    const ecs::Entity e = CreateEntity("Reflection Probe", Transform(position), parent);
+    world.Add(e, ReflectionProbe{});
+    CommitCreated(e, "Create Reflection Probe");
 }
 
 void Editor::CreatePostProcessVolume(Vec3 position, ecs::Entity parent)
@@ -1252,6 +1278,92 @@ void Editor::StepFrame()
         BeginPlay();
     playState = PlayState::Paused;
     m_pieStep = true;
+}
+
+void Editor::RunReflectionSelfTest()
+{
+    const Vec3 base(0.0f, 60.0f, 400.0f); // open air, away from the sample scene
+    auto fail = [this](StringView why) {
+        ZX_LOG_ERROR(LogEditor, "Reflection self-test FAILED: {}", why);
+        selfTestFailed = true;
+        m_reflTestStage = 0;
+    };
+    render::ReflectionRenderer& refl = viewport->Reflections();
+    switch (m_reflTestStage) {
+    case 1: {
+        // Materials: a mirror (metal, roughness 0.05) and two emissive colors.
+        auto makeMaterial = [this](StringView name, Vec3 color, f32 metallic, f32 roughness, bool emissive) {
+            const String path = String::Format("{}/Materials/{}.zmat", contentRoot, name);
+            platform::DeleteFileAt(path);
+            const Guid guid = CreateMaterial(path);
+            MaterialLibrary::Material* m = materials ? materials->Find(guid) : nullptr;
+            if (!m)
+                return Guid();
+            m_reflTestFiles.PushBack(path);
+            render::MaterialGraph& g = m->graph;
+            const u32 out = g.OutputNode();
+            g.nodes[1].value = Vec4(color.x, color.y, color.z, 1.0f);
+            if (emissive)
+                g.Connect(g.nodes[1].id, 0, out, 4);
+            MaterialGraphNode* met = g.AddNode("Scalar", Vec2(0, 150));
+            met->value.x = metallic;
+            g.Connect(met->id, 0, out, 1);
+            MaterialGraphNode* rough = g.AddNode("Scalar", Vec2(0, 250));
+            rough->value.x = roughness;
+            g.Connect(rough->id, 0, out, 2);
+            materials->Apply(guid);
+            return guid;
+        };
+        const Guid mirror = makeMaterial("ReflTestMirror", Vec3(0.95f, 0.95f, 0.95f), 1.0f, 0.05f, false);
+        const Guid red = makeMaterial("ReflTestRed", Vec3(4.0f, 0.2f, 0.1f), 0.0f, 0.5f, true);
+        const Guid green = makeMaterial("ReflTestGreen", Vec3(0.2f, 3.0f, 0.3f), 0.0f, 0.5f, true);
+        if (!mirror.IsValid() || !red.IsValid() || !green.IsValid())
+            return fail("can't create the test materials");
+        CreateShape(BuiltinShape::Plane, base);
+        AssignMaterial(selected, mirror);
+        CreateShape(BuiltinShape::Cube, base + Vec3(-1.5f, 0.6f, 2.5f));
+        AssignMaterial(selected, red);
+        m_reflTestMover = selected;
+        CreateShape(BuiltinShape::Sphere, base + Vec3(1.5f, 0.6f, 2.0f));
+        AssignMaterial(selected, green);
+        CreateReflectionProbe(base + Vec3(0.0f, 1.0f, 0.0f));
+        world.Get<ReflectionProbe>(selected)->extent = Vec3(5.0f, 3.0f, 5.0f);
+        Select(ecs::NullEntity);
+        camera.position = base + Vec3(0.0f, 1.6f, -4.5f);
+        camera.LookAt(base + Vec3(0.0f, 0.3f, 2.0f));
+        viewport->Settings().reflections.ssr = true;
+        m_reflTestStage = 2;
+        break;
+    }
+    case 2: // the probe is captured within its 6 faces (+ a few frames for materials and transforms)
+        if (refl.CapturedProbes() >= 1 && !refl.IsCapturing()) {
+            // Moving a shape changes the scene content: the probe captures again.
+            world.Get<Transform>(m_reflTestMover)->position.x += 0.5f;
+            m_reflTestStage = 3;
+        } else if (frameIndex > m_reflTestFrame + 120) {
+            return fail(String::Format("the probe was not captured ({} probes, {} captured)", refl.ProbeCount(), refl.CapturedProbes()));
+        }
+        return;
+    case 3:
+        if (!refl.IsCapturing()) {
+            if (frameIndex > m_reflTestFrame + 30)
+                return fail("moving a shape did not recapture the probe");
+            return;
+        }
+        m_reflTestStage = 4;
+        return;
+    case 4:
+        if (refl.IsCapturing()) {
+            if (frameIndex > m_reflTestFrame + 120)
+                return fail("the recapture did not finish");
+            return;
+        }
+        ZX_LOG_INFO(LogEditor, "Reflection self-test passed (probe captured and recaptured, SSR on)");
+        m_reflTestStage = 0;
+        return;
+    default: m_reflTestStage = 0; return;
+    }
+    m_reflTestFrame = frameIndex;
 }
 
 void Editor::RunPostSelfTest()
@@ -1970,6 +2082,8 @@ bool Editor::Frame()
         RunCppSelfTest();
     if (m_postTestStage && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle())
         RunPostSelfTest();
+    if (m_reflTestStage && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle())
+        RunReflectionSelfTest();
     if (m_scriptTest && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle()) {
         m_scriptTest = false;
         selfTestFailed |= !RunScriptSelfTest();
@@ -2000,7 +2114,7 @@ bool Editor::Frame()
     ++m_timedFrames;
 
     ++frameIndex;
-    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !m_cppTestStage && !m_postTestStage &&
+    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !m_cppTestStage && !m_postTestStage && !m_reflTestStage &&
         (m_screenshotPath.Empty() || m_screenshotBuffer)) {
         if (!m_saveScenePath.Empty() && SaveSceneFile(m_saveScenePath, world, SceneIO(), SceneSettings()))
             ZX_LOG_INFO(LogEditor, "Saved scene '{}'", m_saveScenePath);
@@ -2033,6 +2147,8 @@ void Editor::RenderFrame()
         vf.postProcessVolumes = FeatureEnabled("postProcessVolumes") && showPostVolumes;
         vf.depthOfField = FeatureEnabled("depthOfField") && showDepthOfField;
         vf.motionBlur = FeatureEnabled("motionBlur") && showMotionBlur && IsPlaying(); // not while editing
+        vf.reflections = FeatureEnabled("reflections");
+        vf.screenSpaceReflections = FeatureEnabled("screenSpaceReflections");
         ViewportCamera cam{camera.ViewMatrix(), camera.position, camera.fovY, camera.nearPlane};
         if (UsingGameCamera()) {
             // Game view: the Camera entity's world position and orientation (+Z forward), scale ignored.
@@ -2067,6 +2183,15 @@ void Editor::RenderFrame()
                                     if (const AudioSource* as = world.Get<AudioSource>(selected); as && as->spatial) {
                                         debugDraw->Sphere(m.GetTranslation(), as->minDistance, Color(90, 200, 255), 24);
                                         debugDraw->Sphere(m.GetTranslation(), as->maxDistance, Color(60, 120, 170), 32);
+                                    }
+                                    if (const ReflectionProbe* rp = world.Get<ReflectionProbe>(selected)) {
+                                        // Influence box (axis-aligned, scaled) and its fade-in margin.
+                                        const Vec3 pc = m.GetTranslation(), sc = m.GetScale();
+                                        const Vec3 half(Abs(rp->extent.x * sc.x), Abs(rp->extent.y * sc.y), Abs(rp->extent.z * sc.z));
+                                        debugDraw->Box(AABB(pc - half, pc + half), Color(110, 220, 255));
+                                        const Vec3 inner = Max(half - Vec3(rp->blendDistance), Vec3(0.0f));
+                                        debugDraw->Box(AABB(pc - inner, pc + inner), Color(60, 130, 160));
+                                        debugDraw->Sphere(pc, 0.25f, Color(110, 220, 255), 16);
                                     }
                                     if (const PostProcessVolume* pv = world.Get<PostProcessVolume>(selected); pv && !pv->unbound) {
                                         const AABB box(-pv->extent, pv->extent);
@@ -2145,6 +2270,9 @@ void Editor::Shutdown()
                 timer.SmoothedDeltaSeconds() * 1000.0f, m_timeUi / f64(Max<u64>(m_timedFrames, 1)),
                 m_timeRender / f64(Max<u64>(m_timedFrames, 1)), m_timePresent / f64(Max<u64>(m_timedFrames, 1)));
     debugLayerErrors = d3d12::GetDebugLayerErrorCount(*device);
+    if (viewport && viewport->Reflections().ProbeCount())
+        ZX_LOG_INFO(LogEditor, "Reflection probes: {} ({} captured{})", viewport->Reflections().ProbeCount(),
+                    viewport->Reflections().CapturedProbes(), viewport->Reflections().IsCapturing() ? ", still capturing" : "");
     ZX_LOG_INFO(LogEditor, "Exited after {} frames, debug layer errors: {}", frameIndex, debugLayerErrors);
     device->Destroy(viewportTexture);
     viewportTexture = nullptr;
@@ -2163,6 +2291,9 @@ void Editor::Shutdown()
     audioEngine.Reset();
     if (!m_scriptTestFile.Empty())
         platform::DeleteFileAt(m_scriptTestFile);
+    for (const String& f : m_reflTestFiles)
+        platform::DeleteFileAt(f);
+    m_reflTestFiles.Reset();
     prefabs.Reset();
     viewport.Reset();
     renderAssets.Reset();

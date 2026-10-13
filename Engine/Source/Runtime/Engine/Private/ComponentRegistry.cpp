@@ -49,6 +49,7 @@ void RegisterEngineComponents()
     RegisterComponent<AudioListener>("Audio Listener", "\xEE\x8E\x82");              // ear
     RegisterComponent<ReverbZone>("Reverb Zone", "\xEE\x95\x9A");                    // audio-lines
     RegisterComponent<Water>("Water", "\xEE\x82\xB5");                                // droplets
+    RegisterComponent<ReflectionProbe>("Reflection Probe", "\xEE\x8D\x85");           // circle-dot
     RegisterComponent<PostProcessVolume>("Post Process Volume", "\xEE\x81\x80");      // aperture
     RegisterComponent<Camera>("Camera", "\xEE\x86\xA5");                              // video
     RegisterComponent<CharacterController>("Character Controller", "\xEE\x88\x9E");  // person-standing

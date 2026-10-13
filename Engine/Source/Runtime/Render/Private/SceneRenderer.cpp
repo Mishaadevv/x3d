@@ -110,6 +110,8 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
     const ShaderDefine depthOnly[] = {{"DEPTH_ONLY"}};
     const ShaderDefine depthAlpha[] = {{"DEPTH_ONLY"}, {"ALPHA_TEST"}};
     const ShaderDefine alpha[] = {{"ALPHA_TEST"}};
+    const ShaderDefine normals[] = {{"ZX_NORMAL_OUTPUT"}};
+    const ShaderDefine alphaNormals[] = {{"ALPHA_TEST"}, {"ZX_NORMAL_OUTPUT"}};
     struct Job
     {
         ShaderBytecode* out;
@@ -123,6 +125,8 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
         {&m_ps, "PSMain", ShaderStage::Pixel, {}},
         {&m_psAlpha, "PSMain", ShaderStage::Pixel, Span<const ShaderDefine>(alpha)},
         {&m_psDepthAlpha, "PSDepth", ShaderStage::Pixel, Span<const ShaderDefine>(depthAlpha)},
+        {&m_psNormals, "PSMain", ShaderStage::Pixel, Span<const ShaderDefine>(normals)},
+        {&m_psAlphaNormals, "PSMain", ShaderStage::Pixel, Span<const ShaderDefine>(alphaNormals)},
     };
     for (const Job& j : jobs) {
         Result<ShaderBytecode> r = Compile(j.entry, j.stage, j.defines);
@@ -223,7 +227,7 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
             GraphicsPipelineDesc pd;
             pd.rasterizer.cullMode = twoSided ? CullMode::None : CullMode::Back;
             pd.depthFormat = m_depthFormat;
-            pd.depthStencil.depthWrite = variant != VariantMainNoWrite && !translucent;
+            pd.depthStencil.depthWrite = variant != VariantMainNoWrite && variant != VariantMainNoWriteMRT && !translucent;
             if (variant == VariantShadow) {
                 pd.rasterizer.cullMode = CullMode::None;
                 pd.rasterizer.depthBias = i32(m_settings.shadows.depthBias);
@@ -235,9 +239,12 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
                 pd.colorCount = 0;
             } else {
                 pd.vertexShader = &m_vs;
-                pd.pixelShader = masked ? &shaders->mainAlphaTest : &shaders->main;
+                const bool mrt = variant == VariantMainMRT || variant == VariantMainNoWriteMRT;
+                pd.pixelShader = masked ? (mrt ? &shaders->mainAlphaTestNormals : &shaders->mainAlphaTest)
+                                        : (mrt ? &shaders->mainNormals : &shaders->main);
                 pd.colorFormats[0] = m_colorFormat;
-                pd.colorCount = 1;
+                pd.colorFormats[1] = Format::R10G10B10A2_UNORM;
+                pd.colorCount = mrt ? 2 : 1;
                 if (translucent)
                     pd.blend[0] = BlendTarget::AlphaBlend();
             }
@@ -261,7 +268,7 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
     GraphicsPipelineDesc pd;
     pd.rasterizer.cullMode = twoSided ? CullMode::None : CullMode::Back;
     pd.depthFormat = m_depthFormat;
-    pd.depthStencil.depthWrite = variant != VariantMainNoWrite && !translucent;
+    pd.depthStencil.depthWrite = variant != VariantMainNoWrite && variant != VariantMainNoWriteMRT && !translucent;
     if (variant == VariantShadow) {
         // Thin and open geometry is common in levels: render both faces into the shadow map, biased.
         pd.rasterizer.cullMode = CullMode::None;
@@ -276,14 +283,16 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
         pd.colorCount = 0;
     } else {
         pd.vertexShader = &m_vs;
-        pd.pixelShader = masked ? &m_psAlpha : &m_ps;
+        const bool mrt = variant == VariantMainMRT || variant == VariantMainNoWriteMRT;
+        pd.pixelShader = masked ? (mrt ? &m_psAlphaNormals : &m_psAlpha) : (mrt ? &m_psNormals : &m_ps);
         pd.colorFormats[0] = m_colorFormat;
-        pd.colorCount = 1;
+        pd.colorFormats[1] = Format::R10G10B10A2_UNORM; // normal + roughness (MRT variants)
+        pd.colorCount = mrt ? 2 : 1;
         if (translucent)
             pd.blend[0] = BlendTarget::AlphaBlend();
     }
     static const char* kinds[KindCount] = {"Opaque", "Opaque2S", "Masked", "Masked2S", "Translucent", "Translucent2S"};
-    static const char* variants[VariantCount] = {"Depth", "Main", "MainNoWrite", "Shadow"};
+    static const char* variants[VariantCount] = {"Depth", "Main", "MainNoWrite", "Shadow", "MainMRT", "MainNoWriteMRT"};
     const String name = String::Format("Forward.{}.{}", kinds[kind], variants[variant]);
     pd.debugName = name.View();
     p = m_device.CreateGraphicsPipeline(pd);
@@ -824,6 +833,14 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
     m_viewConstants.skyIrradianceScale = lighting.skyIrradianceScale;
     m_viewConstants.debugMode = settings.debugMode;
     m_viewConstants.materialSampler = GetMaterialSampler(settings.maxAnisotropy);
+    m_viewConstants.skyCube = lighting.skyCube;
+    m_viewConstants.skyCubeMips = lighting.skyCubeMips;
+    m_viewConstants.probeBuffer = lighting.probeBuffer;
+    m_viewConstants.probeCount = lighting.probeBuffer != InvalidDescriptor ? lighting.probeCount : 0u;
+    m_viewConstants.reflectionExposure = lighting.reflectionExposure;
+    m_viewConstants.ssrTexture = lighting.ssrTexture;
+    m_viewConstants.ssrMaxRoughness = lighting.ssrMaxRoughness;
+    m_viewConstants.ssrViewProj = lighting.ssrViewProj;
 }
 
 void SceneRenderer::Draw(CommandList& cmd, const DrawItem& d, PipelineVariant variant, Pipeline*& bound)
@@ -841,7 +858,8 @@ void SceneRenderer::Draw(CommandList& cmd, const DrawItem& d, PipelineVariant va
     cmd.DrawIndexed(d.indexCount, 1, d.indexOffset, 0, 0);
 }
 
-void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture depth, LinearColor clearColor)
+void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture depth, LinearColor clearColor,
+                              Function<void(RenderGraph&, RGTexture, RGTexture, RGTexture)> afterOpaque)
 {
     if (!m_shadersOk)
         return;
@@ -989,19 +1007,36 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
         if (skySH)
             b.ReadBuffer(skySHHandle, ResourceState::ConstantBuffer);
     };
+    // Normal + roughness for screen-space reflections (cleared: a = 0 marks "no opaque surface").
+    RGTexture normals;
+    const bool mrt = m_settings.normalOutput;
+    if (mrt) {
+        TextureDesc nd;
+        nd.width = m_renderSize.x;
+        nd.height = m_renderSize.y;
+        nd.format = Format::R10G10B10A2_UNORM;
+        nd.usage = TextureUsage::RenderTarget | TextureUsage::ShaderResource;
+        nd.debugName = "NormalRoughness";
+        normals = graph.CreateTexture(nd);
+    }
     graph.AddPass(
         "ForwardOpaque", PassType::Graphics,
-        [color, depth, prepass, clearColor, readShadows](PassBuilder& b) {
+        [color, depth, prepass, clearColor, readShadows, mrt, normals](PassBuilder& b) {
             b.RenderTarget(color, LoadOp::Clear, clearColor);
+            if (mrt)
+                b.RenderTarget(normals, LoadOp::Clear, LinearColor(0, 0, 0, 0));
             b.DepthStencil(depth, prepass ? LoadOp::Load : LoadOp::Clear, 0.0f);
             readShadows(b);
         },
-        [this, prepass, bindView](PassContext& ctx) {
+        [this, prepass, bindView, mrt](PassContext& ctx) {
             bindView(ctx);
             Pipeline* bound = nullptr;
+            const PipelineVariant variant = prepass ? (mrt ? VariantMainNoWriteMRT : VariantMainNoWrite) : (mrt ? VariantMainMRT : VariantMain);
             for (const DrawItem& d : m_opaque)
-                Draw(ctx.cmd, d, prepass ? VariantMainNoWrite : VariantMain, bound);
+                Draw(ctx.cmd, d, variant, bound);
         });
+    if (afterOpaque)
+        afterOpaque(graph, color, depth, normals);
     if (!m_translucent.Empty()) {
         graph.AddPass(
             "ForwardTranslucent", PassType::Graphics,

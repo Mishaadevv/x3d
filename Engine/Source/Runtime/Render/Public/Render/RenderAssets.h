@@ -76,6 +76,9 @@ public:
     /// Uploads newly loaded assets (within the byte budget) and the dirty part of the material table.
     void Update(rhi::CommandList& cmd);
     void SetUploadBudget(u64 bytesPerFrame) { m_uploadBudget = bytesPerFrame; }
+    /// Changes whenever something that renders differently arrived or changed (meshes, textures, materials, compiled
+    /// material shaders) - reflection probes recapture on it.
+    u64 ContentVersion() const { return m_contentVersion; }
 
     /// Null until resident.
     const GpuMesh* GetMesh(AssetId id);
@@ -173,6 +176,8 @@ private:
     u32 m_paramUsed = 0;
     u32 m_paramDirtyBegin = 0, m_paramDirtyEnd = 0;
     u64 m_uploadBudget = 16ull << 20;
+    u64 m_contentVersion = 1;
+    u32 m_readyShaders = 0;
 };
 
 } // namespace zx::render

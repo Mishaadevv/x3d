@@ -8,7 +8,7 @@ using namespace rhi;
 using namespace render;
 
 ViewportRenderer::ViewportRenderer(Device& device, RenderAssets& assets)
-    : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_taa(device), m_post(device), m_outline(device)
+    : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_taa(device), m_reflections(device), m_captureScene(device, assets), m_post(device), m_outline(device)
 {
 }
 
@@ -41,7 +41,10 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     s.post.dofQuality = lite ? 1.5f : 1.0f;
     s.post.motionBlurSamples = lite ? 6 : 10;
     s.renderScale = lite ? 0.7f : 1.0f;
-    return m_scene.Init(m_hdrFormat, DepthFormat()) && m_sky.Init(m_hdrFormat, DepthFormat()) && m_post.Init(outputFormat) &&
+    s.reflections.probeResolution = lite ? 64 : 128;
+    s.reflections.maxProbes = lite ? 8 : 16;
+    s.reflections.ssr = !lite; // Lite: probes + sky only (the iGPU is bandwidth bound)
+    return m_scene.Init(m_hdrFormat, DepthFormat()) && m_captureScene.Init(m_hdrFormat, DepthFormat()) && m_reflections.Init() && m_sky.Init(m_hdrFormat, DepthFormat()) && m_post.Init(outputFormat) &&
            m_taa.Init() && m_outline.Init(outputFormat) && m_water.Init(m_hdrFormat, DepthFormat(), lite);
 }
 
@@ -93,6 +96,10 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         m_settings.post = EvaluatePostProcessVolumes(world, camera.position, m_settings.post);
     m_settings.post.depthOfField &= features.depthOfField;
     m_settings.post.motionBlur &= features.motionBlur;
+    m_settings.reflections.sky &= features.reflections;
+    m_settings.reflections.probes &= features.reflections;
+    m_settings.reflections.ssr &= features.screenSpaceReflections;
+    m_settings.scene.normalOutput = m_settings.reflections.ssr;
     if (camera.cut)
         m_taa.Reset();
     ApplyEnvironment(env);
@@ -121,7 +128,45 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         m_sky.AddPrePasses(graph, view, m_dirToSun, exposure, m_settings.sky, m_lighting);
     m_time += f64(deltaTime);
     m_scene.SetTime(f32(std::fmod(m_time, 3600.0))); // wraps hourly: keeps float precision for animated materials
+    // Reflections: probes are recaptured when the scene content, the sun or the sky changes.
+    m_probes.Clear();
+    GatherReflectionProbes(world, m_probes, SceneContentKey(m_instances.View(), m_lights.View()) ^ (m_assets.ContentVersion() * 0x9E3779B97F4A7C15ull));
+    u64 environmentKey = m_settings.useSky ? 1u : 2u;
+    for (f32 c : {m_dirToSun.x, m_dirToSun.y, m_dirToSun.z, env.night ? 1.0f : 0.0f})
+        environmentKey = environmentKey * 31u + u64(i64(c * 1000.0f));
+    m_reflections.Prepare(m_probes.View(), view, exposure, m_settings.reflections, environmentKey, m_lighting);
     m_scene.Prepare(m_instances.View(), view, m_lighting, m_settings.scene);
+    // One face of a reflection probe per frame, rendered by a second scene renderer (sky reflections only, no SSR/AO).
+    RGTexture faceColor, faceDepth;
+    RenderView faceView;
+    if (m_reflections.CaptureView(faceView)) {
+        SceneLighting captureLighting = m_lighting;
+        captureLighting.probeBuffer = InvalidDescriptor;
+        captureLighting.probeCount = 0;
+        captureLighting.ssrTexture = InvalidDescriptor;
+        SceneRenderSettings cs = m_settings.scene;
+        cs.normalOutput = false;
+        cs.ao.enabled = false;
+        cs.debugMode = 0;
+        cs.lodBias = 0.5f;
+        cs.shadows.localEnabled = false;
+        cs.shadows.cascades = Min(cs.shadows.cascades, 2u);
+        cs.shadows.cache = false;
+        m_captureScene.SetTime(f32(std::fmod(m_time, 3600.0)));
+        m_captureScene.Prepare(m_instances.View(), faceView, captureLighting, cs);
+        TextureDesc fd;
+        fd.width = faceView.width;
+        fd.height = faceView.height;
+        fd.format = m_hdrFormat;
+        fd.usage = TextureUsage::RenderTarget | TextureUsage::ShaderResource;
+        fd.debugName = "ProbeFace";
+        faceColor = graph.CreateTexture(fd);
+        fd.format = DepthFormat();
+        fd.usage = TextureUsage::DepthStencil | TextureUsage::ShaderResource;
+        fd.debugName = "ProbeFaceDepth";
+        faceDepth = graph.CreateTexture(fd);
+        m_captureScene.AddPasses(graph, faceColor, faceDepth, LinearColor(0, 0, 0, 1));
+    }
 
     TextureDesc hdrDesc;
     hdrDesc.width = renderSize.x;
@@ -135,7 +180,10 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     depthDesc.usage = TextureUsage::DepthStencil | TextureUsage::ShaderResource;
     depthDesc.debugName = "SceneDepth";
     const RGTexture sceneDepth = graph.CreateTexture(depthDesc);
-    m_scene.AddPasses(graph, sceneColor, sceneDepth, LinearColor(0, 0, 0, 1));
+    m_scene.AddPasses(graph, sceneColor, sceneDepth, LinearColor(0, 0, 0, 1),
+                      [this, &view](RenderGraph& g, RGTexture color, RGTexture depth, RGTexture normals) {
+                          m_reflections.AddSsrPass(g, color, depth, normals, view);
+                      });
     if (m_settings.useSky)
         m_sky.AddSkyPass(graph, sceneColor, sceneDepth);
     // Water after the sky (its refraction sees the sky) and before the fog (which then covers it too).
@@ -146,6 +194,9 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
                       f32(std::fmod(m_time, 3600.0)), exposure);
     if (m_settings.useSky)
         m_sky.AddFogPass(graph, sceneColor, sceneDepth, m_lighting, m_settings.sky);
+    // After every pass that samples the cubes: sky cube update, the probe face, prefiltering.
+    m_reflections.AddUpdatePasses(graph, m_settings.useSky ? m_sky.SkyViewTexture() : RGTexture(), m_sky.SkyRadianceScale(), faceColor,
+                                  faceDepth, exposure);
     if (overlay) {
         graph.AddPass(
             "Overlay", PassType::Graphics,
