@@ -222,6 +222,10 @@ bool Editor::Initialize()
     };
     inputActions = InputActionMap::Defaults();
     viewport.Reset(new ViewportRenderer(*device, *renderAssets));
+    // Decal images resolve through the open project's material library (same texture assets as material graphs).
+    viewport->decalTextures = [this](StringView path, bool normalMap) {
+        return materials ? materials->TextureAsset(path, normalMap) : asset::AssetId();
+    };
     debugDraw.Reset(new DebugDraw(*device));
     pool.Reset(new TransientResourcePool(*device));
     if (!renderAssets->Init() || !viewport->Init(lite, Format::R8G8B8A8_UNORM) ||
@@ -248,6 +252,7 @@ bool Editor::Initialize()
     m_cppTestStage = CommandLine::HasFlag("cpptest") ? 1u : 0u;
     m_postTestStage = CommandLine::HasFlag("posttest") ? 1u : 0u;
     m_reflTestStage = CommandLine::HasFlag("reflectiontest") ? 1u : 0u;
+    m_decalTestStage = CommandLine::HasFlag("decaltest") ? 1u : 0u;
     m_toolTest = CommandLine::HasFlag("tooltest") ? 300u : 0u;
     m_audioTestStage = CommandLine::HasFlag("audiotest") ? 1u : 0u;
     StringView execArg;
@@ -753,6 +758,19 @@ void Editor::CreateAudioSource(Vec3 position, ecs::Entity parent)
     const ecs::Entity e = CreateEntity("Audio Source", Transform(position), parent);
     world.Add(e, AudioSource{});
     CommitCreated(e, "Create Audio Source");
+}
+
+void Editor::CreateDecal(Vec3 position, ecs::Entity parent)
+{
+    // Placed on the ground below the point when there is one (the decal projects down).
+    if (renderAssets) {
+        RaycastHit hit;
+        if (RaycastMeshes(world, *renderAssets, Ray(position + Vec3(0, 0.5f, 0), Vec3(0, -1, 0)), hit, 100.0f))
+            position = hit.point;
+    }
+    const ecs::Entity e = CreateEntity("Decal", Transform(position), parent);
+    world.Add(e, Decal{});
+    CommitCreated(e, "Create Decal");
 }
 
 void Editor::CreateReflectionProbe(Vec3 position, ecs::Entity parent)
@@ -1278,6 +1296,62 @@ void Editor::StepFrame()
         BeginPlay();
     playState = PlayState::Paused;
     m_pieStep = true;
+}
+
+void Editor::RunDecalSelfTest()
+{
+    auto fail = [this](StringView why) {
+        ZX_LOG_ERROR(LogEditor, "Decal self-test FAILED: {}", why);
+        selfTestFailed = true;
+        m_decalTestStage = 0;
+    };
+    switch (m_decalTestStage) {
+    case 1: {
+        // Any image of the project for the textured decal.
+        String texture;
+        Array<String> dirs{contentRoot};
+        while (!dirs.Empty() && texture.Empty()) {
+            const String dir = dirs.PopBackValue();
+            Array<platform::DirectoryEntry> entries;
+            platform::ListDirectory(dir, entries);
+            for (const platform::DirectoryEntry& e : entries) {
+                if (e.isDirectory)
+                    dirs.PushBack(Path::Join(dir, e.name));
+                else if (texture.Empty() && (Path::HasExtension(e.name, ".png") || Path::HasExtension(e.name, ".jpg")) &&
+                         !e.name.View().Contains("normal") && !e.name.View().Contains("Normal"))
+                    texture = Path::MakeRelative(Path::Join(dir, e.name), contentRoot);
+            }
+        }
+        const Vec3 ahead = camera.position + camera.Forward() * 4.0f;
+        CreateDecal(ahead + camera.Rotation().GetRight() * -1.2f);
+        Decal* textured = world.Get<Decal>(selected);
+        if (!textured)
+            return fail("Create Decal did not create a decal");
+        textured->texture = texture;
+        textured->extent = Vec3(1.0f, 1.0f, 1.0f);
+        CreateDecal(ahead + camera.Rotation().GetRight() * 1.2f);
+        Decal* glow = world.Get<Decal>(selected);
+        glow->color = Vec3(0.1f, 0.6f, 1.0f);
+        glow->emissive = 4.0f;
+        glow->extent = Vec3(0.8f, 1.0f, 0.8f);
+        Select(ecs::NullEntity);
+        m_decalTestStage = 2;
+        break;
+    }
+    case 2: { // both reach the renderer once the texture streamed in
+        const u32 drawn = viewport->Scene().GetStats().decals;
+        if (drawn >= 2) {
+            ZX_LOG_INFO(LogEditor, "Decal self-test passed ({} decals rendered)", drawn);
+            m_decalTestStage = 0;
+            return;
+        }
+        if (frameIndex > m_decalTestFrame + 300)
+            return fail(String::Format("{} of 2 decals rendered", drawn));
+        return;
+    }
+    default: m_decalTestStage = 0; return;
+    }
+    m_decalTestFrame = frameIndex;
 }
 
 void Editor::RunReflectionSelfTest()
@@ -2084,6 +2158,8 @@ bool Editor::Frame()
         RunPostSelfTest();
     if (m_reflTestStage && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle())
         RunReflectionSelfTest();
+    if (m_decalTestStage && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle())
+        RunDecalSelfTest();
     if (m_scriptTest && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle()) {
         m_scriptTest = false;
         selfTestFailed |= !RunScriptSelfTest();
@@ -2114,7 +2190,7 @@ bool Editor::Frame()
     ++m_timedFrames;
 
     ++frameIndex;
-    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !m_cppTestStage && !m_postTestStage && !m_reflTestStage &&
+    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !m_cppTestStage && !m_postTestStage && !m_reflTestStage && !m_decalTestStage &&
         (m_screenshotPath.Empty() || m_screenshotBuffer)) {
         if (!m_saveScenePath.Empty() && SaveSceneFile(m_saveScenePath, world, SceneIO(), SceneSettings()))
             ZX_LOG_INFO(LogEditor, "Saved scene '{}'", m_saveScenePath);
@@ -2149,6 +2225,7 @@ void Editor::RenderFrame()
         vf.motionBlur = FeatureEnabled("motionBlur") && showMotionBlur && IsPlaying(); // not while editing
         vf.reflections = FeatureEnabled("reflections");
         vf.screenSpaceReflections = FeatureEnabled("screenSpaceReflections");
+        vf.decals = FeatureEnabled("decals");
         ViewportCamera cam{camera.ViewMatrix(), camera.position, camera.fovY, camera.nearPlane};
         if (UsingGameCamera()) {
             // Game view: the Camera entity's world position and orientation (+Z forward), scale ignored.
@@ -2183,6 +2260,13 @@ void Editor::RenderFrame()
                                     if (const AudioSource* as = world.Get<AudioSource>(selected); as && as->spatial) {
                                         debugDraw->Sphere(m.GetTranslation(), as->minDistance, Color(90, 200, 255), 24);
                                         debugDraw->Sphere(m.GetTranslation(), as->maxDistance, Color(60, 120, 170), 32);
+                                    }
+                                    if (const Decal* dc = world.Get<Decal>(selected)) {
+                                        const Mat4 box = m * Mat4::Scale(Vec3(Max(Abs(dc->extent.x), 0.001f), Max(Abs(dc->extent.y), 0.001f),
+                                                                              Max(Abs(dc->extent.z), 0.001f)));
+                                        debugDraw->Box(AABB(Vec3(-1.0f), Vec3(1.0f)), box, Color(255, 120, 200));
+                                        const Vec3 top = box.TransformPoint(Vec3(0, 1, 0)), bottom = box.TransformPoint(Vec3(0, -1, 0));
+                                        debugDraw->Arrow(top, bottom, Color(255, 120, 200)); // projection direction
                                     }
                                     if (const ReflectionProbe* rp = world.Get<ReflectionProbe>(selected)) {
                                         // Influence box (axis-aligned, scaled) and its fade-in margin.
@@ -2243,6 +2327,8 @@ void Editor::RenderFrame()
     for (const GpuTiming& t : device->GetGpuTimings())
         if (StringView(t.name) == "Frame")
             gpuFrameMs = t.milliseconds;
+    if (viewport)
+        viewport->UpdateDynamicResolution(f32(gpuFrameMs), dt);
 }
 
 void Editor::Shutdown()

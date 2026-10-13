@@ -85,6 +85,9 @@ and higher Priority wins. Viewport **Lit > Depth of Field Focus** shows what is 
 **Create > Reflection Probe** gives shiny surfaces inside its box real reflections of the room around them (size the
 box to the room: floors and walls then line up). Probes update by themselves when the scene changes.
 
+**Create > Decal** projects an image onto the ground below it (rotate the entity to project onto walls): drop an image
+from the Content Browser into its Texture field; its alpha channel decides where it covers.
+
 ## Input Actions
 
 **Window > Input Actions** names the controls of the game: buttons (`Jump`, `Fire`, ...) and axes (`MoveForward`,
@@ -234,7 +237,7 @@ This is a game project for the **ZeqouX3D** engine ({version}). Read this before
 - `{name}.zproj` - project descriptor (JSON). Don't rename it.
 - `Content/Scenes/*.zscene` - scenes as JSON: `entities[]` with a `guid`, optional `parent`, and one object per
   component (`Transform`, `MeshRenderer`, `PointLight`, `SpotLight`, `Camera`, `CharacterController`, `Water`, `Script`,
-  `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`, `PostProcessVolume`, `ReflectionProbe`,
+  `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`, `PostProcessVolume`, `ReflectionProbe`, `Decal`,
   `Rotator`, `Oscillator`, ...). Prefer editing scenes in the editor; when editing JSON keep guids unique and stable.
 - `Content/Scripts/*.zs` - gameplay code in **ZeqouScript** (see `Docs/ZeqouScript.md`). This is where most work happens.
 - `Content/**/*.zmat` / `.zmati` - material graphs / instances (JSON node graphs). `.zprefab` - prefabs.

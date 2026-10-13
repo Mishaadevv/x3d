@@ -40,6 +40,9 @@ Post: Render/PostProcess.h (DOF, motion blur, bloom, tonemap; Shaders/Post/Depth
 -uiscale=<x> (multiplies the UI scale; tall panels in screenshots). MeshViewer: -dof=<focus m>,<f-stop>, -motionblur=<amount>.
 Reflections: Render/Reflections.h (sky cube, probes, SSR; Shaders/Lighting/Reflections.hlsl), ReflectionProbe component
 (Engine/SceneRendering.h), -reflectiontest, r.SSR / r.ReflectionProbes, reflections.recapture / reflections.stats.
+Decals: Decal component (Engine/SceneRendering.h, GatherDecals; ApplyDecals in ForwardPBR.hlsl), -decaltest.
+ZTSR: TemporalAA UpscaleCS (history at output size when renderScale < 1), r.TSR; dynamic resolution
+(NextDynamicResolutionScale, r.DynamicResolution*).
 ForwardPBR PSMain writes normal+roughness only with ZX_NORMAL_OUTPUT (MRT pipeline variants; graph materials compile both).
 Reflection meta used by Details: Meta::Category (section headers), Meta::EditCondition("boolField") (override checkbox).
 Audio: Runtime/Audio (AudioEngine.cpp mixer, Wasapi.cpp, Wav.cpp, Vorbis.cpp, Dsp.cpp; tests ZXTests Audio.*; Vorbis

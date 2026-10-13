@@ -51,7 +51,20 @@ struct ViewportFeatures
     bool motionBlur = true;
     bool reflections = true;            // sky cube + reflection probes
     bool screenSpaceReflections = true;
+    bool decals = true;
 };
+
+/// Dynamic resolution: the render scale follows the GPU frame time towards a target (5 % steps, 4 times a second).
+struct DynamicResolutionSettings
+{
+    bool enabled = false;
+    f32 targetMs = 16.6f;
+    f32 minScale = 0.5f;
+    f32 maxScale = 1.0f;
+};
+
+/// Next render scale for a measured GPU frame time (pure: the step dynamic resolution takes 4 times a second).
+f32 NextDynamicResolutionScale(f32 currentScale, f32 gpuFrameMs, const DynamicResolutionSettings& settings);
 
 struct ViewportSettings
 {
@@ -61,7 +74,8 @@ struct ViewportSettings
     render::TAASettings taa;
     render::ReflectionSettings reflections;
     bool useSky = true; // physical sky + fog
-    f32 renderScale = 1.0f;
+    f32 renderScale = 1.0f; // below 1 with TAA: ZTSR temporal upscaling to the output resolution
+    DynamicResolutionSettings dynamicResolution;
 };
 
 class ViewportRenderer
@@ -82,6 +96,11 @@ public:
                    Function<void(rhi::CommandList&, const render::RenderView&, f32 exposure)> overlay = nullptr);
 
     ViewportSettings& Settings() { return m_settings; }
+    /// Feeds the measured GPU frame time to dynamic resolution (changes Settings().renderScale when enabled).
+    void UpdateDynamicResolution(f32 gpuFrameMs, f32 deltaTime);
+    /// Render scale actually used for the last frame (dynamic resolution, clamping).
+    f32 LastRenderScale() const { return m_lastScale; }
+    bool IsUpscaling() const { return m_taa.IsUpscaling(); }
     ViewportFeatures features;
     render::SceneRenderer& Scene() { return m_scene; }
     const render::SceneLighting& Lighting() const { return m_lighting; }
@@ -95,6 +114,9 @@ public:
     const render::PostSettings& LastPostSettings() const { return m_lastPost; }
     void ResetHistory() { m_taa.Reset(); }
     render::ReflectionRenderer& Reflections() { return m_reflections; }
+    /// Content-relative texture path (+ normal map flag) -> texture asset, for decals (the editor resolves it through the
+    /// project's material library). Unset = solid-color decals.
+    Function<asset::AssetId(StringView path, bool normalMap)> decalTextures;
 
     /// Entities whose meshes get the selection outline (editor). Pass the selected entity and its descendants.
     void SetOutlinedEntities(Span<const ecs::Entity> entities) { m_outlined.Clear(); m_outlined.Append(entities); }
@@ -113,6 +135,7 @@ private:
     render::ReflectionRenderer m_reflections;
     render::SceneRenderer m_captureScene; // reflection probe faces
     Array<render::ReflectionProbeDesc> m_probes;
+    Array<render::DecalDesc> m_decals;
     render::PostProcess m_post;
     render::SelectionOutline m_outline;
     render::OutlineSettings m_outlineSettings;
@@ -126,6 +149,8 @@ private:
     render::RenderView m_view;
     Mat4 m_viewProjNoJitter = Mat4::Identity();
     render::PostSettings m_lastPost;
+    f32 m_lastScale = 1.0f;
+    f32 m_dynamicTimer = 0.0f;
     Array<render::RenderInstance> m_instances;
     Array<render::LightDesc> m_lights;
 };

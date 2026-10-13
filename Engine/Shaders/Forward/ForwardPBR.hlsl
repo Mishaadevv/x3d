@@ -64,6 +64,9 @@ struct ViewData
     float ssrMaxRoughness;
     float reflectionPad;
     float4x4 ssrViewProj;    // view-projection the SSR texture was traced with
+    uint decalBuffer;        // GpuDecal x decalCount (sorted, later ones on top)
+    uint decalCount;
+    float2 decalPad;
 };
 ZX_VIEW_CONSTANTS(ViewData, g_View);
 
@@ -389,7 +392,7 @@ float3 SpecularEnvironment(float3 worldPos, float3 R, float roughness)
 {
     float3 acc = 0;
     float weight = 0;
-    for (uint k = 0; k < g_View.probeCount && weight < 0.999; ++k) {
+    for (uint k = 0; k < min(g_View.probeCount, 32u) && weight < 0.999; ++k) {
         const GpuProbe p = LoadProbe(k);
         const float3 inside = min(worldPos - p.boxMin, p.boxMax - worldPos);
         const float edge = min(inside.x, min(inside.y, inside.z));
@@ -424,6 +427,66 @@ float3 SpecularEnvironment(float3 worldPos, float3 R, float roughness)
         }
     }
     return acc;
+}
+
+// Decal (144 bytes, SceneRenderer GpuDecal): projected along its local -Y through a -1..1 box.
+#define DECAL_STRIDE 144
+
+/// Projects the decals touching worldPos onto the surface before lighting: base color (+ coverage in alpha), normal
+/// map, roughness, emissive. Fades where the surface turns away from the projection direction.
+void ApplyDecals(inout SurfaceData s, inout float3 N, float3 worldPos, float3 geometricNormal)
+{
+    if (g_View.decalCount == 0)
+        return;
+    // Screen-space derivatives outside the loop (sampling inside divergent control flow needs explicit gradients).
+    const float3 dPdx = ddx(worldPos), dPdy = ddy(worldPos);
+    ByteAddressBuffer b = GetBuffer(g_View.decalBuffer);
+    for (uint k = 0; k < min(g_View.decalCount, 256u); ++k) {
+        const uint o = k * DECAL_STRIDE;
+        float4x4 m;
+        m[0] = asfloat(b.Load4(o));
+        m[1] = asfloat(b.Load4(o + 16));
+        m[2] = asfloat(b.Load4(o + 32));
+        m[3] = asfloat(b.Load4(o + 48));
+        const float3 p = mul(m, float4(worldPos, 1.0)).xyz; // rows: world -> decal box
+        if (any(abs(p) > 1.0))
+            continue;
+        const float3 axisY = asfloat(b.Load3(o + 64)); // decal up (projects along -Y)
+        const uint albedo = b.Load(o + 76);
+        const float3 axisX = asfloat(b.Load3(o + 80));
+        const uint normalMap = b.Load(o + 92);
+        const float4 colorOpacity = asfloat(b.Load4(o + 96));
+        const float4 params = asfloat(b.Load4(o + 112)); // roughness, affectRoughness, normalStrength, angleFade
+        const float emissive = asfloat(b.Load(o + 128));
+        // Angle fade: full on surfaces facing the projector, gone at 90 degrees.
+        const float facing = dot(geometricNormal, axisY);
+        const float fade = saturate((facing - (1.0 - params.w) * 0.5) / max(params.w * 0.5 + 0.05, 1e-3));
+        // Edge fade along the projection depth avoids hard cuts on thick geometry.
+        const float depthFade = saturate((1.0 - abs(p.y)) * 8.0);
+        const float2 uv = float2(p.x * 0.5 + 0.5, 0.5 - p.z * 0.5);
+        const float3x3 m3 = (float3x3)m;
+        const float2 gx = float2(mul(m3, dPdx).x * 0.5, -mul(m3, dPdx).z * 0.5);
+        const float2 gy = float2(mul(m3, dPdy).x * 0.5, -mul(m3, dPdy).z * 0.5);
+        float4 tex = float4(1, 1, 1, 1);
+        if (albedo != ZX_INVALID_INDEX)
+            tex = GetTexture2D(albedo).SampleGrad(g_LinearClamp, uv, gx, gy);
+        const float a = tex.a * colorOpacity.a * fade * depthFade;
+        if (a <= 0.001)
+            continue;
+        s.baseColor = lerp(s.baseColor, tex.rgb * colorOpacity.rgb, a);
+        s.metallic = lerp(s.metallic, 0.0, a);
+        s.emissive += tex.rgb * colorOpacity.rgb * emissive * a;
+        if (params.y > 0.5)
+            s.roughness = lerp(s.roughness, params.x, a);
+        if (normalMap != ZX_INVALID_INDEX) {
+            float2 xy = GetTexture2D(normalMap).SampleGrad(g_LinearClamp, uv, gx, gy).rg * 2.0 - 1.0;
+            const float3 tn = float3(xy, sqrt(saturate(1.0 - dot(xy, xy))));
+            const float3 T = normalize(axisX - N * dot(N, axisX));
+            const float3 B = cross(N, T);
+            const float3 dn = normalize(tn.x * T - tn.y * B + tn.z * N);
+            N = normalize(lerp(N, dn, a * params.z));
+        }
+    }
 }
 
 float2 EncodeOct(float3 n)
@@ -471,6 +534,7 @@ float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
         N = -N;
         T = -T;
     }
+    const float3 geometricNormal = N;
 #ifdef ZX_GRAPH_MATERIAL
     MaterialInputs mi = GraphInputs(m, i.uv);
     mi.vertexColor = i.color;
@@ -516,6 +580,7 @@ float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
         N = normalize(tn.x * T + tn.y * B + tn.z * N);
     }
 #endif
+    ApplyDecals(s, N, i.worldPos, geometricNormal);
     s.normal = N;
     normalRoughness = float4(EncodeOct(N), s.roughness, 1.0);
 

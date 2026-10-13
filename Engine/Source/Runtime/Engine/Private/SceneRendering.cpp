@@ -35,6 +35,20 @@ ZX_REFLECT_STRUCT_BEGIN(ReflectionProbe)
     ZX_FIELD(boxProjection, Meta::Tooltip("Parallax-correct the reflection against the box (rooms, corridors)"))
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_STRUCT_BEGIN(Decal)
+    ZX_FIELD(texture, Meta::AssetType("Texture"), Meta::Tooltip("Image projected onto surfaces (alpha = coverage). Drop one from the Content Browser"))
+    ZX_FIELD(normalTexture, Meta::AssetType("Texture"), Meta::Tooltip("Optional normal map"))
+    ZX_FIELD(extent, Meta::Tooltip("Half size in meters: x/z across the surface, y = how deep it projects"))
+    ZX_FIELD(color, Meta::Color())
+    ZX_FIELD(opacity, Meta::Range(0, 1))
+    ZX_FIELD(affectRoughness)
+    ZX_FIELD(roughness, Meta::Range(0, 1), Meta::EditCondition("affectRoughness"))
+    ZX_FIELD(normalStrength, Meta::Range(0, 2))
+    ZX_FIELD(angleFade, Meta::Range(0, 1), Meta::Tooltip("Fade on surfaces that turn away from the projection (0 = hard cut)"))
+    ZX_FIELD(emissive, Meta::Range(0, 50), Meta::Tooltip("Glow (multiplies the color)"))
+    ZX_FIELD(sortOrder, Meta::Tooltip("Higher values are drawn over lower ones"))
+ZX_REFLECT_STRUCT_END()
+
 ZX_REFLECT_STRUCT_BEGIN(PointLight)
     ZX_FIELD(color, Meta::Color())
     ZX_FIELD(lumens, Meta::Range(0, 200000), Meta::Units("lm"), Meta::Tooltip("Luminous power"))
@@ -156,6 +170,31 @@ void GatherReflectionProbes(World& world, Array<render::ReflectionProbeDesc>& ou
         u64 h = HashBytes(contentKey ^ e.Pack(), &d.position, sizeof(d.position));
         d.key = HashBytes(h, &half, sizeof(half));
         out.PushBack(d);
+    });
+}
+
+void GatherDecals(World& world, Array<render::DecalDesc>& out, const Function<u32(StringView, bool)>& texture)
+{
+    world.Query<const WorldTransform, const Decal>().Each([&](const WorldTransform& wt, const Decal& d) {
+        render::DecalDesc g;
+        g.world = wt.matrix * Mat4::Scale(Vec3(Max(Abs(d.extent.x), 0.001f), Max(Abs(d.extent.y), 0.001f), Max(Abs(d.extent.z), 0.001f)));
+        if (texture) {
+            if (!d.texture.Empty())
+                g.albedo = texture(d.texture, false);
+            if (!d.normalTexture.Empty())
+                g.normal = texture(d.normalTexture, true);
+            if (!d.texture.Empty() && g.albedo == rhi::InvalidDescriptor)
+                return; // still loading: no solid-color flash
+        }
+        g.color = d.color;
+        g.opacity = d.opacity;
+        g.affectRoughness = d.affectRoughness;
+        g.roughness = d.roughness;
+        g.normalStrength = d.normalStrength;
+        g.angleFade = d.angleFade;
+        g.emissive = d.emissive;
+        g.sortOrder = d.sortOrder;
+        out.PushBack(g);
     });
 }
 

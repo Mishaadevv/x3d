@@ -339,6 +339,7 @@ public:
     void CreateReverbZone(Vec3 position, ecs::Entity parent = {});
     void CreatePostProcessVolume(Vec3 position, ecs::Entity parent = {});
     void CreateReflectionProbe(Vec3 position, ecs::Entity parent = {});
+    void CreateDecal(Vec3 position, ecs::Entity parent = {}); // on the surface under / in front of the point
     /// The listener while playing: the game camera when it is shown, else the editor camera.
     ListenerPose CurrentListener();
     void CreateShape(BuiltinShape shape, Vec3 position, ecs::Entity parent = {});
@@ -433,6 +434,10 @@ private:
     ecs::Entity m_reflTestMover;
     Array<String> m_reflTestFiles; // test materials, deleted on exit
     void RunReflectionSelfTest();
+    // -decaltest: a textured and a glowing decal on the floor reach the renderer; editing the texture keeps working.
+    u32 m_decalTestStage = 0;
+    u64 m_decalTestFrame = 0;
+    void RunDecalSelfTest();
 
 public:
     bool CppSelfTestRunning() const { return m_cppTestStage != 0; }

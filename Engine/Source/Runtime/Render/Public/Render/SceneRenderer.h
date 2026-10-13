@@ -59,6 +59,22 @@ struct LightDesc
 
 inline f32 LumensToCandela(f32 lumens) { return lumens / (4.0f * Pi); }
 
+/// Projected decal: a -1..1 box (world = box transform including its size) whose local -Y is the projection direction.
+struct DecalDesc
+{
+    Mat4 world = Mat4::Identity();
+    u32 albedo = rhi::InvalidDescriptor; // texture SRV: rgb color, a coverage (invalid = solid color)
+    u32 normal = rhi::InvalidDescriptor; // BC5 normal map SRV
+    Vec3 color = Vec3(1, 1, 1);
+    f32 opacity = 1.0f;
+    f32 roughness = 0.5f;
+    bool affectRoughness = false;
+    f32 normalStrength = 1.0f;
+    f32 angleFade = 0.5f; // 0 = hard cut at 90 degrees, 1 = fades from facing to perpendicular
+    f32 emissive = 0.0f;
+    i32 sortOrder = 0; // higher draws on top
+};
+
 /// Scene lighting in physical units; the renderer pre-exposes everything (exposure = 1 / (1.2 * 2^EV100)).
 struct SceneLighting
 {
@@ -83,6 +99,8 @@ struct SceneLighting
     u32 ssrTexture = rhi::InvalidDescriptor; // last frame's screen-space reflections
     Mat4 ssrViewProj = Mat4::Identity();
     f32 ssrMaxRoughness = 0.0f;
+    /// Decals projected onto the scene (the forward pass applies them before lighting). Valid until AddPasses.
+    Span<const DecalDesc> decals;
 };
 
 inline f32 ExposureFromEV100(f32 ev100) { return 1.0f / (1.2f * std::exp2(ev100)); }
@@ -177,6 +195,7 @@ public:
         u32 localShadowFaces = 0;   // shadowed point/spot faces this frame
         u32 localShadowUpdates = 0; // faces re-rendered this frame
         u32 lights = 0; // after frustum culling
+        u32 decals = 0; // after frustum culling
         u32 lodHistogram[8] = {};
     };
     const Stats& GetStats() const { return m_stats; }
@@ -292,6 +311,9 @@ private:
         f32 ssrMaxRoughness;
         f32 reflectionPad;
         Mat4 ssrViewProj;
+        u32 decalBuffer;
+        u32 decalCount;
+        Vec2 decalPad;
     } m_viewConstants = {};
     // HLSL constant buffer packing: a matrix starts on a 16-byte boundary.
     static_assert(offsetof(ViewConstants, ssrViewProj) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
@@ -366,6 +388,8 @@ private:
     rhi::ShaderBytecode m_clusterCS;
     rhi::Pipeline* m_clusterPipeline = nullptr;
     rhi::Buffer* m_lightBuffers[rhi::FramesInFlight] = {};
+    rhi::Buffer* m_decalBuffers[rhi::FramesInFlight] = {};
+    void PrepareDecals(Span<const DecalDesc> decals, const struct Frustum& frustum);
     rhi::Buffer* m_clusterBuffer = nullptr;
     rhi::Buffer* m_skyIrradianceBuffer = nullptr;
     struct Cascade

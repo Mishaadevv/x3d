@@ -18,6 +18,7 @@ struct TAASettings
     f32 blend = 0.1f;        // weight of the current frame
     bool catmullRom = true;  // sharper history fetch (5 taps) vs bilinear
     u32 jitterSamples = 8;
+    bool upscale = true;     // ZTSR: below 100 % render scale, accumulate at the output resolution
 };
 
 class TemporalAA
@@ -34,8 +35,11 @@ public:
     static Mat4 ApplyJitter(const Mat4& projection, Vec2 jitterNdc);
 
     /// Resolves `color` against the history; returns the new (persistent) history texture to feed post-processing.
+    /// With an outputSize larger than the input (and settings.upscale) it upscales temporally (ZTSR): the history and
+    /// the result are at outputSize. `jitterNdc` is this frame's NextJitter value.
     RGTexture AddPass(RenderGraph& graph, RGTexture color, RGTexture depth, const Mat4& viewProjNoJitter, f32 exposure,
-                      const TAASettings& settings);
+                      const TAASettings& settings, UVec2 outputSize = UVec2(0, 0), Vec2 jitterNdc = Vec2(0.0f, 0.0f));
+    bool IsUpscaling() const { return m_upscaling; }
     /// Drops the history (camera cut, resolution change).
     void Reset() { m_historyValid = false; }
 
@@ -54,11 +58,15 @@ private:
         f32 blend;
         u32 catmullRom;
         f32 pad;
+        Vec2 inputSize;
+        Vec2 jitter;
     };
 
     rhi::Device& m_device;
-    rhi::ShaderBytecode m_cs;
+    rhi::ShaderBytecode m_cs, m_upscaleCS;
     rhi::Pipeline* m_pipeline = nullptr;
+    rhi::Pipeline* m_upscalePipeline = nullptr;
+    bool m_upscaling = false;
     rhi::Texture* m_history[2] = {};
     UVec2 m_size;
     u32 m_current = 0;

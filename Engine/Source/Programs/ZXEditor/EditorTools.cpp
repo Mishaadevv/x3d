@@ -18,6 +18,7 @@ const FeatureInfo Features[] = {
     {"bloom", "Bloom", "Rendering", "Glow around bright pixels"},
     {"temporalAA", "Temporal Anti-Aliasing", "Rendering", "TAA (FXAA is used when off)"},
     {"water", "Water", "Rendering", "Water surfaces (Water component)"},
+    {"decals", "Decals", "Rendering", "Decal components (images projected onto surfaces)"},
     {"reflections", "Reflections", "Rendering", "Sky reflections and Reflection Probe components"},
     {"screenSpaceReflections", "Screen Space Reflections", "Rendering", "Sharp reflections of what is on screen (Full profile)"},
     {"postProcessVolumes", "Post Process Volumes", "Rendering", "Post Process Volume components change the look per area"},

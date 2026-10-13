@@ -125,6 +125,8 @@ void DrawLightIcons(Editor& ed, const ViewProjector& vp, DrawList& dl, f32 s)
     });
     ed.world.Query<const ReverbZone, const scene::WorldTransform>().Each(
         [&](ecs::Entity e, const ReverbZone&, const scene::WorldTransform& wt) { icon(e, wt, Vec3(0.7f, 0.5f, 1.0f), ZX_ICON_AUDIO_LINES); });
+    ed.world.Query<const Decal, const scene::WorldTransform>().Each(
+        [&](ecs::Entity e, const Decal&, const scene::WorldTransform& wt) { icon(e, wt, Vec3(1.0f, 0.5f, 0.8f), ZX_ICON_STAMP); });
     ed.world.Query<const ReflectionProbe, const scene::WorldTransform>().Each(
         [&](ecs::Entity e, const ReflectionProbe&, const scene::WorldTransform& wt) { icon(e, wt, Vec3(0.45f, 0.85f, 1.0f), ZX_ICON_CIRCLE_DOT); });
     ed.world.Query<const PostProcessVolume, const scene::WorldTransform>().Each(
@@ -366,6 +368,10 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
         if (ui::MenuItem("Temporal AA", {}, &vs.taa.enabled))
             ed.viewport->ResetHistory();
         ui::MenuItem("Bloom", {}, &vs.post.bloom);
+        ui::MenuItem("Decals", {}, &ed.viewport->features.decals);
+        if (ui::MenuItem("Temporal Upscaling (ZTSR)", {}, &vs.taa.upscale))
+            ed.viewport->ResetHistory();
+        ui::MenuItem("Dynamic Resolution", {}, &vs.dynamicResolution.enabled);
         ui::MenuItem("Reflection Probes", {}, &vs.reflections.probes);
         ui::MenuItem("Screen Space Reflections", {}, &vs.reflections.ssr);
         ui::MenuItem("Post Process Volumes", {}, &ed.showPostVolumes);
@@ -391,7 +397,11 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
     }
     // Right: camera speed + frame stats.
     ui::Context& ctx = *ui::GetCurrentContext();
-    const String stats = String::Format("{:.0f} FPS   {:.1f} ms", 1.0f / Max(ed.timer.SmoothedDeltaSeconds(), 1e-4f), ed.gpuFrameMs);
+    const f32 scale = ed.viewport->LastRenderScale();
+    const String resolution = scale < 0.999f || scale > 1.001f
+                                  ? String::Format("   {:.0f}%{}", scale * 100.0f, ed.viewport->IsUpscaling() ? " ZTSR" : "")
+                                  : String();
+    const String stats = String::Format("{:.0f} FPS   {:.1f} ms{}", 1.0f / Max(ed.timer.SmoothedDeltaSeconds(), 1e-4f), ed.gpuFrameMs, resolution);
     const ui::FontHandle font = ui::GetCurrentContext()->Fonts().FindFont("Inter");
     const f32 w = ui::GetCurrentContext()->Fonts().MeasureWidth(font, 12.0f * s, stats);
     const Rect sr(Vec2(r.max.x - w - 18.0f * s, r.min.y + 6.0f * s), Vec2(r.max.x - 8.0f * s, r.min.y + 6.0f * s + ui::GetFrameHeight()));

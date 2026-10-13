@@ -1,5 +1,6 @@
 #include "Core/Testing/Test.h"
 #include "Engine/SceneRendering.h"
+#include "Engine/ViewportRenderer.h"
 #include "Scene/Hierarchy.h"
 
 using namespace zx;
@@ -62,4 +63,27 @@ ZX_TEST(ReflectionProbe, SceneContentKeyChangesWithTheScene)
     brighter.intensity *= 2.0f;
     ZX_EXPECT_NE(k0, SceneContentKey(Span<const render::RenderInstance>(&a, 1), Span<const render::LightDesc>(&brighter, 1)));
     ZX_EXPECT_NE(k0, SceneContentKey({}, Span<const render::LightDesc>(&l, 1)));
+}
+
+ZX_TEST(DynamicResolution, FollowsTheFrameTime)
+{
+    DynamicResolutionSettings d;
+    d.enabled = true;
+    d.targetMs = 16.0f;
+    d.minScale = 0.5f;
+    d.maxScale = 1.0f;
+    // Too slow: the scale drops (in 5 % steps), never below the minimum.
+    f32 s = 1.0f;
+    s = NextDynamicResolutionScale(s, 30.0f, d);
+    ZX_EXPECT_LT(s, 1.0f);
+    ZX_EXPECT_NEAR(s * 20.0f, Round(s * 20.0f), 1e-4f);
+    for (u32 i = 0; i < 50; ++i)
+        s = NextDynamicResolutionScale(s, 40.0f, d);
+    ZX_EXPECT_NEAR(s, 0.5f, 1e-6f);
+    // Fast: back up to the maximum.
+    for (u32 i = 0; i < 50; ++i)
+        s = NextDynamicResolutionScale(s, 6.0f, d);
+    ZX_EXPECT_NEAR(s, 1.0f, 1e-6f);
+    // On target: stays.
+    ZX_EXPECT_NEAR(NextDynamicResolutionScale(0.75f, 16.0f, d), 0.75f, 1e-6f);
 }

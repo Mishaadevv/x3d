@@ -154,6 +154,20 @@ bool EditValue(const FieldInfo* field, const TypeInfo& type, void* p, const Stri
         String* s = static_cast<String*>(p);
         if (field && field->meta.Has(Meta::KeyMultiline()))
             return ui::InputTextMultiline(id, *s, Vec2(0.0f, 70.0f));
+        if (field && field->meta.GetText(Meta::KeyAssetType()) == "Texture" && g_editor) {
+            // Content-relative image path: typed, or dropped from the Content Browser.
+            bool changed = ui::InputText(id, *s, ui::InputTextFlags::None, "Drop an image here");
+            if (const void* payload = ui::AcceptDragDropPayload("asset")) {
+                const StringView path(static_cast<const char*>(payload));
+                for (StringView ext : {StringView(".png"), StringView(".jpg"), StringView(".jpeg"), StringView(".tga"), StringView(".dds")})
+                    if (Path::HasExtension(path, ext)) {
+                        *s = Path::MakeRelative(path, g_editor->contentRoot);
+                        changed = true;
+                        break;
+                    }
+            }
+            return changed;
+        }
         return ui::InputText(id, *s);
     }
     case TypeKind::Name:

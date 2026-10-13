@@ -25,6 +25,7 @@ TemporalAA::TemporalAA(Device& device) : m_device(device) {}
 TemporalAA::~TemporalAA()
 {
     m_device.Destroy(m_pipeline);
+    m_device.Destroy(m_upscalePipeline);
     for (Texture* t : m_history)
         m_device.Destroy(t);
 }
@@ -45,7 +46,17 @@ bool TemporalAA::Init()
     cd.computeShader = &m_cs;
     cd.debugName = "TAA.Resolve";
     m_pipeline = m_device.CreateComputePipeline(cd);
-    return m_pipeline != nullptr;
+    d.entryPoint = "UpscaleCS";
+    Result<ShaderBytecode> u = ShaderCompiler::Compile(d);
+    if (!u) {
+        ZX_LOG_ERROR(LogTAA, "{}", u.GetError().message);
+        return false;
+    }
+    m_upscaleCS = move(*u);
+    cd.computeShader = &m_upscaleCS;
+    cd.debugName = "TAA.Upscale";
+    m_upscalePipeline = m_device.CreateComputePipeline(cd);
+    return m_pipeline != nullptr && m_upscalePipeline != nullptr;
 }
 
 Vec2 TemporalAA::NextJitter(u32 width, u32 height, const TAASettings& settings)
@@ -67,9 +78,19 @@ Mat4 TemporalAA::ApplyJitter(const Mat4& projection, Vec2 jitterNdc)
 }
 
 RGTexture TemporalAA::AddPass(RenderGraph& graph, RGTexture color, RGTexture depth, const Mat4& viewProjNoJitter, f32 exposure,
-                              const TAASettings& settings)
+                              const TAASettings& settings, UVec2 outputSize, Vec2 jitterNdc)
 {
-    const TextureDesc& cd = graph.GetDesc(color);
+    const TextureDesc& inDesc = graph.GetDesc(color);
+    const UVec2 inSize(inDesc.width, inDesc.height);
+    const bool upscale = settings.upscale && outputSize.x > inSize.x && outputSize.y > inSize.y;
+    const UVec2 histSize = upscale ? outputSize : inSize;
+    if (upscale != m_upscaling)
+        m_historyValid = false;
+    m_upscaling = upscale;
+    struct
+    {
+        u32 width, height;
+    } cd{histSize.x, histSize.y};
     if (cd.width != m_size.x || cd.height != m_size.y) {
         for (Texture*& t : m_history) {
             m_device.Destroy(t);
@@ -95,6 +116,9 @@ RGTexture TemporalAA::AddPass(RenderGraph& graph, RGTexture color, RGTexture dep
     p.historyScale = m_historyValid ? exposure / m_prevExposure : 1.0f;
     p.blend = settings.blend;
     p.catmullRom = settings.catmullRom ? 1u : 0u;
+    p.inputSize = Vec2(f32(inSize.x), f32(inSize.y));
+    // NDC jitter -> input pixels in screen space (NDC y points up, pixels down).
+    p.jitter = Vec2(jitterNdc.x * 0.5f * f32(inSize.x), -jitterNdc.y * 0.5f * f32(inSize.y));
     const bool hasHistory = m_historyValid && settings.enabled;
     graph.AddPass(
         "TAA", PassType::Compute,
@@ -105,13 +129,13 @@ RGTexture TemporalAA::AddPass(RenderGraph& graph, RGTexture color, RGTexture dep
                 b.ReadTexture(history);
             b.WriteTexture(output);
         },
-        [this, p, color, depth, history, output, hasHistory](PassContext& ctx) {
+        [this, p, color, depth, history, output, hasHistory, upscale](PassContext& ctx) {
             Params q = p;
             q.color = ctx.Texture(color)->GetSrvIndex();
             q.depth = ctx.Texture(depth)->GetSrvIndex();
             q.history = hasHistory ? ctx.Texture(history)->GetSrvIndex() : InvalidDescriptor;
             q.output = ctx.Texture(output)->GetUavIndex();
-            ctx.cmd.SetPipeline(m_pipeline);
+            ctx.cmd.SetPipeline(upscale ? m_upscalePipeline : m_pipeline);
             ctx.cmd.SetConstants(0, &q, sizeof(q));
             ctx.cmd.Dispatch((m_size.x + 7) / 8, (m_size.y + 7) / 8);
         });

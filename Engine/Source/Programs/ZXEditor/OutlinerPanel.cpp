@@ -3,6 +3,7 @@
 #include "Editor.h"
 #include "Core/Console/Console.h"
 #include "Core/Containers/Algorithm.h"
+#include "Engine/ComponentRegistry.h"
 #include "Core/String/Path.h"
 #include "Engine/SceneRendering.h"
 
@@ -22,6 +23,10 @@ StringView EntityIcon(Editor& ed, ecs::Entity e)
         return ZX_ICON_SPOTLIGHT;
     if (ed.world.Has<MeshRenderer>(e))
         return ZX_ICON_BOX;
+    // Otherwise the icon of its first user component (Camera, Audio Source, Decal, Reflection Probe...).
+    for (const ComponentType& ct : GetComponentTypes())
+        if (ct.userAddable && !ct.icon.Empty() && ed.world.HasComponent(e, ct.id))
+            return ct.icon;
     if (!scene::GetChildren(ed.world, e).Empty())
         return ZX_ICON_FOLDER;
     return ZX_ICON_CIRCLE_DOT;

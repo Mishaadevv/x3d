@@ -21,6 +21,10 @@ CVar<bool> CVarAO("r.AO", true, "Ground-truth ambient occlusion");
 CVar<bool> CVarShadows("r.Shadows", true, "Sun cascaded shadows");
 CVar<bool> CVarSky("r.Sky", true, "Physical sky and height fog");
 CVar<bool> CVarBloom("r.Bloom", true, "Bloom");
+CVar<bool> CVarTSR("r.TSR", true, "ZTSR temporal upscaling when r.ScreenPercentage is below 100");
+CVar<bool> CVarDynRes("r.DynamicResolution", false, "Render scale follows the GPU frame time (r.DynamicResolution.TargetMs)");
+CVar<f32> CVarDynResTarget("r.DynamicResolution.TargetMs", 16.6f, "Dynamic resolution target GPU frame time (ms)");
+CVar<f32> CVarDynResMin("r.DynamicResolution.MinPercentage", 50.0f, "Lowest render scale of dynamic resolution (percent)");
 CVar<bool> CVarSSR("r.SSR", false, "Screen-space reflections (on by default in the Full profile)");
 CVar<bool> CVarProbes("r.ReflectionProbes", true, "Reflection probes and the sky reflection cube");
 CVar<f32> CVarExposure("r.ExposureCompensation", 1.0f, "Exposure compensation in EV (+ = brighter)");
@@ -204,6 +208,8 @@ ConCommand CmdCreate("create", "Creates an object in front of the camera: create
         ed->CreatePostProcessVolume(at);
     else if (kind.EqualsIgnoreCase("reflectionprobe") || kind.EqualsIgnoreCase("probe"))
         ed->CreateReflectionProbe(at);
+    else if (kind.EqualsIgnoreCase("decal"))
+        ed->CreateDecal(at);
     else if (kind.EqualsIgnoreCase("entity"))
         ed->CreateEmpty(at);
     else if (kind.EqualsIgnoreCase("cube"))
@@ -424,6 +430,15 @@ void RegisterEditorConsole(Editor& ed)
     Bind<bool>(CVarShadows, s.scene.shadows.enabled, [](bool v) { Ed()->viewport->Settings().scene.shadows.enabled = v; });
     Bind<bool>(CVarSky, s.useSky, [](bool v) { Ed()->viewport->Settings().useSky = v; });
     Bind<bool>(CVarBloom, s.post.bloom, [](bool v) { Ed()->viewport->Settings().post.bloom = v; });
+    Bind<bool>(CVarTSR, s.taa.upscale, [](bool v) {
+        Ed()->viewport->Settings().taa.upscale = v;
+        Ed()->viewport->ResetHistory();
+    });
+    Bind<bool>(CVarDynRes, s.dynamicResolution.enabled, [](bool v) { Ed()->viewport->Settings().dynamicResolution.enabled = v; });
+    Bind<f32>(CVarDynResTarget, s.dynamicResolution.targetMs,
+              [](f32 v) { Ed()->viewport->Settings().dynamicResolution.targetMs = Clamp(v, 4.0f, 100.0f); });
+    Bind<f32>(CVarDynResMin, s.dynamicResolution.minScale * 100.0f,
+              [](f32 v) { Ed()->viewport->Settings().dynamicResolution.minScale = Clamp(v, 25.0f, 100.0f) / 100.0f; });
     Bind<bool>(CVarSSR, s.reflections.ssr, [](bool v) { Ed()->viewport->Settings().reflections.ssr = v; });
     Bind<bool>(CVarProbes, s.reflections.probes, [](bool v) {
         Ed()->viewport->Settings().reflections.probes = v;
@@ -440,7 +455,8 @@ void UnregisterEditorConsole()
 {
     g_editor = nullptr;
     for (CVarBase* c : {static_cast<CVarBase*>(&CVarScreenPercentage), static_cast<CVarBase*>(&CVarTAA), static_cast<CVarBase*>(&CVarAO),
-                        static_cast<CVarBase*>(&CVarShadows), static_cast<CVarBase*>(&CVarSky), static_cast<CVarBase*>(&CVarBloom), static_cast<CVarBase*>(&CVarSSR), static_cast<CVarBase*>(&CVarProbes),
+                        static_cast<CVarBase*>(&CVarShadows), static_cast<CVarBase*>(&CVarSky), static_cast<CVarBase*>(&CVarBloom), static_cast<CVarBase*>(&CVarSSR), static_cast<CVarBase*>(&CVarTSR),
+                        static_cast<CVarBase*>(&CVarDynRes), static_cast<CVarBase*>(&CVarDynResTarget), static_cast<CVarBase*>(&CVarDynResMin), static_cast<CVarBase*>(&CVarProbes),
                         static_cast<CVarBase*>(&CVarExposure), static_cast<CVarBase*>(&CVarViewMode),
                         static_cast<CVarBase*>(&CVarForceLod), static_cast<CVarBase*>(&CVarCameraSpeed),
                         static_cast<CVarBase*>(&CVarShowGrid)})

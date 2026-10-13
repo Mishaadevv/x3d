@@ -128,6 +128,7 @@ void DrawMenus(Editor& ed)
         ActionMenuItem(ed, "create.reverbZone");
         ActionMenuItem(ed, "create.postProcessVolume");
         ActionMenuItem(ed, "create.reflectionProbe");
+        ActionMenuItem(ed, "create.decal");
         ui::Separator();
         ActionMenuItem(ed, "create.material");
         ui::EndMenu();

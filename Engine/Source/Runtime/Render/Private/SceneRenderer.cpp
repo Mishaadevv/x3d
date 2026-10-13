@@ -17,6 +17,25 @@ namespace {
 
 constexpr u32 InstanceStride = 112; // keep in sync with ForwardPBR.hlsl
 constexpr u32 MaxLights = 1024;
+constexpr u32 MaxDecals = 256;
+
+struct GpuDecal
+{
+    Vec4 worldToDecal[4]; // rows
+    Vec3 axisY;
+    u32 albedo;
+    Vec3 axisX;
+    u32 normal;
+    Vec3 color;
+    f32 opacity;
+    f32 roughness;
+    f32 affectRoughness;
+    f32 normalStrength;
+    f32 angleFade;
+    f32 emissive;
+    f32 pad[3];
+};
+static_assert(sizeof(GpuDecal) == 144);
 constexpr u32 ClusterGridX = 16, ClusterGridY = 9, ClusterGridZ = 24; // keep in sync with Lights.hlsli
 constexpr u32 ClusterCount = ClusterGridX * ClusterGridY * ClusterGridZ;
 constexpr u32 ClusterBytes = 256;
@@ -84,6 +103,8 @@ SceneRenderer::~SceneRenderer()
     for (Cascade& c : m_cascades)
         m_device.Destroy(c.map);
     for (Buffer* b : m_lightBuffers)
+        m_device.Destroy(b);
+    for (Buffer* b : m_decalBuffers)
         m_device.Destroy(b);
     for (Buffer* b : m_localFaceBuffers)
         m_device.Destroy(b);
@@ -173,6 +194,8 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
     m_clusterPipeline = m_device.CreateComputePipeline(cpd);
     for (Buffer*& b : m_lightBuffers)
         b = m_device.CreateBuffer(BufferDesc{u64(MaxLights) * sizeof(GpuLight), BufferUsage::ShaderResource, MemoryType::Upload, 0, "Lights"});
+    for (Buffer*& b : m_decalBuffers)
+        b = m_device.CreateBuffer(BufferDesc{u64(MaxDecals) * sizeof(GpuDecal), BufferUsage::ShaderResource, MemoryType::Upload, 0, "Decals"});
     m_clusterBuffer = m_device.CreateBuffer(BufferDesc{u64(ClusterCount) * ClusterBytes,
                                                        BufferUsage::ShaderResource | BufferUsage::UnorderedAccess,
                                                        MemoryType::GpuOnly, 0, "LightClusters"});
@@ -841,6 +864,53 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
     m_viewConstants.ssrTexture = lighting.ssrTexture;
     m_viewConstants.ssrMaxRoughness = lighting.ssrMaxRoughness;
     m_viewConstants.ssrViewProj = lighting.ssrViewProj;
+    PrepareDecals(lighting.decals, Frustum::FromMatrix(view.viewProj));
+}
+
+void SceneRenderer::PrepareDecals(Span<const DecalDesc> decals, const Frustum& frustum)
+{
+    m_viewConstants.decalBuffer = InvalidDescriptor;
+    m_viewConstants.decalCount = 0;
+    if (decals.Empty())
+        return;
+    // Visible decals in sortOrder (stable), so later entries are blended on top.
+    Array<u32> order;
+    for (u32 i = 0; i < u32(decals.Size()) && order.Size() < MaxDecals; ++i) {
+        const DecalDesc& d = decals[i];
+        const f32 radius = Length(d.world.columns[0].XYZ()) + Length(d.world.columns[1].XYZ()) + Length(d.world.columns[2].XYZ());
+        if (d.opacity > 0.0f && frustum.Intersects(Sphere{d.world.GetTranslation(), radius}))
+            order.PushBack(i);
+    }
+    for (usize i = 1; i < order.Size(); ++i)
+        for (usize j = i; j > 0 && decals[order[j]].sortOrder < decals[order[j - 1]].sortOrder; --j) {
+            const u32 t = order[j];
+            order[j] = order[j - 1];
+            order[j - 1] = t;
+        }
+    Buffer* buffer = m_decalBuffers[m_device.GetFrameIndex() % FramesInFlight];
+    GpuDecal* gpu = static_cast<GpuDecal*>(buffer->GetMappedData());
+    for (usize i = 0; i < order.Size(); ++i) {
+        const DecalDesc& d = decals[order[i]];
+        const Mat4 inv = Inverse(d.world);
+        GpuDecal g = {};
+        for (u32 r = 0; r < 4; ++r)
+            g.worldToDecal[r] = Vec4(inv.columns[0][r], inv.columns[1][r], inv.columns[2][r], inv.columns[3][r]);
+        g.axisY = SafeNormalize(d.world.columns[1].XYZ(), Vec3::Up());
+        g.axisX = SafeNormalize(d.world.columns[0].XYZ(), Vec3::Right());
+        g.albedo = d.albedo;
+        g.normal = d.normal;
+        g.color = d.color;
+        g.opacity = Saturate(d.opacity);
+        g.roughness = d.roughness;
+        g.affectRoughness = d.affectRoughness ? 1.0f : 0.0f;
+        g.normalStrength = d.normalStrength;
+        g.angleFade = Saturate(d.angleFade);
+        g.emissive = d.emissive;
+        gpu[i] = g;
+    }
+    m_viewConstants.decalBuffer = order.Empty() ? InvalidDescriptor : buffer->GetSrvIndex();
+    m_viewConstants.decalCount = u32(order.Size());
+    m_stats.decals = u32(order.Size());
 }
 
 void SceneRenderer::Draw(CommandList& cmd, const DrawItem& d, PipelineVariant variant, Pipeline*& bound)

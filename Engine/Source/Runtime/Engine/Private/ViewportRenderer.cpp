@@ -108,12 +108,17 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     m_lighting.lights = m_lights.View();
 
     const f32 scale = Clamp(m_settings.renderScale, 0.25f, 2.0f);
+    m_lastScale = scale;
+    // ZTSR needs more jitter positions per output pixel the lower the render scale.
+    if (m_settings.taa.upscale && scale < 0.999f)
+        m_settings.taa.jitterSamples = Max(m_settings.taa.jitterSamples, u32(Ceil(8.0f / (scale * scale))));
     const UVec2 renderSize(Max(1u, u32(f32(outputSize.x) * scale)), Max(1u, u32(f32(outputSize.y) * scale)));
     RenderView& view = m_view;
     view.view = camera.view;
     const Mat4 projection = Mat4::PerspectiveInfiniteReversedZ(camera.fovY, f32(renderSize.x) / f32(renderSize.y), camera.nearPlane);
     m_viewProjNoJitter = projection * camera.view;
-    view.projection = TemporalAA::ApplyJitter(projection, m_taa.NextJitter(renderSize.x, renderSize.y, m_settings.taa));
+    const Vec2 jitter = m_taa.NextJitter(renderSize.x, renderSize.y, m_settings.taa);
+    view.projection = TemporalAA::ApplyJitter(projection, jitter);
     view.viewProj = view.projection * view.view;
     view.position = camera.position;
     view.fovY = camera.fovY;
@@ -135,6 +140,12 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     for (f32 c : {m_dirToSun.x, m_dirToSun.y, m_dirToSun.z, env.night ? 1.0f : 0.0f})
         environmentKey = environmentKey * 31u + u64(i64(c * 1000.0f));
     m_reflections.Prepare(m_probes.View(), view, exposure, m_settings.reflections, environmentKey, m_lighting);
+    m_decals.Clear();
+    if (features.decals)
+        GatherDecals(world, m_decals, [this](StringView path, bool normalMap) {
+            return decalTextures ? m_assets.GetTextureSrv(decalTextures(path, normalMap)) : InvalidDescriptor;
+        });
+    m_lighting.decals = m_decals.View();
     m_scene.Prepare(m_instances.View(), view, m_lighting, m_settings.scene);
     // One face of a reflection probe per frame, rendered by a second scene renderer (sky reflections only, no SSR/AO).
     RGTexture faceColor, faceDepth;
@@ -212,7 +223,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     }
     m_settings.post.fxaa = !m_settings.taa.enabled;
     const RGTexture resolved = m_settings.taa.enabled
-                                   ? m_taa.AddPass(graph, sceneColor, sceneDepth, m_viewProjNoJitter, exposure, m_settings.taa)
+                                   ? m_taa.AddPass(graph, sceneColor, sceneDepth, m_viewProjNoJitter, exposure, m_settings.taa, outputSize, jitter)
                                    : sceneColor;
     PostView postView;
     postView.viewProj = m_viewProjNoJitter;
@@ -235,6 +246,29 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     if (!m_outlineItems.Empty())
         m_outline.AddPasses(graph, m_outlineItems.View(), m_viewProjNoJitter, camera.nearPlane, sceneDepth, renderSize, output, outputSize,
                             m_outlineSettings);
+}
+
+void ViewportRenderer::UpdateDynamicResolution(f32 gpuFrameMs, f32 deltaTime)
+{
+    DynamicResolutionSettings& d = m_settings.dynamicResolution;
+    if (!d.enabled || gpuFrameMs <= 0.0f)
+        return;
+    m_dynamicTimer += deltaTime;
+    if (m_dynamicTimer < 0.25f)
+        return;
+    m_dynamicTimer = 0.0f;
+    m_settings.renderScale = NextDynamicResolutionScale(m_settings.renderScale, gpuFrameMs, d);
+}
+
+f32 NextDynamicResolutionScale(f32 currentScale, f32 gpuFrameMs, const DynamicResolutionSettings& d)
+{
+    const f32 lo = Clamp(Min(d.minScale, d.maxScale), 0.25f, 1.0f), hi = Clamp(Max(d.minScale, d.maxScale), lo, 2.0f);
+    if (gpuFrameMs <= 0.0f)
+        return Clamp(currentScale, lo, hi);
+    // GPU cost grows with the pixel count (scale squared); move half of the way, in 5 % steps.
+    const f32 headroom = Clamp(d.targetMs / gpuFrameMs, 0.7f, 1.3f);
+    const f32 next = currentScale * Sqrt(Lerp(1.0f, headroom, 0.5f));
+    return Clamp(Round(next * 20.0f) / 20.0f, lo, hi);
 }
 
 } // namespace zx

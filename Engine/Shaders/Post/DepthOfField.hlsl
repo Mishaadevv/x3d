@@ -44,7 +44,7 @@ void DofPrepareCS(uint2 id : SV_DispatchThreadID)
     if (any(id >= uint2(g_Dof.size)))
         return;
     Texture2D<float4> color = GetTexture2D(g_Dof.color);
-    Texture2D<float4> depth = GetTexture2D(g_Dof.depth);
+    Texture2D<float4> depth = GetTexture2D(g_Dof.depth); // may be lower resolution (temporal upscaling): sampled by uv
     const int2 full = int2(id) * 2;
     const int2 maxP = int2(1.0 / g_Dof.fullInvSize) - 1;
     float3 c = 0;
@@ -52,7 +52,7 @@ void DofPrepareCS(uint2 id : SV_DispatchThreadID)
     [unroll] for (int i = 0; i < 4; ++i) {
         const int2 p = min(full + int2(i & 1, i >> 1), maxP);
         c += color.Load(int3(p, 0)).rgb;
-        const float coc = SignedCoc(depth.Load(int3(p, 0)).r);
+        const float coc = SignedCoc(depth.SampleLevel(g_PointClamp, (float2(p) + 0.5) * g_Dof.fullInvSize, 0).r);
         nearCoc = min(nearCoc, coc);
         farCoc = max(farCoc, coc);
     }
@@ -100,8 +100,8 @@ void DofCompositeCS(uint2 id : SV_DispatchThreadID)
     if (any(id >= uint2(g_Dof.size)))
         return;
     const float3 sharp = GetTexture2D(g_Dof.color).Load(int3(id, 0)).rgb;
-    const float coc = SignedCoc(GetTexture2D(g_Dof.depth).Load(int3(id, 0)).r);
     const float2 uv = (float2(id) + 0.5) * g_Dof.invSize;
+    const float coc = SignedCoc(GetTexture2D(g_Dof.depth).SampleLevel(g_PointClamp, uv, 0).r);
     const float4 blurred = GetTexture2D(g_Dof.input).SampleLevel(g_LinearClamp, uv, 0);
     float amount = abs(coc);
     if (blurred.a < 0.0)
@@ -124,8 +124,8 @@ void MotionBlurCS(uint2 id : SV_DispatchThreadID)
     if (any(id >= uint2(g_Dof.size)))
         return;
     Texture2D<float4> color = GetTexture2D(g_Dof.color);
-    const float d = GetTexture2D(g_Dof.depth).Load(int3(id, 0)).r;
     const float2 uv = (float2(id) + 0.5) * g_Dof.invSize;
+    const float d = GetTexture2D(g_Dof.depth).SampleLevel(g_PointClamp, uv, 0).r;
     const float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     const float4 world = mul(g_Dof.invViewProj, float4(ndc, d, 1.0));
     const float4 prevClip = mul(g_Dof.prevViewProj, world);

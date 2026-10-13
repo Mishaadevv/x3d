@@ -55,9 +55,10 @@ public:
     render::MaterialShaderCache::State ShaderState(const Guid& guid) const;
 
     StringView ContentRoot() const { return m_contentRoot; }
+    /// Texture asset of a Content-relative image (normal maps are imported linear as BC5); cached per path.
+    asset::AssetId TextureAsset(StringView relativePath, bool normalMap);
 
 private:
-    asset::AssetId TextureAsset(StringView relativePath, bool normalMap);
 
     asset::AssetManager& m_assets;
     render::RenderAssets& m_renderAssets;

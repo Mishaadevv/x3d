@@ -78,6 +78,24 @@ struct ReflectionProbe
 };
 ZX_DECLARE_TYPE(ReflectionProbe);
 
+/// Decal: projects an image (and optionally a normal map) onto whatever is inside its box - along the entity's -Y,
+/// so with no rotation it paints the ground below. Lit like the surface it lands on.
+struct Decal
+{
+    String texture;       // Content-relative image: rgb color, alpha coverage (empty = solid color)
+    String normalTexture; // optional normal map (tangent space, OpenGL convention)
+    Vec3 extent = Vec3(1.0f, 0.5f, 1.0f); // half size: x/z across the surface, y = projection depth (scaled by the transform)
+    Vec3 color = Vec3(1.0f, 1.0f, 1.0f);
+    f32 opacity = 1.0f;
+    bool affectRoughness = false;
+    f32 roughness = 0.5f;
+    f32 normalStrength = 1.0f;
+    f32 angleFade = 0.5f;
+    f32 emissive = 0.0f;
+    i32 sortOrder = 0;
+};
+ZX_DECLARE_TYPE(Decal);
+
 /// Creates entities for all prefab nodes (Transform, WorldTransform, EntityName, hierarchy, MeshRenderer).
 /// Returns the instance root (a new entity parenting the prefab's root nodes).
 ecs::Entity InstantiatePrefab(ecs::World& world, const asset::PrefabAsset& prefab, const Transform& rootTransform = {},
@@ -92,6 +110,9 @@ void GatherLights(ecs::World& world, Array<render::LightDesc>& out);
 void GatherWater(ecs::World& world, Array<render::WaterSurface>& out);
 /// Appends a probe per ReflectionProbe entity; `contentKey` (scene content hash) is part of every probe's capture key.
 void GatherReflectionProbes(ecs::World& world, Array<render::ReflectionProbeDesc>& out, u64 contentKey);
+/// Appends a DecalDesc per Decal entity; `texture` turns a Content-relative path (normal map flag) into a texture SRV
+/// (invalid while it loads). Null = solid-color decals.
+void GatherDecals(ecs::World& world, Array<render::DecalDesc>& out, const Function<u32(StringView path, bool normalMap)>& texture);
 /// Hash of what reflection captures see (mesh instances and lights): a change recaptures the probes.
 u64 SceneContentKey(Span<const render::RenderInstance> instances, Span<const render::LightDesc> lights);
 
