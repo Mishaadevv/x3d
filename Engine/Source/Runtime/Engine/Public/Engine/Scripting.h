@@ -9,7 +9,8 @@
 //   scripts.End();                                       // Stop
 //
 // Globals a script sees: entity / transform (its own entity), character (its CharacterController), input, time,
-// audio, find(name), plus the standard library.
+// audio, physics, find(name), plus the standard library. Physics callbacks: collisionEnter(other, speed),
+// collisionExit(other), triggerEnter(other), triggerExit(other).
 // Language reference: docs/ZeqouScript.md.
 
 #include "Core/Containers/Function.h"
@@ -25,6 +26,8 @@ namespace zx {
 class InputState;
 class InputActionState;
 class AudioSystem;
+class PhysicsSystem;
+struct PhysicsEvent;
 
 /// Runs a .zs file on the entity. `properties` holds the values of the script's `prop` fields that differ from the
 /// defaults, as a JSON object ({"speed": 120, "tint": [1, 0, 0]}).
@@ -73,6 +76,10 @@ public:
     AudioSystem* audio = nullptr;
     /// The project's Input Actions for input.action / actionPressed / actionReleased / axis (null = all released).
     const InputActionState* actions = nullptr;
+    /// Rigid bodies and queries for entity.velocity / addForce and the physics global (null = no physics).
+    PhysicsSystem* physics = nullptr;
+    /// Calls collisionEnter / collisionExit / triggerEnter / triggerExit on the scripts of both entities of each event.
+    void DispatchPhysicsEvents(ecs::World& world, Span<const PhysicsEvent> events);
 
     /// log()/print() output and errors (file:line: message).
     Function<void(StringView message, bool isError)> onLog;
@@ -89,6 +96,7 @@ private:
     UniquePtr<script::VM> m_vm;
     script::NativeType* m_entityType = nullptr;
     script::NativeType* m_characterType = nullptr;
+    script::NativeType* m_hitType = nullptr;
     HashMap<String, UniquePtr<CachedProgram>> m_programs;
     Array<UniquePtr<RunningScript>> m_instances;
     Array<script::Program*> m_retired; // replaced by hot reload, freed when no instance uses them
@@ -105,6 +113,13 @@ public:
         f64 elapsed = 0.0;
         u64 frame = 0;
         Array<ecs::Entity> destroyQueue;
+        struct Hit
+        {
+            ecs::Entity entity;
+            Vec3 point, normal;
+            f32 distance;
+        };
+        Array<Hit> hits; // raycast results handed to scripts this frame
     } context;
 };
 

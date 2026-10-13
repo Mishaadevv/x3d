@@ -5,6 +5,21 @@
 одном месте — `project(ZeqouX3D VERSION ...)` в корневом CMakeLists.txt (оттуда его берут `Core/Version.h`, ресурс
 версии ZXEditor.exe, About и лог).
 
+## 0.10.3 — физика, часть 2: триггеры, события, запросы, API (2026-10-13)
+- **Триггеры**: у Box / Sphere / Capsule Collider галочка **Is Trigger** — коллайдер не сталкивается, а сообщает о
+  входе и выходе тел (в том числе персонажа)
+- **События**: начало и конец касания двух тел (со скоростью удара) и вход/выход из триггера. Скрипты получают
+  `collisionEnter(other, speed)`, `collisionExit(other)`, `triggerEnter(other)`, `triggerExit(other)`, C++
+  компоненты — `OnCollisionEnter/Exit`, `OnTriggerEnter/Exit`
+- **Запросы**: raycast (пропускает триггеры), shape cast (сфера / коробка / капсула, метод консервативного
+  продвижения), overlap; **слои** (Layer 0–31) у коллайдеров, фильтр в любом запросе
+- **API ZeqouScript**: `entity.velocity`, `entity.angularVelocity`, `entity.addForce / addImpulse / addTorque`,
+  глобальный `physics`: `raycast`, `sphereCast`, `overlapSphere`, `gravity`
+- **API C++** (Game SDK v2): `host->AddForce / AddImpulse / Get/SetVelocity / Raycast`; модули, собранные со старым
+  SDK, попросят пересборку (Compile, F7)
+- Быстрые тела не проходят сквозь стенки (speculative contacts с запасом по скорости: 100 м/с против 10 см — тест)
+- Тесты: события и триггеры, overlap и shape cast, туннелирование, связка скрипт ↔ физика
+
 ## 0.10.2 — физика ZPhys, часть 1 (2026-10-13)
 - **Свой физический движок** (модуль Physics, без сторонних библиотек): формы сфера, коробка, капсула, статический
   треугольный меш (BVH), составные тела; масса и инерция из объёма; два динамических AABB-дерева, слои с матрицей

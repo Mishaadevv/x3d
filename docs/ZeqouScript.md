@@ -102,6 +102,12 @@ vec3 и quat копируются как значения; списки и ст�
 | `input` | `key("W")` — удерживается, `pressed("Space")` / `released(...)` — в этом кадре, `mouse("left")`, `mousePressed("right")`; `move` — vec3 из WASD/стрелок/стика (x — вправо, z — вперёд, y — E/Q), `look` / `mouseDelta`, `mousePosition`, `wheel`; Input Actions проекта (Window > Input Actions): `action("Jump")` — удерживается, `actionPressed(...)` / `actionReleased(...)` — в этом кадре, `axis("MoveForward")` — значение оси. Имена клавиш: буквы, цифры, `Space`, `Enter`, `Escape`, `Shift`, `Ctrl`, `Alt`, `Tab`, `Up`, `F1`…`F12` |
 | `time` | `dt`, `elapsed` (секунды с начала Play), `frame` |
 | `audio` | `play("Sounds/x.wav"[, громкость])` → id, `playAt(файл, позиция[, громкость])` — 3D-звук в точке, `stop(id)`, `setVolume("Music" \| "SFX" \| "UI" \| "Voice" \| "Master", громкость)`; у сущности с Audio Source — `entity.playSound()` / `entity.stopSound()` |
+| Rigid Body | у сущности с Rigid Body: `entity.velocity`, `entity.angularVelocity` (чтение и запись), `entity.addForce(v)` (ньютоны, на этот кадр), `entity.addImpulse(v[, точка])`, `entity.addTorque(v)` |
+| `physics` | `raycast(начало, направление[, дальность[, слои]])` и `sphereCast(начало, радиус, направление[, дальность[, слои]])` → попадание (`entity`, `point`, `normal`, `distance`) или `nil`; `overlapSphere(центр, радиус[, слои])` → список сущностей; `gravity` (vec3). `слои` — номер слоя или список (`[0, 2]`), по умолчанию все; триггеры лучи не ловят |
+
+Колбэки физики (необязательные): `collisionEnter(other, speed)` — коллайдеры сущности коснулись другого твёрдого
+тела (`speed` — скорость удара, м/с), `collisionExit(other)`, `triggerEnter(other)` / `triggerExit(other)` — для
+коллайдеров с галочкой Is Trigger (у той или другой стороны).
 
 Позиции и повороты — локальные (относительно родителя). Ось Y — вверх, +Z — вперёд, метры.
 

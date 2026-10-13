@@ -170,6 +170,10 @@ Translate(local) Name() Log(text)`.
 | Time | `DeltaTime()`, `Time()` |
 | Character | `CharacterMove(e, velocity)`, `CharacterJump(e, speed)`, `CharacterGrounded(e)` (needs a Character Controller) |
 | Sound | `PlaySound("Sounds/x.wav", volume, spatial, position)` -> voice, `StopSound(voice)` |
+| Physics | `AddForce(e, force)`, `AddImpulse(e, impulse)`, `Get/SetVelocity(e)` (need a Rigid Body), `Raycast(origin, direction, maxDistance, &result, layerMask)` |
+
+Physics callbacks to override: `OnCollisionEnter(other, speed)`, `OnCollisionExit(other)`, `OnTriggerEnter(other)`,
+`OnTriggerExit(other)`.
 | Log | `Log(text, isError)` |
 
 Math: `Vec3` (`+ - * /`, `Length() Normalized()`, `Dot Cross Distance Lerp`), `Quat` (`Euler(pitch, yaw, roll)` in
@@ -202,6 +206,8 @@ script Spinner {
 - `prop name = literal` - a number, bool, string or `vec3(...)`; annotations: `@range(min, max)`, `@tooltip("text")`,
   `@color` (vec3 shown as a color picker).
 - The engine calls `start()` once and `update(dt)` every frame while playing (both optional).
+- Physics callbacks (optional): `collisionEnter(other, speed)` / `collisionExit(other)` when the entity's colliders
+  touch another solid body, `triggerEnter(other)` / `triggerExit(other)` for colliders with Is Trigger.
 
 ## Statements and operators
 - `if a { } elif b { } else { }`, `while cond { }`, `for i in 0..10 { }`, `for item in list { }`, `break`, `continue`, `return`.
@@ -229,6 +235,8 @@ vec3/quat are values (copied); lists and strings are references.
 | `input` | `key("W")`, `pressed("Space")`, `released(...)`, `mouse("left")`, `mousePressed(...)`, `move` (WASD/stick vec3), `look`, `mouseDelta`, `mousePosition`, `wheel`; Input Actions: `action("Jump")`, `actionPressed(...)`, `actionReleased(...)`, `axis("MoveForward")` |
 | `time` | `dt elapsed frame` |
 | `audio` | `play(file[, volume])`, `playAt(file, position[, volume])`, `stop(id)`, `setVolume(bus, volume)`; `entity.playSound()` / `stopSound()` with an Audio Source |
+| Rigid Body | `entity.velocity`, `entity.angularVelocity` (read / write), `entity.addForce(v)`, `entity.addImpulse(v[, point])`, `entity.addTorque(v)` |
+| `physics` | `raycast(origin, direction[, maxDistance[, layers]])` / `sphereCast(origin, radius, direction[, maxDistance[, layers]])` -> hit (`entity point normal distance`) or `nil`; `overlapSphere(center, radius[, layers])` -> list of entities; `gravity`. `layers`: a layer number or a list (`[0, 2]`); triggers are not hit |
 
 Positions are local to the parent; Y is up, +Z forward, meters, rotations in degrees in the API.
 

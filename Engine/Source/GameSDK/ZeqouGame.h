@@ -29,7 +29,7 @@
 
 namespace zx::game {
 
-inline constexpr uint32_t ApiVersion = 1;
+inline constexpr uint32_t ApiVersion = 2; // 2: physics (Host forces/velocity/raycast, collision callbacks)
 
 // --- Math --------------------------------------------------------------------------------------------------------------
 
@@ -89,6 +89,15 @@ struct Quat
 
 using EntityId = uint64_t; // 0 = none
 
+/// Result of Host::Raycast.
+struct RaycastResult
+{
+    EntityId entity = 0;
+    Vec3 point;
+    Vec3 normal;
+    float distance = 0.0f;
+};
+
 // --- Host: what the engine provides -------------------------------------------------------------------------------------
 
 class Host
@@ -125,6 +134,13 @@ public:
     // Sound (path under the project's Content folder).
     virtual uint32_t PlaySound(const char* file, float volume, bool spatial, Vec3 position) = 0;
     virtual void StopSound(uint32_t voice) = 0;
+    // Physics: the entity's Rigid Body (no effect without one).
+    virtual void AddForce(EntityId e, Vec3 force) = 0;     // newtons, this frame
+    virtual void AddImpulse(EntityId e, Vec3 impulse) = 0; // N*s, instant
+    virtual Vec3 GetVelocity(EntityId e) = 0;
+    virtual void SetVelocity(EntityId e, Vec3 velocity) = 0;
+    /// Closest solid collider along the ray (unit or not); layerMask: one bit per physics layer (~0u = all).
+    virtual bool Raycast(Vec3 origin, Vec3 direction, float maxDistance, RaycastResult* hit, uint32_t layerMask) = 0;
 
 protected:
     ~Host() = default;
@@ -141,6 +157,11 @@ public:
     virtual void OnStop() {}
     /// Called instead of OnStart on the new object after a hot reload (props already restored).
     virtual void OnReloaded() {}
+    // Physics callbacks (colliders of this entity): touching another solid body / entering a trigger.
+    virtual void OnCollisionEnter(EntityId other, float speed) { (void)other, (void)speed; }
+    virtual void OnCollisionExit(EntityId other) { (void)other; }
+    virtual void OnTriggerEnter(EntityId other) { (void)other; }
+    virtual void OnTriggerExit(EntityId other) { (void)other; }
 
     // Set by the engine before OnStart.
     EntityId entity = 0;

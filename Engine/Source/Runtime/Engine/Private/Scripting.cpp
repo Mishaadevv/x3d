@@ -1,4 +1,5 @@
 #include "Engine/Scripting.h"
+#include "Engine/PhysicsSystem.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
 #include "Core/Log/Log.h"
@@ -232,6 +233,13 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             out = p ? script::MakeNative(*o.nativeType, o.handle, p.Pack()) : Value();
             return true;
         }
+        if (m == "velocity" || m == "angularVelocity") {
+            // The Rigid Body's velocity (zero without one).
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            out = Value(sys.physics ? (m == "velocity" ? sys.physics->GetVelocity(e) : sys.physics->GetAngularVelocity(e)) : Vec3());
+            return true;
+        }
         const bool known = m == "position" || m == "rotation" || m == "scale" || m == "forward" || m == "right" || m == "up" ||
                            m == "transform";
         if (!known)
@@ -263,6 +271,19 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             if (!w || !w->IsAlive(e))
                 return v.Fail("The entity was destroyed");
             w->Set(e, scene::EntityName{String(value.AsString())});
+            return true;
+        }
+        if (m == "velocity" || m == "angularVelocity") {
+            if (value.Type() != ValueType::Vec3)
+                return v.Fail(String::Format("{} must be a vec3", m));
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            if (sys.physics) {
+                if (m == "velocity")
+                    sys.physics->SetVelocity(e, value.AsVec3());
+                else
+                    sys.physics->SetAngularVelocity(e, value.AsVec3());
+            }
             return true;
         }
         if (m != "position" && m != "rotation" && m != "scale")
@@ -304,6 +325,24 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
         if (m == "destroy") {
             e = ecs::Entity::Unpack(o.id);
             SystemOf(o).context.destroyQueue.PushBack(e);
+            return true;
+        }
+        if (m == "addForce" || m == "addImpulse" || m == "addTorque") {
+            // Rigid Body forces: addForce(newtons), addImpulse(N*s[, worldPoint]), addTorque(N*m).
+            if (a.Empty() || a[0].Type() != ValueType::Vec3 || (a.Size() > 1 && a[1].Type() != ValueType::Vec3))
+                return v.Fail(String::Format("entity.{}(vec3{})", m, m == "addImpulse" ? "[, point: vec3]" : ""));
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            if (!sys.physics)
+                return true;
+            if (m == "addForce")
+                sys.physics->AddForce(e, a[0].AsVec3());
+            else if (m == "addTorque")
+                sys.physics->AddTorque(e, a[0].AsVec3());
+            else if (a.Size() > 1)
+                sys.physics->AddImpulseAtPoint(e, a[0].AsVec3(), a[1].AsVec3());
+            else
+                sys.physics->AddImpulse(e, a[0].AsVec3());
             return true;
         }
         if (m == "child") {
@@ -540,6 +579,97 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
     };
     vm.SetGlobal("audio", script::MakeNative(audioType, this));
 
+    // physics: raycast(origin, direction[, maxDistance[, layers]]) / sphereCast(origin, radius, direction[, maxDistance[,
+    // layers]]) -> hit (entity, point, normal, distance) or nil; overlapSphere(center, radius[, layers]) -> [entities];
+    // gravity (vec3). `layers` is a layer number or a list of them (default: all).
+    script::NativeType& hitType = vm.AddType("PhysicsHit");
+    hitType.get = [this](script::VM& v, script::NativeObject& o, StringView m, Value& out) {
+        const u32 index = u32(o.id), frame = u32(o.id >> 32);
+        if (frame != u32(context.frame) || index >= context.hits.Size())
+            return v.Fail("A physics hit is only valid during the frame it was returned");
+        const Context::Hit& h = context.hits[index];
+        if (m == "entity")
+            out = script::MakeNative(*m_entityType, this, h.entity.Pack());
+        else if (m == "point")
+            out = Value(h.point);
+        else if (m == "normal")
+            out = Value(h.normal);
+        else if (m == "distance")
+            out = Value(h.distance);
+        else
+            return false;
+        return true;
+    };
+    script::NativeType& physicsType = vm.AddType("Physics");
+    auto layerMask = [](const Value* layers) -> u32 {
+        if (!layers || layers->IsNil())
+            return ~0u;
+        if (layers->IsNumber())
+            return 1u << (u32(Clamp(layers->AsFloat(), 0.0f, 31.0f)) & 31);
+        u32 mask = 0;
+        if (const script::ListObject* list = static_cast<const script::ListObject*>(layers->AsObject());
+            list && layers->Type() == ValueType::List)
+            for (const Value& item : list->items)
+                if (item.IsNumber())
+                    mask |= 1u << (u32(Clamp(item.AsFloat(), 0.0f, 31.0f)) & 31);
+        return mask;
+    };
+    physicsType.get = [this](script::VM&, script::NativeObject&, StringView m, Value& out) {
+        if (m != "gravity")
+            return false;
+        out = Value(physics && physics->World() ? physics->World()->Settings().gravity : Vec3(0.0f, -9.81f, 0.0f));
+        return true;
+    };
+    physicsType.set = [this](script::VM& v, script::NativeObject&, StringView m, const Value& value) {
+        if (m != "gravity")
+            return false;
+        if (value.Type() != ValueType::Vec3)
+            return v.Fail("physics.gravity must be a vec3");
+        if (physics && physics->World())
+            physics->World()->Settings().gravity = value.AsVec3();
+        return true;
+    };
+    physicsType.call = [this, layerMask](script::VM& v, script::NativeObject&, StringView m, Span<const Value> a, Value& out) {
+        auto hitValue = [&](const PhysicsHit& h) {
+            context.hits.PushBack(Context::Hit{h.entity, h.point, h.normal, h.distance});
+            out = script::MakeNative(*m_hitType, this, (u64(u32(context.frame)) << 32) | u64(context.hits.Size() - 1));
+        };
+        if (m == "raycast") {
+            if (a.Size() < 2 || a[0].Type() != ValueType::Vec3 || a[1].Type() != ValueType::Vec3)
+                return v.Fail("physics.raycast(origin: vec3, direction: vec3[, maxDistance[, layers]])");
+            const f32 maxDistance = a.Size() > 2 && a[2].IsNumber() ? a[2].AsFloat() : 1000.0f;
+            PhysicsHit h;
+            if (physics && physics->Raycast(a[0].AsVec3(), a[1].AsVec3(), maxDistance, h, layerMask(a.Size() > 3 ? &a[3] : nullptr)))
+                hitValue(h);
+            return true;
+        }
+        if (m == "sphereCast") {
+            if (a.Size() < 3 || a[0].Type() != ValueType::Vec3 || !a[1].IsNumber() || a[2].Type() != ValueType::Vec3)
+                return v.Fail("physics.sphereCast(origin: vec3, radius, direction: vec3[, maxDistance[, layers]])");
+            const f32 maxDistance = a.Size() > 3 && a[3].IsNumber() ? a[3].AsFloat() : 1000.0f;
+            PhysicsHit h;
+            if (physics && physics->SphereCast(a[0].AsVec3(), a[1].AsFloat(), a[2].AsVec3(), maxDistance, h,
+                                               layerMask(a.Size() > 4 ? &a[4] : nullptr)))
+                hitValue(h);
+            return true;
+        }
+        if (m == "overlapSphere") {
+            if (a.Size() < 2 || a[0].Type() != ValueType::Vec3 || !a[1].IsNumber())
+                return v.Fail("physics.overlapSphere(center: vec3, radius[, layers])");
+            Array<ecs::Entity> found;
+            if (physics)
+                physics->OverlapSphere(a[0].AsVec3(), a[1].AsFloat(), found, layerMask(a.Size() > 2 ? &a[2] : nullptr));
+            script::ListObject* list = new script::ListObject();
+            for (ecs::Entity e : found)
+                list->items.PushBack(script::MakeNative(*m_entityType, this, e.Pack()));
+            out = Value::FromObject(list);
+            return true;
+        }
+        return false;
+    };
+    m_hitType = &hitType;
+    vm.SetGlobal("physics", script::MakeNative(physicsType, this));
+
     vm.SetGlobal("find", script::MakeNativeFunction("find", [this](script::VM& v, Span<const Value> a, Value& out) {
                      if (a.Size() != 1 || a[0].Type() != ValueType::String)
                          return v.Fail("find(\"Entity Name\")");
@@ -770,6 +900,7 @@ void ScriptSystem::Tick(ecs::World& world, f32 dt, const InputState* input)
     context.dt = dt;
     context.elapsed += f64(dt);
     ++context.frame;
+    context.hits.Clear();
     m_checkTimer += f64(dt);
     if (m_checkTimer > 0.5)
         CheckForChanges();
@@ -799,6 +930,34 @@ void ScriptSystem::Tick(ecs::World& world, f32 dt, const InputState* input)
         if (world.IsAlive(e))
             scene::DestroyHierarchy(world, e);
     context.destroyQueue.Clear();
+}
+
+void ScriptSystem::DispatchPhysicsEvents(ecs::World& world, Span<const PhysicsEvent> events)
+{
+    if (!m_running || events.Empty())
+        return;
+    context.world = &world;
+    for (const PhysicsEvent& ev : events)
+        for (u32 side = 0; side < 2; ++side) {
+            const ecs::Entity self = side == 0 ? ev.a : ev.b, other = side == 0 ? ev.b : ev.a;
+            const char* fn = nullptr;
+            switch (ev.type) {
+            case physics::ContactEventType::TouchBegin: fn = "collisionEnter"; break;
+            case physics::ContactEventType::TouchEnd: fn = "collisionExit"; break;
+            case physics::ContactEventType::SensorEnter: fn = "triggerEnter"; break;
+            case physics::ContactEventType::SensorExit: fn = "triggerExit"; break;
+            }
+            const Value args[2] = {script::MakeNative(*m_entityType, this, other.Pack()), Value(ev.speed)};
+            for (UniquePtr<RunningScript>& rs : m_instances) {
+                if (rs->failed || !rs->started || rs->entity != self || !rs->instance->HasFunction(fn))
+                    continue;
+                RebindGlobals(*rs);
+                if (!rs->instance->Call(fn, Span<const Value>(args, 2))) {
+                    Report(m_vm->LastError(), true);
+                    rs->failed = true;
+                }
+            }
+        }
 }
 
 void ScriptSystem::End()

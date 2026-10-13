@@ -33,16 +33,22 @@ struct RigidBody
     bool canSleep = true;
 };
 
+// Collider fields shared by every collider: isTrigger (reports overlaps to scripts, doesn't collide) and the
+// physics layer 0..31 (queries filter by it; the body takes the layer of its own entity's collider).
 struct BoxCollider
 {
     Vec3 center;
     Vec3 size = Vec3(1.0f); // full size (scaled by the transform)
+    bool isTrigger = false;
+    i32 layer = 0;
 };
 
 struct SphereCollider
 {
     Vec3 center;
     f32 radius = 0.5f;
+    bool isTrigger = false;
+    i32 layer = 0;
 };
 
 /// Capsule along the entity's local Y axis.
@@ -51,12 +57,15 @@ struct CapsuleCollider
     Vec3 center;
     f32 radius = 0.5f;
     f32 height = 2.0f; // end to end
+    bool isTrigger = false;
+    i32 layer = 0;
 };
 
 /// The triangles of the entity's Mesh Renderer (static collision: level geometry).
 struct MeshCollider
 {
     bool enabled = true;
+    i32 layer = 0;
 };
 
 ZX_DECLARE_ENUM(RigidBodyType);
@@ -79,6 +88,25 @@ struct ColliderOutline
     f32 halfHeight = 0.0f;
 };
 void GatherColliderOutlines(ecs::World& world, ecs::Entity e, Array<ColliderOutline>& out);
+
+/// A contact event between two entities (per frame, see PhysicsSystem::Events).
+struct PhysicsEvent
+{
+    physics::ContactEventType type = physics::ContactEventType::TouchBegin;
+    ecs::Entity a, b;
+    Vec3 point;  // begin events
+    Vec3 normal; // from a to b
+    f32 speed = 0.0f; // impact speed (begin events)
+};
+
+/// Hit of a scene query.
+struct PhysicsHit
+{
+    ecs::Entity entity;
+    Vec3 point;
+    Vec3 normal;
+    f32 distance = 0.0f;
+};
 
 class PhysicsSystem
 {
@@ -104,6 +132,23 @@ public:
     physics::BodyId BodyOf(ecs::Entity e) const;
     /// Closest collider hit; the entity is returned in `entity`.
     bool Raycast(const Ray& ray, f32 maxDistance, physics::RaycastHit& hit, ecs::Entity& entity) const;
+    // Scene queries for gameplay code (layerMask: bit per layer; triggers are not hit by casts).
+    bool Raycast(Vec3 origin, Vec3 direction, f32 maxDistance, PhysicsHit& hit, u32 layerMask = ~0u, ecs::Entity ignore = {}) const;
+    bool SphereCast(Vec3 origin, f32 radius, Vec3 direction, f32 maxDistance, PhysicsHit& hit, u32 layerMask = ~0u,
+                    ecs::Entity ignore = {}) const;
+    void OverlapSphere(Vec3 center, f32 radius, Array<ecs::Entity>& out, u32 layerMask = ~0u) const;
+    /// Contact / trigger events of the last Tick.
+    Span<const PhysicsEvent> Events() const { return m_events.View(); }
+
+    // Forces and velocities of an entity's Rigid Body (no effect without one or while not playing).
+    void AddForce(ecs::Entity e, Vec3 force);
+    void AddImpulse(ecs::Entity e, Vec3 impulse);
+    void AddImpulseAtPoint(ecs::Entity e, Vec3 impulse, Vec3 point);
+    void AddTorque(ecs::Entity e, Vec3 torque);
+    Vec3 GetVelocity(ecs::Entity e) const;
+    void SetVelocity(ecs::Entity e, Vec3 v);
+    Vec3 GetAngularVelocity(ecs::Entity e) const;
+    void SetAngularVelocity(ecs::Entity e, Vec3 w);
 
 private:
     struct Tracked
@@ -126,6 +171,9 @@ private:
     Array<Tracked> m_tracked;
     HashMap<u64, u32> m_byEntity; // entity -> index in m_tracked
     Array<ecs::Entity> m_pendingMeshes; // static mesh colliders whose mesh is not loaded yet
+    Array<PhysicsEvent> m_events;
+    Array<physics::ContactEvent> m_rawEvents;
+    ecs::Entity EntityOf(physics::BodyId id) const;
     f32 m_accumulator = 0.0f;
 };
 

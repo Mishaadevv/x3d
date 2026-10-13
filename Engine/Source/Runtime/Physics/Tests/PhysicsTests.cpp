@@ -347,3 +347,98 @@ ZX_TEST(ManualPhysics, Pile500Bodies)
     std::printf("500 bodies: %.2f ms average (broadphase %.2f [bounds %.2f], narrowphase %.2f, solver %.2f), %.2f ms worst; awake %u, contacts %u, points %u\n",
                 total / steps, bp / steps, bounds / steps, np / steps, sv / steps, worst, s.awake, s.contacts, s.points);
 }
+
+ZX_TEST(Physics, ContactAndSensorEvents)
+{
+    PhysicsWorld w;
+    const BodyId ground = Ground(w);
+    // A sensor box hovering over the ground; a ball falls through it onto the ground.
+    BodyDesc zone;
+    zone.position = Vec3(0.0f, 3.0f, 0.0f);
+    ShapeDesc trigger = ShapeDesc::Box(Vec3(1.0f));
+    trigger.isSensor = true;
+    zone.shapes.PushBack(trigger);
+    const BodyId sensor = w.CreateBody(zone);
+    BodyDesc d;
+    d.motion = MotionType::Dynamic;
+    d.position = Vec3(0.0f, 6.0f, 0.0f);
+    d.shapes.PushBack(ShapeDesc::Sphere(0.3f));
+    const BodyId ball = w.CreateBody(d);
+    Array<ContactEvent> events;
+    for (u32 i = 0; i < 180; ++i) {
+        w.Step(Dt);
+        w.TakeEvents(events);
+    }
+    auto count = [&](ContactEventType type, BodyId other) {
+        u32 n = 0;
+        for (const ContactEvent& e : events)
+            n += e.type == type && ((e.a == ball && e.b == other) || (e.b == ball && e.a == other)) ? 1u : 0u;
+        return n;
+    };
+    ZX_EXPECT_EQ(count(ContactEventType::SensorEnter, sensor), 1u);
+    ZX_EXPECT_EQ(count(ContactEventType::SensorExit, sensor), 1u);
+    ZX_EXPECT_EQ(count(ContactEventType::TouchBegin, ground), 1u); // no flicker while resting
+    ZX_EXPECT_EQ(count(ContactEventType::TouchEnd, ground), 0u);
+    ZX_EXPECT(Abs(w.GetPosition(ball).y - 0.3f) < 0.02f); // the sensor didn't stop it
+    for (const ContactEvent& e : events)
+        if (e.type == ContactEventType::TouchBegin)
+            ZX_EXPECT(e.speed > 5.0f); // fell ~6 m
+    // Lift it away: the touch ends.
+    w.SetTransform(ball, Vec3(10.0f, 5.0f, 0.0f), Quat());
+    events.Clear();
+    w.Step(Dt);
+    w.TakeEvents(events);
+    ZX_EXPECT_EQ(count(ContactEventType::TouchEnd, ground), 1u);
+}
+
+ZX_TEST(Physics, OverlapAndShapeCast)
+{
+    PhysicsWorld w;
+    const BodyId ground = Ground(w);
+    BodyDesc wall;
+    wall.position = Vec3(0.0f, 1.0f, 5.0f);
+    wall.shapes.PushBack(ShapeDesc::Box(Vec3(2.0f, 1.0f, 0.25f)));
+    wall.layer = 2;
+    const BodyId wallId = w.CreateBody(wall);
+    // Overlap.
+    Array<BodyId> hits;
+    w.Overlap(ShapeDesc::Sphere(0.5f), Vec3(0.0f, 1.0f, 4.5f), Quat(), hits);
+    ZX_EXPECT(hits.Size() == 1u && hits[0] == wallId);
+    hits.Clear();
+    w.Overlap(ShapeDesc::Sphere(0.5f), Vec3(0.0f, 1.0f, 2.0f), Quat(), hits);
+    ZX_EXPECT(hits.Empty());
+    // Sphere, capsule and box casts towards the wall (front face at z = 4.75).
+    RaycastHit hit;
+    ZX_REQUIRE(w.ShapeCast(ShapeDesc::Sphere(0.5f), Vec3(0.0f, 1.0f, 0.0f), Quat(), Vec3(0, 0, 1), 20.0f, hit));
+    ZX_EXPECT(hit.body == wallId && Abs(hit.distance - 4.25f) < 0.01f && hit.normal.z < -0.99f);
+    ZX_REQUIRE(w.ShapeCast(ShapeDesc::Capsule(0.3f, 0.5f), Vec3(1.0f, 1.0f, 0.0f), Quat(), Vec3(0, 0, 1), 20.0f, hit));
+    ZX_EXPECT(Abs(hit.distance - 4.45f) < 0.01f);
+    ZX_REQUIRE(w.ShapeCast(ShapeDesc::Box(Vec3(0.5f)), Vec3(0.0f, 1.0f, 0.0f), Quat::FromEulerDegrees(Vec3(0.0f, 45.0f, 0.0f)), Vec3(0, 0, 1), 20.0f, hit));
+    ZX_EXPECT(Abs(hit.distance - (4.75f - 0.7071f)) < 0.01f);
+    // Downwards onto the ground; layer filter skips the wall.
+    ZX_REQUIRE(w.ShapeCast(ShapeDesc::Sphere(0.5f), Vec3(0.0f, 1.0f, 5.0f), Quat(), Vec3(0, -1, 0), 20.0f, hit, ~(1u << 2)));
+    ZX_EXPECT(hit.body == ground && Abs(hit.distance - 0.5f) < 0.01f && hit.normal.y > 0.99f);
+    // Starting inside: distance 0.
+    ZX_REQUIRE(w.ShapeCast(ShapeDesc::Sphere(0.5f), Vec3(0.0f, 1.0f, 4.8f), Quat(), Vec3(0, 0, 1), 5.0f, hit));
+    ZX_EXPECT(hit.distance == 0.0f);
+    // Moving away from a touched surface is free.
+    ZX_EXPECT(!w.ShapeCast(ShapeDesc::Sphere(0.5f), Vec3(0.0f, 0.5f, 0.0f), Quat(), Vec3(0, 1, 0), 3.0f, hit, ~(1u << 2)));
+}
+
+ZX_TEST(Physics, FastBodiesDoNotTunnel)
+{
+    // Speculative contacts: a 100 m/s ball (1.7 m per step) against a 10 cm wall.
+    PhysicsWorld w;
+    BodyDesc wall;
+    wall.position = Vec3(0.0f, 0.0f, 10.0f);
+    wall.shapes.PushBack(ShapeDesc::Box(Vec3(3.0f, 3.0f, 0.05f)));
+    w.CreateBody(wall);
+    BodyDesc d;
+    d.motion = MotionType::Dynamic;
+    d.gravityScale = 0.0f;
+    d.linearVelocity = Vec3(0.0f, 0.0f, 100.0f);
+    d.shapes.PushBack(ShapeDesc::Sphere(0.1f));
+    const BodyId ball = w.CreateBody(d);
+    Run(w, 1.0f);
+    ZX_EXPECT(w.GetPosition(ball).z < 10.0f);
+}

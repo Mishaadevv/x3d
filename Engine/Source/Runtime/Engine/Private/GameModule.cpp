@@ -1,4 +1,5 @@
 #include "Engine/GameModule.h"
+#include "Engine/PhysicsSystem.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
 #include "Core/Log/Log.h"
@@ -318,6 +319,39 @@ public:
     {
         if (context.audio && voice)
             context.audio->Engine().Stop(audio::VoiceId(voice), 0.05f);
+    }
+
+    void AddForce(game::EntityId id, game::Vec3 force) override
+    {
+        if (context.physics)
+            context.physics->AddForce(FromId(id), ToEngine(force));
+    }
+    void AddImpulse(game::EntityId id, game::Vec3 impulse) override
+    {
+        if (context.physics)
+            context.physics->AddImpulse(FromId(id), ToEngine(impulse));
+    }
+    game::Vec3 GetVelocity(game::EntityId id) override
+    {
+        return ToGame(context.physics ? context.physics->GetVelocity(FromId(id)) : Vec3());
+    }
+    void SetVelocity(game::EntityId id, game::Vec3 v) override
+    {
+        if (context.physics)
+            context.physics->SetVelocity(FromId(id), ToEngine(v));
+    }
+    bool Raycast(game::Vec3 origin, game::Vec3 direction, float maxDistance, game::RaycastResult* hit, uint32_t layerMask) override
+    {
+        PhysicsHit h;
+        if (!context.physics || !context.physics->Raycast(ToEngine(origin), ToEngine(direction), maxDistance, h, layerMask))
+            return false;
+        if (hit) {
+            hit->entity = ToId(h.entity);
+            hit->point = ToGame(h.point);
+            hit->normal = ToGame(h.normal);
+            hit->distance = h.distance;
+        }
+        return true;
     }
 
 private:
@@ -685,6 +719,27 @@ void GameModuleSystem::Tick(ecs::World& world, f32 dt, const GameTickContext& co
         if (world.IsAlive(e))
             scene::DestroyHierarchy(world, e);
     host.destroyQueue.Clear();
+}
+
+void GameModuleSystem::DispatchPhysicsEvents(Span<const PhysicsEvent> events)
+{
+    if (!m_running)
+        return;
+    for (const PhysicsEvent& ev : events)
+        for (u32 side = 0; side < 2; ++side) {
+            const ecs::Entity self = side == 0 ? ev.a : ev.b, other = side == 0 ? ev.b : ev.a;
+            for (usize i = 0; i < m_instances.Size(); ++i) {
+                Instance& in = m_instances[i];
+                if (!in.started || in.entity != self || !in.object)
+                    continue;
+                switch (ev.type) {
+                case physics::ContactEventType::TouchBegin: in.object->OnCollisionEnter(ToId(other), ev.speed); break;
+                case physics::ContactEventType::TouchEnd: in.object->OnCollisionExit(ToId(other)); break;
+                case physics::ContactEventType::SensorEnter: in.object->OnTriggerEnter(ToId(other)); break;
+                case physics::ContactEventType::SensorExit: in.object->OnTriggerExit(ToId(other)); break;
+                }
+            }
+        }
 }
 
 void GameModuleSystem::End()

@@ -24,25 +24,34 @@ ZX_REFLECT_STRUCT_BEGIN(RigidBody)
     ZX_FIELD(canSleep, Meta::Tooltip("Resting bodies stop simulating until something touches them"))
 ZX_REFLECT_STRUCT_END()
 
+#define ZX_COLLIDER_COMMON_FIELDS                                                                                          \
+    ZX_FIELD(isTrigger, Meta::Tooltip("Reports overlaps to scripts (triggerEnter / triggerExit) instead of colliding"))     \
+    ZX_FIELD(layer, Meta::Range(0, 31), Meta::Tooltip("Physics layer: raycasts and other queries can filter by it"))
+
 ZX_REFLECT_STRUCT_BEGIN(BoxCollider)
     ZX_FIELD(center, Meta::Units("m"))
     ZX_FIELD(size, Meta::Units("m"), Meta::Tooltip("Full size, scaled by the transform"))
+    ZX_COLLIDER_COMMON_FIELDS
 ZX_REFLECT_STRUCT_END()
 
 ZX_REFLECT_STRUCT_BEGIN(SphereCollider)
     ZX_FIELD(center, Meta::Units("m"))
     ZX_FIELD(radius, Meta::Range(0.01, 100), Meta::Units("m"))
+    ZX_COLLIDER_COMMON_FIELDS
 ZX_REFLECT_STRUCT_END()
 
 ZX_REFLECT_STRUCT_BEGIN(CapsuleCollider)
     ZX_FIELD(center, Meta::Units("m"))
     ZX_FIELD(radius, Meta::Range(0.01, 100), Meta::Units("m"))
     ZX_FIELD(height, Meta::Range(0.02, 200), Meta::Units("m"), Meta::Tooltip("End to end, along the local Y axis"))
+    ZX_COLLIDER_COMMON_FIELDS
 ZX_REFLECT_STRUCT_END()
 
 ZX_REFLECT_STRUCT_BEGIN(MeshCollider)
     ZX_FIELD(enabled, Meta::Tooltip("Static collision with the triangles of the Mesh Renderer"))
+    ZX_FIELD(layer, Meta::Range(0, 31), Meta::Tooltip("Physics layer: raycasts and other queries can filter by it"))
 ZX_REFLECT_STRUCT_END()
+#undef ZX_COLLIDER_COMMON_FIELDS
 
 using namespace physics;
 using ecs::Entity;
@@ -82,15 +91,38 @@ void AppendShapes(const ecs::World& world, Entity e, const Pose& body, Array<Sha
         shape.rotation = Normalize(inv * p.rotation);
         out.PushBack(shape);
     };
+    auto sensor = [](ShapeDesc d, bool trigger) {
+        d.isSensor = trigger;
+        return d;
+    };
     if (const BoxCollider* c = world.Get<const BoxCollider>(e))
-        place(ShapeDesc::Box(Max(Abs(c->size) * s * 0.5f, Vec3(0.005f))), c->center);
+        place(sensor(ShapeDesc::Box(Max(Abs(c->size) * s * 0.5f, Vec3(0.005f))), c->isTrigger), c->center);
     if (const SphereCollider* c = world.Get<const SphereCollider>(e))
-        place(ShapeDesc::Sphere(Max(c->radius * Max(s.x, Max(s.y, s.z)), 0.005f)), c->center);
+        place(sensor(ShapeDesc::Sphere(Max(c->radius * Max(s.x, Max(s.y, s.z)), 0.005f)), c->isTrigger), c->center);
     if (const CapsuleCollider* c = world.Get<const CapsuleCollider>(e)) {
         const f32 r = Max(c->radius * Max(s.x, s.z), 0.005f);
         const f32 half = Max(c->height * s.y * 0.5f - r, 0.0f);
-        place(ShapeDesc::Capsule(r, half), c->center);
+        place(sensor(ShapeDesc::Capsule(r, half), c->isTrigger), c->center);
     }
+}
+
+/// Physics layer of an entity: from its first collider component.
+u32 LayerOf(const ecs::World& world, Entity e)
+{
+    i32 layer = 0;
+    const BoxCollider* box = world.Get<const BoxCollider>(e);
+    const SphereCollider* sphere = world.Get<const SphereCollider>(e);
+    const CapsuleCollider* capsule = world.Get<const CapsuleCollider>(e);
+    const MeshCollider* mesh = world.Get<const MeshCollider>(e);
+    if (box)
+        layer = box->layer;
+    else if (sphere)
+        layer = sphere->layer;
+    else if (capsule)
+        layer = capsule->layer;
+    else if (mesh)
+        layer = mesh->layer;
+    return u32(Clamp(layer, 0, 31));
 }
 
 /// Part of a character (its body is the controller's capsule).
@@ -175,6 +207,7 @@ bool PhysicsSystem::CreateBody(ecs::World& world, Entity e, bool dynamic)
     d.position = pose.position;
     d.rotation = pose.rotation;
     d.userData = e.Pack();
+    d.layer = LayerOf(world, e);
     const RigidBody* rb = world.Get<const RigidBody>(e);
     if (dynamic && rb) {
         d.motion = rb->type == RigidBodyType::Kinematic ? MotionType::Kinematic : MotionType::Dynamic;
@@ -288,6 +321,7 @@ void PhysicsSystem::CreateBodies(ecs::World& world)
 
 void PhysicsSystem::Tick(ecs::World& world, f32 dt)
 {
+    m_events.Clear();
     if (!m_world)
         return;
     // Mesh colliders whose meshes arrived since.
@@ -312,6 +346,7 @@ void PhysicsSystem::Tick(ecs::World& world, f32 dt)
             d.position = pose.position;
             d.rotation = pose.rotation;
             d.userData = e.Pack();
+            d.layer = LayerOf(world, e);
             d.shapes.PushBack(ShapeDesc::Mesh(m_world->CreateTriangleMesh(positions.View(), indices.View())));
             m_world->CreateBody(d);
             if (m_pendingMeshes.Empty())
@@ -360,6 +395,21 @@ void PhysicsSystem::Tick(ecs::World& world, f32 dt)
             }
     }
 
+    // Contact events of this frame's steps, as entities.
+    m_rawEvents.Clear();
+    m_world->TakeEvents(m_rawEvents);
+    for (const ContactEvent& r : m_rawEvents) {
+        PhysicsEvent e;
+        e.type = r.type;
+        e.a = Entity::Unpack(m_world->IsValid(r.a) ? m_world->GetUserData(r.a) : 0);
+        e.b = Entity::Unpack(m_world->IsValid(r.b) ? m_world->GetUserData(r.b) : 0);
+        e.point = r.point;
+        e.normal = r.normal;
+        e.speed = r.speed;
+        if (e.a && e.b)
+            m_events.PushBack(e);
+    }
+
     // Write the interpolated poses of simulated bodies to their entities.
     const f32 alpha = m_accumulator / FixedStep;
     for (Tracked& t : m_tracked) {
@@ -389,6 +439,108 @@ physics::BodyId PhysicsSystem::BodyOf(Entity e) const
 {
     const u32* i = m_byEntity.Find(e.Pack());
     return i ? m_tracked[*i].body : physics::BodyId{};
+}
+
+Entity PhysicsSystem::EntityOf(physics::BodyId id) const
+{
+    return m_world && m_world->IsValid(id) ? Entity::Unpack(m_world->GetUserData(id)) : Entity{};
+}
+
+bool PhysicsSystem::Raycast(Vec3 origin, Vec3 direction, f32 maxDistance, PhysicsHit& hit, u32 layerMask, Entity ignore) const
+{
+    if (!m_world || LengthSq(direction) < 1e-12f)
+        return false;
+    // Rays ignore triggers and the given entity: walk the hits front to back.
+    Vec3 o = origin;
+    const Vec3 d = Normalize(direction);
+    f32 travelled = 0.0f;
+    for (u32 attempt = 0; attempt < 16; ++attempt) {
+        physics::RaycastHit h;
+        if (!m_world->Raycast(Ray(o, d), maxDistance - travelled, h, layerMask))
+            return false;
+        const Entity e = EntityOf(h.body);
+        const bool sensor = h.shape < m_world->GetShapes(h.body).Size() && m_world->GetShapes(h.body)[h.shape].isSensor;
+        if (!sensor && !(ignore && e == ignore)) {
+            hit.entity = e;
+            hit.point = h.point;
+            hit.normal = h.normal;
+            hit.distance = travelled + h.distance;
+            return true;
+        }
+        travelled += h.distance + 1e-3f;
+        o = origin + d * travelled;
+    }
+    return false;
+}
+
+bool PhysicsSystem::SphereCast(Vec3 origin, f32 radius, Vec3 direction, f32 maxDistance, PhysicsHit& hit, u32 layerMask, Entity ignore) const
+{
+    if (!m_world || LengthSq(direction) < 1e-12f)
+        return false;
+    physics::RaycastHit h;
+    const physics::BodyId skip = ignore ? BodyOf(ignore) : physics::BodyId{};
+    if (!m_world->ShapeCast(ShapeDesc::Sphere(Max(radius, 0.001f)), origin, Quat(), direction, maxDistance, h, layerMask, skip))
+        return false;
+    hit.entity = EntityOf(h.body);
+    hit.point = h.point;
+    hit.normal = h.normal;
+    hit.distance = h.distance;
+    return true;
+}
+
+void PhysicsSystem::OverlapSphere(Vec3 center, f32 radius, Array<Entity>& out, u32 layerMask) const
+{
+    if (!m_world)
+        return;
+    Array<physics::BodyId> bodies;
+    m_world->Overlap(ShapeDesc::Sphere(Max(radius, 0.001f)), center, Quat(), bodies, layerMask);
+    for (physics::BodyId b : bodies) {
+        const Entity e = EntityOf(b);
+        bool seen = false;
+        for (Entity x : out)
+            seen |= x == e;
+        if (e && !seen)
+            out.PushBack(e);
+    }
+}
+
+void PhysicsSystem::AddForce(Entity e, Vec3 force)
+{
+    if (m_world)
+        m_world->AddForce(BodyOf(e), force);
+}
+
+void PhysicsSystem::AddImpulse(Entity e, Vec3 impulse)
+{
+    if (m_world)
+        m_world->AddImpulse(BodyOf(e), impulse);
+}
+
+void PhysicsSystem::AddImpulseAtPoint(Entity e, Vec3 impulse, Vec3 point)
+{
+    if (m_world)
+        m_world->AddImpulseAtPoint(BodyOf(e), impulse, point);
+}
+
+void PhysicsSystem::AddTorque(Entity e, Vec3 torque)
+{
+    if (m_world)
+        m_world->AddTorque(BodyOf(e), torque);
+}
+
+Vec3 PhysicsSystem::GetVelocity(Entity e) const { return m_world ? m_world->GetLinearVelocity(BodyOf(e)) : Vec3(); }
+Vec3 PhysicsSystem::GetAngularVelocity(Entity e) const { return m_world ? m_world->GetAngularVelocity(BodyOf(e)) : Vec3(); }
+
+void PhysicsSystem::SetVelocity(Entity e, Vec3 v)
+{
+    if (m_world)
+        m_world->SetLinearVelocity(BodyOf(e), v);
+}
+
+void PhysicsSystem::SetAngularVelocity(Entity e, Vec3 w)
+{
+    if (m_world)
+        m_world->SetAngularVelocity(BodyOf(e), w);
 }
 
 bool PhysicsSystem::Raycast(const Ray& ray, f32 maxDistance, physics::RaycastHit& hit, Entity& entity) const

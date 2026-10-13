@@ -58,6 +58,7 @@ struct ShapeDesc
     Vec3 position;                 // pose relative to the body origin
     Quat rotation;
     f32 density = 1000.0f; // kg/m^3 (water); a body's mass comes from its shapes unless BodyDesc::mass is set
+    bool isSensor = false;  // trigger: reports overlaps (SensorEnter/Exit events), doesn't collide
 
     static ShapeDesc Box(Vec3 halfExtents, Vec3 position = {}, Quat rotation = {});
     static ShapeDesc Sphere(f32 radius, Vec3 position = {});
@@ -132,6 +133,24 @@ struct PhysicsStats
     f64 solverMs = 0.0;
 };
 
+enum class ContactEventType : u8
+{
+    TouchBegin, // two solid bodies started touching
+    TouchEnd,
+    SensorEnter, // a body entered a sensor shape (of either body)
+    SensorExit,
+};
+
+/// Begin/end of contact between two bodies (per body pair, not per shape), gathered over Steps until TakeEvents.
+struct ContactEvent
+{
+    ContactEventType type = ContactEventType::TouchBegin;
+    BodyId a, b;
+    Vec3 point;  // a contact point (begin events)
+    Vec3 normal; // from a to b (begin events)
+    f32 speed = 0.0f; // approach speed along the normal at the begin (m/s)
+};
+
 /// Contact point for debug drawing.
 struct DebugContact
 {
@@ -195,6 +214,14 @@ public:
     bool Raycast(const Ray& ray, f32 maxDistance, RaycastHit& hit, u32 layerMask = ~0u) const;
     /// Bodies whose bounds overlap `box`.
     void QueryAabb(const AABB& box, Array<BodyId>& out) const;
+    /// Bodies a shape (sphere / box / capsule) placed at position/rotation overlaps (sensors included).
+    void Overlap(const ShapeDesc& shape, Vec3 position, Quat rotation, Array<BodyId>& out, u32 layerMask = ~0u, BodyId ignore = {}) const;
+    /// Sweeps a shape from position along unit `direction`; the first solid body it touches (sensors are ignored).
+    /// Starting inside something reports a hit at distance 0 with the push-out normal.
+    bool ShapeCast(const ShapeDesc& shape, Vec3 position, Quat rotation, Vec3 direction, f32 maxDistance, RaycastHit& hit,
+                   u32 layerMask = ~0u, BodyId ignore = {}) const;
+    /// Contact events of the Steps since the last call.
+    void TakeEvents(Array<ContactEvent>& out);
 
     const PhysicsStats& Stats() const { return m_stats; }
     /// Contact points of the last step (debug drawing).

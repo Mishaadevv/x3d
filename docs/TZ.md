@@ -1155,9 +1155,13 @@ Vulkan-бэкенд, HDR-вывод, плагины редактора, ZScript 
 - [x] Приёмка (часть 1): стопка из 20 кубов стоит 60 с (тест Physics.StackOf20CubesStableFor60Seconds), 500 тел —
   2.9 мс на шаг (ManualPhysics.Pile500Bodies, i5-10310U)
 - [ ] ConvexHull (Quickhull при импорте) + GJK/EPA, HeightField
-- [ ] Запросы: shapecast, overlap, closest point, батчи; триггеры (Enter/Stay/Exit) и события контактов; API в
-  ZeqouScript и C++ (силы, скорость, рейкасты)
-- [ ] CCD: swept sphere для быстрых тел
+- [x] Запросы: raycast, shapecast (консервативное продвижение по узкой фазе), overlap; триггеры (сенсоры, события
+  входа/выхода) и события контактов (с силой удара); слои у коллайдеров; API в ZeqouScript (`entity.velocity`,
+  `addForce/Impulse/Torque`, `physics.raycast/sphereCast/overlapSphere/gravity`, колбэки `collisionEnter/Exit`,
+  `triggerEnter/Exit`) и C++ (Host + `OnCollisionEnter/Exit`, `OnTriggerEnter/Exit`, Game SDK v2)
+- [x] CCD: speculative contacts с запасом по относительной скорости (тест: 100 м/с сквозь стенку 10 см не проходит);
+  swept sphere — если понадобится для снарядов быстрее ~150 м/с
+- [ ] Closest point, батчевые запросы, Stay-события
 - [ ] Джоинты: Fixed, Hinge (лимиты, мотор), Slider, BallSocket/Cone-twist, Distance/Spring, 6DOF
 - [ ] Character controller на физике: kinematic capsule, sweep & slide, ступеньки, склоны, платформы, push
 - [ ] Параллельное решение островов, debug draw контактов и островов, сэмпл PhysicsPlayground

@@ -1,4 +1,8 @@
+#include "Core/FileSystem/FileSystem.h"
+#include "Core/HAL/PlatformFile.h"
+#include "Core/String/Path.h"
 #include "Core/Testing/Test.h"
+#include "Engine/Scripting.h"
 #include "Engine/ComponentRegistry.h"
 #include "Engine/Gameplay.h"
 #include "Engine/PhysicsSystem.h"
@@ -128,4 +132,70 @@ ZX_TEST(PhysicsSystem, ComponentsSaveAndLoad)
         found += r.mass == 12.0f && r.type == RigidBodyType::Kinematic && c.height == 1.8f && c.center == Vec3(0, 1, 0) ? 1 : 0;
     });
     ZX_EXPECT_EQ(found, 1u);
+}
+
+ZX_TEST(PhysicsSystem, ScriptsGetCollisionsAndQueries)
+{
+    const String root = Path::Join(Path::Normalize(platform::GetTempDirectory()), "zx_script_test/physics");
+    platform::DeleteDirectoryTree(root);
+    platform::CreateDirectoryTree(root + "/Scripts");
+    // A ball launched sideways: it reports hitting the wall and passing a trigger; raycast and overlap from scripts.
+    ZX_REQUIRE(fs::WriteTextFile(root + "/Scripts/Ball.zs", R"zs(
+        script Ball {
+            fn start() {
+                entity.addImpulse(vec3(0, 0, entity.velocity.z + 300))
+                let hit = physics.raycast(vec3(0, 5, 0), vec3(0, -1, 0))
+                log("ray " + hit.entity.name + " " + hit.distance)
+                let near = physics.overlapSphere(vec3(0, 0.5, 6), 0.5)
+                log("overlap " + len(near))
+                let miss = physics.raycast(vec3(0, 5, 0), vec3(0, -1, 0), 100, 3)
+                log("filtered " + (miss == nil))
+            }
+            fn collisionEnter(other, speed) { log("hit " + other.name) }
+            fn triggerEnter(other) { log("enter " + other.name) }
+            fn triggerExit(other) { log("exit " + other.name) }
+        }
+    )zs"));
+    Scene s;
+    const ecs::Entity floor = s.Floor();
+    s.world.Get<scene::EntityName>(floor)->value = "Floor";
+    const ecs::Entity wall = scene::CreateNode(s.world, "Wall", Transform(Vec3(0, 1, 8)));
+    s.world.Add(wall, BoxCollider{Vec3(), Vec3(4, 2, 0.5f)});
+    const ecs::Entity zone = scene::CreateNode(s.world, "Zone", Transform(Vec3(0, 0.5f, 4)));
+    BoxCollider trigger;
+    trigger.size = Vec3(4, 2, 1);
+    trigger.isTrigger = true;
+    s.world.Add(zone, trigger);
+    const ecs::Entity ball = scene::CreateNode(s.world, "Ball", Transform(Vec3(0, 0.3f, 0)));
+    s.world.Add(ball, SphereCollider{Vec3(), 0.3f});
+    RigidBody rb;
+    rb.mass = 50.0f; // 300 N*s -> 6 m/s
+    rb.friction = 0.0f;
+    s.world.Add(ball, rb);
+    s.world.Add(ball, Script{String("Scripts/Ball.zs"), String()});
+    scene::UpdateWorldTransforms(s.world);
+
+    PhysicsSystem p;
+    p.Begin(s.world, nullptr);
+    ScriptSystem scripts;
+    scripts.SetContentRoot(root);
+    scripts.physics = &p;
+    String log;
+    scripts.onLog = [&](StringView msg, bool) {
+        log += msg;
+        log += '\n';
+    };
+    for (u32 i = 0; i < 150; ++i) {
+        scene::UpdateWorldTransforms(s.world);
+        scripts.Tick(s.world, 1.0f / 60.0f, nullptr);
+        scene::UpdateWorldTransforms(s.world);
+        p.Tick(s.world, 1.0f / 60.0f);
+        scripts.DispatchPhysicsEvents(s.world, p.Events());
+    }
+    scripts.End();
+    p.End();
+    platform::DeleteDirectoryTree(root);
+    if (!log.View().Contains("ray Ball") || !log.View().Contains("overlap 1") || !log.View().Contains("filtered true") ||
+        !log.View().Contains("hit Wall") || !log.View().Contains("enter Zone") || !log.View().Contains("exit Zone"))
+        test::ReportFailure(__FILE__, __LINE__, String::Format("script log:\n{}", log));
 }

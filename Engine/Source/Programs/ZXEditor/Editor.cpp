@@ -2325,6 +2325,7 @@ bool Editor::Frame()
         inputActionState.Update(inputActions, gameInput);
         if (scripts && FeatureEnabled("scripts")) {
             scripts->actions = &inputActionState;
+            scripts->physics = physics.IsRunning() ? &physics : nullptr;
             scripts->Tick(world, gameDt, gameInput);
         }
         if (game) {
@@ -2332,6 +2333,7 @@ bool Editor::Frame()
             context.input = gameInput;
             context.actions = &inputActionState;
             context.audio = audio.Get();
+            context.physics = physics.IsRunning() ? &physics : nullptr;
             game->Tick(world, gameDt, context);
         }
         // Physics after gameplay code moved things (kinematic bodies follow, teleports), characters after physics.
@@ -2339,6 +2341,11 @@ bool Editor::Frame()
         if (physics.IsRunning()) {
             physics.Tick(world, gameDt);
             scene::UpdateWorldTransforms(world);
+            // Collision / trigger callbacks of this frame's steps.
+            if (scripts && FeatureEnabled("scripts"))
+                scripts->DispatchPhysicsEvents(world, physics.Events());
+            if (game)
+                game->DispatchPhysicsEvents(physics.Events());
         }
         if (audio && !m_pieStep)
             audio->Tick(world, gameDt, CurrentListener());

@@ -4,7 +4,7 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12 — par
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a Unity URP / Unreal Engine 5 style workflow that runs
 well on everyday hardware (the development machine is a laptop with Intel UHD 620 graphics).
 
-**Version 0.10.2** · zero third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md)
+**Version 0.10.3** · zero third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md)
 
 ![Water template](docs/images/water.jpg)
 
@@ -19,7 +19,8 @@ well on everyday hardware (the development machine is a laptop with Intel UHD 62
   and tiled), DDS, WAV, Ogg Vorbis, TTF/WOFF, SVG; own BC1/BC3/BC4/BC5, BC7 and BC6H (HDR) encoders; cooked data cache.
 - **Physics (ZPhys)** — own rigid-body engine: boxes, spheres, capsules, static triangle meshes and compounds, dynamic
   AABB trees, SAT contact clipping, a soft-step solver with substeps (stable stacks), friction, bounce, sleeping
-  islands, raycasts; Unity-style Rigid Body and Collider components in the editor.
+  islands, triggers and collision events, raycasts / sphere casts / overlaps by layer; Unity-style Rigid Body and
+  Collider components, physics API and callbacks for ZeqouScript and C++.
 - **Realistic water** — Gerstner waves, Fresnel sky reflection, sun glints, refraction, depth absorption and foam.
 - **Audio** — own 48 kHz mixer on WASAPI with buses, ducking, snapshots, reverb and a limiter; 3D sound with
   attenuation, panning, cones, Doppler and raycast occlusion; own WAV/ADPCM and Ogg Vorbis decoders, streamed music.

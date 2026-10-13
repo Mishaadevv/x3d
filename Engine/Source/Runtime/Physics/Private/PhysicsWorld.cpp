@@ -77,6 +77,7 @@ struct Body
     f32 extent = 0.0f; // radius around the center of mass (speculative margin for spinning bodies)
     i32 proxy = AabbTree::Null;
     u32 island = 0;
+    bool hasSensor = false;
 
     Vec3 Origin() const { return x - q * comLocal; }
     bool IsDynamic() const { return motion == MotionType::Dynamic; }
@@ -108,6 +109,8 @@ struct Contact
     u64 key = 0;
     u32 a = 0, b = 0; // body indices (a < b)
     u32 shapeA = 0, shapeB = 0;
+    bool sensor = false;
+    f32 approachSpeed = 0.0f; // closing speed when the pair first came within reach (impact strength)
     Manifold manifold;
     f32 normalImpulse[4] = {};
     f32 tangentImpulse[4][2] = {};
@@ -216,6 +219,8 @@ struct PhysicsWorld::Impl
     Array<SolverContact> solver;
     Array<SolverBody> solverBodies;
     Array<Array<BodyPair>> bodyPairs; // per body, this step
+    HashMap<u64, bool> touching;      // body pair (a << 32 | b) -> sensor overlap, as of the last step
+    Array<ContactEvent> events;
     Array<PairOut> pairOuts;           // per pair, this step
     Array<u32> toSolver;
 
@@ -298,6 +303,8 @@ BodyId PhysicsWorld::CreateBody(const BodyDesc& desc)
     b.layer = desc.layer & 31;
     b.allowSleep = desc.allowSleep;
     b.userData = desc.userData;
+    for (const ShapeDesc& s : b.shapes)
+        b.hasSensor |= s.isSensor;
 
     // Mass properties (dynamic bodies): total mass, center of mass, inertia about it (parallel axis theorem).
     if (b.motion == MotionType::Dynamic) {
@@ -308,6 +315,10 @@ BodyId PhysicsWorld::CreateBody(const BodyDesc& desc)
         for (const ShapeDesc& s : b.shapes) {
             f32 m;
             inertias.PushBack(ShapeInertia(s, m));
+            if (s.isSensor) {
+                m = 0.0f;
+                inertias.Back() = Mat3::Scale(Vec3(0.0f));
+            }
             masses.PushBack(m);
             total += m;
             com += s.position * m;
@@ -382,6 +393,7 @@ void PhysicsWorld::DestroyBody(BodyId id)
     I.contactIndex.Clear();
     for (usize i = 0; i < I.contacts.Size(); ++i)
         I.contactIndex.InsertOrAssign(I.contacts[i].key, u32(i));
+    I.touching.RemoveIf([&](u64 key, bool) { return u32(key >> 32) == id.index || u32(key) == id.index; });
 }
 
 bool PhysicsWorld::IsValid(BodyId id) const
@@ -630,8 +642,10 @@ void PhysicsWorld::Step(f32 dt)
             switch (bj.motion) {
             case MotionType::Static:
             case MotionType::Kinematic:
-                if (!iDyn)
-                    return true;
+                if (!iDyn && !bi.hasSensor && !bj.hasSensor)
+                    return true; // kinematic vs static/kinematic: only sensors matter
+                if (!iDyn && bj.motion == MotionType::Kinematic && bj.IsAwakeMover() && j < i)
+                    return true; // two moving kinematic bodies: the other one reports it
                 break;
             case MotionType::Dynamic:
                 if (!bj.sleeping && (!iDyn || j < i))
@@ -641,7 +655,7 @@ void PhysicsWorld::Step(f32 dt)
             out.PushBack(Pair{Min(i, j), Max(i, j)});
             return true;
         };
-        if (bi.IsDynamic())
+        if (bi.IsDynamic() || bi.motion == MotionType::Kinematic)
             I.staticTree.Query(query, consider);
         I.movingTree.Query(query, consider);
     });
@@ -702,11 +716,13 @@ void PhysicsWorld::Step(f32 dt)
                         c.b = p.b;
                         c.shapeA = sa;
                         c.shapeB = sb;
+                        c.sensor = A.shapes[sa].isSensor || B.shapes[sb].isSensor;
                         c.manifold = m;
                         c.localNormal = Conjugate(A.q) * m.normal;
                         const Contact* old = nullptr;
                         if (const u32* oi = I.contactIndex.Find(c.key))
                             old = &I.contacts[*oi];
+                        c.approachSpeed = old ? old->approachSpeed : Max(0.0f, -Dot(B.v - A.v, m.normal));
                         f32 minSep = Infinity;
                         for (u32 k = 0; k < m.count; ++k) {
                             c.localA[k] = Conjugate(A.q) * (m.points[k].pointA - A.x);
@@ -723,7 +739,7 @@ void PhysicsWorld::Step(f32 dt)
                                 }
                         }
                         // Touching an awake body wakes a sleeping one.
-                        if (minSep < S.speculativeDistance) {
+                        if (minSep < S.speculativeDistance && !c.sensor) {
                             out.wakeA |= A.sleeping && B.IsAwakeMover();
                             out.wakeB |= B.sleeping && A.IsAwakeMover();
                         }
@@ -751,6 +767,47 @@ void PhysicsWorld::Step(f32 dt)
     I.contacts = move(contacts);
     I.contactIndex = move(index);
 
+    // Contact events: body pairs that started / stopped touching (or overlapping a sensor) since the last step.
+    {
+        HashMap<u64, bool> now;
+        for (const Contact& c : I.contacts) {
+            f32 minSep = Infinity;
+            for (u32 k = 0; k < c.manifold.count; ++k)
+                minSep = Min(minSep, c.manifold.points[k].separation);
+            if (minSep > (c.sensor ? 0.0f : 0.01f))
+                continue;
+            const u64 key = (u64(c.a) << 32) | c.b;
+            bool* sensor = now.Find(key);
+            if (sensor) {
+                *sensor = *sensor && c.sensor; // any solid contact makes the pair a touch
+                continue;
+            }
+            now.InsertOrAssign(key, c.sensor);
+            if (I.touching.Contains(key))
+                continue;
+            ContactEvent e;
+            e.type = c.sensor ? ContactEventType::SensorEnter : ContactEventType::TouchBegin;
+            e.a = BodyId{c.a, bodies[c.a].generation};
+            e.b = BodyId{c.b, bodies[c.b].generation};
+            e.point = c.manifold.points[0].pointB;
+            e.normal = c.manifold.normal;
+            e.speed = c.approachSpeed;
+            I.events.PushBack(e);
+        }
+        for (const auto& [key, sensor] : I.touching)
+            if (!now.Contains(key)) {
+                const u32 a = u32(key >> 32), b = u32(key);
+                if (!bodies[a].alive || !bodies[b].alive)
+                    continue;
+                ContactEvent e;
+                e.type = sensor ? ContactEventType::SensorExit : ContactEventType::TouchEnd;
+                e.a = BodyId{a, bodies[a].generation};
+                e.b = BodyId{b, bodies[b].generation};
+                I.events.PushBack(e);
+            }
+        I.touching = move(now);
+    }
+
     m_stats.narrowphaseMs = timer.ElapsedMilliseconds() - m_stats.broadphaseMs;
     // 3. Islands of awake dynamic bodies connected by contacts (union-find).
     Array<u32> parent;
@@ -767,7 +824,7 @@ void PhysicsWorld::Step(f32 dt)
     for (const Contact& c : I.contacts) {
         const Body& a = bodies[c.a];
         const Body& b = bodies[c.b];
-        if (a.IsDynamic() && b.IsDynamic() && !a.sleeping && !b.sleeping)
+        if (a.IsDynamic() && b.IsDynamic() && !a.sleeping && !b.sleeping && !c.sensor)
             parent[find(c.a)] = find(c.b);
     }
 
@@ -813,7 +870,7 @@ void PhysicsWorld::Step(f32 dt)
         Contact& c = I.contacts[ci];
         const Body& A = bodies[c.a];
         const Body& B = bodies[c.b];
-        if (!(A.IsDynamic() && !A.sleeping) && !(B.IsDynamic() && !B.sleeping))
+        if (c.sensor || (!(A.IsDynamic() && !A.sleeping) && !(B.IsDynamic() && !B.sleeping)))
             continue;
         SolverContact sc;
         sc.contact = ci;
@@ -1088,6 +1145,108 @@ void PhysicsWorld::QueryAabb(const AABB& box, Array<BodyId>& out) const
     };
     I.staticTree.Query(box, add);
     I.movingTree.Query(box, add);
+}
+
+void PhysicsWorld::Overlap(const ShapeDesc& shape, Vec3 position, Quat rotation, Array<BodyId>& out, u32 layerMask, BodyId ignore) const
+{
+    const Impl& I = *m_impl;
+    PosedShape query;
+    query.desc = &shape;
+    query.position = position;
+    query.rotation = Normalize(rotation);
+    const AABB box = ShapeBounds(query);
+    Array<Manifold> scratch;
+    auto test = [&](u32 index) {
+        const Body& b = I.bodies[index];
+        if (!b.alive || !((layerMask >> b.layer) & 1u) || (ignore.IsValid() && ignore.index == index) || !b.bounds.Intersects(box))
+            return true;
+        for (u32 s = 0; s < b.shapes.Size(); ++s) {
+            scratch.Clear();
+            Collide(query, I.Pose(b, s), 0.0f, scratch);
+            for (const Manifold& m : scratch)
+                for (u32 k = 0; k < m.count; ++k)
+                    if (m.points[k].separation <= 0.0f) {
+                        out.PushBack(BodyId{index, b.generation});
+                        return true;
+                    }
+        }
+        return true;
+    };
+    I.staticTree.Query(box, test);
+    I.movingTree.Query(box, test);
+}
+
+bool PhysicsWorld::ShapeCast(const ShapeDesc& shape, Vec3 position, Quat rotation, Vec3 direction, f32 maxDistance, RaycastHit& hit,
+                             u32 layerMask, BodyId ignore) const
+{
+    const Impl& I = *m_impl;
+    const Vec3 dir = Normalize(direction);
+    rotation = Normalize(rotation);
+    PosedShape query;
+    query.desc = &shape;
+    query.rotation = rotation;
+    query.position = position;
+    AABB swept = ShapeBounds(query);
+    query.position = position + dir * maxDistance;
+    swept.Expand(ShapeBounds(query));
+    f32 best = maxDistance;
+    bool found = false;
+    Array<Manifold> scratch;
+    // Conservative advancement: the separation the narrowphase reports never exceeds the true distance, so moving
+    // the shape forward by it can't pass through anything.
+    auto test = [&](u32 index) {
+        const Body& b = I.bodies[index];
+        if (!b.alive || !((layerMask >> b.layer) & 1u) || (ignore.IsValid() && ignore.index == index) || !b.bounds.Intersects(swept))
+            return true;
+        for (u32 s = 0; s < b.shapes.Size(); ++s) {
+            if (b.shapes[s].isSensor || !b.shapeBounds[s].Intersects(swept))
+                continue;
+            const PosedShape other = I.Pose(b, s);
+            f32 t = 0.0f;
+            for (u32 it = 0; it < 48 && t <= best; ++it) {
+                query.position = position + dir * t;
+                scratch.Clear();
+                Collide(query, other, best - t + 0.01f, scratch);
+                f32 sep = Infinity;
+                Vec3 normal, point;
+                for (const Manifold& m : scratch)
+                    for (u32 k = 0; k < m.count; ++k)
+                        if (m.points[k].separation < sep) {
+                            sep = m.points[k].separation;
+                            normal = -m.normal; // from the other shape towards the cast shape
+                            point = m.points[k].pointB;
+                        }
+                if (sep == Infinity)
+                    break; // nothing within reach
+                if (sep < 1e-3f) {
+                    // Only a hit when moving into it (sliding along a surface we already touch is not).
+                    if (t > 0.0f || Dot(normal, dir) < 0.0f || sep < 0.0f) {
+                        if (t < best || !found) {
+                            best = t;
+                            found = true;
+                            hit.body = BodyId{index, b.generation};
+                            hit.distance = t;
+                            hit.normal = normal;
+                            hit.point = point;
+                            hit.shape = s;
+                        }
+                    }
+                    break;
+                }
+                t += sep;
+            }
+        }
+        return true;
+    };
+    I.staticTree.Query(swept, test);
+    I.movingTree.Query(swept, test);
+    return found;
+}
+
+void PhysicsWorld::TakeEvents(Array<ContactEvent>& out)
+{
+    out.Append(m_impl->events.View());
+    m_impl->events.Clear();
 }
 
 void PhysicsWorld::GetDebugContacts(Array<DebugContact>& out) const

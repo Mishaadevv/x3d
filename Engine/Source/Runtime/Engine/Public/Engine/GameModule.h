@@ -24,6 +24,8 @@ namespace zx {
 
 class InputState;
 class AudioSystem;
+class PhysicsSystem;
+struct PhysicsEvent;
 
 /// Runs the game module's C++ component `className` on the entity. `properties` holds prop values that differ from the
 /// component's defaults (JSON object, like Script::properties).
@@ -47,6 +49,7 @@ struct GameTickContext
     const InputState* input = nullptr;
     const InputActionState* actions = nullptr;
     AudioSystem* audio = nullptr;
+    PhysicsSystem* physics = nullptr;
 };
 
 /// The prop overrides stored on the component (JSON object, empty when none).
@@ -91,6 +94,8 @@ public:
 
     void Begin(ecs::World& world);
     void Tick(ecs::World& world, f32 dt, const GameTickContext& context);
+    /// OnCollisionEnter / Exit, OnTriggerEnter / Exit on the components of both entities of each event.
+    void DispatchPhysicsEvents(Span<const PhysicsEvent> events);
     void End();
     bool IsRunning() const { return m_running; }
     u32 RunningComponents() const { return u32(m_instances.Size()); }
