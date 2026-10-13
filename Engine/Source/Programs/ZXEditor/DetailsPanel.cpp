@@ -55,25 +55,36 @@ bool IsOverridden(StringView field)
 }
 
 /// Starts a "label | value" row; the value widget fills the rest of the line. Overridden prefab values are bold with
-/// an accent marker (as in UE/Unity).
-void PropertyLabel(StringView label, StringView tooltip, bool overridden = false)
+/// an accent marker (as in UE/Unity). `condition` (EditCondition) adds an override checkbox in front of the label;
+/// `conditionChanged` is set when it was clicked. Long labels are cut with an ellipsis at the value column.
+void PropertyLabel(StringView label, StringView tooltip, bool overridden = false, bool* condition = nullptr, bool* conditionChanged = nullptr)
 {
     ui::Context& ctx = *ui::GetCurrentContext();
-    const f32 avail = ui::GetContentRegionAvail().x / ctx.GetScale();
+    const f32 s = ctx.GetScale();
+    const f32 avail = ui::GetContentRegionAvail().x / s;
+    const f32 lineStart = ui::GetCursorPos().x;
+    const f32 valueX = lineStart + Round(avail * LabelRatio * s);
     ui::AlignTextToFramePadding();
-    if (overridden) {
-        const f32 s = ctx.GetScale();
-        const Vec2 p = ui::GetCursorPos();
+    if (condition) {
+        const bool clicked = ui::Checkbox("##override", condition);
+        if (conditionChanged)
+            *conditionChanged = clicked;
+        ui::ItemTooltip(*condition ? StringView("Overridden: this value is used") : StringView("Not overridden: tick to use this value"));
+        ui::SameLine(0.0f, 4.0f);
+    }
+    const Vec2 p = ui::GetCursorPos();
+    if (overridden)
         ui::GetWindowDrawList().AddRect(Rect(p + Vec2(-Round(5.0f * s), Round(3.0f * s)), p + Vec2(-Round(3.0f * s), ui::GetFrameHeight() - Round(3.0f * s))),
                                         ctx.GetStyle().colors.accentHovered);
-        ui::PushFont(ui::FontStyle::SemiBold);
-        ui::TextColored(ctx.GetStyle().colors.text, label);
-        ui::PopFont();
-    } else {
-        ui::TextColored(ctx.GetStyle().colors.textDim, label);
-    }
+    const f32 width = Max(valueX - p.x - Round(6.0f * s), 1.0f);
+    const ui::FontHandle font = ctx.Fonts().FindFont(overridden ? "Inter SemiBold" : "Inter");
+    ui::GetWindowDrawList().AddTextInRect(font, ctx.GetStyle().fontSize * s, Rect(p, p + Vec2(width, ui::GetFrameHeight())),
+                                          overridden ? ctx.GetStyle().colors.text : ctx.GetStyle().colors.textDim, label);
+    ui::Dummy(Vec2(width / s, ui::GetFrameHeight() / s));
     if (!tooltip.Empty())
         ui::ItemTooltip(tooltip);
+    else if (ctx.Fonts().MeasureWidth(font, ctx.GetStyle().fontSize * s, label) > width)
+        ui::ItemTooltip(label); // cut: show it in full on hover
     ui::SameLine(Round(avail * LabelRatio));
     ui::SetNextItemWidth(-1.0f);
 }
@@ -588,16 +599,32 @@ bool PropertyEditor(const TypeInfo& type, void* object, StringView idPrefix)
         ~DepthScope() { --g_depth; }
     } depth;
     bool changed = false;
+    StringView category;
     for (const TypeInfo* t = &type; t; t = t->base) {
         for (const FieldInfo& f : t->fields) {
-            if (HasAnyFlags(f.flags, FieldFlags::Hidden))
+            if (HasAnyFlags(f.flags, FieldFlags::Hidden) || f.meta.Has(Meta::KeyHidden()))
                 continue;
+            // Category: a section header when it changes.
+            const StringView cat = f.meta.GetText(Meta::KeyCategory());
+            if (!cat.Empty() && cat != category)
+                ui::SeparatorText(cat);
+            category = cat;
             ui::PushID(f.name.View());
-            const bool readOnly = HasAnyFlags(f.flags, FieldFlags::ReadOnly) || f.meta.Has(Meta::KeyReadOnly());
+            // EditCondition: the named bool field is drawn as a checkbox in front; the value is editable when it's set.
+            bool* condition = nullptr;
+            if (const StringView condName = f.meta.GetText(Meta::KeyEditCondition()); !condName.Empty())
+                for (const TypeInfo* ct = &type; ct && !condition; ct = ct->base)
+                    for (const FieldInfo& cf : ct->fields)
+                        if (cf.name.View() == condName && cf.type->kind == TypeKind::Bool)
+                            condition = static_cast<bool*>(cf.Ptr(object));
+            const bool readOnly = HasAnyFlags(f.flags, FieldFlags::ReadOnly) || f.meta.Has(Meta::KeyReadOnly()) || (condition && !*condition);
             const String id = String::Format("##{}{}", idPrefix, f.name.View());
             void* p = f.Ptr(object);
             if (IsInlineStruct(*f.type) || f.type->kind == TypeKind::Array) {
-                PropertyLabel(f.displayName, f.meta.GetText(Meta::KeyTooltip()), IsOverridden(f.name.View()));
+                bool conditionChanged = false;
+                PropertyLabel(f.displayName, f.meta.GetText(Meta::KeyTooltip()), IsOverridden(f.name.View()) || (condition && *condition), condition,
+                              &conditionChanged);
+                changed |= conditionChanged;
                 if (readOnly && f.type->kind != TypeKind::Array && f.type->kind != TypeKind::Guid)
                     ui::BeginDisabled(true);
                 changed |= EditValue(&f, *f.type, p, id, f.displayName);

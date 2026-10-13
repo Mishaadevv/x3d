@@ -24,6 +24,7 @@ struct ViewportCamera
     Vec3 position;
     f32 fovY = DegToRad(60.0f);
     f32 nearPlane = 0.05f;
+    bool cut = false; // the view jumped (camera switch): no motion blur / history this frame
 };
 
 /// Sun / sky / exposure of a scene (until these become scene components).
@@ -44,6 +45,9 @@ struct ViewportFeatures
     bool bloom = true;
     bool temporalAA = true;
     bool water = true;
+    bool postProcessVolumes = true;
+    bool depthOfField = true;
+    bool motionBlur = true;
 };
 
 struct ViewportSettings
@@ -83,6 +87,8 @@ public:
     rhi::Format DepthFormat() const { return rhi::Format::D32_FLOAT; }
     /// Unjittered view-projection of the last frame (picking, gizmos).
     const Mat4& ViewProjection() const { return m_viewProjNoJitter; }
+    /// Post-processing settings of the last frame after Post Process Volumes and feature toggles.
+    const render::PostSettings& LastPostSettings() const { return m_lastPost; }
     void ResetHistory() { m_taa.Reset(); }
 
     /// Entities whose meshes get the selection outline (editor). Pass the selected entity and its descendants.
@@ -111,6 +117,7 @@ private:
     Vec3 m_dirToSun;
     render::RenderView m_view;
     Mat4 m_viewProjNoJitter = Mat4::Identity();
+    render::PostSettings m_lastPost;
     Array<render::RenderInstance> m_instances;
     Array<render::LightDesc> m_lights;
 };

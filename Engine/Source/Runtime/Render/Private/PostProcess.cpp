@@ -34,11 +34,21 @@ Vec3 BlackbodyColor(f32 kelvin)
 
 } // namespace
 
+f32 CircleOfConfusion(f32 depthMeters, f32 focusDistance, f32 fStop, f32 fovY, f32 imageHeight)
+{
+    // Thin lens: CoC = f^2 / (N (S1 - f)) * (1 - S1 / S2), in mm on a 24 mm high sensor.
+    const f32 f = 12.0f / std::tan(Max(fovY, 0.01f) * 0.5f); // focal length, mm
+    const f32 s1 = Max(focusDistance * 1000.0f, f * 1.01f);
+    const f32 scale = f * f / (Max(fStop, 0.5f) * (s1 - f)) / 24.0f * imageHeight;
+    return scale * (1.0f - s1 / Max(depthMeters * 1000.0f, 1e-3f));
+}
+
 PostProcess::PostProcess(Device& device) : m_device(device) {}
 
 PostProcess::~PostProcess()
 {
-    for (Pipeline* p : {m_histogramPipeline, m_exposurePipeline, m_bloomDown, m_bloomUp, m_tonemap, m_fxaa, m_tonemapToOutput})
+    for (Pipeline* p : {m_histogramPipeline, m_exposurePipeline, m_bloomDown, m_bloomUp, m_tonemap, m_fxaa, m_tonemapToOutput, m_dofPrepare,
+                        m_dofBlur, m_dofComposite, m_motionBlur})
         m_device.Destroy(p);
     m_device.Destroy(m_histogram);
     for (Buffer* b : m_readback)
@@ -57,10 +67,13 @@ bool PostProcess::Init(Format outputFormat)
         {&m_vs, "FullscreenVS", ShaderStage::Vertex},          {&m_bloomDownPS, "BloomDownPS", ShaderStage::Pixel},
         {&m_bloomUpPS, "BloomUpPS", ShaderStage::Pixel},       {&m_tonemapPS, "TonemapPS", ShaderStage::Pixel},
         {&m_fxaaPS, "FxaaPS", ShaderStage::Pixel},
+        {&m_dofPrepareCS, "DofPrepareCS", ShaderStage::Compute}, {&m_dofBlurCS, "DofBlurCS", ShaderStage::Compute},
+        {&m_dofCompositeCS, "DofCompositeCS", ShaderStage::Compute}, {&m_motionBlurCS, "MotionBlurCS", ShaderStage::Compute},
     };
     for (const Job& j : jobs) {
         ShaderCompileDesc d;
-        d.path = "/Shaders/Post/PostProcess.hlsl";
+        const bool dof = j.out == &m_dofPrepareCS || j.out == &m_dofBlurCS || j.out == &m_dofCompositeCS || j.out == &m_motionBlurCS;
+        d.path = dof ? "/Shaders/Post/DepthOfField.hlsl" : "/Shaders/Post/PostProcess.hlsl";
         d.entryPoint = j.entry;
         d.stage = j.stage;
         Result<ShaderBytecode> r = ShaderCompiler::Compile(d);
@@ -77,6 +90,18 @@ bool PostProcess::Init(Format outputFormat)
     cd.computeShader = &m_exposureCS;
     cd.debugName = "Post.Exposure";
     m_exposurePipeline = m_device.CreateComputePipeline(cd);
+    cd.computeShader = &m_dofPrepareCS;
+    cd.debugName = "Post.DofPrepare";
+    m_dofPrepare = m_device.CreateComputePipeline(cd);
+    cd.computeShader = &m_dofBlurCS;
+    cd.debugName = "Post.DofBlur";
+    m_dofBlur = m_device.CreateComputePipeline(cd);
+    cd.computeShader = &m_dofCompositeCS;
+    cd.debugName = "Post.DofComposite";
+    m_dofComposite = m_device.CreateComputePipeline(cd);
+    cd.computeShader = &m_motionBlurCS;
+    cd.debugName = "Post.MotionBlur";
+    m_motionBlur = m_device.CreateComputePipeline(cd);
 
     auto fullscreen = [&](const ShaderBytecode& ps, Format format, bool additive, StringView name) {
         GraphicsPipelineDesc pd;
@@ -110,12 +135,147 @@ bool PostProcess::Init(Format outputFormat)
                                         zeros);
     for (Buffer*& b : m_readback)
         b = m_device.CreateBuffer(BufferDesc{16, BufferUsage::CopyDest, MemoryType::Readback, 0, "ExposureReadback"});
-    return m_histogramPipeline && m_exposurePipeline && m_bloomDown && m_bloomUp && m_tonemap && m_fxaa && m_histogram;
+    return m_histogramPipeline && m_exposurePipeline && m_bloomDown && m_bloomUp && m_tonemap && m_fxaa && m_histogram && m_dofPrepare &&
+           m_dofBlur && m_dofComposite && m_motionBlur;
+}
+
+RGTexture PostProcess::AddDepthOfField(RenderGraph& graph, RGTexture color, RGTexture depth, const DofParams& base)
+{
+    const TextureDesc& cd = graph.GetDesc(color);
+    TextureDesc hd;
+    hd.width = Max(1u, (cd.width + 1) / 2);
+    hd.height = Max(1u, (cd.height + 1) / 2);
+    hd.format = Format::R16G16B16A16_FLOAT;
+    hd.usage = TextureUsage::ShaderResource | TextureUsage::UnorderedAccess;
+    hd.debugName = "DofHalf";
+    const RGTexture half = graph.CreateTexture(hd);
+    hd.debugName = "DofBlurred";
+    const RGTexture blurred = graph.CreateTexture(hd);
+    TextureDesc fd = hd;
+    fd.width = cd.width;
+    fd.height = cd.height;
+    fd.debugName = "DofResult";
+    const RGTexture result = graph.CreateTexture(fd);
+    const Vec2 halfSize(f32(hd.width), f32(hd.height)), fullSize(f32(cd.width), f32(cd.height));
+
+    graph.AddPass(
+        "DofPrepare", PassType::Compute,
+        [=](PassBuilder& b) {
+            b.ReadTexture(color);
+            b.ReadTexture(depth);
+            b.WriteTexture(half);
+        },
+        [this, base, color, depth, half, halfSize](PassContext& ctx) {
+            DofParams p = base;
+            p.color = ctx.Texture(color)->GetSrvIndex();
+            p.depth = ctx.Texture(depth)->GetSrvIndex();
+            p.output = ctx.Texture(half)->GetUavIndex();
+            p.size = halfSize;
+            p.invSize = Vec2(1.0f / halfSize.x, 1.0f / halfSize.y);
+            ctx.cmd.SetPipeline(m_dofPrepare);
+            ctx.cmd.SetConstants(0, &p, sizeof(p));
+            ctx.cmd.Dispatch((u32(halfSize.x) + 7) / 8, (u32(halfSize.y) + 7) / 8);
+        });
+    graph.AddPass(
+        "DofBlur", PassType::Compute,
+        [=](PassBuilder& b) {
+            b.ReadTexture(half);
+            b.WriteTexture(blurred);
+        },
+        [this, base, half, blurred, halfSize](PassContext& ctx) {
+            DofParams p = base;
+            p.input = ctx.Texture(half)->GetSrvIndex();
+            p.output = ctx.Texture(blurred)->GetUavIndex();
+            p.size = halfSize;
+            p.invSize = Vec2(1.0f / halfSize.x, 1.0f / halfSize.y);
+            ctx.cmd.SetPipeline(m_dofBlur);
+            ctx.cmd.SetConstants(0, &p, sizeof(p));
+            ctx.cmd.Dispatch((u32(halfSize.x) + 7) / 8, (u32(halfSize.y) + 7) / 8);
+        });
+    graph.AddPass(
+        "DofComposite", PassType::Compute,
+        [=](PassBuilder& b) {
+            b.ReadTexture(color);
+            b.ReadTexture(depth);
+            b.ReadTexture(blurred);
+            b.WriteTexture(result);
+        },
+        [this, base, color, depth, blurred, result, fullSize](PassContext& ctx) {
+            DofParams p = base;
+            p.color = ctx.Texture(color)->GetSrvIndex();
+            p.depth = ctx.Texture(depth)->GetSrvIndex();
+            p.input = ctx.Texture(blurred)->GetSrvIndex();
+            p.output = ctx.Texture(result)->GetUavIndex();
+            p.size = fullSize;
+            p.invSize = Vec2(1.0f / fullSize.x, 1.0f / fullSize.y);
+            ctx.cmd.SetPipeline(m_dofComposite);
+            ctx.cmd.SetConstants(0, &p, sizeof(p));
+            ctx.cmd.Dispatch((u32(fullSize.x) + 7) / 8, (u32(fullSize.y) + 7) / 8);
+        });
+    return result;
+}
+
+RGTexture PostProcess::AddMotionBlur(RenderGraph& graph, RGTexture color, RGTexture depth, const DofParams& base)
+{
+    const TextureDesc& cd = graph.GetDesc(color);
+    TextureDesc td;
+    td.width = cd.width;
+    td.height = cd.height;
+    td.format = Format::R16G16B16A16_FLOAT;
+    td.usage = TextureUsage::ShaderResource | TextureUsage::UnorderedAccess;
+    td.debugName = "MotionBlur";
+    const RGTexture result = graph.CreateTexture(td);
+    const Vec2 size(f32(cd.width), f32(cd.height));
+    graph.AddPass(
+        "MotionBlur", PassType::Compute,
+        [=](PassBuilder& b) {
+            b.ReadTexture(color);
+            b.ReadTexture(depth);
+            b.WriteTexture(result);
+        },
+        [this, base, color, depth, result, size](PassContext& ctx) {
+            DofParams p = base;
+            p.color = ctx.Texture(color)->GetSrvIndex();
+            p.depth = ctx.Texture(depth)->GetSrvIndex();
+            p.output = ctx.Texture(result)->GetUavIndex();
+            p.size = size;
+            p.invSize = Vec2(1.0f / size.x, 1.0f / size.y);
+            ctx.cmd.SetPipeline(m_motionBlur);
+            ctx.cmd.SetConstants(0, &p, sizeof(p));
+            ctx.cmd.Dispatch((u32(size.x) + 7) / 8, (u32(size.y) + 7) / 8);
+        });
+    return result;
 }
 
 void PostProcess::AddPasses(RenderGraph& graph, RGTexture sceneColor, RGTexture sceneDepth, RGTexture output,
-                            f32 exposureEV100, f32 deltaTime, const PostSettings& settings)
+                            f32 exposureEV100, f32 deltaTime, const PostSettings& settings, const PostView* view)
 {
+    // --- Depth of field, motion blur (before exposure/bloom: they work on the HDR image) ---
+    if (view) {
+        const TextureDesc& sd = graph.GetDesc(sceneColor);
+        DofParams dp = {};
+        dp.invViewProj = Inverse(view->viewProj);
+        dp.prevViewProj = m_hasPrevView && !view->cut ? m_prevViewProj : view->viewProj;
+        dp.fullInvSize = Vec2(1.0f / f32(sd.width), 1.0f / f32(sd.height));
+        dp.nearZ = view->nearPlane;
+        // cocScale * (1 - focus / z): the CoC of a point at infinity.
+        dp.cocScale = CircleOfConfusion(1e9f, settings.focusDistance, settings.fStop, view->fovY, f32(sd.height));
+        dp.focusDistance = Max(settings.focusDistance, 0.01f);
+        dp.maxCoc = Clamp(settings.maxBlur, 1.0f, 64.0f);
+        dp.radiusStep = Clamp(settings.dofQuality, 0.5f, 4.0f);
+        dp.motionScale = settings.motionBlurAmount;
+        dp.motionMax = settings.motionBlurMax;
+        dp.samples = Clamp(settings.motionBlurSamples, 2u, 32u);
+        dp.viewMode = settings.viewMode;
+        dp.input = InvalidDescriptor;
+        if (settings.depthOfField || settings.viewMode == 5)
+            sceneColor = AddDepthOfField(graph, sceneColor, sceneDepth, dp);
+        if (settings.motionBlur && settings.motionBlurAmount > 0.0f && m_hasPrevView && !view->cut)
+            sceneColor = AddMotionBlur(graph, sceneColor, sceneDepth, dp);
+        m_prevViewProj = view->viewProj;
+        m_hasPrevView = true;
+    }
+
     // Read back the EV computed FramesInFlight frames ago (its fence has been waited on by BeginFrame).
     const u32 slot = u32(m_frame % FramesInFlight);
     if (m_readbackValid[slot]) {
@@ -148,6 +308,7 @@ void PostProcess::AddPasses(RenderGraph& graph, RGTexture sceneColor, RGTexture 
     base.vignette = settings.vignette;
     base.tonemapper = settings.tonemapper == Tonemapper::AgX ? 1u : 0u;
     base.viewMode = settings.viewMode;
+    base.colorFilter = settings.colorFilter;
 
     // --- Auto exposure ---
     if (settings.autoExposure) {

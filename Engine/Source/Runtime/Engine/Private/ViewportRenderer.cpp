@@ -1,5 +1,6 @@
 #include "Engine/ViewportRenderer.h"
 #include "Core/Profiler/Profiler.h"
+#include "Engine/PostProcessVolume.h"
 
 namespace zx {
 
@@ -36,6 +37,9 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     s.scene.ao.steps = lite ? 4 : 6;
     s.taa.catmullRom = !lite;
     s.post.bloomLevels = lite ? 4 : 6;
+    s.post.maxBlur = lite ? 10.0f : 16.0f;
+    s.post.dofQuality = lite ? 1.5f : 1.0f;
+    s.post.motionBlurSamples = lite ? 6 : 10;
     s.renderScale = lite ? 0.7f : 1.0f;
     return m_scene.Init(m_hdrFormat, DepthFormat()) && m_sky.Init(m_hdrFormat, DepthFormat()) && m_post.Init(outputFormat) &&
            m_taa.Init() && m_outline.Init(outputFormat) && m_water.Init(m_hdrFormat, DepthFormat(), lite);
@@ -84,6 +88,13 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         const ViewportSettings& saved;
         ~Restore() { target = saved; }
     } restore{m_settings, userSettings};
+    // Post Process Volumes around the camera, then the feature toggles on top.
+    if (features.postProcessVolumes)
+        m_settings.post = EvaluatePostProcessVolumes(world, camera.position, m_settings.post);
+    m_settings.post.depthOfField &= features.depthOfField;
+    m_settings.post.motionBlur &= features.motionBlur;
+    if (camera.cut)
+        m_taa.Reset();
     ApplyEnvironment(env);
     m_lights.Clear();
     GatherLights(world, m_lights);
@@ -152,7 +163,13 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     const RGTexture resolved = m_settings.taa.enabled
                                    ? m_taa.AddPass(graph, sceneColor, sceneDepth, m_viewProjNoJitter, exposure, m_settings.taa)
                                    : sceneColor;
-    m_post.AddPasses(graph, resolved, sceneDepth, output, m_lighting.exposureEV100, deltaTime, m_settings.post);
+    PostView postView;
+    postView.viewProj = m_viewProjNoJitter;
+    postView.fovY = camera.fovY;
+    postView.nearPlane = camera.nearPlane;
+    postView.cut = camera.cut;
+    m_post.AddPasses(graph, resolved, sceneDepth, output, m_lighting.exposureEV100, deltaTime, m_settings.post, &postView);
+    m_lastPost = m_settings.post;
 
     m_outlineItems.Clear();
     for (ecs::Entity e : m_outlined) {

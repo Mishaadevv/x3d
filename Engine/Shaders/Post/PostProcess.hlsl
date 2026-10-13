@@ -23,9 +23,11 @@ struct PostParams
     float3 whiteBalance; // per-channel gains
     float vignette;
     uint tonemapper;    // 0 ACES, 1 AgX
-    uint viewMode;      // 0 final, 1 HDR (no tonemap), 2 depth, 3 luminance heatmap, 4 bloom only
+    uint viewMode;      // 0 final, 1 HDR (no tonemap), 2 depth, 3 luminance heatmap, 4 bloom only, 5 DOF focus
     uint depth;
     float pad;
+    float3 colorFilter;
+    float pad2;
 };
 ZX_PUSH_CONSTANTS(PostParams, g_Post);
 
@@ -165,7 +167,7 @@ float3 TonemapAgX(float3 c)
 
 float3 Grade(float3 c)
 {
-    c *= g_Post.whiteBalance;
+    c *= g_Post.whiteBalance * g_Post.colorFilter;
     const float l = Luminance(c);
     c = lerp(l.xxx, c, g_Post.saturation);
     // Contrast around mid-grey in log space.
@@ -186,7 +188,7 @@ float4 TonemapPS(VSOutput i) : SV_Target0
     if (g_Post.bloom != ZX_INVALID_INDEX)
         hdr = lerp(hdr, GetTexture2D(g_Post.bloom).SampleLevel(g_LinearClamp, i.uv, 0).rgb, g_Post.bloomIntensity);
     float3 color;
-    if (g_Post.viewMode == 1) {
+    if (g_Post.viewMode == 1 || g_Post.viewMode == 5) {
         color = saturate(hdr);
     } else if (g_Post.viewMode == 2) {
         const float d = GetTexture2D(g_Post.depth).SampleLevel(g_PointClamp, i.uv, 0).r;

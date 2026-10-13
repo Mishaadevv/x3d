@@ -12,6 +12,7 @@
 #include "Engine/FlyCamera.h"
 #include "Engine/GameModule.h"
 #include "Engine/InputActions.h"
+#include "Engine/PostProcessVolume.h"
 #include "Engine/Materials.h"
 #include "Engine/Prefab.h"
 #include "Engine/Project.h"
@@ -272,6 +273,9 @@ public:
     void SetGameInputCaptured(bool captured);
     void ToggleEject();
     bool showGrid = true;
+    // Viewport show flags for post-processing (motion blur only while playing).
+    bool showPostVolumes = true, showDepthOfField = true, showMotionBlur = true;
+    bool lastViewWasGame = false; // camera cut detection (editor <-> game camera)
 
     // Viewport target (recreated when the panel is resized).
     rhi::Texture* viewportTexture = nullptr;
@@ -333,6 +337,7 @@ public:
     void CreateWater(Vec3 position, ecs::Entity parent = {}); // 50 x 50 m at sea level (y = 0)
     void CreateAudioSource(Vec3 position, ecs::Entity parent = {});
     void CreateReverbZone(Vec3 position, ecs::Entity parent = {});
+    void CreatePostProcessVolume(Vec3 position, ecs::Entity parent = {});
     /// The listener while playing: the game camera when it is shown, else the editor camera.
     ListenerPose CurrentListener();
     void CreateShape(BuiltinShape shape, Vec3 position, ecs::Entity parent = {});
@@ -417,6 +422,10 @@ private:
     f32 m_cppTestY = 0.0f;
     Quat m_cppTestRotation;
     void RunCppSelfTest();
+    // -posttest: Post Process Volumes blend as the camera moves through them; DOF + motion blur render.
+    u32 m_postTestStage = 0;
+    u64 m_postTestFrame = 0;
+    void RunPostSelfTest();
 
 public:
     bool CppSelfTestRunning() const { return m_cppTestStage != 0; }

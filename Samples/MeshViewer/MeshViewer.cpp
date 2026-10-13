@@ -102,6 +102,22 @@ int Run()
     PostProcess post(*device);
     PostSettings postSettings;
     postSettings.bloomLevels = lite ? 4 : 6;
+    // -dof=<focus m>,<f-stop>: depth of field; -motionblur=<amount>: camera motion blur.
+    StringView dofArg, motionArg;
+    if (CommandLine::GetValue("dof", dofArg)) {
+        StringView focus, fstop;
+        if (!dofArg.Split(',', focus, fstop))
+            focus = dofArg;
+        postSettings.depthOfField = true;
+        postSettings.focusDistance = f32(ParseDouble(focus).ValueOr(5.0));
+        postSettings.fStop = f32(ParseDouble(fstop).ValueOr(2.8));
+        postSettings.maxBlur = lite ? 10.0f : 16.0f;
+        postSettings.dofQuality = lite ? 1.5f : 1.0f;
+    }
+    if (CommandLine::GetValue("motionblur", motionArg)) {
+        postSettings.motionBlur = true;
+        postSettings.motionBlurAmount = f32(ParseDouble(motionArg).ValueOr(0.5));
+    }
     if (!renderAssets.Init() || !sceneRenderer.Init(hdrFormat, depthFormat) ||
         !sky.Init(hdrFormat, depthFormat) || !post.Init(swapChain->GetFormat()) || !taa.Init())
         return 1;
@@ -485,7 +501,11 @@ int Run()
         const RGTexture resolved = taaSettings.enabled ? taa.AddPass(graph, sceneColor, sceneDepth, viewProjNoJitter,
                                                                      ExposureFromEV100(lighting.exposureEV100), taaSettings)
                                                        : sceneColor;
-        post.AddPasses(graph, resolved, sceneDepth, output, lighting.exposureEV100, dt, postSettings);
+        PostView postView;
+        postView.viewProj = viewProjNoJitter;
+        postView.fovY = camera.fovY;
+        postView.nearPlane = camera.nearPlane;
+        post.AddPasses(graph, resolved, sceneDepth, output, lighting.exposureEV100, dt, postSettings, &postView);
         uiRenderer.Prepare(*cmd, fonts, uiContext.GetDrawLists()); // atlas uploads: before the graph's render passes
         if (uiRenderer.GetStats().primitives > 0)
             uiRenderer.AddPass(graph, output, outSize);

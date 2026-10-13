@@ -185,6 +185,8 @@ ConCommand CmdCreate("create", "Creates an object in front of the camera: create
         ed->CreateAudioSource(at);
     else if (kind.EqualsIgnoreCase("reverbzone"))
         ed->CreateReverbZone(at);
+    else if (kind.EqualsIgnoreCase("postvolume") || kind.EqualsIgnoreCase("postprocessvolume"))
+        ed->CreatePostProcessVolume(at);
     else if (kind.EqualsIgnoreCase("entity"))
         ed->CreateEmpty(at);
     else if (kind.EqualsIgnoreCase("cube"))

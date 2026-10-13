@@ -3,6 +3,7 @@
 #include "Engine/AudioSystem.h"
 #include "Engine/GameModule.h"
 #include "Engine/Gameplay.h"
+#include "Engine/PostProcessVolume.h"
 #include "Engine/Prefab.h"
 #include "Engine/SceneRendering.h"
 #include "Engine/Scripting.h"
@@ -48,6 +49,7 @@ void RegisterEngineComponents()
     RegisterComponent<AudioListener>("Audio Listener", "\xEE\x8E\x82");              // ear
     RegisterComponent<ReverbZone>("Reverb Zone", "\xEE\x95\x9A");                    // audio-lines
     RegisterComponent<Water>("Water", "\xEE\x82\xB5");                                // droplets
+    RegisterComponent<PostProcessVolume>("Post Process Volume", "\xEE\x81\x80");      // aperture
     RegisterComponent<Camera>("Camera", "\xEE\x86\xA5");                              // video
     RegisterComponent<CharacterController>("Character Controller", "\xEE\x88\x9E");  // person-standing
     RegisterComponent<PaintedInstance>("Painted Instance", "\xEE\x8B\xA7", false, true, true); // paintbrush (Brush tool marker)

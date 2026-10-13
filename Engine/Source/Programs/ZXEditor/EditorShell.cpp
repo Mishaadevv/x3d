@@ -126,6 +126,7 @@ void DrawMenus(Editor& ed)
         ActionMenuItem(ed, "create.water");
         ActionMenuItem(ed, "create.audioSource");
         ActionMenuItem(ed, "create.reverbZone");
+        ActionMenuItem(ed, "create.postProcessVolume");
         ui::Separator();
         ActionMenuItem(ed, "create.material");
         ui::EndMenu();

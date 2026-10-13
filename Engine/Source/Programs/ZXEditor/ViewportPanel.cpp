@@ -125,6 +125,8 @@ void DrawLightIcons(Editor& ed, const ViewProjector& vp, DrawList& dl, f32 s)
     });
     ed.world.Query<const ReverbZone, const scene::WorldTransform>().Each(
         [&](ecs::Entity e, const ReverbZone&, const scene::WorldTransform& wt) { icon(e, wt, Vec3(0.7f, 0.5f, 1.0f), ZX_ICON_AUDIO_LINES); });
+    ed.world.Query<const PostProcessVolume, const scene::WorldTransform>().Each(
+        [&](ecs::Entity e, const PostProcessVolume&, const scene::WorldTransform& wt) { icon(e, wt, Vec3(1.0f, 0.67f, 0.25f), ZX_ICON_APERTURE); });
 }
 
 /// Draws and drives the transform gizmo. Returns true if the gizmo owns the mouse this frame.
@@ -332,15 +334,22 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
 {
     ViewportSettings& vs = ed.viewport->Settings();
     ui::SetCursorPos(r.min + Vec2(8.0f * s, 6.0f * s));
+    // The last entry is a post-processing view (focus check: near blur red, far blur blue, in focus green).
     static const StringView ViewModes[] = {"Lit", "Base Color", "Normals", "Roughness / Metallic", "LOD", "Shadow Cascades",
-                                           "Light Clusters", "Ambient Occlusion", "Local Shadows"};
-    const String litLabel = String::Format(ZX_ICON_SUN "  {}  " ZX_ICON_CHEVRON_DOWN "##viewmode", ViewModes[Min(vs.scene.debugMode, 8u)]);
+                                           "Light Clusters", "Ambient Occlusion", "Local Shadows", "Depth of Field Focus"};
+    const u32 current = vs.post.viewMode == 5 ? 9u : Min(vs.scene.debugMode, 8u);
+    const String litLabel = String::Format(ZX_ICON_SUN "  {}  " ZX_ICON_CHEVRON_DOWN "##viewmode", ViewModes[current]);
     if (ui::Button(litLabel, Vec2::Zero(), ui::ButtonVariant::Default))
         ui::OpenPopup("##viewmodes");
     if (ui::BeginPopup("##viewmodes")) {
-        for (u32 i = 0; i < 9; ++i)
-            if (ui::MenuItem(ViewModes[i], {}, vs.scene.debugMode == i))
-                vs.scene.debugMode = i;
+        for (u32 i = 0; i < 10; ++i) {
+            if (i == 9)
+                ui::Separator();
+            if (ui::MenuItem(ViewModes[i], {}, current == i)) {
+                vs.scene.debugMode = i == 9 ? 0u : i;
+                vs.post.viewMode = i == 9 ? 5u : 0u;
+            }
+        }
         ui::EndPopup();
     }
     ui::SameLine(0.0f, 4.0f);
@@ -355,6 +364,9 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
         if (ui::MenuItem("Temporal AA", {}, &vs.taa.enabled))
             ed.viewport->ResetHistory();
         ui::MenuItem("Bloom", {}, &vs.post.bloom);
+        ui::MenuItem("Post Process Volumes", {}, &ed.showPostVolumes);
+        ui::MenuItem("Depth of Field", {}, &ed.showDepthOfField);
+        ui::MenuItem("Motion Blur (playing)", {}, &ed.showMotionBlur);
         ui::Separator();
         ui::MenuItem("Night", {}, &ed.environment.night);
         ui::MenuItem("Auto Exposure", {}, &ed.environment.autoExposure);

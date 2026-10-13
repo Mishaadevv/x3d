@@ -246,6 +246,7 @@ bool Editor::Initialize()
     m_materialTest = CommandLine::HasFlag("materialtest");
     m_scriptTest = CommandLine::HasFlag("scripttest");
     m_cppTestStage = CommandLine::HasFlag("cpptest") ? 1u : 0u;
+    m_postTestStage = CommandLine::HasFlag("posttest") ? 1u : 0u;
     m_toolTest = CommandLine::HasFlag("tooltest") ? 300u : 0u;
     m_audioTestStage = CommandLine::HasFlag("audiotest") ? 1u : 0u;
     StringView execArg;
@@ -733,6 +734,13 @@ void Editor::CreateAudioSource(Vec3 position, ecs::Entity parent)
     const ecs::Entity e = CreateEntity("Audio Source", Transform(position), parent);
     world.Add(e, AudioSource{});
     CommitCreated(e, "Create Audio Source");
+}
+
+void Editor::CreatePostProcessVolume(Vec3 position, ecs::Entity parent)
+{
+    const ecs::Entity e = CreateEntity("Post Process Volume", Transform(position), parent);
+    world.Add(e, PostProcessVolume{});
+    CommitCreated(e, "Create Post Process Volume");
 }
 
 void Editor::CreateReverbZone(Vec3 position, ecs::Entity parent)
@@ -1244,6 +1252,87 @@ void Editor::StepFrame()
         BeginPlay();
     playState = PlayState::Paused;
     m_pieStep = true;
+}
+
+void Editor::RunPostSelfTest()
+{
+    // Stage 1 places a global volume (saturation 0.2) and a local one 30 m away (exposure +2, saturation 1.6, depth of
+    // field, 1 m half size, 4 m blend radius, higher priority); each later stage moves the editor camera and checks the
+    // settings the viewport rendered with two frames later.
+    const Vec3 center(0.0f, 2.0f, 30.0f);
+    auto fail = [this](StringView why) {
+        ZX_LOG_ERROR(LogEditor, "Post self-test FAILED: {}", why);
+        selfTestFailed = true;
+        m_postTestStage = 0;
+    };
+    auto near = [](f32 a, f32 b) { return Abs(a - b) < 0.02f; };
+    if (m_postTestStage > 1 && frameIndex < m_postTestFrame + 3)
+        return;
+    const render::PostSettings& s = viewport->LastPostSettings();
+    switch (m_postTestStage) {
+    case 1: {
+        PostProcessVolume global;
+        global.unbound = true;
+        global.overrideSaturation = true;
+        global.saturation = 0.2f;
+        const ecs::Entity g = CreateEntity("Global Post Volume", Transform(Vec3(0.0f)));
+        world.Add(g, global);
+        PostProcessVolume local;
+        local.extent = Vec3(1.0f);
+        local.blendRadius = 4.0f;
+        local.priority = 1;
+        local.overrideExposureCompensation = true;
+        local.exposureCompensation = 2.0f;
+        local.overrideSaturation = true;
+        local.saturation = 1.6f;
+        local.overrideDepthOfField = true;
+        local.overrideFocusDistance = true;
+        local.focusDistance = 2.0f;
+        const ecs::Entity l = CreateEntity("Local Post Volume", Transform(center));
+        world.Add(l, local);
+        camera.position = Vec3(0.0f, 2.0f, -20.0f); // 49 m away from the local volume
+        m_postTestStage = 2;
+        break;
+    }
+    case 2: // global only
+        if (!near(s.saturation, 0.2f) || s.depthOfField)
+            return fail(String::Format("outside: saturation {} dof {}", s.saturation, s.depthOfField));
+        camera.position = center; // inside
+        m_postTestStage = 3;
+        break;
+    case 3:
+        if (!near(s.saturation, 1.6f) || !near(s.exposureCompensation, 2.0f) || !s.depthOfField ||
+            !near(s.focusDistance, 2.0f))
+            return fail(String::Format("inside: saturation {} exposure {} dof {}", s.saturation, s.exposureCompensation, s.depthOfField));
+        camera.position = center + Vec3(2.9f, 0.0f, 0.0f); // 1.9 m out of the box: weight 1 - 1.9 / 4
+        m_postTestStage = 4;
+        break;
+    case 4: {
+        const f32 w = 1.0f - 1.9f / 4.0f;
+        const f32 base = viewport->Settings().post.exposureCompensation; // r.ExposureCompensation
+        if (!near(s.saturation, Lerp(0.2f, 1.6f, w)) || !near(s.exposureCompensation, Lerp(base, 2.0f, w)) || !s.depthOfField)
+            return fail(String::Format("blend: saturation {} exposure {} dof {}", s.saturation, s.exposureCompensation, s.depthOfField));
+        // Motion blur: playing with the camera moving (rendered under the debug layer).
+        showMotionBlur = true;
+        viewport->Settings().post.motionBlur = true;
+        BeginPlay();
+        m_postTestStage = 5;
+        break;
+    }
+    case 5:
+        camera.position += Vec3(0.3f, 0.0f, 0.0f);
+        if (frameIndex < m_postTestFrame + 20)
+            return;
+        if (!s.motionBlur)
+            return fail("motion blur is not enabled while playing");
+        EndPlay();
+        viewport->Settings().post.motionBlur = false;
+        ZX_LOG_INFO(LogEditor, "Post self-test passed (volumes blend, depth of field, motion blur)");
+        m_postTestStage = 0;
+        return;
+    default: m_postTestStage = 0; return;
+    }
+    m_postTestFrame = frameIndex;
 }
 
 bool Editor::RunPieSelfTest()
@@ -1796,7 +1885,12 @@ bool Editor::Frame()
     ui::FrameInput fi;
     fi.displaySize = Vec2(f32(client.x), f32(client.y));
     fi.deltaTime = dt;
-    fi.dpiScale = window->GetDpiScale();
+    // -uiscale=<x> multiplies the system DPI scale (screenshots of tall panels).
+    static const f32 s_uiScale = [] {
+        StringView v;
+        return CommandLine::GetValue("uiscale", v) ? Clamp(f32(ParseDouble(v).ValueOr(1.0)), 0.5f, 3.0f) : 1.0f;
+    }();
+    fi.dpiScale = window->GetDpiScale() * s_uiScale;
     fi.input = flying ? nullptr : &input;
     fi.events = m_events.View();
     fi.hasFocus = window->IsFocused() || m_autotestFrames > 0;
@@ -1874,6 +1968,8 @@ bool Editor::Frame()
     }
     if (m_cppTestStage && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle())
         RunCppSelfTest();
+    if (m_postTestStage && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle())
+        RunPostSelfTest();
     if (m_scriptTest && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle()) {
         m_scriptTest = false;
         selfTestFailed |= !RunScriptSelfTest();
@@ -1904,7 +2000,7 @@ bool Editor::Frame()
     ++m_timedFrames;
 
     ++frameIndex;
-    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !m_cppTestStage &&
+    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !m_cppTestStage && !m_postTestStage &&
         (m_screenshotPath.Empty() || m_screenshotBuffer)) {
         if (!m_saveScenePath.Empty() && SaveSceneFile(m_saveScenePath, world, SceneIO(), SceneSettings()))
             ZX_LOG_INFO(LogEditor, "Saved scene '{}'", m_saveScenePath);
@@ -1934,6 +2030,9 @@ void Editor::RenderFrame()
         vf.bloom = FeatureEnabled("bloom");
         vf.temporalAA = FeatureEnabled("temporalAA");
         vf.water = FeatureEnabled("water");
+        vf.postProcessVolumes = FeatureEnabled("postProcessVolumes") && showPostVolumes;
+        vf.depthOfField = FeatureEnabled("depthOfField") && showDepthOfField;
+        vf.motionBlur = FeatureEnabled("motionBlur") && showMotionBlur && IsPlaying(); // not while editing
         ViewportCamera cam{camera.ViewMatrix(), camera.position, camera.fovY, camera.nearPlane};
         if (UsingGameCamera()) {
             // Game view: the Camera entity's world position and orientation (+Z forward), scale ignored.
@@ -1947,6 +2046,8 @@ void Editor::RenderFrame()
                 cam = ViewportCamera{Mat4::LookAt(pos, pos + fwd, up), pos, DegToRad(gc->fieldOfView), Max(gc->nearPlane, 0.001f)};
             }
         }
+        cam.cut = UsingGameCamera() != lastViewWasGame;
+        lastViewWasGame = UsingGameCamera();
         Array<ecs::Entity> outlined;
         CollectHierarchy(world, selected, outlined);
         viewport->SetOutlinedEntities(outlined.View());
@@ -1966,6 +2067,17 @@ void Editor::RenderFrame()
                                     if (const AudioSource* as = world.Get<AudioSource>(selected); as && as->spatial) {
                                         debugDraw->Sphere(m.GetTranslation(), as->minDistance, Color(90, 200, 255), 24);
                                         debugDraw->Sphere(m.GetTranslation(), as->maxDistance, Color(60, 120, 170), 32);
+                                    }
+                                    if (const PostProcessVolume* pv = world.Get<PostProcessVolume>(selected); pv && !pv->unbound) {
+                                        const AABB box(-pv->extent, pv->extent);
+                                        debugDraw->Box(box, m, Color(255, 170, 60));
+                                        if (pv->blendRadius > 0.0f) {
+                                            // Blend region, approximated by the box grown by the radius in world units.
+                                            const Vec3 sc = m.GetScale();
+                                            const Vec3 grow(pv->blendRadius / Max(sc.x, 1e-3f), pv->blendRadius / Max(sc.y, 1e-3f),
+                                                            pv->blendRadius / Max(sc.z, 1e-3f));
+                                            debugDraw->Box(AABB(-pv->extent - grow, pv->extent + grow), m, Color(140, 95, 40));
+                                        }
                                     }
                                     if (const ReverbZone* rz = world.Get<ReverbZone>(selected)) {
                                         debugDraw->Sphere(m.GetTranslation(), rz->radius, Color(180, 130, 255), 32);

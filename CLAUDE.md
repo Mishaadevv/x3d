@@ -35,6 +35,10 @@ C++ gameplay: Engine/Source/GameSDK/ZeqouGame.h (header-only SDK, Host interface
 Engine/GameModule.h (NativeScript = "C++ Script" component, GameModuleSystem: build via Tools/build_game.ps1, copy-load,
 hot reload carrying props), editor EditorGameCode.cpp (Compile F7, Input Actions window, -cpptest); tests ZXTests
 GameModule.*. Input Actions: Engine/InputActions.h (Config/Input.json; tests InputActions.*).
+Post: Render/PostProcess.h (DOF, motion blur, bloom, tonemap; Shaders/Post/DepthOfField.hlsl), Engine/PostProcessVolume.h
+(blending; tests PostProcessVolume.*). -posttest (volumes blend as the camera moves, DOF/motion blur render),
+-uiscale=<x> (multiplies the UI scale; tall panels in screenshots). MeshViewer: -dof=<focus m>,<f-stop>, -motionblur=<amount>.
+Reflection meta used by Details: Meta::Category (section headers), Meta::EditCondition("boolField") (override checkbox).
 Audio: Runtime/Audio (AudioEngine.cpp mixer, Wasapi.cpp, Wav.cpp, Vorbis.cpp, Dsp.cpp; tests ZXTests Audio.*; Vorbis
 references Tests/Data/Audio from Tools/gen_audio_testdata.py), Engine/AudioSystem.h (components, PIE), EditorAudio.cpp.
 ZeqouScript (own language, docs/ZeqouScript.md): Runtime/Script (Compiler.cpp = lexer/parser/codegen, VM.cpp = values,
