@@ -8,7 +8,7 @@ ZX_REFLECT_STRUCT_BEGIN(MeshRenderer)
     ZX_FIELD(mesh, Meta::AssetType("Mesh"), Meta::ReadOnly())
     ZX_FIELD(materials, Meta::AssetType("Material"), Meta::ReadOnly())
     ZX_FIELD(visible)
-    ZX_FIELD(collision, Meta::Tooltip("Blocks Character Controllers (box collision until M11 physics)"))
+    ZX_FIELD(collision, Meta::Tooltip("Solid: blocks Character Controllers and rigid bodies (as a static triangle mesh unless the entity has colliders)"))
 ZX_REFLECT_STRUCT_END()
 
 ZX_REFLECT_STRUCT_BEGIN(Water)

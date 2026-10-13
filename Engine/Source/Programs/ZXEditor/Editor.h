@@ -12,6 +12,7 @@
 #include "Engine/FlyCamera.h"
 #include "Engine/GameModule.h"
 #include "Engine/InputActions.h"
+#include "Engine/PhysicsSystem.h"
 #include "Engine/PostProcessVolume.h"
 #include "Engine/Materials.h"
 #include "Engine/Prefab.h"
@@ -226,6 +227,7 @@ public:
     UniquePtr<ScriptSystem> scripts;      // ZeqouScript programs of the open project; runs them while playing
     UniquePtr<audio::AudioEngine> audioEngine; // WASAPI output (-noaudio: null backend)
     UniquePtr<AudioSystem> audio;         // Audio Sources of the scene while playing, previews
+    PhysicsSystem physics;                // rigid bodies and colliders while playing
     UniquePtr<GameModuleSystem> game;     // C++ game module of the open project (Source/<Name>), hot-reloaded
     i64 gameDllTime = 0;                  // modification time of the loaded Binaries/<Name>.dll
     GameBuildState gameBuildState = GameBuildState::Idle;
@@ -443,6 +445,14 @@ private:
     void RunDecalSelfTest();
     // -hdritest: a generated .exr panorama with a sun becomes the HDRI Sky; its sun drives the directional light and
     // follows the rotation; Sun = None turns it off.
+    // -physicstest: Mesh Colliders on the scene, a column of Rigid Body cubes falls onto the floor and stacks, Stop
+    // puts them back.
+    u32 m_physicsTestStage = 0;
+    u64 m_physicsTestFrame = 0;
+    Array<ecs::Entity> m_physicsTestCubes;
+    Array<Vec3> m_physicsTestStart;
+    f32 m_physicsTestFloor = 0.0f;
+    void RunPhysicsSelfTest();
     u32 m_hdriTestStage = 0;
     u64 m_hdriTestFrame = 0;
     u64 m_lastHdriKey = 0; // logs the HDRI Sky (hdri.info) when it changes

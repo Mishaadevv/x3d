@@ -256,6 +256,7 @@ bool Editor::Initialize()
     m_reflTestStage = CommandLine::HasFlag("reflectiontest") ? 1u : 0u;
     m_decalTestStage = CommandLine::HasFlag("decaltest") ? 1u : 0u;
     m_hdriTestStage = CommandLine::HasFlag("hdritest") ? 1u : 0u;
+    m_physicsTestStage = CommandLine::HasFlag("physicstest") ? 1u : 0u;
     m_toolTest = CommandLine::HasFlag("tooltest") ? 300u : 0u;
     m_audioTestStage = CommandLine::HasFlag("audiotest") ? 1u : 0u;
     StringView execArg;
@@ -827,6 +828,13 @@ void Editor::CreateShape(BuiltinShape shape, Vec3 position, ecs::Entity parent)
     MeshRenderer mr;
     mr.mesh = builtin::Mesh(shape);
     world.Add(e, mr);
+    // A matching collider, like Unity's primitives (static until a Rigid Body is added).
+    switch (shape) {
+    case BuiltinShape::Sphere: world.Add(e, SphereCollider{}); break;
+    case BuiltinShape::Plane: world.Add(e, BoxCollider{Vec3(0.0f, -0.005f, 0.0f), Vec3(1.0f, 0.01f, 1.0f)}); break;
+    case BuiltinShape::Cylinder: world.Add(e, CapsuleCollider{Vec3(), 0.5f, 1.0f}); break;
+    default: world.Add(e, BoxCollider{}); break;
+    }
     CommitCreated(e, String::Format("Create {}", builtin::ShapeName(shape)));
 }
 
@@ -1224,6 +1232,10 @@ void Editor::BeginPlay()
     inputActionState = InputActionState();
     if (audio)
         audio->Begin(world);
+    if (FeatureEnabled("physics")) {
+        scene::UpdateWorldTransforms(world);
+        physics.Begin(world, renderAssets.Get());
+    }
     gameCameraEjected = false;
     SetGameInputCaptured(FindGameCamera(world) != ecs::NullEntity && m_autotestFrames == 0); // tests keep the cursor free
     ZX_LOG_INFO(LogEditor, "Play-in-Editor started ({} entities)", m_pieSnapshot.Get("entities").Size());
@@ -1243,6 +1255,7 @@ void Editor::EndPlay()
         game->End();
     if (audio)
         audio->End();
+    physics.End();
     if (audioEngine)
         audioEngine->SetBusMuted(audio::Bus::Master, false);
     SetGameInputCaptured(false);
@@ -1321,6 +1334,107 @@ void Editor::StepFrame()
         BeginPlay();
     playState = PlayState::Paused;
     m_pieStep = true;
+}
+
+void Editor::RunPhysicsSelfTest()
+{
+    auto fail = [this](StringView why) {
+        ZX_LOG_ERROR(LogEditor, "Physics self-test FAILED: {}", why);
+        selfTestFailed = true;
+        if (IsPlaying())
+            EndPlay();
+        m_physicsTestStage = 0;
+    };
+    switch (m_physicsTestStage) {
+    case 1: {
+        // Static collision for the level, then a column of cubes in front of the camera, above the floor.
+        u32 meshes = 0;
+        Array<ecs::Entity> targets;
+        world.Query<const MeshRenderer>().Each([&](ecs::Entity e, const MeshRenderer&) { targets.PushBack(e); });
+        for (ecs::Entity e : targets)
+            if (!HasCollider(world, e)) {
+                world.Add(e, MeshCollider{});
+                ++meshes;
+            }
+        scene::UpdateWorldTransforms(world);
+        const Vec3 ahead = camera.position + Vec3(camera.Forward().x, 0.0f, camera.Forward().z) * 3.0f;
+        RaycastHit floorHit;
+        if (!RaycastMeshes(world, *renderAssets, Ray(ahead + Vec3(0, 2, 0), Vec3(0, -1, 0)), floorHit, 50.0f)) {
+            if (frameIndex > 600)
+                return fail("no floor under the camera");
+            return; // the level's meshes are still uploading
+        }
+        m_physicsTestFloor = floorHit.point.y;
+        m_physicsTestCubes.Clear();
+        m_physicsTestStart.Clear();
+        for (u32 i = 0; i < 5; ++i) {
+            CreateShape(BuiltinShape::Cube, Vec3(floorHit.point.x, m_physicsTestFloor + 1.0f + f32(i) * 1.3f, floorHit.point.z));
+            if (!world.Get<BoxCollider>(selected))
+                return fail("Create Cube did not add a Box Collider");
+            world.Add(selected, RigidBody{});
+            m_physicsTestCubes.PushBack(selected);
+            m_physicsTestStart.PushBack(world.Get<Transform>(selected)->position);
+        }
+        Select(ecs::NullEntity);
+        ZX_LOG_INFO(LogEditor, "Physics self-test: {} mesh colliders, 5 cubes", meshes);
+        BeginPlay();
+        m_physicsTestStage = 2;
+        break;
+    }
+    case 2: { // the cubes fall, stack and come to rest
+        if (frameIndex < m_physicsTestFrame + 30 || !physics.IsRunning())
+            return;
+        bool resting = true;
+        for (ecs::Entity e : m_physicsTestCubes) {
+            const physics::BodyId id = physics.BodyOf(e);
+            if (!physics.World()->IsValid(id))
+                return fail("a cube has no body");
+            resting &= physics.World()->IsSleeping(id) || Length(physics.World()->GetLinearVelocity(id)) < 0.05f;
+        }
+        if (!resting) {
+            if (frameIndex > m_physicsTestFrame + 1500)
+                return fail("the cubes did not come to rest");
+            return;
+        }
+        Array<f32> heights;
+        for (ecs::Entity e : m_physicsTestCubes) {
+            const Vec3 p = world.Get<Transform>(e)->position;
+            if (!(p.y == p.y))
+                return fail("NaN position");
+            heights.PushBack(p.y - m_physicsTestFloor);
+        }
+        for (usize i = 1; i < heights.Size(); ++i)
+            for (usize j = i; j > 0 && heights[j] < heights[j - 1]; --j)
+                swap(heights[j], heights[j - 1]);
+        if (heights[0] < 0.3f || heights[0] > 0.8f)
+            return fail(String::Format("bottom cube at {:.2f} m above the floor", heights[0]));
+        if (heights.Back() > 6.0f || heights.Back() < 0.3f)
+            return fail(String::Format("top cube at {:.2f} m", heights.Back()));
+        const physics::PhysicsStats& st = physics.World()->Stats();
+        ZX_LOG_INFO(LogEditor, "Physics self-test: cubes at {:.2f}..{:.2f} m, {} bodies, {} contacts, step {:.2f} ms", heights[0], heights.Back(),
+                    st.bodies, st.contacts, st.stepMs);
+        EndPlay();
+        m_physicsTestStage = 3;
+        break;
+    }
+    case 3: { // Stop restored the scene (entities are recreated: find the cubes by their Rigid Body)
+        u32 restored = 0;
+        world.Query<const RigidBody, const Transform>().Each([&](const RigidBody&, const Transform& t) {
+            for (Vec3 start : m_physicsTestStart)
+                if (Distance(t.position, start) < 1e-3f) {
+                    ++restored;
+                    break;
+                }
+        });
+        if (restored != m_physicsTestStart.Size())
+            return fail(String::Format("Stop restored {} of {} cubes", restored, m_physicsTestStart.Size()));
+        ZX_LOG_INFO(LogEditor, "Physics self-test passed");
+        m_physicsTestStage = 0;
+        return;
+    }
+    default: m_physicsTestStage = 0; return;
+    }
+    m_physicsTestFrame = frameIndex;
 }
 
 void Editor::RunHdriSelfTest()
@@ -2220,8 +2334,12 @@ bool Editor::Frame()
             context.audio = audio.Get();
             game->Tick(world, gameDt, context);
         }
-        // Characters move after the scripts asked them to (character.move / jump).
+        // Physics after gameplay code moved things (kinematic bodies follow, teleports), characters after physics.
         scene::UpdateWorldTransforms(world);
+        if (physics.IsRunning()) {
+            physics.Tick(world, gameDt);
+            scene::UpdateWorldTransforms(world);
+        }
         if (audio && !m_pieStep)
             audio->Tick(world, gameDt, CurrentListener());
         if (FeatureEnabled("characters"))
@@ -2264,6 +2382,8 @@ bool Editor::Frame()
         RunDecalSelfTest();
     if (m_hdriTestStage && frameIndex > 5 && pendingImports.Empty())
         RunHdriSelfTest();
+    if (m_physicsTestStage && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle())
+        RunPhysicsSelfTest();
     if (m_scriptTest && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle()) {
         m_scriptTest = false;
         selfTestFailed |= !RunScriptSelfTest();
@@ -2299,7 +2419,7 @@ bool Editor::Frame()
     ++m_timedFrames;
 
     ++frameIndex;
-    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !m_cppTestStage && !m_postTestStage && !m_reflTestStage && !m_decalTestStage && !m_hdriTestStage &&
+    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !m_cppTestStage && !m_postTestStage && !m_reflTestStage && !m_decalTestStage && !m_hdriTestStage && !m_physicsTestStage &&
         (m_screenshotPath.Empty() || m_screenshotBuffer)) {
         if (!m_saveScenePath.Empty() && SaveSceneFile(m_saveScenePath, world, SceneIO(), SceneSettings()))
             ZX_LOG_INFO(LogEditor, "Saved scene '{}'", m_saveScenePath);
@@ -2364,6 +2484,29 @@ void Editor::RenderFrame()
                                 DrawToolOverlay(*this, *debugDraw);
                                 if (world.IsAlive(selected)) {
                                     const Mat4 m = scene::ComputeWorldMatrix(world, selected);
+                                    // Colliders of the selection (and its children): green wireframes.
+                                    Array<ecs::Entity> colliderOwners;
+                                    CollectHierarchy(world, selected, colliderOwners);
+                                    Array<ColliderOutline> outlines;
+                                    for (ecs::Entity ce : colliderOwners)
+                                        GatherColliderOutlines(world, ce, outlines);
+                                    const Color green(120, 230, 120);
+                                    for (const ColliderOutline& o : outlines) {
+                                        const Vec3 oc = o.transform.GetTranslation();
+                                        if (o.type == physics::ShapeType::Box) {
+                                            debugDraw->Box(AABB(-o.halfExtents, o.halfExtents), o.transform, green);
+                                        } else if (o.type == physics::ShapeType::Sphere) {
+                                            debugDraw->Sphere(oc, o.radius, green, 24);
+                                        } else if (o.type == physics::ShapeType::Capsule) {
+                                            const Vec3 up = (o.transform * Vec4(0, 1, 0, 0)).XYZ();
+                                            const Vec3 side = (o.transform * Vec4(1, 0, 0, 0)).XYZ(), fwd = (o.transform * Vec4(0, 0, 1, 0)).XYZ();
+                                            const Vec3 top = oc + up * o.halfHeight, bottom = oc - up * o.halfHeight;
+                                            debugDraw->Sphere(top, o.radius, green, 20);
+                                            debugDraw->Sphere(bottom, o.radius, green, 20);
+                                            for (Vec3 d : {side, -side, fwd, -fwd})
+                                                debugDraw->Line(top + d * o.radius, bottom + d * o.radius, green);
+                                        }
+                                    }
                                     if (const PointLight* pl = world.Get<PointLight>(selected))
                                         debugDraw->Sphere(m.GetTranslation(), pl->range, Color(255, 200, 80), 32);
                                     if (const AudioSource* as = world.Get<AudioSource>(selected); as && as->spatial) {

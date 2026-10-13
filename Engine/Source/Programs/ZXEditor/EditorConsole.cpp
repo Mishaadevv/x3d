@@ -3,6 +3,7 @@
 // editing the settings directly.
 
 #include "Editor.h"
+#include "EditorActions.h"
 #include "Core/Console/Console.h"
 #include "Core/String/Parse.h"
 #include "Core/String/Path.h"
@@ -208,6 +209,37 @@ ConCommand CmdHdriSet("hdri.set", "Edits the HDRI Sky: hdri.set rotation|intensi
                                                             : HdriSunMode::FromHDRI;
     else
         ZX_LOG_WARN(LogCmd, "Unknown HDRI Sky field '{}' (rotation, intensity, sun)", args[0]);
+});
+
+ConCommand CmdPhysicsSpawn("physics.spawn", "Drops Rigid Body cubes and spheres in front of the camera: physics.spawn [count]",
+                           [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || ed->IsPlaying())
+        return;
+    const u32 count = Clamp(u32(args.Empty() ? 20 : ParseInt(args[0]).ValueOr(20)), 1u, 2000u);
+    const Vec3 forward = SafeNormalize(Vec3(ed->camera.Forward().x, 0.0f, ed->camera.Forward().z), Vec3(0, 0, 1));
+    const Vec3 base = ed->camera.position + forward * 6.0f;
+    const u32 side = Max(1u, u32(Sqrt(f32(count) / 4.0f) + 0.5f));
+    for (u32 i = 0; i < count; ++i) {
+        const u32 layer = i / (side * side), cell = i % (side * side);
+        const Vec3 p = base + Vec3((f32(cell % side) - f32(side) * 0.5f) * 1.2f + (layer & 1) * 0.3f, 2.0f + f32(layer) * 1.2f,
+                                   (f32(cell / side) - f32(side) * 0.5f) * 1.2f);
+        ed->CreateShape(i % 3 == 2 ? BuiltinShape::Sphere : BuiltinShape::Cube, p);
+        ed->world.Add(ed->selected, RigidBody{});
+    }
+    ed->Select(ecs::NullEntity);
+    ZX_LOG_INFO(LogCmd, "Spawned {} rigid bodies (press Play)", count);
+});
+
+ConCommand CmdPhysicsStats("physics.stats", "Physics while playing: bodies, awake, contacts, step time", [](Span<const StringView>) {
+    Editor* ed = Ed();
+    if (!ed || !ed->physics.IsRunning()) {
+        ZX_LOG_INFO(LogCmd, "Physics runs while playing");
+        return;
+    }
+    const physics::PhysicsStats& s = ed->physics.World()->Stats();
+    ZX_LOG_INFO(LogCmd, "Physics: {} bodies ({} dynamic, {} awake), {} pairs, {} contacts ({} points), {} islands, step {:.2f} ms", s.bodies, s.dynamic,
+                s.awake, s.pairs, s.contacts, s.points, s.islands, s.stepMs);
 });
 
 ConCommand CmdRecapture("reflections.recapture", "Recaptures every reflection probe", [](Span<const StringView>) {
@@ -444,6 +476,13 @@ ConCommand CmdPalette("palette", "Opens the command palette: palette [query]", [
     OpenCommandPalette(*Ed(), false);
     for (usize i = 0; i < args.Size(); ++i)
         Ed()->palette.query += i ? String::Format(" {}", args[i]) : String(args[i]);
+});
+
+ConCommand CmdAction("action", "Runs an editor action by id (as in Keys.ini): action play.eject", [](Span<const StringView> args) {
+    if (!Ed() || args.Empty())
+        return;
+    if (!RunAction(*Ed(), args[0]))
+        ZX_LOG_WARN(LogCmd, "Unknown or unavailable action '{}'", args[0]);
 });
 
 ConCommand CmdResetLayout("editor.ResetLayout", "Restores the default panel layout", [](Span<const StringView>) {

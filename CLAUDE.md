@@ -49,6 +49,11 @@ RHI.BlockCompressionMatchesHardwareDecoder). Cooker: HDR -> box mips + BC6H + Hd
 sun), alpha textures -> BC7; .zmeta "compression". HDRI Sky component (Engine/SceneRendering.h, ViewportRenderer::
 ResolveHdriSky, Sky.hlsl SkyViewFromHdriCS, Shaders/Sky/Hdri.hlsli), -hdritest, console hdri.info / hdri.set,
 create hdrisky <panorama>, camera x y z yaw pitch (pitch < 0 looks up). ManualExr.* benchmark: ZX_EXR_FILE=<path>.
+Physics (M11): Runtime/Physics (PhysicsWorld.h API; Private/AabbTree, Collide.cpp = SAT/clipping + rounded shapes +
+mesh BVH, PhysicsWorld.cpp = broadphase, contacts, soft-step solver, islands/sleep); tests ZXTests Physics.*,
+ManualPhysics.Pile500Bodies (benchmark). Scene layer: Engine/PhysicsSystem.h (RigidBody, Box/Sphere/Capsule/Mesh
+Collider, implicit mesh collision of MeshRenderer.collision, PIE ticking with interpolation; tests PhysicsSystem.*),
+-physicstest, console physics.spawn / physics.stats, action <id> runs any editor action (e.g. play.eject).
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

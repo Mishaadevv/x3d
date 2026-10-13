@@ -2,6 +2,7 @@
 #include "Core/Memory/Memory.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/GameModule.h"
+#include "Engine/PhysicsSystem.h"
 #include "Engine/Gameplay.h"
 #include "Engine/PostProcessVolume.h"
 #include "Engine/Prefab.h"
@@ -52,6 +53,11 @@ void RegisterEngineComponents()
     RegisterComponent<Decal>("Decal", "\xEE\x8E\xBB");                                 // stamp
     RegisterComponent<ReflectionProbe>("Reflection Probe", "\xEE\x8D\x85");           // circle-dot
     RegisterComponent<HdriSky>("HDRI Sky", "\xEE\x88\x96");                          // cloud-sun
+    RegisterComponent<RigidBody>("Rigid Body", "\xEE\x94\xB0");                     // weight
+    RegisterComponent<BoxCollider>("Box Collider", "\xEE\x87\x8B");                 // square-dashed
+    RegisterComponent<SphereCollider>("Sphere Collider", "\xEE\x92\xB0");           // circle-dashed
+    RegisterComponent<CapsuleCollider>("Capsule Collider", "\xEE\x8E\xBD");         // pill
+    RegisterComponent<MeshCollider>("Mesh Collider", "\xEE\x86\x92");               // triangle
     RegisterComponent<PostProcessVolume>("Post Process Volume", "\xEE\x81\x80");      // aperture
     RegisterComponent<Camera>("Camera", "\xEE\x86\xA5");                              // video
     RegisterComponent<CharacterController>("Character Controller", "\xEE\x88\x9E");  // person-standing

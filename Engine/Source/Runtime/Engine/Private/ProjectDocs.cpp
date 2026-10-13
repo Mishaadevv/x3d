@@ -88,6 +88,11 @@ box to the room: floors and walls then line up). Probes update by themselves whe
 **Create > Decal** projects an image onto the ground below it (rotate the entity to project onto walls): drop an image
 from the Content Browser into its Texture field; its alpha channel decides where it covers.
 
+**Physics**: built-in shapes (Create > Cube, Sphere...) come with a collider. Add a **Rigid Body** component to make
+an object fall, collide and get pushed (Kinematic = moved by your code, pushes others). Colliders without a Rigid Body
+are static; colliders on children of a Rigid Body belong to it. Meshes with **Collision** ticked in their Mesh
+Renderer are solid level geometry automatically. The console command `physics.spawn 50` drops a pile to try it.
+
 **HDRI Sky**: double-click an HDR panorama (`.hdr` / `.exr`, lat-long) in the Content Browser, or drag it into the
 viewport, and it becomes the sky - background, sky light, fog color, water and reflections. The sun found in the
 panorama lights the scene with shadows (**Sun**: From HDRI / Scene Sun / None); turn it with **Rotation**, set the
@@ -246,6 +251,7 @@ This is a game project for the **ZeqouX3D** engine ({version}). Read this before
 - `Content/Scenes/*.zscene` - scenes as JSON: `entities[]` with a `guid`, optional `parent`, and one object per
   component (`Transform`, `MeshRenderer`, `PointLight`, `SpotLight`, `Camera`, `CharacterController`, `Water`, `Script`,
   `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`, `PostProcessVolume`, `ReflectionProbe`, `Decal`, `HdriSky`,
+  `RigidBody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `MeshCollider`,
   `Rotator`, `Oscillator`, ...). Prefer editing scenes in the editor; when editing JSON keep guids unique and stable.
 - `Content/Scripts/*.zs` - gameplay code in **ZeqouScript** (see `Docs/ZeqouScript.md`). This is where most work happens.
 - `Content/**/*.zmat` / `.zmati` - material graphs / instances (JSON node graphs). `.zprefab` - prefabs.

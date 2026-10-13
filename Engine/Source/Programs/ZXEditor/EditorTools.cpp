@@ -26,6 +26,7 @@ const FeatureInfo Features[] = {
     {"motionBlur", "Motion Blur", "Rendering", "Camera motion blur while playing (set in Post Process Volumes)"},
     {"scripts", "ZeqouScript", "Gameplay", "Run Script components while playing"},
     {"characters", "Character Physics", "Gameplay", "Move Character Controllers while playing"},
+    {"physics", "Physics", "Gameplay", "Rigid bodies and colliders while playing (ZPhys)"},
     {"brush", "Brush Tool", "Editor Tools", "Paint models onto surfaces (B)"},
     {"measure", "Measure Tool", "Editor Tools", "Measure distances in the viewport (M)"},
 };
