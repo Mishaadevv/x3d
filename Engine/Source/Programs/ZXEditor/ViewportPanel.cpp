@@ -119,6 +119,12 @@ void DrawLightIcons(Editor& ed, const ViewProjector& vp, DrawList& dl, f32 s)
         [&](ecs::Entity e, const PointLight& l, const scene::WorldTransform& wt) { icon(e, wt, l.color, ZX_ICON_LIGHTBULB); });
     ed.world.Query<const SpotLight, const scene::WorldTransform>().Each(
         [&](ecs::Entity e, const SpotLight& l, const scene::WorldTransform& wt) { icon(e, wt, l.color, ZX_ICON_SPOTLIGHT); });
+    ed.world.Query<const AudioSource, const scene::WorldTransform>().Each([&](ecs::Entity e, const AudioSource&, const scene::WorldTransform& wt) {
+        if (!ed.world.Has<MeshRenderer>(e))
+            icon(e, wt, Vec3(0.3f, 0.8f, 1.0f), ZX_ICON_VOLUME_2);
+    });
+    ed.world.Query<const ReverbZone, const scene::WorldTransform>().Each(
+        [&](ecs::Entity e, const ReverbZone&, const scene::WorldTransform& wt) { icon(e, wt, Vec3(0.7f, 0.5f, 1.0f), ZX_ICON_AUDIO_LINES); });
 }
 
 /// Draws and drives the transform gizmo. Returns true if the gizmo owns the mouse this frame.

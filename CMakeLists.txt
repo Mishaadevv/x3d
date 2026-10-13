@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 
 # Engine version (single source of truth: Core/Version.h and the executables' version resources read it).
 # Scheme: 0.<last closed milestone>.<release within it> until 1.0 (see docs/CHANGELOG.md).
-project(ZeqouX3D VERSION 0.8.6 LANGUAGES CXX RC)
+project(ZeqouX3D VERSION 0.9.0 LANGUAGES CXX RC)
 
 if(NOT MSVC)
     message(FATAL_ERROR "ZeqouX3D currently supports only MSVC on Windows.")
@@ -19,6 +19,7 @@ set(ZX_SOURCE_DIR "${ZX_ENGINE_DIR}/Source")
 # Runtime modules (order = dependency order)
 add_subdirectory(Engine/Source/Runtime/Core)
 add_subdirectory(Engine/Source/Runtime/Script)
+add_subdirectory(Engine/Source/Runtime/Audio)
 add_subdirectory(Engine/Source/Runtime/Platform)
 add_subdirectory(Engine/Source/Runtime/RHI)
 add_subdirectory(Engine/Source/Runtime/RHI_D3D12)

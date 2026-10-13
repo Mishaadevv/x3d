@@ -2,6 +2,7 @@
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
 #include "Core/Log/Log.h"
+#include "Engine/AudioSystem.h"
 #include "Engine/Gameplay.h"
 #include "Platform/Input.h"
 #include "Scene/Hierarchy.h"
@@ -284,6 +285,21 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
     };
     entityType.call = [](script::VM& v, script::NativeObject& o, StringView m, Span<const Value> a, Value& out) {
         ecs::Entity e;
+        if (m == "playSound" || m == "stopSound") {
+            // The entity's Audio Source.
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            if (!sys.audio || !sys.context.world)
+                return true;
+            if (m == "stopSound") {
+                sys.audio->StopEntity(e);
+                return true;
+            }
+            if (!sys.context.world->Has<AudioSource>(e))
+                return v.Fail("This entity has no Audio Source component (Add Component > Audio Source)");
+            out = Value(sys.audio->PlayEntity(*sys.context.world, e));
+            return true;
+        }
         if (m == "destroy") {
             e = ecs::Entity::Unpack(o.id);
             SystemOf(o).context.destroyQueue.PushBack(e);
@@ -473,6 +489,39 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
         return true;
     };
     vm.SetGlobal("time", script::MakeNative(timeType, this));
+
+    // audio: play(file[, volume]) / playAt(file, position[, volume]) -> id, stop(id), setVolume(bus, volume).
+    script::NativeType& audioType = vm.AddType("Audio");
+    audioType.call = [](script::VM& v, script::NativeObject& o, StringView m, Span<const Value> a, Value& out) {
+        AudioSystem* sys = SystemOf(o).audio;
+        if (m == "play" || m == "playAt") {
+            const bool at = m == "playAt";
+            if (a.Empty() || a[0].Type() != ValueType::String || (at && (a.Size() < 2 || a[1].Type() != ValueType::Vec3)))
+                return v.Fail(at ? "audio.playAt(\"Sounds/x.wav\", position[, volume])" : "audio.play(\"Sounds/x.wav\"[, volume])");
+            const usize volumeArg = at ? 2 : 1;
+            const f32 volume = a.Size() > volumeArg && a[volumeArg].IsNumber() ? a[volumeArg].AsFloat() : 1.0f;
+            out = Value(f64(sys ? sys->PlayOneShot(a[0].AsString(), volume, at, at ? a[1].AsVec3() : Vec3(0.0f)) : 0u));
+            return true;
+        }
+        if (m == "stop") {
+            if (sys && !a.Empty() && a[0].IsNumber())
+                sys->Engine().Stop(audio::VoiceId(a[0].AsNumber()), 0.05f);
+            return true;
+        }
+        if (m == "setVolume") {
+            if (a.Size() != 2 || a[0].Type() != ValueType::String || !a[1].IsNumber())
+                return v.Fail("audio.setVolume(\"Music\" | \"SFX\" | \"UI\" | \"Voice\" | \"Master\", volume)");
+            for (u32 b = 0; b < u32(audio::Bus::Count); ++b)
+                if (a[0].AsString().EqualsIgnoreCase(audio::BusName(audio::Bus(b)))) {
+                    if (sys)
+                        sys->Engine().SetBusVolume(audio::Bus(b), a[1].AsFloat());
+                    return true;
+                }
+            return v.Fail(String::Format("Unknown bus '{}'", a[0].AsString()));
+        }
+        return false;
+    };
+    vm.SetGlobal("audio", script::MakeNative(audioType, this));
 
     vm.SetGlobal("find", script::MakeNativeFunction("find", [this](script::VM& v, Span<const Value> a, Value& out) {
                      if (a.Size() != 1 || a[0].Type() != ValueType::String)

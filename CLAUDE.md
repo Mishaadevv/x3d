@@ -28,6 +28,9 @@ Self-tests (exit code 4 on failure): -undotest, -pietest (Play-in-Editor restore
 with texture + params, structural edit < 1 s, value edit without recompiling). -scripttest (Script component: props, start/update in PIE,
 hot reload keeps state, Stop restores; writes Content/ScriptSelfTest.zs, deleted on exit), -tooltest (triangle picking,
 Drop to Ground, Brush paint/undo/redo/erase, Features toggles). Tools: EditorTools.cpp (Brush/Measure/Features), Engine/Raycast.h.
+-audiotest (64 looping 3D sources on the real device: 0 underruns, Stop silences), -noaudio (null audio backend).
+Audio: Runtime/Audio (AudioEngine.cpp mixer, Wasapi.cpp, Wav.cpp, Vorbis.cpp, Dsp.cpp; tests ZXTests Audio.*; Vorbis
+references Tests/Data/Audio from Tools/gen_audio_testdata.py), Engine/AudioSystem.h (components, PIE), EditorAudio.cpp.
 ZeqouScript (own language, docs/ZeqouScript.md): Runtime/Script (Compiler.cpp = lexer/parser/codegen, VM.cpp = values,
 VM, stdlib; tests ZXTests Script.*), engine bindings Engine/Scripting.h (Script component, ScriptSystem; tests Scripting.*),
 editor ScriptEditor.cpp (ui::InputTextCode). Version: CMakeLists project(VERSION) + docs/CHANGELOG.md; state it in reports. Useful console commands: create <shape>,

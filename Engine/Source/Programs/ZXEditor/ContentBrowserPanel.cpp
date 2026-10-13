@@ -214,6 +214,8 @@ void DrawContentBrowserPanel(Editor& ed)
                     ed.RequestSceneAction(SceneAction::Open, item.path);
                 else if (Path::HasExtension(item.path, ".zs"))
                     OpenScriptEditor(ed, item.path);
+                else if ((Path::HasExtension(item.path, ".wav") || Path::HasExtension(item.path, ".ogg")) && ed.audio)
+                    ed.audio->TogglePreview(item.path);
                 else if (Path::HasExtension(item.path, ".zmat") || Path::HasExtension(item.path, ".zmati")) {
                     MaterialLibrary::Material* m = ed.materials ? ed.materials->FindByPath(item.path) : nullptr;
                     const Guid guid = m ? m->guid : (ed.materials ? ed.materials->LoadFile(item.path) : Guid());
@@ -263,6 +265,20 @@ void DrawContentBrowserPanel(Editor& ed)
                         if (inst.IsValid())
                             OpenMaterialEditor(ed, inst);
                         b.browserListedDir.Clear();
+                    }
+                }
+                if ((Path::HasExtension(item.path, ".wav") || Path::HasExtension(item.path, ".ogg")) && ed.audio) {
+                    const bool playing = ed.audio->PreviewFile() == item.path;
+                    if (ui::MenuItem(playing ? ZX_ICON_SQUARE "  Stop" : ZX_ICON_PLAY "  Play"))
+                        ed.audio->TogglePreview(item.path);
+                    const bool canAttach = ed.world.IsAlive(ed.selected) && !ed.IsPlaying();
+                    if (ui::MenuItem(ZX_ICON_PLUS "  Add Audio Source to Selected", {}, false, canAttach)) {
+                        ed.undo.Begin("Add Audio Source");
+                        ed.undo.Record(ed.selected);
+                        AudioSource src;
+                        src.clip = Path::MakeRelative(item.path, ed.contentRoot);
+                        ed.world.Set(ed.selected, src);
+                        ed.undo.End();
                     }
                 }
                 if (Path::HasExtension(item.path, ".zs")) {

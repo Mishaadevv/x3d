@@ -124,6 +124,7 @@ vec3/quat are values (copied); lists and strings are references.
 | `character` | the Character Controller: `move(velocity)`, `jump(speed)`, `grounded`, `velocity` |
 | `input` | `key("W")`, `pressed("Space")`, `released(...)`, `mouse("left")`, `mousePressed(...)`, `move` (WASD/stick vec3), `look`, `mouseDelta`, `mousePosition`, `wheel` |
 | `time` | `dt elapsed frame` |
+| `audio` | `play(file[, volume])`, `playAt(file, position[, volume])`, `stop(id)`, `setVolume(bus, volume)`; `entity.playSound()` / `stopSound()` with an Audio Source |
 
 Positions are local to the parent; Y is up, +Z forward, meters, rotations in degrees in the API.
 
@@ -145,6 +146,7 @@ This is a game project for the **ZeqouX3D** engine ({version}). Read this before
 - `{name}.zproj` - project descriptor (JSON). Don't rename it.
 - `Content/Scenes/*.zscene` - scenes as JSON: `entities[]` with a `guid`, optional `parent`, and one object per
   component (`Transform`, `MeshRenderer`, `PointLight`, `SpotLight`, `Camera`, `CharacterController`, `Water`, `Script`,
+  `AudioSource`, `AudioListener`, `ReverbZone`,
   `Rotator`, `Oscillator`, ...). Prefer editing scenes in the editor; when editing JSON keep guids unique and stable.
 - `Content/Scripts/*.zs` - gameplay code in **ZeqouScript** (see `Docs/ZeqouScript.md`). This is where most work happens.
 - `Content/**/*.zmat` / `.zmati` - material graphs / instances (JSON node graphs). `.zprefab` - prefabs.

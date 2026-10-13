@@ -7,6 +7,7 @@
 #include "Core/Log/Log.h"
 #include "Core/Threading/Mutex.h"
 #include "Core/Time/Time.h"
+#include "Engine/AudioSystem.h"
 #include "Engine/BuiltinAssets.h"
 #include "Engine/FlyCamera.h"
 #include "Engine/Materials.h"
@@ -220,6 +221,8 @@ public:
     UniquePtr<PrefabLibrary> prefabs; // prefab files of the open project
     UniquePtr<MaterialLibrary> materials; // material graphs of the open project
     UniquePtr<ScriptSystem> scripts;      // ZeqouScript programs of the open project; runs them while playing
+    UniquePtr<audio::AudioEngine> audioEngine; // WASAPI output (-noaudio: null backend)
+    UniquePtr<AudioSystem> audio;         // Audio Sources of the scene while playing, previews
     UniquePtr<ThumbnailCache> thumbnails;
     UniquePtr<render::DebugDraw> debugDraw;
     UniquePtr<render::TransientResourcePool> pool;
@@ -283,6 +286,7 @@ public:
     // Panel visibility (Window menu).
     bool showOutliner = true, showDetails = true, showContent = true, showLog = true, showViewport = true, showStats = false;
     bool showAbout = false;
+    bool showMixer = false; // Window > Audio Mixer
     bool requestResetLayout = false;
     bool quit = false;
 
@@ -319,6 +323,10 @@ public:
     void CreatePointLight(Vec3 position, ecs::Entity parent = {});
     void CreateSpotLight(Vec3 position, ecs::Entity parent = {});
     void CreateWater(Vec3 position, ecs::Entity parent = {}); // 50 x 50 m at sea level (y = 0)
+    void CreateAudioSource(Vec3 position, ecs::Entity parent = {});
+    void CreateReverbZone(Vec3 position, ecs::Entity parent = {});
+    /// The listener while playing: the game camera when it is shown, else the editor camera.
+    ListenerPose CurrentListener();
     void CreateShape(BuiltinShape shape, Vec3 position, ecs::Entity parent = {});
     /// Undoable re-parenting (keeps the world transform). Returns false if it would create a cycle.
     bool Reparent(ecs::Entity child, ecs::Entity parent);
@@ -385,6 +393,9 @@ private:
     bool m_scriptTest = false;
     bool RunScriptSelfTest();
     u32 m_toolTest = 0; // -tooltest: frames left to wait for the test meshes (0 = off)
+    u32 m_audioTestStage = 0; // -audiotest: 1 = start, 2 = playing, 3 = stopped, 0 = off
+    u64 m_audioTestFrame = 0, m_audioTestUnderruns = 0;
+    bool RunAudioSelfTest(); // returns false while still running; sets selfTestFailed on failure
     bool RunToolSelfTest(bool& retry);
     f64 m_scriptCheckTimer = 0.0;
     String m_scriptTestFile; // -scripttest: deleted on shutdown
@@ -418,6 +429,9 @@ void BuildDefaultLayout(ui::ID root);
 
 /// Inspector widgets for reflected data. Returns true if a value changed.
 bool PropertyEditor(const TypeInfo& type, void* object, StringView idPrefix = {});
+/// Audio (EditorAudio.cpp).
+void DrawAudioMixerPanel(Editor& ed);
+bool EditAudioSourceClip(Editor& ed, AudioSource& source);
 
 /// Console variables/commands of the editor (EditorConsole.cpp).
 void RegisterEditorConsole(Editor& ed);
@@ -430,5 +444,6 @@ inline constexpr StringView DetailsTitle = ZX_ICON_SLIDERS_HORIZONTAL "  Details
 inline constexpr StringView ContentTitle = ZX_ICON_FOLDER_OPEN "  Content Browser";
 inline constexpr StringView LogTitle = ZX_ICON_SQUARE_TERMINAL "  Output Log";
 inline constexpr StringView StatsTitle = ZX_ICON_GAUGE "  Statistics";
+inline constexpr StringView AudioMixerTitle = ZX_ICON_SLIDERS_VERTICAL "  Audio Mixer";
 
 } // namespace zx::editor

@@ -5,6 +5,17 @@
 одном месте — `project(ZeqouX3D VERSION ...)` в корневом CMakeLists.txt (оттуда его берут `Core/Version.h`, ресурс
 версии ZXEditor.exe, About и лог).
 
+## 0.9.0 — M9: звук (2026-10-13)
+- Свой звуковой движок: микшер 48 кГц на отдельном потоке, вывод WASAPI, шины Master/Music/SFX/UI/Voice с громкостью,
+  mute и метрами, ducking, снапшоты, реверб, лимитер; DSP: фильтры, Freeverb, задержка, компрессор
+- Свои декодеры: WAV (PCM, float, IMA/MS ADPCM) и **Ogg Vorbis** (совпадает с эталоном libvorbis), потоковая музыка
+- 3D-звук: затухание, панорама, конусы, доплер, окклюзия рейкастом; 64+ голоса с виртуализацией, без щелчков
+- Компоненты **Audio Source**, **Audio Listener**, **Reverb Zone**; звук в Play-in-Editor (пауза глушит)
+- Редактор: превью звуков в Content Browser, слот клипа в Details, окно **Audio Mixer**, иконки и радиусы во вьюпорте
+- ZeqouScript: `audio.play(...)`, `audio.playAt(...)`, `audio.setVolume(...)`, `entity.playSound()`
+- Starter Content: синтезированные звуки; в шаблонах — гул у куба (3D), море и ветер на острове, реверб в хижине
+- Самопроверка `-audiotest` (64 источника на реальном устройстве), флаг `-noaudio`
+
 ## 0.8.6 — инструменты, Features, документация проекта (2026-10-13)
 - Окно **Features** (Tools > Features): включение/выключение теней, AO, неба и тумана, bloom, TAA, воды, ZeqouScript,
   физики персонажей, инструментов Brush/Measure — хранится в `.zproj` (`disabledFeatures`)

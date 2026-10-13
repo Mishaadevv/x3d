@@ -186,8 +186,27 @@ bool Editor::Initialize()
     renderAssets.Reset(new RenderAssets(*device, *assets));
     prefabs.Reset(new PrefabLibrary(assets.Get(), contentRoot));
     materials.Reset(new MaterialLibrary(*assets, *renderAssets, contentRoot));
+    {
+        audio::AudioSettings audioSettings;
+        if (CommandLine::HasFlag("noaudio"))
+            audioSettings.backend = audio::AudioSettings::Backend::Null;
+        audioEngine.Reset(new audio::AudioEngine());
+        audioEngine->Initialize(audioSettings);
+        audio.Reset(new AudioSystem(*audioEngine));
+        audio->SetContentRoot(contentRoot);
+        // Occlusion: something between the listener and the source (meshes; the source's own entity is ignored).
+        audio->occlusion = [this](Vec3 from, Vec3 to) {
+            const Vec3 d = to - from;
+            const f32 dist = Length(d);
+            if (dist < 0.5f || !renderAssets)
+                return 0.0f;
+            RaycastHit hit;
+            return RaycastMeshes(world, *renderAssets, Ray(from, d / dist), hit, dist - 0.5f) ? 1.0f : 0.0f;
+        };
+    }
     scripts.Reset(new ScriptSystem());
     scripts->SetContentRoot(contentRoot);
+    scripts->audio = audio.Get();
     scripts->onLog = [](StringView message, bool isError) {
         if (isError)
             ZX_LOG_ERROR(LogScript, "{}", message);
@@ -219,6 +238,7 @@ bool Editor::Initialize()
     m_materialTest = CommandLine::HasFlag("materialtest");
     m_scriptTest = CommandLine::HasFlag("scripttest");
     m_toolTest = CommandLine::HasFlag("tooltest") ? 300u : 0u;
+    m_audioTestStage = CommandLine::HasFlag("audiotest") ? 1u : 0u;
     StringView execArg;
     if (CommandLine::GetValue("exec", execArg))
         m_execCommands = execArg;
@@ -297,6 +317,8 @@ bool Editor::OpenProject(StringView descriptorPath)
         thumbnails->SetMaterialLibrary(materials.Get());
     if (scripts)
         scripts->SetContentRoot(contentRoot);
+    if (audio)
+        audio->SetContentRoot(contentRoot);
     scriptEditor.open = false;
     panels.browserCurrent = contentRoot;
     panels.browserListedDir.Clear();
@@ -506,11 +528,34 @@ void Editor::BuildWaterLevel()
     }
     block("Hut", BuiltinShape::Cube, Vec3(-11, 0.9f, -6), Vec3(-7, 3.4f, -3), "M_Wood");
 
-    // The sea: level at y = 0.
+    // The sea: level at y = 0, with its sound all around the island.
     const ecs::Entity sea = CreateEntity("Sea", Transform(Vec3(0, 0, 0)));
     Water w;
     w.size = Vec2(300.0f, 300.0f);
     world.Add(sea, w);
+    AudioSource surf;
+    surf.clip = "StarterContent/Sounds/Ocean_Loop.wav";
+    surf.volume = 0.6f;
+    surf.spatial = false;
+    surf.bus = audio::Bus::Music;
+    world.Add(sea, surf);
+    {
+        AudioSource wind;
+        wind.clip = "StarterContent/Sounds/Wind_Loop.wav";
+        wind.volume = 0.25f;
+        wind.spatial = false;
+        const ecs::Entity windEntity = CreateEntity("Wind", Transform(Vec3(0, 5, 0)));
+        world.Add(windEntity, wind);
+        EnsureEntityGuid(world, windEntity);
+        // The hut sounds like a small room inside.
+        const ecs::Entity room = CreateEntity("Hut Reverb", Transform(Vec3(-9, 2, -4.5f)));
+        ReverbZone zone;
+        zone.radius = 3.0f;
+        zone.fade = 1.5f;
+        zone.roomSize = 0.4f;
+        world.Add(room, zone);
+        EnsureEntityGuid(world, room);
+    }
     EnsureEntityGuid(world, sea);
 
     // Player on the pier, looking at the open sea.
@@ -553,7 +598,14 @@ void Editor::BuildStarterShowcase()
         return e;
     };
     shape(BuiltinShape::Plane, "Floor", Vec3(0, 0, 0), Vec3(12, 1, 12), "M_Concrete", {}, {});
-    shape(BuiltinShape::Cube, "Spinning Cube", Vec3(-2.5f, 0.75f, 0), Vec3(1), "M_Plastic_Red", "Rotator.zs", {});
+    const ecs::Entity cube = shape(BuiltinShape::Cube, "Spinning Cube", Vec3(-2.5f, 0.75f, 0), Vec3(1), "M_Plastic_Red", "Rotator.zs", {});
+    {
+        AudioSource hum; // a 3D sound: walk around the cube in Play to hear it move between the speakers
+        hum.clip = "StarterContent/Sounds/Hum_Loop.wav";
+        hum.volume = 0.5f;
+        hum.maxDistance = 15.0f;
+        world.Add(cube, hum);
+    }
     shape(BuiltinShape::Sphere, "Floating Sphere", Vec3(0, 1.0f, 0), Vec3(1), "M_Metal_Gold", "Bobbing.zs", {});
     shape(BuiltinShape::Cylinder, "Player (WASD)", Vec3(2.5f, 0.5f, 0), Vec3(0.8f, 1, 0.8f), "M_Metal_Steel", "SimpleMover.zs", {});
     shape(BuiltinShape::Cube, "Watcher", Vec3(0, 0.5f, -3), Vec3(0.6f), "M_Emissive_Cyan", "LookAt.zs", R"json({"target":"Player (WASD)"})json");
@@ -651,6 +703,20 @@ void Editor::CreateWater(Vec3 position, ecs::Entity parent)
     const ecs::Entity e = CreateEntity("Water", Transform(Vec3(position.x, 0.0f, position.z)), parent);
     world.Add(e, Water{});
     CommitCreated(e, "Create Water");
+}
+
+void Editor::CreateAudioSource(Vec3 position, ecs::Entity parent)
+{
+    const ecs::Entity e = CreateEntity("Audio Source", Transform(position), parent);
+    world.Add(e, AudioSource{});
+    CommitCreated(e, "Create Audio Source");
+}
+
+void Editor::CreateReverbZone(Vec3 position, ecs::Entity parent)
+{
+    const ecs::Entity e = CreateEntity("Reverb Zone", Transform(position), parent);
+    world.Add(e, ReverbZone{});
+    CommitCreated(e, "Create Reverb Zone");
 }
 
 void Editor::CreateShape(BuiltinShape shape, Vec3 position, ecs::Entity parent)
@@ -1053,6 +1119,8 @@ void Editor::BeginPlay()
     m_pieStep = false;
     if (scripts)
         scripts->Begin(world);
+    if (audio)
+        audio->Begin(world);
     gameCameraEjected = false;
     SetGameInputCaptured(FindGameCamera(world) != ecs::NullEntity && m_autotestFrames == 0); // tests keep the cursor free
     ZX_LOG_INFO(LogEditor, "Play-in-Editor started ({} entities)", m_pieSnapshot.Get("entities").Size());
@@ -1068,6 +1136,10 @@ void Editor::EndPlay()
     }
     if (scripts)
         scripts->End();
+    if (audio)
+        audio->End();
+    if (audioEngine)
+        audioEngine->SetBusMuted(audio::Bus::Master, false);
     SetGameInputCaptured(false);
     gameCameraEjected = false;
     // Restore the edit-time world: same entities and guids, so the undo history stays valid.
@@ -1119,6 +1191,23 @@ void Editor::TogglePause()
 {
     if (IsPlaying())
         playState = playState == PlayState::Paused ? PlayState::Playing : PlayState::Paused;
+    if (audioEngine) // paused game = silent game
+        audioEngine->SetBusMuted(audio::Bus::Master, playState == PlayState::Paused);
+}
+
+ListenerPose Editor::CurrentListener()
+{
+    ListenerPose pose;
+    pose.position = camera.position;
+    pose.forward = camera.Forward();
+    pose.up = Vec3::Up();
+    if (UsingGameCamera())
+        if (const scene::WorldTransform* wt = world.Get<const scene::WorldTransform>(FindGameCamera(world))) {
+            pose.position = wt->GetPosition();
+            pose.forward = SafeNormalize(wt->matrix.TransformVector(Vec3::Forward()), Vec3::Forward());
+            pose.up = SafeNormalize(wt->matrix.TransformVector(Vec3::Up()), Vec3::Up());
+        }
+    return pose;
 }
 
 void Editor::StepFrame()
@@ -1226,6 +1315,83 @@ bool Editor::RunToolSelfTest(bool& retry)
                      picked, dropped, painted, onFloor, afterUndo, afterRedo, afterErase, featureOff, featureOn);
     tools.items.Clear();
     return ok;
+}
+
+bool Editor::RunAudioSelfTest()
+{
+    // 64 looping 3D sources around the camera play through the real device for ~2 s: every source becomes a voice,
+    // at most 64 are mixed, the device never runs dry; Stop silences everything.
+    static Array<ecs::Entity> s_sources;
+    const String file = contentRoot + "/AudioSelfTest.wav";
+    if (m_audioTestStage == 1) {
+        audio::PcmData tone;
+        tone.sampleRate = 44100;
+        tone.channels = 1;
+        tone.samples.Resize(44100);
+        for (u32 i = 0; i < 44100; ++i)
+            tone.samples[i] = 0.2f * Sin(TwoPi * 220.0f * f32(i) / 44100.0f) * (0.6f + 0.4f * Sin(TwoPi * 2.0f * f32(i) / 44100.0f));
+        fs::WriteFile(file, audio::EncodeWav(tone).View());
+        audio->ClearCache();
+        s_sources.Clear();
+        for (u32 i = 0; i < 64; ++i) {
+            const f32 a = f32(i) * TwoPi / 64.0f;
+            const f32 r = 3.0f + f32(i % 8) * 2.0f;
+            const ecs::Entity e = CreateEntity(String::Format("Audio Test {}", i), Transform(camera.position + Vec3(Cos(a) * r, 0.0f, Sin(a) * r)));
+            AudioSource src;
+            src.clip = "AudioSelfTest.wav";
+            src.volume = 0.15f;
+            src.maxDistance = 30.0f;
+            src.occlusion = (i % 4) == 0;
+            world.Add(e, src);
+            s_sources.PushBack(e);
+        }
+        BeginPlay();
+        m_audioTestUnderruns = audioEngine->GetStats().underruns;
+        m_audioTestFrame = frameIndex;
+        m_audioTestStage = 2;
+        return false;
+    }
+    if (m_audioTestStage == 2 && frameIndex >= m_audioTestFrame + 120) {
+        const audio::AudioStats st = audioEngine->GetStats();
+        const bool voices = st.voices == 64 && audio->PlayingSources() == 64 && st.audible > 0 && st.audible <= 64;
+        const u64 underruns = st.underruns - m_audioTestUnderruns;
+        // Underruns only count with a real device (none on a machine without audio output).
+        const bool smooth = !st.deviceOpen || underruns == 0;
+        ZX_LOG_INFO(LogEditor, "Audio self-test: {} voices ({} audible), {} underruns, mix {:.3f} ms/block, device '{}'", st.voices, st.audible,
+                    underruns, st.mixCpuMs, st.deviceOpen ? st.deviceName : String("none"));
+        EndPlay();
+        m_audioTestFrame = frameIndex;
+        m_audioTestStage = voices && smooth ? 3 : 4;
+        if (m_audioTestStage == 4) {
+            ZX_LOG_ERROR(LogEditor, "Audio self-test FAILED (voices ok {}, smooth {})", voices, smooth);
+            selfTestFailed = true;
+            m_audioTestStage = 0;
+            s_sources.Reset();
+        }
+        return false;
+    }
+    if (m_audioTestStage == 3 && frameIndex >= m_audioTestFrame + 30) {
+        const bool silent = audioEngine->GetStats().voices == 0;
+        if (silent)
+            ZX_LOG_INFO(LogEditor, "Audio self-test passed");
+        else
+            ZX_LOG_ERROR(LogEditor, "Audio self-test FAILED: {} voices still playing after Stop", audioEngine->GetStats().voices);
+        selfTestFailed |= !silent;
+        // Stop restored the scene (with new entity ids): remove the test sources by name.
+        Array<ecs::Entity> leftovers;
+        world.Query<const scene::EntityName>().Each([&](ecs::Entity e, const scene::EntityName& n) {
+            if (n.value.StartsWith("Audio Test "))
+                leftovers.PushBack(e);
+        });
+        for (ecs::Entity e : leftovers)
+            if (world.IsAlive(e))
+                scene::DestroyHierarchy(world, e);
+        s_sources.Reset(); // frees the memory (a static would otherwise show up as a leak at exit)
+        platform::DeleteFileAt(file);
+        m_audioTestStage = 0;
+        return true;
+    }
+    return false;
 }
 
 bool Editor::RunScriptSelfTest()
@@ -1634,6 +1800,8 @@ bool Editor::Frame()
             scripts->Tick(world, gameDt, gameInputCaptured ? &input : nullptr);
         // Characters move after the scripts asked them to (character.move / jump).
         scene::UpdateWorldTransforms(world);
+        if (audio && !m_pieStep)
+            audio->Tick(world, gameDt, CurrentListener());
         if (FeatureEnabled("characters"))
             TickCharacters(world, gameDt, [this](asset::AssetId id, AABB& out) {
             const render::GpuMesh* mesh = renderAssets->GetMesh(id);
@@ -1643,7 +1811,10 @@ bool Editor::Frame()
             return true;
         });
         m_pieStep = false;
-    } else if (scripts && (m_scriptCheckTimer += dt) > 0.5) {
+    } else if (audio && !IsPlaying()) {
+        audio->TickIdle(dt); // previews
+    }
+    if (!IsPlaying() && scripts && (m_scriptCheckTimer += dt) > 0.5) {
         m_scriptCheckTimer = 0.0; // edit mode: keep the Details panel in sync with files edited elsewhere
         scripts->CheckForChanges();
     }
@@ -1651,6 +1822,8 @@ bool Editor::Frame()
         SaveSceneTo(m_saveAfterImports);
         m_saveAfterImports.Clear();
     }
+    if (m_audioTestStage && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle())
+        RunAudioSelfTest();
     if (m_toolTest && frameIndex > 5 && pendingImports.Empty() && assets->IsIdle()) {
         bool retry = false;
         const bool ok = RunToolSelfTest(retry);
@@ -1748,6 +1921,14 @@ void Editor::RenderFrame()
                                     const Mat4 m = scene::ComputeWorldMatrix(world, selected);
                                     if (const PointLight* pl = world.Get<PointLight>(selected))
                                         debugDraw->Sphere(m.GetTranslation(), pl->range, Color(255, 200, 80), 32);
+                                    if (const AudioSource* as = world.Get<AudioSource>(selected); as && as->spatial) {
+                                        debugDraw->Sphere(m.GetTranslation(), as->minDistance, Color(90, 200, 255), 24);
+                                        debugDraw->Sphere(m.GetTranslation(), as->maxDistance, Color(60, 120, 170), 32);
+                                    }
+                                    if (const ReverbZone* rz = world.Get<ReverbZone>(selected)) {
+                                        debugDraw->Sphere(m.GetTranslation(), rz->radius, Color(180, 130, 255), 32);
+                                        debugDraw->Sphere(m.GetTranslation(), Max(rz->radius - rz->fade, 0.0f), Color(120, 90, 180), 24);
+                                    }
                                 }
                                 debugDraw->Render(c, view.viewProj);
                             });
@@ -1823,6 +2004,8 @@ void Editor::Shutdown()
     thumbnails.Reset();
     materials.Reset();
     scripts.Reset();
+    audio.Reset();
+    audioEngine.Reset();
     if (!m_scriptTestFile.Empty())
         platform::DeleteFileAt(m_scriptTestFile);
     prefabs.Reset();

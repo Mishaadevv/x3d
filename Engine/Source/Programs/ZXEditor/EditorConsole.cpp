@@ -129,6 +129,26 @@ ConCommand CmdImport("import", "Imports a model into the project and places it i
                          ed->ImportAsset(args[0], ed->camera.position + ed->camera.Forward() * 5.0f);
                      });
 
+ConCommand CmdAudioPlay("audio.play", "Plays a sound file once (path under Content): audio.play Sounds/x.wav", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (ed && ed->audio && !args.Empty())
+        ed->audio->TogglePreview(args[0]);
+});
+
+ConCommand CmdAudioStats("audio.stats", "Prints the audio device and mixer state", [](Span<const StringView>) {
+    Editor* ed = Ed();
+    if (!ed || !ed->audioEngine)
+        return;
+    const audio::AudioStats s = ed->audioEngine->GetStats();
+    ZX_LOG_INFO(LogCmd, "Audio: device '{}', {} voices ({} audible, {} virtual, {} streams), {} underruns, mix {:.3f} ms",
+                s.deviceOpen ? s.deviceName : String("none"), s.voices, s.audible, s.virtualVoices, s.streams, s.underruns, s.mixCpuMs);
+});
+
+ConCommand CmdMixer("mixer", "Opens the Audio Mixer", [](Span<const StringView>) {
+    if (Editor* ed = Ed())
+        ed->showMixer = true;
+});
+
 ConCommand CmdFeatures("features", "Opens the Features window (engine features and tools per project)", [](Span<const StringView>) {
     if (Editor* ed = Ed())
         ed->showFeatures = true;
@@ -148,7 +168,7 @@ ConCommand CmdTool("tool", "Activates an editor tool: tool <brush|measure|none>;
         SetActiveTool(*ed, tool);
 });
 
-ConCommand CmdCreate("create", "Creates an object in front of the camera: create <entity|pointlight|spotlight|water|cube|sphere|cylinder|plane>",
+ConCommand CmdCreate("create", "Creates an object in front of the camera: create <entity|pointlight|spotlight|water|audiosource|reverbzone|cube|sphere|cylinder|plane>",
                      [](Span<const StringView> args) {
     Editor* ed = Ed();
     if (!ed)
@@ -161,6 +181,10 @@ ConCommand CmdCreate("create", "Creates an object in front of the camera: create
         ed->CreateSpotLight(at);
     else if (kind.EqualsIgnoreCase("water"))
         ed->CreateWater(at);
+    else if (kind.EqualsIgnoreCase("audiosource"))
+        ed->CreateAudioSource(at);
+    else if (kind.EqualsIgnoreCase("reverbzone"))
+        ed->CreateReverbZone(at);
     else if (kind.EqualsIgnoreCase("entity"))
         ed->CreateEmpty(at);
     else if (kind.EqualsIgnoreCase("cube"))

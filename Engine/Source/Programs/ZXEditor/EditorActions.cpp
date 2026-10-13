@@ -193,6 +193,9 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.pointLight", "Create Point Light", "Create", ZX_ICON_LIGHTBULB, "", [spawn](Editor& e) { e.CreatePointLight(spawn(e)); });
     Add(ed, "create.spotLight", "Create Spot Light", "Create", ZX_ICON_SPOTLIGHT, "", [spawn](Editor& e) { e.CreateSpotLight(spawn(e)); });
     Add(ed, "create.water", "Create Water", "Create", ZX_ICON_DROPLETS, "", [spawn](Editor& e) { e.CreateWater(spawn(e)); });
+    Add(ed, "create.audioSource", "Create Audio Source", "Create", ZX_ICON_VOLUME_2, "", [spawn](Editor& e) { e.CreateAudioSource(spawn(e)); });
+    Add(ed, "create.reverbZone", "Create Reverb Zone", "Create", ZX_ICON_AUDIO_LINES, "", [spawn](Editor& e) { e.CreateReverbZone(spawn(e)); });
+    Add(ed, "window.audioMixer", "Audio Mixer", "Window", ZX_ICON_SLIDERS_VERTICAL, "", [](Editor& e) { e.showMixer = !e.showMixer; });
     Add(ed, "create.material", "Create Material", "Create", ZX_ICON_PALETTE, "", [](Editor& e) {
         String dir = e.panels.browserCurrent.Empty() ? e.contentRoot : e.panels.browserCurrent;
         String path = Path::Join(dir, "NewMaterial.zmat");

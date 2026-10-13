@@ -101,6 +101,7 @@ vec3 и quat копируются как значения; списки и ст�
 | `character` | Character Controller своей сущности: `move(vec3 скорость)` — горизонтальная скорость на этот кадр (м/с), `jump(скорость)` — прыжок, если стоит на земле; `grounded`, `velocity` |
 | `input` | `key("W")` — удерживается, `pressed("Space")` / `released(...)` — в этом кадре, `mouse("left")`, `mousePressed("right")`; `move` — vec3 из WASD/стрелок/стика (x — вправо, z — вперёд, y — E/Q), `look` / `mouseDelta`, `mousePosition`, `wheel`. Имена клавиш: буквы, цифры, `Space`, `Enter`, `Escape`, `Shift`, `Ctrl`, `Alt`, `Tab`, `Up`, `F1`…`F12` |
 | `time` | `dt`, `elapsed` (секунды с начала Play), `frame` |
+| `audio` | `play("Sounds/x.wav"[, громкость])` → id, `playAt(файл, позиция[, громкость])` — 3D-звук в точке, `stop(id)`, `setVolume("Music" \| "SFX" \| "UI" \| "Voice" \| "Master", громкость)`; у сущности с Audio Source — `entity.playSound()` / `entity.stopSound()` |
 
 Позиции и повороты — локальные (относительно родителя). Ось Y — вверх, +Z — вперёд, метры.
 

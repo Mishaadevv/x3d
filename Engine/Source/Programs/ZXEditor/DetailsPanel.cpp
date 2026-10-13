@@ -602,7 +602,13 @@ void DrawDetailsPanel(Editor& ed)
         if (open) {
             ui::Indent(4.0f);
             g_component = ct.type->name.View();
-            const bool edited = ct.type == &TypeOf<Script>() ? EditScript(ed, *static_cast<Script*>(data)) : PropertyEditor(*ct.type, data);
+            bool edited = false;
+            if (ct.type == &TypeOf<Script>())
+                edited = EditScript(ed, *static_cast<Script*>(data));
+            else if (ct.type == &TypeOf<AudioSource>())
+                edited = EditAudioSourceClip(ed, *static_cast<AudioSource*>(data)) | PropertyEditor(*ct.type, data);
+            else
+                edited = PropertyEditor(*ct.type, data);
             if (edited) {
                 ed.world.GetComponent(e, ct.id, true); // mark changed for systems
                 ed.BeginContinuousEdit(String::Format("Edit {}", ct.displayName), e, &before);

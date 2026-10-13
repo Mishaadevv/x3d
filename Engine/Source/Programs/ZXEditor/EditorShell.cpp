@@ -124,6 +124,8 @@ void DrawMenus(Editor& ed)
         ActionMenuItem(ed, "create.spotLight");
         ui::Separator();
         ActionMenuItem(ed, "create.water");
+        ActionMenuItem(ed, "create.audioSource");
+        ActionMenuItem(ed, "create.reverbZone");
         ui::Separator();
         ActionMenuItem(ed, "create.material");
         ui::EndMenu();
@@ -143,6 +145,7 @@ void DrawMenus(Editor& ed)
         ui::MenuItem(ContentTitle, {}, &ed.showContent);
         ui::MenuItem(LogTitle, {}, &ed.showLog);
         ui::MenuItem(StatsTitle, {}, &ed.showStats);
+        ui::MenuItem(AudioMixerTitle, {}, &ed.showMixer);
         ui::Separator();
         ActionMenuItem(ed, "window.resetLayout");
         ActionMenuItem(ed, "view.fullscreen");
@@ -463,6 +466,7 @@ void DrawShell(Editor& ed)
     DrawMaterialEditorPanel(ed);
     DrawToolPanel(ed);
     DrawFeaturesPanel(ed);
+    DrawAudioMixerPanel(ed);
     DrawScriptEditorPanel(ed);
     DrawAbout(ed);
     DrawSaveChangesDialog(ed);

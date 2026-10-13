@@ -4,7 +4,7 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12 — par
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a Unity URP / Unreal Engine 5 style workflow that runs
 well on everyday hardware (the development machine is a laptop with Intel UHD 620 graphics).
 
-**Version 0.8.6** · zero third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md)
+**Version 0.9.0** · zero third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md)
 
 ![Water template](docs/images/water.jpg)
 
@@ -14,6 +14,8 @@ well on everyday hardware (the development machine is a laptop with Intel UHD 62
   shadows, GTAO, physical sky with height fog, TAA, bloom, auto exposure, ACES tonemapping; Lite/Full profiles chosen by
   hardware.
 - **Realistic water** — Gerstner waves, Fresnel sky reflection, sun glints, refraction, depth absorption and foam.
+- **Audio** — own 48 kHz mixer on WASAPI with buses, ducking, snapshots, reverb and a limiter; 3D sound with
+  attenuation, panning, cones, Doppler and raycast occlusion; own WAV/ADPCM and Ogg Vorbis decoders, streamed music.
 - **Editor** — dockable UE5/Unity-style shell (own immediate-mode UI with SDF text): viewport with gizmos, outliner,
   details, content browser, output log with console, command palette, undo/redo for everything.
 - **Projects** — Project Browser with templates (Blank, Sample Scene, First Person, Third Person, Water), Starter Content,
@@ -48,7 +50,7 @@ Binaries go to `Binaries/Win64/<Debug|Development|Shipping>/`: `ZXEditor.exe` (t
 
 | Path | Contents |
 |---|---|
-| `Engine/Source/Runtime` | Engine modules: Core, Platform, RHI, RHI_D3D12, Asset, Scene, Render, Script, Engine, UI |
+| `Engine/Source/Runtime` | Engine modules: Core, Platform, RHI, RHI_D3D12, Asset, Scene, Render, Script, Audio, Engine, UI |
 | `Engine/Source/Programs/ZXEditor` | The editor |
 | `Engine/Shaders` | HLSL shaders (compiled with DXC at runtime) |
 | `Engine/Content` | Fonts, icons, branding |

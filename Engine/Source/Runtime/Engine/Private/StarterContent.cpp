@@ -3,7 +3,12 @@
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
 #include "Core/String/Path.h"
+#include "Audio/AudioClip.h"
+#include "Core/Containers/Function.h"
+#include "Core/Math/Random.h"
 #include "Engine/Project.h"
+
+#include <cmath>
 #include "Render/MaterialGraph.h"
 
 namespace zx {
@@ -306,6 +311,94 @@ u32 WriteGameplayScripts(StringView contentDir)
     return WriteScripts(Path::Join(contentDir, "Scripts"), Span<const StarterScript>(GameplayScripts, ZX_ARRAY_COUNT(GameplayScripts)));
 }
 
+// --- Sounds (synthesized, so the starter content needs no recorded files) -------------------------------------------------
+
+namespace {
+
+/// Makes a looping sound seamless: the last `fade` frames are cross-faded into the start and then dropped.
+void MakeLoop(audio::PcmData& p, u32 fadeFrames)
+{
+    const u32 frames = u32(p.samples.Size() / p.channels);
+    const u32 keep = frames - fadeFrames;
+    for (u32 i = 0; i < fadeFrames; ++i) {
+        const f32 t = (f32(i) + 0.5f) / f32(fadeFrames);
+        for (u32 c = 0; c < p.channels; ++c) {
+            f32& head = p.samples[usize(i) * p.channels + c];
+            const f32 tail = p.samples[usize(keep + i) * p.channels + c];
+            head = head * Sqrt(t) + tail * Sqrt(1.0f - t);
+        }
+    }
+    p.samples.Resize(usize(keep) * p.channels);
+}
+
+audio::PcmData Synth(u32 rate, f32 seconds, const Function<f32(f32 t, u32 i), 32>& f)
+{
+    audio::PcmData p;
+    p.sampleRate = rate;
+    p.channels = 1;
+    const u32 frames = u32(seconds * f32(rate));
+    p.samples.Resize(frames);
+    for (u32 i = 0; i < frames; ++i)
+        p.samples[i] = f(f32(i) / f32(rate), i);
+    return p;
+}
+
+u32 WriteSounds(const String& dir)
+{
+    platform::CreateDirectoryTree(dir);
+    u32 written = 0;
+    auto save = [&](StringView name, const audio::PcmData& p) {
+        written += fs::WriteFile(String::Format("{}/{}", dir, name), audio::EncodeWav(p).View()) ? 1u : 0u;
+    };
+    Random rng(77);
+    // UI click: a short bright blip.
+    save("UI_Click.wav", Synth(44100, 0.06f, [](f32 t, u32) {
+        return 0.6f * std::sin(TwoPi * 1800.0f * t) * std::exp(-t * 90.0f) + 0.2f * std::sin(TwoPi * 3600.0f * t) * std::exp(-t * 160.0f);
+    }));
+    // Chime: inharmonic bell partials with their own decays.
+    save("Chime.wav", Synth(44100, 2.5f, [](f32 t, u32) {
+        const f32 partials[4][3] = {{1.0f, 0.5f, 1.6f}, {2.76f, 0.25f, 2.6f}, {5.40f, 0.12f, 4.0f}, {8.93f, 0.06f, 6.0f}};
+        f32 s = 0.0f;
+        for (const auto& p : partials)
+            s += p[1] * std::sin(TwoPi * 660.0f * p[0] * t) * std::exp(-t * p[2]);
+        return s * Min(1.0f, t * 400.0f);
+    }));
+    // Hum: 110 Hz with harmonics and a slow wobble; 2 s holds whole cycles, so it loops without a seam.
+    save("Hum_Loop.wav", Synth(44100, 2.0f, [](f32 t, u32) {
+        const f32 wobble = 0.85f + 0.15f * std::sin(TwoPi * 2.0f * t);
+        return wobble * (0.35f * std::sin(TwoPi * 110.0f * t) + 0.15f * std::sin(TwoPi * 220.0f * t) + 0.08f * std::sin(TwoPi * 330.0f * t));
+    }));
+    // Wind: low-passed noise with a slowly moving cutoff and level.
+    {
+        f32 lp = 0.0f, lp2 = 0.0f;
+        audio::PcmData wind = Synth(22050, 6.5f, [&](f32 t, u32) {
+            const f32 gust = 0.5f + 0.3f * std::sin(TwoPi * 0.11f * t) + 0.2f * std::sin(TwoPi * 0.27f * t + 1.0f);
+            const f32 coef = 0.02f + 0.06f * gust;
+            lp += (rng.Range(-1.0f, 1.0f) - lp) * coef;
+            lp2 += (lp - lp2) * coef;
+            return lp2 * 3.0f * gust;
+        });
+        MakeLoop(wind, 22050 / 2);
+        save("Wind_Loop.wav", wind);
+    }
+    // Ocean: deep rumble plus swells of hiss as waves break.
+    {
+        f32 low = 0.0f, mid = 0.0f;
+        audio::PcmData ocean = Synth(22050, 8.5f, [&](f32 t, u32) {
+            const f32 n = rng.Range(-1.0f, 1.0f);
+            low += (n - low) * 0.01f;
+            mid += (n - mid) * 0.12f;
+            const f32 swell = std::pow(Max(0.0f, std::sin(TwoPi * 0.125f * t)), 2.0f) + 0.6f * std::pow(Max(0.0f, std::sin(TwoPi * 0.2f * t + 2.0f)), 3.0f);
+            return low * 2.2f + mid * 0.35f * (0.25f + swell);
+        });
+        MakeLoop(ocean, 22050 / 2);
+        save("Ocean_Loop.wav", ocean);
+    }
+    return written;
+}
+
+} // namespace
+
 u32 WriteStarterContent(StringView contentDir)
 {
     const String root = Path::Join(contentDir, "StarterContent");
@@ -318,6 +411,7 @@ u32 WriteStarterContent(StringView contentDir)
     }
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(Scripts, ZX_ARRAY_COUNT(Scripts)));
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(GameplayScripts, ZX_ARRAY_COUNT(GameplayScripts)));
+    written += WriteSounds(root + "/Sounds");
     return written;
 }
 

@@ -9,7 +9,7 @@
 //   scripts.End();                                       // Stop
 //
 // Globals a script sees: entity / transform (its own entity), character (its CharacterController), input, time,
-// find(name), plus the standard library.
+// audio, find(name), plus the standard library.
 // Language reference: docs/ZeqouScript.md.
 
 #include "Core/Containers/Function.h"
@@ -23,6 +23,7 @@
 namespace zx {
 
 class InputState;
+class AudioSystem;
 
 /// Runs a .zs file on the entity. `properties` holds the values of the script's `prop` fields that differ from the
 /// defaults, as a JSON object ({"speed": 120, "tint": [1, 0, 0]}).
@@ -66,6 +67,9 @@ public:
     bool IsRunning() const { return m_running; }
     u32 InstanceCount() const { return u32(m_instances.Size()); }
     script::VM& GetVM() { return *m_vm; }
+
+    /// Sound for scripts (audio.play, entity.playSound); null = scripts play nothing.
+    AudioSystem* audio = nullptr;
 
     /// log()/print() output and errors (file:line: message).
     Function<void(StringView message, bool isError)> onLog;

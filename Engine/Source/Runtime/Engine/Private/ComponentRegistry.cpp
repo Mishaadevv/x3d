@@ -1,5 +1,6 @@
 #include "Engine/ComponentRegistry.h"
 #include "Core/Memory/Memory.h"
+#include "Engine/AudioSystem.h"
 #include "Engine/Gameplay.h"
 #include "Engine/Prefab.h"
 #include "Engine/SceneRendering.h"
@@ -42,6 +43,9 @@ void RegisterEngineComponents()
     RegisterComponent<SpotLight>("Spot Light", "\xEE\x9A\x82");                       // spotlight
     RegisterComponent<Rotator>("Rotator", "\xEE\x8B\xAA");                            // rotate-3d
     RegisterComponent<Oscillator>("Oscillator", "\xEE\x8A\x83");                      // waves
+    RegisterComponent<AudioSource>("Audio Source", "\xEE\x86\xAB");                  // volume-2
+    RegisterComponent<AudioListener>("Audio Listener", "\xEE\x8E\x82");              // ear
+    RegisterComponent<ReverbZone>("Reverb Zone", "\xEE\x95\x9A");                    // audio-lines
     RegisterComponent<Water>("Water", "\xEE\x82\xB5");                                // droplets
     RegisterComponent<Camera>("Camera", "\xEE\x86\xA5");                              // video
     RegisterComponent<CharacterController>("Character Controller", "\xEE\x88\x9E");  // person-standing
