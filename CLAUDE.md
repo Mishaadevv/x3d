@@ -59,6 +59,11 @@ UI headless interaction tests: `ZXTests.exe UI.*` (synthetic mouse/keys drive re
 - ZUI GPU cost is fill-bound on UHD 620 (~0.5-1 Gpix/s blended): keep overlapping layers few; border-only rects and
   shadows are drawn hollow automatically. Lucide icons: macros in UI/Icons.h (regenerate with Tools/gen_lucide_icons.py).
 
+## Publishing
+- GitHub: https://github.com/Mishaadevv/x3d (public, branch main, PolyForm Strict). Screenshots for the README live in docs/images.
+- Website: the sibling repo ../Zeqou (https://mishaadevv.github.io/zeqou/, page /apps/x3d, docs /docs/x3d) reads the engine
+  version from this CMakeLists.txt: after a version bump run `npm run versions` there, commit and push (GitHub Pages deploys).
+
 ## Rules
 - Definition of done: builds warning-free (Debug + Development), tests pass, no leaks, no D3D12 debug-layer errors.
 - Don't delete the source zips (`inter.zip`, `lucide-*.zip`) without asking. Commit only when asked.
