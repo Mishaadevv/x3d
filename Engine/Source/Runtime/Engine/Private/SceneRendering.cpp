@@ -24,6 +24,18 @@ ZX_REFLECT_STRUCT_BEGIN(HeightFog)
     ZX_FIELD(localLights, Meta::Range(0, 20), Meta::Tooltip("How strongly point and spot lights light the fog"))
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_STRUCT_BEGIN(VolumetricClouds)
+    ZX_FIELD(coverage, Meta::Range(0, 1), Meta::Tooltip("0 = clear sky, 1 = overcast"))
+    ZX_FIELD(bottom, Meta::Range(100, 10000), Meta::Units("m"))
+    ZX_FIELD(thickness, Meta::Range(50, 10000), Meta::Units("m"))
+    ZX_FIELD(density, Meta::Range(0, 1), Meta::Units("1/m"))
+    ZX_FIELD(detail, Meta::Range(0, 1), Meta::Tooltip("Edges eroded by fine noise: wispy"))
+    ZX_FIELD(windSpeed, Meta::Range(0, 200), Meta::Units("m/s"))
+    ZX_FIELD(windDirection, Meta::Range(0, 360), Meta::Units("deg"))
+    ZX_FIELD(color, Meta::Color())
+    ZX_FIELD(shadows, Meta::Range(0, 1), Meta::Tooltip("How dark their shadows are on the ground"))
+ZX_REFLECT_STRUCT_END()
+
 ZX_REFLECT_ENUM_BEGIN(FogShape)
     ZX_ENUM_VALUE(Box)
     ZX_ENUM_VALUE(Sphere)
@@ -244,6 +256,26 @@ const HeightFog* FindHeightFog(World& world, f32* height)
             *height = wt.matrix.GetTranslation().y;
     });
     return found;
+}
+
+render::CloudSettings FindClouds(World& world)
+{
+    render::CloudSettings s;
+    world.Query<const VolumetricClouds>().Each([&](const VolumetricClouds& c) {
+        if (s.enabled)
+            return;
+        s.enabled = true;
+        s.coverage = c.coverage;
+        s.bottom = c.bottom;
+        s.thickness = c.thickness;
+        s.density = c.density;
+        s.detail = c.detail;
+        s.windSpeed = c.windSpeed;
+        s.windDirection = c.windDirection;
+        s.albedo = c.color;
+        s.shadowStrength = c.shadows;
+    });
+    return s;
 }
 
 void GatherFogVolumes(World& world, Array<render::FogVolumeDesc>& out)

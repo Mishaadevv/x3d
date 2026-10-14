@@ -55,7 +55,11 @@ struct VolumeParams
     Vec3 prevCameraForward;
     f32 nearPlane;
     f32 skyScale; // < 0: no sky SH, use ambient
-    f32 pad[3];
+    u32 cloudShadow;
+    f32 cloudShadowInvExtent;
+    f32 pad0;
+    Vec2 cloudShadowOrigin;
+    f32 pad1[2];
 };
 
 // Keep in sync with AddVolumes (112 bytes).
@@ -260,6 +264,9 @@ void VolumetricFogRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTex
     p.prevCameraPosition = m_prevPosition;
     p.prevCameraForward = m_prevForward;
     p.nearPlane = view.nearPlane;
+    p.cloudShadow = lighting.cloudShadow;
+    p.cloudShadowInvExtent = 1.0f / Max(lighting.cloudShadowExtent, 1.0f);
+    p.cloudShadowOrigin = lighting.cloudShadowOrigin;
     m_prevViewProj = viewProjNoJitter;
     m_prevPosition = view.position;
     m_prevForward = p.cameraForward;

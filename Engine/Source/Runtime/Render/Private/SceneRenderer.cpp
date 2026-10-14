@@ -866,6 +866,9 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
     m_viewConstants.probeCount = lighting.probeBuffer != InvalidDescriptor ? lighting.probeCount : 0u;
     m_viewConstants.reflectionExposure = lighting.reflectionExposure;
     m_viewConstants.ssrTexture = lighting.ssrTexture;
+    m_viewConstants.cloudShadow = lighting.cloudShadow;
+    m_viewConstants.cloudShadowInvExtent = 1.0f / Max(lighting.cloudShadowExtent, 1.0f);
+    m_viewConstants.cloudShadowOrigin = lighting.cloudShadowOrigin;
     m_viewConstants.ssrMaxRoughness = lighting.ssrMaxRoughness;
     m_viewConstants.ssrViewProj = lighting.ssrViewProj;
     PrepareDecals(lighting.decals, Frustum::FromMatrix(view.viewProj));

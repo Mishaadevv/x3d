@@ -67,6 +67,9 @@ struct ViewData
     uint decalBuffer;        // GpuDecal x decalCount (sorted, later ones on top)
     uint decalCount;
     float2 decalPad;
+    uint cloudShadow;        // fraction of sunlight the clouds let through (top-down map) or invalid
+    float cloudShadowInvExtent;
+    float2 cloudShadowOrigin;
 };
 ZX_VIEW_CONSTANTS(ViewData, g_View);
 
@@ -630,7 +633,9 @@ float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
     normalRoughness = float4(EncodeOct(N), s.roughness, 1.0);
 
     uint cascade;
-    const float shadow = SunShadow(i.worldPos, N, cascade);
+    float shadow = SunShadow(i.worldPos, N, cascade);
+    if (g_View.cloudShadow != ZX_INVALID_INDEX) // clouds passing over the sun
+        shadow *= GetTexture2D(g_View.cloudShadow).SampleLevel(g_LinearClamp, (i.worldPos.xz - g_View.cloudShadowOrigin) * g_View.cloudShadowInvExtent, 0).r;
     switch (g_View.debugMode) {
     case 1: return float4(s.baseColor, 1);
     case 2: return float4(N * 0.5 + 0.5, 1);

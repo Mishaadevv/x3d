@@ -107,6 +107,10 @@ struct SceneLighting
     f32 ssrMaxRoughness = 0.0f;
     /// Decals projected onto the scene (the forward pass applies them before lighting). Valid until AddPasses.
     Span<const DecalDesc> decals;
+    /// Cloud shadows (CloudRenderer): fraction of sunlight reaching the ground over a square of the world.
+    u32 cloudShadow = rhi::InvalidDescriptor;
+    Vec2 cloudShadowOrigin; // world xz of the map's corner
+    f32 cloudShadowExtent = 1.0f;
 };
 
 inline f32 ExposureFromEV100(f32 ev100) { return 1.0f / (1.2f * std::exp2(ev100)); }
@@ -338,6 +342,9 @@ private:
         u32 decalBuffer;
         u32 decalCount;
         Vec2 decalPad;
+        u32 cloudShadow; // SRV or invalid
+        f32 cloudShadowInvExtent;
+        Vec2 cloudShadowOrigin;
     } m_viewConstants = {};
     // HLSL constant buffer packing: a matrix starts on a 16-byte boundary.
     static_assert(offsetof(ViewConstants, ssrViewProj) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");

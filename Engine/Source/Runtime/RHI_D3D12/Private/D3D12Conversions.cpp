@@ -5,10 +5,15 @@ ZX_DEFINE_LOG_CATEGORY(LogD3D12, Info);
 
 namespace zx::rhi::d3d12 {
 
+void (*g_deviceRemovedHook)(HRESULT) = nullptr;
+
 bool CheckHR(HRESULT hr, const char* expression, const char* file, int line)
 {
     if (SUCCEEDED(hr))
         return true;
+    // The first failure after a GPU fault: report why (DRED breadcrumbs, page fault) once.
+    if ((hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG) && g_deviceRemovedHook)
+        g_deviceRemovedHook(hr);
     ZX_LOG_ERROR(LogD3D12, "{} failed with HRESULT {:#010x} at {}({})", expression, u32(hr), file, line);
     return false;
 }

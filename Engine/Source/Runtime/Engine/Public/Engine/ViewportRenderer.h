@@ -56,6 +56,7 @@ struct ViewportFeatures
     bool decals = true;
     bool particles = true;
     bool volumetricFog = true;
+    bool clouds = true;
 };
 
 /// Dynamic resolution: the render scale follows the GPU frame time towards a target (5 % steps, 4 times a second).
@@ -143,6 +144,7 @@ private:
     render::WaterRenderer m_water;
     render::ParticleRenderer m_particleRenderer;
     render::VolumetricFogRenderer m_volumetric;
+    render::CloudRenderer m_clouds;
     Array<render::FogVolumeDesc> m_fogVolumes;
     const class ParticleSystem* m_particleSource = nullptr;
     Array<render::GpuParticle> m_particleList;

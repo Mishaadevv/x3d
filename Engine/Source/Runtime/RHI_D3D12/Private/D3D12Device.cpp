@@ -58,8 +58,15 @@ void DescriptorHeap::Free(u32 index)
 
 // --- Device ---------------------------------------------------------------------------------------------------------
 
+extern void (*g_deviceRemovedHook)(HRESULT);
+namespace {
+D3D12Device* g_liveDevice = nullptr;
+}
+
 D3D12Device::~D3D12Device()
 {
+    if (g_liveDevice == this)
+        g_liveDevice = nullptr;
     if (!m_device)
         return;
     WaitIdle();
@@ -94,6 +101,11 @@ D3D12Device::~D3D12Device()
 
 bool D3D12Device::Init(const DeviceDesc& desc)
 {
+    g_liveDevice = this;
+    g_deviceRemovedHook = [](HRESULT hr) {
+        if (g_liveDevice)
+            g_liveDevice->OnDeviceRemoved(hr);
+    };
     UINT factoryFlags = 0;
     if (desc.enableDebugLayer) {
         ComPtr<ID3D12Debug> debug;
@@ -1062,11 +1074,22 @@ void D3D12Device::OnDeviceRemoved(HRESULT reason)
                                                                                     ? node->pCommandListDebugNameA
                                                                                     : "?",
                              completed, node->BreadcrumbCount);
+                // The ops around the one that did not finish (D3D12_AUTO_BREADCRUMB_OP values; 20 = Dispatch, 0/1 = draws).
+                if (completed < node->BreadcrumbCount && node->pCommandHistory) {
+                    String ops;
+                    for (u32 k = completed >= 4 ? completed - 4 : 0; k < Min(completed + 3, node->BreadcrumbCount); ++k)
+                        ops += String::Format("{}{}{} ", k == completed ? "[" : "", u32(node->pCommandHistory[k]), k == completed ? "]" : "");
+                    ZX_LOG_ERROR(LogD3D12, "  DRED: ops {}", ops);
+                }
             }
         }
         D3D12_DRED_PAGE_FAULT_OUTPUT pageFault = {};
         if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&pageFault)) && pageFault.PageFaultVA)
             ZX_LOG_ERROR(LogD3D12, "  DRED: page fault at GPU VA {:#x}", u64(pageFault.PageFaultVA));
+        for (const D3D12_DRED_ALLOCATION_NODE* a = pageFault.pHeadExistingAllocationNode; a; a = a->pNext)
+            ZX_LOG_ERROR(LogD3D12, "  DRED: fault near live allocation '{}'", a->ObjectNameA ? a->ObjectNameA : "?");
+        for (const D3D12_DRED_ALLOCATION_NODE* a = pageFault.pHeadRecentFreedAllocationNode; a; a = a->pNext)
+            ZX_LOG_ERROR(LogD3D12, "  DRED: fault near freed allocation '{}'", a->ObjectNameA ? a->ObjectNameA : "?");
     }
 }
 

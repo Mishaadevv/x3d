@@ -70,6 +70,10 @@ Volumetric fog: Render/VolumetricFog.h + Shaders/Volumetric/VolumetricFog.hlsl (
 t = sqrt(viewDepth / distance)); lights + cascades come from SceneRenderer::GetLightingInputs(), sky light from the sky SH.
 HeightFog / FogVolume components in Engine/SceneRendering.h; ParticleSystem/FireSystem add extra fog volumes. Particles
 sample the lighting + integrated volumes; Heat look = distortion pass (ParticleRenderer::AddPass returns the new color).
+Clouds: Render/Clouds.h + Shaders/Sky/Clouds.hlsl (quarter-res march + temporal, composite over sky pixels; noise
+volumes built on the CPU in Init). Cloud shadow map: written by AddShadowPass at the very end of the frame, read next
+frame through SceneLighting::cloudShadow (forward + volumetric fog). VolumetricClouds component (Engine/SceneRendering.h).
+GPU faults: DRED ops/allocations are logged on device loss; -gpuvalidation enables GPU-based validation.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

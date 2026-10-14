@@ -9,6 +9,7 @@
 #include "Asset/CookedAssets.h"
 #include "Render/Reflections.h"
 #include "Render/SceneRenderer.h"
+#include "Render/Clouds.h"
 #include "Render/VolumetricFog.h"
 #include "Render/Water.h"
 #include "Scene/Hierarchy.h"
@@ -87,6 +88,22 @@ ZX_DECLARE_TYPE(HeightFog);
 /// A local volume of fog, mist, steam or smoke (needs a Height Fog with Volumetric on - or none: the default fog is
 /// volumetric). Its size is the entity's scale (a 1 m box / sphere), density fades out at the edge and is broken up by
 /// drifting noise.
+/// Volumetric clouds over the whole scene (the first one counts): a layer of drifting 3D clouds lit by the sun and the
+/// sky (golden at sunset), casting moving shadows on the ground and through the volumetric fog.
+struct VolumetricClouds
+{
+    f32 coverage = 0.35f;       // 0 = clear sky, 1 = overcast
+    f32 bottom = 1500.0f;       // m above the ground
+    f32 thickness = 2500.0f;    // m
+    f32 density = 0.03f;        // 1/m in the thick of a cloud
+    f32 detail = 0.35f;         // edges eroded by fine noise (wispy)
+    f32 windSpeed = 15.0f;      // m/s
+    f32 windDirection = 60.0f;  // degrees around +Y
+    Vec3 color = Vec3(1.0f);    // albedo
+    f32 shadows = 0.75f;        // how dark their shadows are on the ground
+};
+ZX_DECLARE_TYPE(VolumetricClouds);
+
 enum class FogShape : u8
 {
     Box,
@@ -181,6 +198,8 @@ const HdriSky* FindHdriSky(ecs::World& world);
 /// The scene's Height Fog and the world height of its entity (null when there is none).
 const HeightFog* FindHeightFog(ecs::World& world, f32* height = nullptr);
 void GatherFogVolumes(ecs::World& world, Array<render::FogVolumeDesc>& out);
+/// Cloud settings from the scene's Volumetric Clouds (disabled when there is none).
+render::CloudSettings FindClouds(ecs::World& world);
 /// Hash of what reflection captures see (mesh instances and lights): a change recaptures the probes.
 u64 SceneContentKey(Span<const render::RenderInstance> instances, Span<const render::LightDesc> lights);
 

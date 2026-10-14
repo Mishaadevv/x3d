@@ -21,6 +21,7 @@ const FeatureInfo Features[] = {
     {"decals", "Decals", "Rendering", "Decal components (images projected onto surfaces)"},
     {"particles", "Particles", "Rendering", "Particle Emitter components (fire, smoke, sparks, fog)"},
     {"volumetricFog", "Volumetric Fog", "Rendering", "Light shafts, lights glowing in fog and smoke, Fog Volume components"},
+    {"clouds", "Volumetric Clouds", "Rendering", "Volumetric Clouds component: 3D clouds and their shadows"},
     {"reflections", "Reflections", "Rendering", "Sky reflections and Reflection Probe components"},
     {"screenSpaceReflections", "Screen Space Reflections", "Rendering", "Sharp reflections of what is on screen (Full profile)"},
     {"postProcessVolumes", "Post Process Volumes", "Rendering", "Post Process Volume components change the look per area"},

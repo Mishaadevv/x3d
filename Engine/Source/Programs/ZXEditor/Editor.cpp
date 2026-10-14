@@ -137,7 +137,8 @@ bool Editor::Initialize()
     });
 
     DeviceDesc dd;
-    dd.enableDebugLayer = ZX_BUILD_DEBUG || CommandLine::HasFlag("debuglayer");
+    dd.enableDebugLayer = ZX_BUILD_DEBUG || CommandLine::HasFlag("debuglayer") || CommandLine::HasFlag("gpuvalidation");
+    dd.enableGpuValidation = CommandLine::HasFlag("gpuvalidation"); // slow: resource states and descriptors checked on the GPU
     dd.useWarp = CommandLine::HasFlag("warp");
     device = d3d12::CreateD3D12Device(dd);
     if (!device) {
@@ -626,6 +627,21 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
     }
     environment.sunElevation = DegToRad(48.0f);
     environment.sunAzimuth = DegToRad(135.0f);
+    AddAtmosphere(0.004f, 0.3f);
+}
+
+void Editor::AddAtmosphere(f32 fogDensity, f32 cloudCoverage)
+{
+    const ecs::Entity fog = CreateEntity("Height Fog", Transform(Vec3(0.0f)));
+    HeightFog f;
+    f.density = fogDensity;
+    world.Add(fog, f);
+    EnsureEntityGuid(world, fog);
+    const ecs::Entity clouds = CreateEntity("Volumetric Clouds", Transform(Vec3(0.0f)));
+    VolumetricClouds c;
+    c.coverage = cloudCoverage;
+    world.Add(clouds, c);
+    EnsureEntityGuid(world, clouds);
 }
 
 void Editor::BuildWaterLevel()
@@ -820,6 +836,7 @@ void Editor::BuildWaterLevel()
     // Afternoon sun over the sea (a glitter path towards the camera's view of the pier).
     environment.sunElevation = DegToRad(32.0f);
     environment.sunAzimuth = DegToRad(20.0f);
+    AddAtmosphere(0.003f, 0.32f); // sea haze, fair-weather clouds
     camera.position = Vec3(17.0f, 4.5f, 40.0f);
     camera.LookAt(Vec3(-2.0f, 1.5f, 2.0f));
 }
@@ -891,6 +908,7 @@ void Editor::BuildStarterShowcase(bool withPrefabs)
         }
         environment.sunElevation = DegToRad(40.0f);
         environment.sunAzimuth = DegToRad(150.0f);
+        AddAtmosphere(0.006f, 0.3f);
         camera.position = Vec3(7.0f, 5.0f, -13.0f);
         camera.LookAt(Vec3(-2.0f, 0.8f, 3.0f));
         return;
@@ -1063,6 +1081,22 @@ void Editor::CreateHeightFog(f32 density)
         fog.density = density;
     world.Add(e, fog);
     CommitCreated(e, "Create Height Fog");
+}
+
+void Editor::CreateClouds()
+{
+    ecs::Entity existing;
+    world.Query<const VolumetricClouds>().Each([&](ecs::Entity e, const VolumetricClouds&) {
+        if (existing.IsNull())
+            existing = e;
+    });
+    if (existing) {
+        selected = existing;
+        return;
+    }
+    const ecs::Entity e = CreateEntity("Volumetric Clouds", Transform(Vec3(0.0f)));
+    world.Add(e, VolumetricClouds{});
+    CommitCreated(e, "Create Volumetric Clouds");
 }
 
 void Editor::CreateFogVolume(Vec3 position, ecs::Entity parent)
@@ -2790,6 +2824,7 @@ void Editor::RenderFrame()
         vf.decals = FeatureEnabled("decals");
         vf.particles = FeatureEnabled("particles");
         vf.volumetricFog = FeatureEnabled("volumetricFog");
+        vf.clouds = FeatureEnabled("clouds");
         ViewportCamera cam{camera.ViewMatrix(), camera.position, camera.fovY, camera.nearPlane};
         if (UsingGameCamera()) {
             // Game view: the Camera entity's world position and orientation (+Z forward), scale ignored.

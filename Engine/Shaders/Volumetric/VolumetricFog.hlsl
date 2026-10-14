@@ -51,7 +51,11 @@ struct VolumeParams
     float3 prevCameraForward;
     float nearPlane;
     float skyScale; // < 0: no sky SH bound, use ambient
-    float3 pad;
+    uint cloudShadow;
+    float cloudShadowInvExtent;
+    float pad0;
+    float2 cloudShadowOrigin;
+    float2 pad1;
 };
 ZX_PASS_CONSTANTS(VolumeParams, g_V);
 
@@ -166,7 +170,10 @@ void InjectCS(uint3 id : SV_DispatchThreadID)
     // Light arriving and scattered towards the camera (phase included).
     // Sky light (as the analytic height fog: the sky SH along the view ray).
     float3 L = g_V.skyScale >= 0.0 ? EvalSH(dir) * g_V.skyScale : g_V.ambient * 0.5;
-    L += g_V.sunColor * HenyeyGreenstein(dot(dir, g_V.dirToSun), g_V.anisotropy) * SunShadow(worldPos, viewDepth);
+    float sunVisible = SunShadow(worldPos, viewDepth);
+    if (g_V.cloudShadow != ZX_INVALID_INDEX)
+        sunVisible *= GetTexture2D(g_V.cloudShadow).SampleLevel(g_LinearClamp, (worldPos.xz - g_V.cloudShadowOrigin) * g_V.cloudShadowInvExtent, 0).r;
+    L += g_V.sunColor * HenyeyGreenstein(dot(dir, g_V.dirToSun), g_V.anisotropy) * sunVisible;
     if (g_V.lightCount > 0 && g_V.localLights > 0.0) {
         const float2 pixel = uv * g_V.renderSize;
         const uint2 tile = min(uint2(pixel * g_V.clusterTileScale), uint2(ZX_CLUSTER_GRID_X - 1, ZX_CLUSTER_GRID_Y - 1));

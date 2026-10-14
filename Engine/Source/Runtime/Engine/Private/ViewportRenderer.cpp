@@ -9,7 +9,7 @@ using namespace rhi;
 using namespace render;
 
 ViewportRenderer::ViewportRenderer(Device& device, RenderAssets& assets)
-    : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_particleRenderer(device), m_volumetric(device), m_taa(device), m_reflections(device), m_captureScene(device, assets), m_post(device), m_outline(device)
+    : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_particleRenderer(device), m_volumetric(device), m_clouds(device), m_taa(device), m_reflections(device), m_captureScene(device, assets), m_post(device), m_outline(device)
 {
 }
 
@@ -49,7 +49,8 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     s.volumetricFog.slices = lite ? 48u : 64u;
     return m_scene.Init(m_hdrFormat, DepthFormat()) && m_captureScene.Init(m_hdrFormat, DepthFormat()) && m_reflections.Init() && m_sky.Init(m_hdrFormat, DepthFormat()) && m_post.Init(outputFormat) &&
            m_taa.Init() && m_outline.Init(outputFormat) && m_water.Init(m_hdrFormat, DepthFormat(), lite) &&
-           m_particleRenderer.Init(m_hdrFormat) && m_volumetric.Init(m_hdrFormat);
+           m_particleRenderer.Init(m_hdrFormat) && m_volumetric.Init(m_hdrFormat) &&
+           m_clouds.Init(m_hdrFormat);
 }
 
 void ViewportRenderer::ResolveHdriSky(ecs::World& world)
@@ -226,6 +227,10 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
             return decalTextures ? m_assets.GetTextureSrv(decalTextures(path, normalMap)) : InvalidDescriptor;
         });
     m_lighting.decals = m_decals.View();
+    // Cloud shadows from last frame's map (none without clouds).
+    m_lighting.cloudShadow = m_clouds.ShadowMap();
+    m_lighting.cloudShadowOrigin = m_clouds.ShadowOrigin();
+    m_lighting.cloudShadowExtent = render::CloudRenderer::ShadowExtent;
     m_scene.Prepare(m_instances.View(), view, m_lighting, m_settings.scene);
     // One face of a reflection probe per frame, rendered by a second scene renderer (sky reflections only, no SSR/AO).
     RGTexture faceColor, faceDepth;
@@ -277,6 +282,12 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
                       });
     if (m_settings.useSky)
         m_sky.AddSkyPass(graph, sceneColor, sceneDepth);
+    // Volumetric clouds over the sky (and their shadow map for the next frame).
+    {
+        render::CloudSettings clouds = FindClouds(world);
+        clouds.enabled &= features.clouds && m_settings.useSky && !m_settings.sky.hdri.IsActive();
+        m_clouds.AddPasses(graph, sceneColor, sceneDepth, view, m_viewProjNoJitter, m_lighting, clouds, exposure, f32(std::fmod(m_time, 3600.0)));
+    }
     // Water after the sky (its refraction sees the sky) and before the fog (which then covers it too).
     m_waterSurfaces.Clear();
     if (features.water)
@@ -340,6 +351,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     postView.cut = camera.cut;
     m_post.AddPasses(graph, resolved, sceneDepth, output, m_lighting.exposureEV100, deltaTime, m_settings.post, &postView);
     m_lastPost = m_settings.post;
+    m_clouds.AddShadowPass(graph); // last: this frame's passes read the previous map
 
     m_outlineItems.Clear();
     for (ecs::Entity e : m_outlined) {
