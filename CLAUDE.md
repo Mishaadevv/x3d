@@ -77,6 +77,9 @@ GPU faults: DRED ops/allocations are logged on device loss; -gpuvalidation enabl
 Fluids: Render/Fluid.h + Shaders/Volumetric/Fluid.hlsl (per-volume grids keyed by entity, velocity always in [0],
 scalars ping-pong; ~25 compute passes per step; FluidDraw raymarch after the volumetric fog). FluidVolume component
 (Engine/SceneRendering.h); ViewportEnvironment::playing decides which volumes simulate.
+Materials: graph output pin 8 = Subsurface (SurfaceData::subsurface, SubsurfaceLight in BRDF.hlsli); ParallaxOcclusion node
+(MaterialGraph.hlsli, needs MaterialInputs::tangent). Color LUTs: PostProcessVolume::colorLut -> FindColorLut ->
+PostSettings::colorLut (applied after tonemapping). LUT PNGs must not be block-compressed (ship a .zmeta with compression None).
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

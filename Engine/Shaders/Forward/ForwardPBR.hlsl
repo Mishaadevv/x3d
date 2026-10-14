@@ -575,6 +575,7 @@ float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
 {
     const Material m = LoadMaterial(g_Draw.materialIndex);
     SurfaceData s;
+    s.subsurface = 0.0;
     float3 N = normalize(i.normal);
     float3 T = i.tangent.xyz;
     if (!frontFace) {
@@ -587,8 +588,10 @@ float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
     mi.vertexColor = i.color;
     mi.worldPos = i.worldPos;
     mi.normal = N;
+    mi.tangent = float4(T, i.tangent.w);
     mi.viewDir = normalize(g_View.cameraPosition - i.worldPos);
     const MaterialOutputs mo = EvaluateGraphMaterial(mi);
+    s.subsurface = max(mo.subsurface, 0.0);
     s.baseColor = max(mo.baseColor, 0.0);
     s.alpha = saturate(mo.opacity);
 #ifdef ALPHA_TEST

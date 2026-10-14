@@ -309,6 +309,8 @@ void PostProcess::AddPasses(RenderGraph& graph, RGTexture sceneColor, RGTexture 
     base.tonemapper = settings.tonemapper == Tonemapper::AgX ? 1u : 0u;
     base.viewMode = settings.viewMode;
     base.colorFilter = settings.colorFilter;
+    base.lut = settings.colorLutIntensity > 0.0f ? settings.colorLut : InvalidDescriptor;
+    base.lutIntensity = Saturate(settings.colorLutIntensity);
 
     // --- Auto exposure ---
     if (settings.autoExposure) {

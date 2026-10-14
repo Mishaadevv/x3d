@@ -31,6 +31,8 @@ struct PostSettings
     f32 temperature = 6500.0f; // white balance, Kelvin
     f32 vignette = 0.25f;
     Vec3 colorFilter = Vec3(1.0f, 1.0f, 1.0f); // multiplies the image before tonemapping
+    u32 colorLut = rhi::InvalidDescriptor;     // 256 x 16 color grading LUT (UE layout: 16 slices of 16 x 16), SRV
+    f32 colorLutIntensity = 0.0f;              // 0..1 blend with the ungraded image
     bool fxaa = true;
     // Depth of field: physical camera (24 mm sensor height, focal length from the field of view).
     bool depthOfField = false;
@@ -99,9 +101,9 @@ private:
         u32 tonemapper;
         u32 viewMode;
         u32 depth;
-        f32 pad;
+        u32 lut;           // color grading LUT (SRV) or invalid
         Vec3 colorFilter;
-        f32 pad2;
+        f32 lutIntensity;
     };
     static_assert(sizeof(Params) == 112);
     struct DofParams

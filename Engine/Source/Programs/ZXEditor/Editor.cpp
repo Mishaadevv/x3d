@@ -1,4 +1,5 @@
 #include "Editor.h"
+#include "Engine/PostProcessVolume.h"
 #include "Thumbnails.h"
 #include "Core/Console/Console.h"
 #include "Core/Containers/Algorithm.h"
@@ -741,8 +742,8 @@ void Editor::BuildWaterLevel()
             const Quat inner = yaw * Quat::FromAxisAngle(Vec3(1, 0, 0), DegToRad(-8.0f + 6.0f * f32(i % 3)));
             const Quat outer = yaw * Quat::FromAxisAngle(Vec3(1, 0, 0), DegToRad(38.0f + 5.0f * f32(i % 3)));
             const Vec3 mid = p + inner * Vec3(0.0f, 0.0f, 2.0f);
-            shape(String::Format("Frond {}", i + 1), BuiltinShape::Sphere, p + inner * Vec3(0.0f, 0.0f, 1.0f), Vec3(0.75f, 0.1f, 2.3f), "M_Grass", inner, root);
-            shape(String::Format("Frond {} Tip", i + 1), BuiltinShape::Sphere, mid + outer * Vec3(0.0f, 0.0f, 0.9f), Vec3(0.55f, 0.08f, 2.0f), "M_Grass", outer, root);
+            shape(String::Format("Frond {}", i + 1), BuiltinShape::Sphere, p + inner * Vec3(0.0f, 0.0f, 1.0f), Vec3(0.75f, 0.1f, 2.3f), "M_Leaves", inner, root);
+            shape(String::Format("Frond {} Tip", i + 1), BuiltinShape::Sphere, mid + outer * Vec3(0.0f, 0.0f, 0.9f), Vec3(0.55f, 0.08f, 2.0f), "M_Leaves", outer, root);
         }
         shape("Coconuts", BuiltinShape::Sphere, p - Vec3(0, 0.25f, 0), Vec3(0.55f), "M_Dirt", {}, root);
     };
@@ -905,6 +906,31 @@ void Editor::BuildStarterShowcase(bool withPrefabs)
                     if (Camera* c = world.Get<Camera>(m))
                         c->active = false;
             }
+        }
+        // Relief materials (Parallax Occlusion): a brick wall over a cobblestone patch.
+        auto block = [&](StringView label, Vec3 center, Vec3 size, StringView mat) {
+            Transform t(center);
+            t.scale = size;
+            const ecs::Entity e = CreateEntity(label, t);
+            MeshRenderer mr;
+            mr.mesh = builtin::Mesh(BuiltinShape::Cube);
+            if (const Guid g = material(mat); g.IsValid())
+                mr.materials.PushBack(g);
+            world.Add(e, mr);
+            EnsureEntityGuid(world, e);
+        };
+        block("Brick Wall", Vec3(8.0f, 2.0f, -12.5f), Vec3(6.0f, 4.0f, 0.5f), "M_Bricks");
+        block("Cobblestones", Vec3(8.0f, 0.01f, -10.0f), Vec3(6.0f, 0.02f, 4.5f), "M_Cobblestone");
+        {
+            // Color grading: a teal-and-orange look from one of the Starter Content LUTs over the whole level.
+            const ecs::Entity grading = CreateEntity("Color Grading", Transform(Vec3(0.0f)));
+            PostProcessVolume ppv;
+            ppv.unbound = true;
+            ppv.overrideColorLut = true;
+            ppv.colorLut = "StarterContent/LUTs/LUT_Cinematic.png";
+            ppv.colorLutIntensity = 0.7f;
+            world.Add(grading, ppv);
+            EnsureEntityGuid(world, grading);
         }
         environment.sunElevation = DegToRad(40.0f);
         environment.sunAzimuth = DegToRad(150.0f);

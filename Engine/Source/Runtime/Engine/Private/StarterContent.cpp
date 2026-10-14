@@ -101,6 +101,67 @@ const PatternMaterial Patterns[] = {
     {"M_Dirt", Pattern::Noise, Vec4(0.3f, 0.21f, 0.13f, 1), Vec4(0.18f, 0.12f, 0.07f, 1), 0.5f, 0.5f, 0.9f, 1.0f},
 };
 
+/// Textured relief material: Parallax Occlusion offsets the UV the color and normal maps use (bricks, cobblestones).
+render::MaterialGraph MakeReliefMaterial(StringView name, StringView textures, f32 tiling, f32 height, f32 roughness)
+{
+    render::MaterialGraph g;
+    g.guid = Guid::FromName(Guid(), name);
+    const u32 output = g.AddNode("Output", Vec2(760, 0))->id;
+    render::MaterialGraphNode* uv = g.AddNode("TexCoord", Vec2(0, 0));
+    uv->value = Vec4(tiling, tiling, 0, 0);
+    const u32 uvId = uv->id;
+    render::MaterialGraphNode* pom = g.AddNode("ParallaxOcclusion", Vec2(200, 0));
+    pom->name = "Height Map";
+    pom->texture = String::Format("StarterContent/Textures/{}_Height.png", textures);
+    pom->inputValues[1] = Vec4(height, 0, 0, 0);
+    pom->inputValues[2] = Vec4(16, 0, 0, 0);
+    const u32 pomId = pom->id;
+    g.Connect(uvId, 0, pomId, 0);
+    render::MaterialGraphNode* color = g.AddNode("TextureSample", Vec2(460, -120));
+    color->name = "Color Map";
+    color->texture = String::Format("StarterContent/Textures/{}_Color.png", textures);
+    const u32 colorId = color->id;
+    render::MaterialGraphNode* normal = g.AddNode("TextureSample", Vec2(460, 120));
+    normal->name = "Normal Map";
+    normal->texture = String::Format("StarterContent/Textures/{}_Normal.png", textures);
+    normal->normalMap = true;
+    const u32 normalId = normal->id;
+    g.Connect(pomId, 0, colorId, 0);
+    g.Connect(pomId, 0, normalId, 0);
+    g.Connect(colorId, 0, output, 0);
+    g.Connect(normalId, 0, output, 3);
+    render::MaterialGraphNode* rough = g.AddNode("Scalar", Vec2(460, 300));
+    rough->name = "Roughness";
+    rough->value = Vec4(roughness, 0, 0, 0);
+    g.Connect(rough->id, 0, output, 2);
+    return g;
+}
+
+/// Foliage: green with fine noise, two-sided, light shining through it (Subsurface).
+render::MaterialGraph MakeLeavesMaterial()
+{
+    render::MaterialGraph g;
+    g.guid = Guid::FromName(Guid(), "M_Leaves");
+    g.twoSided = true;
+    const u32 output = g.AddNode("Output", Vec2(720, 0))->id;
+    auto value = [&](StringView type, StringView name, Vec4 v, Vec2 pos) {
+        render::MaterialGraphNode* n = g.AddNode(type, pos);
+        n->name = String(name);
+        n->value = v;
+        return n->id;
+    };
+    const u32 noise = g.AddNode("Noise", Vec2(200, 60))->id;
+    g.Connect(value("Scalar", "Noise Scale", Vec4(3.0f, 0, 0, 0), Vec2(0, 60)), 0, noise, 1);
+    const u32 color = g.AddNode("Lerp", Vec2(460, -60))->id;
+    g.Connect(value("Color", "Dark Green", Vec4(0.07f, 0.2f, 0.03f, 1), Vec2(0, -160)), 0, color, 0);
+    g.Connect(value("Color", "Light Green", Vec4(0.22f, 0.42f, 0.07f, 1), Vec2(0, -60)), 0, color, 1);
+    g.Connect(noise, 0, color, 2);
+    g.Connect(color, 0, output, 0);
+    g.Connect(value("Scalar", "Roughness", Vec4(0.6f, 0, 0, 0), Vec2(460, 160)), 0, output, 2);
+    g.Connect(value("Color", "Subsurface", Vec4(0.35f, 0.55f, 0.08f, 1), Vec2(460, 260)), 0, output, 8);
+    return g;
+}
+
 render::MaterialGraph MakePatternMaterial(const PatternMaterial& m)
 {
     render::MaterialGraph g;
@@ -712,6 +773,30 @@ audio::PcmData Synth(u32 rate, f32 seconds, const Function<f32(f32 t, u32 i), 32
     return p;
 }
 
+/// Copies Engine/Content/StarterContent/<sub> (recursively) into `dir`. Returns the files copied.
+u32 CopyLibrary(StringView sub, const String& dir)
+{
+    const String library = FindEngineRootDirectory() + "/Engine/Content/StarterContent/" + sub;
+    u32 copied = 0;
+    Array<String> dirs;
+    dirs.PushBack(String());
+    platform::CreateDirectoryTree(dir);
+    for (usize d = 0; d < dirs.Size(); ++d) {
+        Array<platform::DirectoryEntry> entries;
+        platform::ListDirectory(library + dirs[d], entries);
+        for (const platform::DirectoryEntry& e : entries) {
+            const String rel = dirs[d] + "/" + e.name;
+            if (e.isDirectory) {
+                platform::CreateDirectoryTree(dir + rel);
+                dirs.PushBack(rel);
+            } else if (platform::CopyFileAt(library + rel, dir + rel)) {
+                ++copied;
+            }
+        }
+    }
+    return copied;
+}
+
 u32 WriteSounds(const String& dir)
 {
     platform::CreateDirectoryTree(dir);
@@ -738,26 +823,9 @@ u32 WriteSounds(const String& dir)
         return wobble * (0.35f * std::sin(TwoPi * 110.0f * t) + 0.15f * std::sin(TwoPi * 220.0f * t) + 0.08f * std::sin(TwoPi * 330.0f * t));
     }));
     // Recorded sounds (CC0, Engine/Content/StarterContent/Sounds: ambiences, footsteps, impacts, props).
-    {
-        const String library = FindEngineRootDirectory() + "/Engine/Content/StarterContent/Sounds";
-        Array<String> dirs;
-        dirs.PushBack(String());
-        for (usize d = 0; d < dirs.Size(); ++d) {
-            Array<platform::DirectoryEntry> entries;
-            platform::ListDirectory(library + dirs[d], entries);
-            for (const platform::DirectoryEntry& e : entries) {
-                const String rel = dirs[d] + "/" + e.name;
-                if (e.isDirectory) {
-                    platform::CreateDirectoryTree(dir + rel);
-                    dirs.PushBack(rel);
-                } else if (platform::CopyFileAt(library + rel, dir + rel)) {
-                    ++written;
-                }
-            }
-        }
-        if (written > 3)
-            return written; // the synthesized ambiences below are only a fallback
-    }
+    written += CopyLibrary("Sounds", dir);
+    if (written > 3)
+        return written; // the synthesized ambiences below are only a fallback
     // Wind: low-passed noise with a slowly moving cutoff and level.
     {
         f32 lp = 0.0f, lp2 = 0.0f;
@@ -822,6 +890,15 @@ u32 WriteStarterContent(StringView contentDir)
         const render::MaterialGraph g = MakePatternMaterial(m);
         written += fs::WriteTextFile(String::Format("{}/Materials/{}.zmat", root, m.name), ToJsonString(g.ToJson())) ? 1u : 0u;
     }
+    // Textures (relief demos) and color grading LUTs shipped with the engine, and the materials using them.
+    written += CopyLibrary("Textures", root + "/Textures");
+    written += CopyLibrary("LUTs", root + "/LUTs");
+    const render::MaterialGraph textured[] = {MakeReliefMaterial("M_Bricks", "T_Bricks", 2.0f, 0.04f, 0.85f),
+                                              MakeReliefMaterial("M_Cobblestone", "T_Cobble", 1.0f, 0.05f, 0.75f),
+                                              MakeLeavesMaterial()};
+    const char* texturedNames[] = {"M_Bricks", "M_Cobblestone", "M_Leaves"};
+    for (u32 i = 0; i < 3; ++i)
+        written += fs::WriteTextFile(String::Format("{}/Materials/{}.zmat", root, texturedNames[i]), ToJsonString(textured[i].ToJson())) ? 1u : 0u;
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(Scripts, ZX_ARRAY_COUNT(Scripts)));
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(GameplayScripts, ZX_ARRAY_COUNT(GameplayScripts)));
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(PropScripts, ZX_ARRAY_COUNT(PropScripts)));

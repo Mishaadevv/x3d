@@ -34,16 +34,29 @@ struct SurfaceData
     float3 normal;   // world space
     float3 emissive;
     float alpha;
+    float3 subsurface; // translucency colour (leaves, skin, wax, snow); 0 = opaque surface
 };
 
 /// Direct light contribution (radiance already multiplied by intensity), returns outgoing radiance.
+/// Light passing through thin or translucent material: a soft wrap around the terminator plus the glow seen when the
+/// light is behind the surface (Barre-Brisebois & Bouchard 2011).
+float3 SubsurfaceLight(SurfaceData s, float3 V, float3 L, float3 radiance)
+{
+    const float3 N = s.normal;
+    const float wrap = saturate((dot(N, L) + 0.5) / 1.5) - saturate(dot(N, L));
+    const float3 bent = L + N * 0.35;
+    const float back = pow(saturate(dot(V, -bent)), 4.0) * 1.6 + saturate(-dot(N, L)) * 0.25;
+    return s.subsurface * (wrap + back) * radiance / ZX_PI;
+}
+
 float3 EvaluateDirectLight(SurfaceData s, float3 V, float3 L, float3 radiance)
 {
     const float3 N = s.normal;
     const float3 H = normalize(V + L);
     const float NoL = saturate(dot(N, L));
+    const float3 sss = any(s.subsurface > 0.0) ? SubsurfaceLight(s, V, L, radiance) : 0.0;
     if (NoL <= 0.0)
-        return 0.0;
+        return sss;
     const float NoV = max(dot(N, V), 1e-4);
     const float NoH = saturate(dot(N, H));
     const float VoH = saturate(dot(V, H));
@@ -53,7 +66,7 @@ float3 EvaluateDirectLight(SurfaceData s, float3 V, float3 L, float3 radiance)
     const float3 F = F_Schlick(f0, VoH);
     const float3 specular = D_GGX(NoH, a2) * V_SmithGGXCorrelated(NoV, NoL, a2) * F;
     const float3 diffuse = (1.0 - F) * (1.0 - s.metallic) * s.baseColor / ZX_PI;
-    return (diffuse + specular) * radiance * NoL;
+    return (diffuse + specular) * radiance * NoL + sss;
 }
 
 /// Analytic approximation of the split-sum environment BRDF (Karis, "Physically Based Shading on Mobile").

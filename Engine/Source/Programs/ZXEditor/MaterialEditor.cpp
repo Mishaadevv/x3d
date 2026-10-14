@@ -414,7 +414,7 @@ void PropertiesPanel(Editor& ed, MaterialEditorState& st, MaterialLibrary::Mater
         ui::SameLine(110.0f);
         ui::SetNextItemWidth(-1.0f);
         Vec4& v = n->inputValues[i];
-        if (dims == 3 && (n->type == "Output" && (i == 0 || i == 4))) {
+        if (dims == 3 && (n->type == "Output" && (i == 0 || i == 4 || i == 8))) {
             LinearColor col(v.x, v.y, v.z, 1.0f);
             if (ui::ColorEdit("##in", &col, false)) {
                 v = Vec4(col.r, col.g, col.b, v.w);

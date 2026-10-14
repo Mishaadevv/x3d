@@ -51,6 +51,9 @@ struct PostProcessVolume
     f32 motionBlurAmount = 0.5f;
     bool overrideMotionBlurMax = false;
     f32 motionBlurMax = 32.0f; // pixels
+    bool overrideColorLut = false;
+    String colorLut;           // 256 x 16 LUT image (Content-relative), e.g. StarterContent/LUTs/LUT_Warm.png
+    f32 colorLutIntensity = 1.0f;
 };
 ZX_DECLARE_TYPE(PostProcessVolume);
 
@@ -60,5 +63,8 @@ f32 PostProcessVolumeWeight(const PostProcessVolume& volume, const Mat4& world, 
 void ApplyPostProcessVolume(const PostProcessVolume& volume, f32 weight, render::PostSettings& settings);
 /// `base` with every enabled volume affecting `position` blended over it in priority order.
 render::PostSettings EvaluatePostProcessVolumes(ecs::World& world, Vec3 position, const render::PostSettings& base);
+/// The color grading LUT at `position`: the highest-priority volume overriding it wins, its intensity scaled by the
+/// volume's weight. Empty when none.
+String FindColorLut(ecs::World& world, Vec3 position, f32& intensity);
 
 } // namespace zx

@@ -46,6 +46,10 @@ ZX_REFLECT_STRUCT_BEGIN(PostProcessVolume)
     ZX_FIELD(overrideMotionBlurMax, Meta::Hidden())
     ZX_FIELD(motionBlurMax, Meta::Category("Motion Blur"), Meta::EditCondition("overrideMotionBlurMax"), Meta::Range(1, 128),
              Meta::Units("px"))
+    ZX_FIELD(overrideColorLut, Meta::Hidden())
+    ZX_FIELD(colorLut, Meta::Category("Color Grading"), Meta::EditCondition("overrideColorLut"),
+             Meta::Tooltip("256 x 16 lookup table image (Unreal layout), e.g. StarterContent/LUTs/LUT_Cinematic.png"))
+    ZX_FIELD(colorLutIntensity, Meta::Category("Color Grading"), Meta::Range(0, 1))
 ZX_REFLECT_STRUCT_END()
 
 f32 PostProcessVolumeWeight(const PostProcessVolume& volume, const Mat4& world, Vec3 position)
@@ -104,6 +108,25 @@ void ApplyPostProcessVolume(const PostProcessVolume& v, f32 w, render::PostSetti
         blend(s.motionBlurAmount, v.motionBlurAmount);
     if (v.overrideMotionBlurMax)
         blend(s.motionBlurMax, v.motionBlurMax);
+}
+
+String FindColorLut(ecs::World& world, Vec3 position, f32& intensity)
+{
+    String best;
+    i32 bestPriority = 0;
+    intensity = 0.0f;
+    world.Query<const PostProcessVolume>().Each([&](ecs::Entity e, const PostProcessVolume& v) {
+        if (!v.overrideColorLut || v.colorLut.Empty())
+            return;
+        const scene::WorldTransform* wt = world.Get<const scene::WorldTransform>(e);
+        const f32 w = PostProcessVolumeWeight(v, wt ? wt->matrix : Mat4::Identity(), position);
+        if (w <= 0.0f || (!best.Empty() && v.priority < bestPriority))
+            return;
+        best = v.colorLut;
+        bestPriority = v.priority;
+        intensity = Saturate(v.colorLutIntensity) * w;
+    });
+    return best;
 }
 
 render::PostSettings EvaluatePostProcessVolumes(ecs::World& world, Vec3 position, const render::PostSettings& base)

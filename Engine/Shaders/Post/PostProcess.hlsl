@@ -25,9 +25,9 @@ struct PostParams
     uint tonemapper;    // 0 ACES, 1 AgX
     uint viewMode;      // 0 final, 1 HDR (no tonemap), 2 depth, 3 luminance heatmap, 4 bloom only, 5 DOF focus
     uint depth;
-    float pad;
+    uint lut;           // color grading LUT (256 x 16, 16 slices of 16 x 16) or invalid
     float3 colorFilter;
-    float pad2;
+    float lutIntensity;
 };
 ZX_PUSH_CONSTANTS(PostParams, g_Post);
 
@@ -176,6 +176,20 @@ float3 Grade(float3 c)
     return c;
 }
 
+/// Color grading LUT on the display-referred (sRGB) image, UE layout: blue picks the slice, red / green the texel.
+float3 ApplyColorLut(float3 srgb)
+{
+    const float size = 16.0;
+    const float3 c = saturate(srgb) * (size - 1.0);
+    const float s0 = floor(c.b), s1 = min(s0 + 1.0, size - 1.0);
+    const float2 inSlice = float2(c.r + 0.5, c.g + 0.5);
+    Texture2D<float4> lut = GetTexture2D(g_Post.lut);
+    // The LUT is stored as a color texture (decoded to linear on sampling): back to display values.
+    const float3 a = LinearToSRGB(lut.SampleLevel(g_LinearClamp, float2((s0 * size + inSlice.x) / (size * size), inSlice.y / size), 0).rgb);
+    const float3 b = LinearToSRGB(lut.SampleLevel(g_LinearClamp, float2((s1 * size + inSlice.x) / (size * size), inSlice.y / size), 0).rgb);
+    return lerp(srgb, lerp(a, b, c.b - s0), g_Post.lutIntensity);
+}
+
 float3 HeatMap(float t)
 {
     return saturate(float3(t * 3.0 - 1.5, t < 0.5 ? t * 2.0 : 2.0 - t * 2.0, 1.5 - t * 3.0));
@@ -205,7 +219,9 @@ float4 TonemapPS(VSOutput i) : SV_Target0
         const float2 d = i.uv - 0.5;
         color *= saturate(1.0 - dot(d, d) * g_Post.vignette * 2.0);
     }
-    const float3 srgb = LinearToSRGB(saturate(color));
+    float3 srgb = LinearToSRGB(saturate(color));
+    if (g_Post.lut != ZX_INVALID_INDEX && g_Post.viewMode == 0)
+        srgb = ApplyColorLut(srgb);
     return float4(srgb, dot(srgb, float3(0.299, 0.587, 0.114)));
 }
 

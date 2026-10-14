@@ -15,6 +15,7 @@ struct MaterialInputs
     float3 worldPos;
     float3 normal;   // interpolated world-space normal (front-facing)
     float3 viewDir;  // pixel -> camera, normalized
+    float4 tangent;  // world-space tangent, w = bitangent sign (0 in depth passes)
     float time;
     uint paramBuffer;
     uint paramOffset;
@@ -31,6 +32,7 @@ struct MaterialOutputs
     float occlusion;
     float opacity;
     float opacityMask;
+    float3 subsurface;
 };
 
 MaterialOutputs DefaultMaterialOutputs()
@@ -44,6 +46,7 @@ MaterialOutputs DefaultMaterialOutputs()
     o.occlusion = 1.0;
     o.opacity = 1.0;
     o.opacityMask = 1.0;
+    o.subsurface = 0.0;
     return o;
 }
 
@@ -71,6 +74,39 @@ float4 SampleParamNormalMap(MaterialInputs mi, uint offset, float2 uv)
         return float4(0.0, 0.0, 1.0, 1.0);
     const float2 xy = GetTexture2D(texture).Sample(GetSampler(mi.sampler), uv).rg * 2.0 - 1.0;
     return float4(xy, sqrt(saturate(1.0 - dot(xy, xy))), 1.0);
+}
+
+/// Parallax occlusion mapping: marches the view ray into the height map (white = high) and returns the UV where it hits,
+/// so bricks, cobbles and stones look raised. `heightScale` = depth of the relief in UV units.
+float2 ParallaxOcclusion(MaterialInputs mi, uint offset, float2 uv, float heightScale, float steps)
+{
+    const uint texture = ParamUint(mi, offset);
+    if (texture == ZX_INVALID_INDEX || heightScale <= 0.0 || dot(mi.tangent.xyz, mi.tangent.xyz) < 1e-6)
+        return uv;
+    const float3 N = normalize(mi.normal);
+    const float3 T = normalize(mi.tangent.xyz - N * dot(N, mi.tangent.xyz));
+    const float3 B = cross(N, T) * (mi.tangent.w < 0.0 ? -1.0 : 1.0);
+    const float3 v = float3(dot(mi.viewDir, T), dot(mi.viewDir, B), dot(mi.viewDir, N));
+    // More layers at grazing angles.
+    const float layers = clamp(steps, 4.0, 64.0) * lerp(2.0, 1.0, saturate(v.z));
+    const float2 delta = float2(v.x, -v.y) / max(v.z, 0.15) * heightScale / layers;
+    const float2 dx = ddx(uv), dy = ddy(uv);
+    Texture2D<float4> map = GetTexture2D(texture);
+    SamplerState sm = GetSampler(mi.sampler);
+    float layerDepth = 0.0;
+    float2 cur = uv;
+    float depth = 1.0 - map.SampleGrad(sm, cur, dx, dy).r;
+    [loop] for (uint k = 0; k < 128 && layerDepth < depth; ++k) {
+        cur -= delta;
+        depth = 1.0 - map.SampleGrad(sm, cur, dx, dy).r;
+        layerDepth += 1.0 / layers;
+    }
+    // Interpolate between the last two layers.
+    const float2 prev = cur + delta;
+    const float after = depth - layerDepth;
+    const float before = (1.0 - map.SampleGrad(sm, prev, dx, dy).r) - (layerDepth - 1.0 / layers);
+    const float w = after / min(after - before, -1e-5);
+    return lerp(cur, prev, saturate(w));
 }
 
 float Fresnel(MaterialInputs mi, float exponent, float baseReflect)

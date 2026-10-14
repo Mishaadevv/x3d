@@ -11,7 +11,7 @@ namespace {
 const MaterialPinDesc OutputInputs[] = {
     {"Base Color", 3, Vec4(0.8f, 0.8f, 0.8f, 1)}, {"Metallic", 1, Vec4(0)}, {"Roughness", 1, Vec4(0.5f)},
     {"Normal", 3, Vec4(0, 0, 1, 0)},              {"Emissive", 3, Vec4(0)},  {"Occlusion", 1, Vec4(1)},
-    {"Opacity", 1, Vec4(1)},                      {"Opacity Mask", 1, Vec4(1)},
+    {"Opacity", 1, Vec4(1)},                      {"Opacity Mask", 1, Vec4(1)}, {"Subsurface", 3, Vec4(0)},
 };
 const MaterialPinDesc ScalarOut[] = {{"Value", 1, {}}};
 const MaterialPinDesc ColorOut[] = {{"RGB", 3, {}}, {"R", 1, {}}, {"G", 1, {}}, {"B", 1, {}}, {"A", 1, {}}, {"RGBA", 4, {}}};
@@ -37,6 +37,7 @@ const MaterialPinDesc MaskIn[] = {{"X", 4, Vec4(0)}};
 const MaterialPinDesc GridIn[] = {{"Cell Size", 1, Vec4(1)}, {"Line Width", 1, Vec4(0.03f)}};
 const MaterialPinDesc GridOut[] = {{"Lines", 1, {}}, {"Checker", 1, {}}};
 const MaterialPinDesc NoiseIn[] = {{"Position", 3, Vec4(0)}, {"Scale", 1, Vec4(1)}};
+const MaterialPinDesc ParallaxIn[] = {{"UV", 2, Vec4(0)}, {"Height", 1, Vec4(0.04f)}, {"Steps", 1, Vec4(16)}};
 
 #define ZX_PINS(a) Span<const MaterialPinDesc>(a, ZX_ARRAY_COUNT(a))
 const Span<const MaterialPinDesc> NoPins;
@@ -47,6 +48,8 @@ const MaterialNodeType NodeTypes[] = {
     {"Color", "Color", "Values", MaterialNodeKind::Value, NoPins, ZX_PINS(ColorOut), "A color / vector (named = material parameter)"},
     {"TextureSample", "Texture Sample", "Textures", MaterialNodeKind::Texture, ZX_PINS(TextureIn), ZX_PINS(ColorOut),
      "Samples a texture (UV defaults to the mesh's first UV set)"},
+    {"ParallaxOcclusion", "Parallax Occlusion", "Textures", MaterialNodeKind::Texture, ZX_PINS(ParallaxIn), ZX_PINS(TexCoordOut),
+     "Relief from a height map (white = high): offsets the UV the other texture samples use"},
     {"TexCoord", "Texture Coordinate", "Inputs", MaterialNodeKind::Input, NoPins, ZX_PINS(TexCoordOut), "Mesh UV (value: tiling U, V; set)"},
     {"Time", "Time", "Inputs", MaterialNodeKind::Input, NoPins, ZX_PINS(TimeOut), "Seconds since start"},
     {"VertexColor", "Vertex Color", "Inputs", MaterialNodeKind::Input, NoPins, ZX_PINS(VertexColorOut), "Mesh vertex color"},
@@ -252,8 +255,9 @@ private:
         };
 
         if (type == "Output") {
-            static const char* fields[8] = {"baseColor", "metallic", "roughness", "normal", "emissive", "occlusion", "opacity", "opacityMask"};
-            for (u32 p = 0; p < 8; ++p)
+            static const char* fields[9] = {"baseColor", "metallic", "roughness", "normal", "emissive", "occlusion", "opacity", "opacityMask",
+                                            "subsurface"};
+            for (u32 p = 0; p < 9; ++p)
                 if (Connected(n, p) || (p < n.inputValues.Size() && !(n.inputValues[p] == t.inputs[p].defaultValue)))
                     m_body += String::Format("    o.{} = {};\n", fields[p], Convert(in(p), t.inputs[p].dims));
         } else if (type == "Scalar") {
@@ -264,6 +268,9 @@ private:
             const String uv = Connected(n, 0) ? Convert(in(0), 2) : String("mi.uv0");
             const String fn = n.normalMap ? "SampleParamNormalMap" : "SampleParamTexture";
             EmitColorOutputs(n, Local(n, 4, String::Format("{}(mi, {}, {})", fn, *slot, uv)));
+        } else if (type == "ParallaxOcclusion") {
+            const String uv = Connected(n, 0) ? Convert(in(0), 2) : String("mi.uv0");
+            Set(id, 0, Local(n, 2, String::Format("ParallaxOcclusion(mi, {}, {}, {}, {})", *slot, uv, Convert(in(1), 1), Convert(in(2), 1))), 2);
         } else if (type == "TexCoord") {
             const Vec2 tiling(n.value.x == 0.0f ? 1.0f : n.value.x, n.value.y == 0.0f ? 1.0f : n.value.y);
             Set(id, 0, Local(n, 2, String::Format("{} * float2({}, {})", n.value.z >= 0.5f ? "mi.uv1" : "mi.uv0", Lit(tiling.x), Lit(tiling.y))), 2);

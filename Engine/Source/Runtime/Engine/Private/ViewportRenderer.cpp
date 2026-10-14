@@ -148,8 +148,16 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         ~Restore() { target = saved; }
     } restore{m_settings, userSettings};
     // Post Process Volumes around the camera, then the feature toggles on top.
-    if (features.postProcessVolumes)
+    if (features.postProcessVolumes) {
         m_settings.post = EvaluatePostProcessVolumes(world, camera.position, m_settings.post);
+        // Color grading LUT (an image in the project, loaded like decal textures).
+        f32 lutIntensity = 0.0f;
+        const String lut = FindColorLut(world, camera.position, lutIntensity);
+        if (!lut.Empty() && decalTextures) {
+            m_settings.post.colorLut = m_assets.GetTextureSrv(decalTextures(lut, false));
+            m_settings.post.colorLutIntensity = lutIntensity;
+        }
+    }
     m_settings.post.depthOfField &= features.depthOfField;
     m_settings.post.motionBlur &= features.motionBlur;
     m_settings.reflections.sky &= features.reflections;
