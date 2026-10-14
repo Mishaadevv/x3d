@@ -263,7 +263,7 @@ This is a game project for the **ZeqouX3D** engine ({version}). Read this before
 - `Content/Scenes/*.zscene` - scenes as JSON: `entities[]` with a `guid`, optional `parent`, and one object per
   component (`Transform`, `MeshRenderer`, `PointLight`, `SpotLight`, `Camera`, `CharacterController`, `Water`, `Script`,
   `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`, `PostProcessVolume`, `ReflectionProbe`, `Decal`, `HdriSky`,
-  `RigidBody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `MeshCollider`, `HingeJoint`, `FixedJoint`,
+  `RigidBody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `MeshCollider` (`convex: true` = hull, works on a dynamic RigidBody), `HingeJoint`, `FixedJoint`,
   `SliderJoint`, `BallJoint`, `DistanceJoint`, `ConfigurableJoint` (`connectedBody` = entity name, empty = world), `ParticleEmitter`, `Flammable`, `ImpactSound`, `DirectionalLight` (the sun: its rotation), `SkyLight`, `HeightFog`, `FogVolume`, `VolumetricClouds`, `FluidVolume`,
   `Rotator`, `Oscillator`, ...). Prefer editing scenes in the editor; when editing JSON keep guids unique and stable.
 - `Content/Scripts/*.zs` - gameplay code in **ZeqouScript** (see `Docs/ZeqouScript.md`). This is where most work happens.

@@ -49,6 +49,16 @@ ShapeDesc ShapeDesc::Mesh(MeshId mesh, Vec3 position, Quat rotation)
     return s;
 }
 
+ShapeDesc ShapeDesc::Hull(HullId hull, Vec3 position, Quat rotation)
+{
+    ShapeDesc s;
+    s.type = ShapeType::ConvexHull;
+    s.hull = hull;
+    s.position = position;
+    s.rotation = rotation;
+    return s;
+}
+
 namespace {
 
 struct Body
@@ -173,10 +183,18 @@ Quat IntegrateRotation(const Quat& q, Vec3 angle)
 
 Mat3 OuterProduct(Vec3 a, Vec3 b) { return Mat3(a * b.x, a * b.y, a * b.z); }
 
-/// Inertia tensor of a shape about its own center (local frame), unit-density mass returned in `mass`.
-Mat3 ShapeInertia(const ShapeDesc& s, f32& mass)
+/// Inertia tensor of a shape about its own center of mass (local frame); its mass in `mass`.
+Mat3 ShapeInertia(const ShapeDesc& s, f32& mass, const ConvexHull* hull = nullptr)
 {
     switch (s.type) {
+    case ShapeType::ConvexHull: {
+        if (!hull) {
+            mass = 0.0f;
+            return Mat3::Scale(Vec3(0.0f));
+        }
+        mass = s.density * hull->volume;
+        return Mat3(hull->inertia.columns[0] * s.density, hull->inertia.columns[1] * s.density, hull->inertia.columns[2] * s.density);
+    }
     case ShapeType::Sphere: {
         mass = s.density * (4.0f / 3.0f) * Pi * s.radius * s.radius * s.radius;
         return Mat3::Scale(Vec3(0.4f * mass * s.radius * s.radius));
@@ -207,6 +225,7 @@ struct PhysicsWorld::Impl
     Array<Body> bodies;
     Array<u32> freeBodies;
     Array<UniquePtr<TriangleMesh>> meshes;
+    Array<UniquePtr<ConvexHull>> hulls;
     AabbTree staticTree, movingTree;
     Array<Contact> contacts;
     HashMap<u64, u32> contactIndex; // key -> index in `contacts`
@@ -265,6 +284,7 @@ struct PhysicsWorld::Impl
         PosedShape p;
         p.desc = &b.shapes[s];
         p.mesh = p.desc->type == ShapeType::TriangleMesh && p.desc->mesh < meshes.Size() ? meshes[p.desc->mesh].Get() : nullptr;
+        p.hull = p.desc->type == ShapeType::ConvexHull && p.desc->hull < hulls.Size() ? hulls[p.desc->hull].Get() : nullptr;
         const Vec3 origin = b.Origin();
         p.position = origin + b.q * p.desc->position;
         p.rotation = b.q * p.desc->rotation;
@@ -299,6 +319,40 @@ PhysicsWorld::PhysicsWorld() : m_impl(MakeUnique<Impl>())
 }
 
 PhysicsWorld::~PhysicsWorld() = default;
+
+HullId PhysicsWorld::CreateConvexHull(Span<const Vec3> points)
+{
+    UniquePtr<ConvexHull> hull = MakeUnique<ConvexHull>();
+    if (!hull->Build(points))
+        return InvalidHull;
+    m_impl->hulls.PushBack(move(hull));
+    return HullId(m_impl->hulls.Size() - 1);
+}
+
+void PhysicsWorld::GetHullEdges(HullId id, Array<Vec3>& vertices, Array<u32>& edges) const
+{
+    vertices.Clear();
+    edges.Clear();
+    if (id >= m_impl->hulls.Size())
+        return;
+    const ConvexHull& h = *m_impl->hulls[id];
+    vertices = h.vertices;
+    for (u8 e : h.edges)
+        edges.PushBack(e);
+}
+
+bool PhysicsWorld::BuildHullEdges(Span<const Vec3> points, Array<Vec3>& vertices, Array<u32>& edges)
+{
+    vertices.Clear();
+    edges.Clear();
+    ConvexHull h;
+    if (!h.Build(points))
+        return false;
+    vertices = h.vertices;
+    for (u8 e : h.edges)
+        edges.PushBack(e);
+    return true;
+}
 
 MeshId PhysicsWorld::CreateTriangleMesh(Span<const Vec3> positions, Span<const u32> indices)
 {
@@ -348,16 +402,19 @@ BodyId PhysicsWorld::CreateBody(const BodyDesc& desc)
         Vec3 com;
         Array<f32> masses;
         Array<Mat3> inertias;
+        Array<Vec3> centers; // each shape's center of mass (body frame)
         for (const ShapeDesc& s : b.shapes) {
             f32 m;
-            inertias.PushBack(ShapeInertia(s, m));
+            const ConvexHull* hull = s.type == ShapeType::ConvexHull && s.hull < m_impl->hulls.Size() ? m_impl->hulls[s.hull].Get() : nullptr;
+            inertias.PushBack(ShapeInertia(s, m, hull));
             if (s.isSensor) {
                 m = 0.0f;
                 inertias.Back() = Mat3::Scale(Vec3(0.0f));
             }
             masses.PushBack(m);
+            centers.PushBack(hull ? s.position + s.rotation * hull->centroid : s.position);
             total += m;
-            com += s.position * m;
+            com += centers.Back() * m;
         }
         if (total <= 0.0f) {
             total = 1.0f;
@@ -369,7 +426,7 @@ BodyId PhysicsWorld::CreateBody(const BodyDesc& desc)
         for (usize i = 0; i < masses.Size(); ++i) {
             const Mat3 r = Mat3::FromQuat(b.shapes[i].rotation);
             const Mat3 rotated = r * inertias[i] * Transpose(r);
-            const Vec3 d = b.shapes[i].position - com;
+            const Vec3 d = centers[i] - com;
             const Mat3 shift = Mat3::Scale(Vec3(Dot(d, d))) * masses[i];
             const Mat3 outer = OuterProduct(d, d) * masses[i];
             for (u32 c = 0; c < 3; ++c)

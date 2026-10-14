@@ -3,6 +3,7 @@
 // Narrowphase: contact manifolds between two posed shapes. Normals point from shape A to shape B; every point carries
 // its position on both surfaces and the separation along the normal (negative = penetration).
 
+#include "ConvexHull.h"
 #include "Physics/PhysicsWorld.h"
 
 namespace zx::physics {
@@ -59,6 +60,7 @@ struct PosedShape
 {
     const ShapeDesc* desc = nullptr;
     const TriangleMesh* mesh = nullptr;
+    const ConvexHull* hull = nullptr;
     Vec3 position;
     Quat rotation;
 };

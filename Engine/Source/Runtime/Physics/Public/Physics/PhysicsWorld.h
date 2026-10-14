@@ -42,12 +42,16 @@ enum class ShapeType : u8
     Sphere,
     Box,
     Capsule,      // segment along local Y (halfHeight) + radius
+    ConvexHull,   // convex point cloud (CreateConvexHull): dynamic bodies of any convex shape
     TriangleMesh, // static bodies only
 };
 
 /// Opaque handle of a triangle mesh registered in a world (CreateTriangleMesh).
 using MeshId = u32;
 inline constexpr MeshId InvalidMesh = ~0u;
+/// Opaque handle of a convex hull registered in a world (CreateConvexHull).
+using HullId = u32;
+inline constexpr HullId InvalidHull = ~0u;
 
 struct ShapeDesc
 {
@@ -56,6 +60,7 @@ struct ShapeDesc
     f32 radius = 0.5f;             // sphere, capsule
     f32 halfHeight = 0.5f;         // capsule: half length of the inner segment
     MeshId mesh = InvalidMesh;     // triangle mesh
+    HullId hull = InvalidHull;     // convex hull
     Vec3 position;                 // pose relative to the body origin
     Quat rotation;
     f32 density = 1000.0f; // kg/m^3 (water); a body's mass comes from its shapes unless BodyDesc::mass is set
@@ -65,6 +70,7 @@ struct ShapeDesc
     static ShapeDesc Sphere(f32 radius, Vec3 position = {});
     static ShapeDesc Capsule(f32 radius, f32 halfHeight, Vec3 position = {}, Quat rotation = {});
     static ShapeDesc Mesh(MeshId mesh, Vec3 position = {}, Quat rotation = {});
+    static ShapeDesc Hull(HullId hull, Vec3 position = {}, Quat rotation = {});
 };
 
 struct BodyDesc
@@ -229,6 +235,13 @@ public:
 
     /// Registers a static triangle mesh (positions + 3 indices per triangle); a BVH is built here.
     MeshId CreateTriangleMesh(Span<const Vec3> positions, Span<const u32> indices);
+    /// Registers the convex hull of `points` (shape space; quickhull, at most 32 vertices kept). Invalid when the points
+    /// are flat or too few.
+    HullId CreateConvexHull(Span<const Vec3> points);
+    /// Hull geometry for debug drawing: vertices and 2 indices per edge (empty for an invalid id).
+    void GetHullEdges(HullId hull, Array<Vec3>& vertices, Array<u32>& edges) const;
+    /// The hull CreateConvexHull would make of `points`, as edges (editor gizmos without a world). False when flat.
+    static bool BuildHullEdges(Span<const Vec3> points, Array<Vec3>& vertices, Array<u32>& edges);
 
     BodyId CreateBody(const BodyDesc& desc);
     void DestroyBody(BodyId id);

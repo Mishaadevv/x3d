@@ -1808,8 +1808,17 @@ void Editor::RunPhysicsSelfTest()
             m_physicsTestCubes.PushBack(selected);
             m_physicsTestStart.PushBack(world.Get<Transform>(selected)->position);
         }
+        // A cylinder on top colliding through a convex Mesh Collider (hull of its mesh).
+        CreateShape(BuiltinShape::Cylinder, Vec3(floorHit.point.x, m_physicsTestFloor + 1.0f + 5.0f * 1.3f, floorHit.point.z));
+        world.Remove<CapsuleCollider>(selected);
+        world.Remove<BoxCollider>(selected);
+        world.Remove<SphereCollider>(selected);
+        world.Add(selected, MeshCollider{.convex = true});
+        world.Add(selected, RigidBody{});
+        m_physicsTestCubes.PushBack(selected);
+        m_physicsTestStart.PushBack(world.Get<Transform>(selected)->position);
         Select(ecs::NullEntity);
-        ZX_LOG_INFO(LogEditor, "Physics self-test: {} mesh colliders, 5 cubes", meshes);
+        ZX_LOG_INFO(LogEditor, "Physics self-test: {} mesh colliders, 5 cubes, a convex cylinder", meshes);
         BeginPlay();
         m_physicsTestStage = 2;
         break;
@@ -2972,7 +2981,7 @@ void Editor::RenderFrame()
                                     CollectHierarchy(world, selected, colliderOwners);
                                     Array<ColliderOutline> outlines;
                                     for (ecs::Entity ce : colliderOwners)
-                                        GatherColliderOutlines(world, ce, outlines);
+                                        GatherColliderOutlines(world, ce, outlines, renderAssets.Get());
                                     const Color green(120, 230, 120);
                                     for (const ColliderOutline& o : outlines) {
                                         const Vec3 oc = o.transform.GetTranslation();
@@ -2988,6 +2997,9 @@ void Editor::RenderFrame()
                                             debugDraw->Sphere(bottom, o.radius, green, 20);
                                             for (Vec3 d : {side, -side, fwd, -fwd})
                                                 debugDraw->Line(top + d * o.radius, bottom + d * o.radius, green);
+                                        } else if (o.type == physics::ShapeType::ConvexHull) {
+                                            for (usize i = 0; i + 1 < o.lines.Size(); i += 2)
+                                                debugDraw->Line(o.lines[i], o.lines[i + 1], green);
                                         }
                                     }
                                     // Joints: anchor, axis and a line to what they connect to (orange).

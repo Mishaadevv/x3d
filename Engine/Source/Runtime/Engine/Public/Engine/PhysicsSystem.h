@@ -61,10 +61,12 @@ struct CapsuleCollider
     i32 layer = 0;
 };
 
-/// The triangles of the entity's Mesh Renderer (static collision: level geometry).
+/// The triangles of the entity's Mesh Renderer (static collision: level geometry). Convex: the convex hull of the mesh
+/// instead (at most 32 vertices) - collides as a dynamic Rigid Body (rocks, barrels, crates of any shape).
 struct MeshCollider
 {
     bool enabled = true;
+    bool convex = false;
     i32 layer = 0;
 };
 
@@ -195,8 +197,10 @@ struct ColliderOutline
     Vec3 halfExtents;
     f32 radius = 0.0f;
     f32 halfHeight = 0.0f;
+    Array<Vec3> lines; // ConvexHull: world-space segments (2 points each)
 };
-void GatherColliderOutlines(ecs::World& world, ecs::Entity e, Array<ColliderOutline>& out);
+/// `assets`: needed for convex Mesh Colliders (their hull is built from the loaded mesh).
+void GatherColliderOutlines(ecs::World& world, ecs::Entity e, Array<ColliderOutline>& out, render::RenderAssets* assets = nullptr);
 
 /// True if the entity has any joint component.
 bool HasJoint(const ecs::World& world, ecs::Entity e);
@@ -298,15 +302,24 @@ private:
     void CreateBodies(ecs::World& world);
     void CreateJoints(ecs::World& world);
     bool CreateBody(ecs::World& world, ecs::Entity e, bool dynamic);
+    physics::HullId HullOf(const render::GpuMesh& mesh, Vec3 scale);
 
     UniquePtr<physics::PhysicsWorld> m_world;
     render::RenderAssets* m_assets = nullptr;
     Array<Tracked> m_tracked;
     HashMap<u64, u32> m_byEntity; // entity -> index in m_tracked
     Array<ecs::Entity> m_pendingMeshes; // static mesh colliders whose mesh is not loaded yet
+    Array<ecs::Entity> m_pendingBodies; // rigid bodies waiting for the meshes of their convex Mesh Colliders
     Array<PhysicsEvent> m_events;
     Array<physics::ContactEvent> m_rawEvents;
     HashMap<u64, physics::JointId> m_joints; // entity -> its joint
+    struct CachedHull
+    {
+        const render::GpuMesh* mesh = nullptr;
+        Vec3 scale;
+        physics::HullId hull = physics::InvalidHull;
+    };
+    Array<CachedHull> m_hulls; // convex Mesh Colliders: instances of one mesh at one scale share a hull
     ecs::Entity EntityOf(physics::BodyId id) const;
     f32 m_accumulator = 0.0f;
 };

@@ -1,4 +1,5 @@
 #include "Engine/PhysicsSystem.h"
+#include "Core/Containers/Function.h"
 #include "Core/Log/Log.h"
 #include "Core/Reflection/Reflection.h"
 #include "Engine/Gameplay.h"
@@ -49,6 +50,7 @@ ZX_REFLECT_STRUCT_END()
 
 ZX_REFLECT_STRUCT_BEGIN(MeshCollider)
     ZX_FIELD(enabled, Meta::Tooltip("Static collision with the triangles of the Mesh Renderer"))
+    ZX_FIELD(convex, Meta::Tooltip("Collide as the convex hull of the mesh (up to 32 vertices): works on a dynamic Rigid Body"))
     ZX_FIELD(layer, Meta::Range(0, 31), Meta::Tooltip("Physics layer: raycasts and other queries can filter by it"))
 ZX_REFLECT_STRUCT_END()
 #undef ZX_COLLIDER_COMMON_FIELDS
@@ -161,8 +163,24 @@ Pose WorldPose(const ecs::World& world, Entity e)
     return p;
 }
 
-/// The colliders of entity `e` as shapes relative to `body` (a world pose without scale).
-void AppendShapes(const ecs::World& world, Entity e, const Pose& body, Array<ShapeDesc>& out)
+/// Hull of a mesh at a scale (convex Mesh Colliders); InvalidHull when the mesh isn't loaded or is flat.
+using HullMaker = Function<HullId(const render::GpuMesh&, Vec3)>;
+
+/// The mesh of a convex Mesh Collider when it is loaded, else null.
+const render::GpuMesh* ConvexMesh(const ecs::World& world, Entity e, render::RenderAssets* assets)
+{
+    const MeshCollider* mc = world.Get<const MeshCollider>(e);
+    const MeshRenderer* mr = world.Get<const MeshRenderer>(e);
+    if (!mc || !mc->enabled || !mc->convex || !mr || !assets)
+        return nullptr;
+    const render::GpuMesh* mesh = assets->GetMesh(mr->mesh);
+    return mesh && !mesh->cpuPositions.Empty() ? mesh : nullptr;
+}
+
+/// The colliders of entity `e` as shapes relative to `body` (a world pose without scale). Convex Mesh Colliders
+/// become hulls through `makeHull` (skipped without it).
+void AppendShapes(const ecs::World& world, Entity e, const Pose& body, Array<ShapeDesc>& out, render::RenderAssets* assets = nullptr,
+                  HullMaker* makeHull = nullptr)
 {
     const Pose p = WorldPose(world, e);
     const Vec3 s = Abs(p.scale);
@@ -186,6 +204,12 @@ void AppendShapes(const ecs::World& world, Entity e, const Pose& body, Array<Sha
         const f32 half = Max(c->height * s.y * 0.5f - r, 0.0f);
         place(sensor(ShapeDesc::Capsule(r, half), c->isTrigger), c->center);
     }
+    if (makeHull)
+        if (const render::GpuMesh* mesh = ConvexMesh(world, e, assets)) {
+            const HullId hull = (*makeHull)(*mesh, p.scale);
+            if (hull != InvalidHull)
+                place(ShapeDesc::Hull(hull), Vec3());
+        }
 }
 
 /// Physics layer of an entity: from its first collider component.
@@ -402,7 +426,7 @@ void GatherJointGizmos(ecs::World& world, Entity e, Array<JointGizmo>& out)
     }
 }
 
-void GatherColliderOutlines(ecs::World& world, Entity e, Array<ColliderOutline>& out)
+void GatherColliderOutlines(ecs::World& world, Entity e, Array<ColliderOutline>& out, render::RenderAssets* assets)
 {
     const Pose p = WorldPose(world, e);
     Array<ShapeDesc> shapes;
@@ -417,6 +441,60 @@ void GatherColliderOutlines(ecs::World& world, Entity e, Array<ColliderOutline>&
         o.halfHeight = s.halfHeight;
         out.PushBack(o);
     }
+    // Convex Mesh Collider: the hull's edges (rebuilt only when the mesh or the scale changes).
+    if (const render::GpuMesh* mesh = ConvexMesh(world, e, assets)) {
+        struct Cached
+        {
+            const render::GpuMesh* mesh = nullptr;
+            usize count = 0;
+            Vec3 scale;
+            Array<Vec3> vertices;
+            Array<u32> edges;
+        };
+        static Array<Cached> cache;
+        Cached* c = nullptr;
+        for (Cached& k : cache)
+            if (k.mesh == mesh && k.count == mesh->cpuPositions.Size() && k.scale == p.scale)
+                c = &k;
+        if (!c) {
+            if (cache.Size() >= 16)
+                cache.Clear();
+            Cached k;
+            k.mesh = mesh;
+            k.count = mesh->cpuPositions.Size();
+            k.scale = p.scale;
+            Array<Vec3> points;
+            points.Reserve(mesh->cpuPositions.Size());
+            for (Vec3 v : mesh->cpuPositions)
+                points.PushBack(v * p.scale);
+            PhysicsWorld::BuildHullEdges(points.View(), k.vertices, k.edges);
+            cache.PushBack(move(k));
+            c = &cache.Back();
+        }
+        ColliderOutline o;
+        o.type = ShapeType::ConvexHull;
+        o.transform = Mat4::TRS(p.position, p.rotation, Vec3(1.0f));
+        for (u32 i : c->edges)
+            o.lines.PushBack(p.position + p.rotation * c->vertices[i]);
+        out.PushBack(move(o));
+    }
+}
+
+HullId PhysicsSystem::HullOf(const render::GpuMesh& mesh, Vec3 scale)
+{
+    for (const CachedHull& c : m_hulls)
+        if (c.mesh == &mesh && c.scale == scale)
+            return c.hull;
+    Array<Vec3> points;
+    points.Reserve(mesh.cpuPositions.Size());
+    for (Vec3 v : mesh.cpuPositions)
+        points.PushBack(v * scale);
+    CachedHull c;
+    c.mesh = &mesh;
+    c.scale = scale;
+    c.hull = m_world->CreateConvexHull(points.View());
+    m_hulls.PushBack(c);
+    return c.hull;
 }
 
 PhysicsSystem::PhysicsSystem() = default;
@@ -443,7 +521,9 @@ void PhysicsSystem::End()
     m_tracked.Clear();
     m_byEntity.Clear();
     m_pendingMeshes.Clear();
+    m_pendingBodies.Clear();
     m_joints.Clear();
+    m_hulls.Clear();
 }
 
 bool PhysicsSystem::CreateBody(ecs::World& world, Entity e, bool dynamic)
@@ -455,6 +535,7 @@ bool PhysicsSystem::CreateBody(ecs::World& world, Entity e, bool dynamic)
     d.rotation = pose.rotation;
     d.userData = e.Pack();
     d.layer = LayerOf(world, e);
+    HullMaker makeHull = [this](const render::GpuMesh& mesh, Vec3 scale) { return HullOf(mesh, scale); };
     const RigidBody* rb = world.Get<const RigidBody>(e);
     if (dynamic && rb) {
         d.motion = rb->type == RigidBodyType::Kinematic ? MotionType::Kinematic : MotionType::Dynamic;
@@ -469,21 +550,31 @@ bool PhysicsSystem::CreateBody(ecs::World& world, Entity e, bool dynamic)
         Array<Entity> stack{e};
         while (!stack.Empty()) {
             const Entity c = stack.PopBackValue();
-            AppendShapes(world, c, bodyPose, d.shapes);
+            const MeshCollider* mc = world.Get<const MeshCollider>(c);
+            const MeshRenderer* mr = world.Get<const MeshRenderer>(c);
+            if (mc && mc->enabled && mc->convex && mr && m_assets && !m_assets->GetMesh(mr->mesh)) {
+                // The mesh is still loading: the body is created once it arrives.
+                for (Entity p : m_pendingBodies)
+                    if (p == e)
+                        return false;
+                m_pendingBodies.PushBack(e);
+                return false;
+            }
+            AppendShapes(world, c, bodyPose, d.shapes, m_assets, &makeHull);
             for (Entity child : scene::GetChildren(world, c))
                 if (!world.Get<const RigidBody>(child))
                     stack.PushBack(child);
         }
         if (d.shapes.Empty()) {
-            ZX_LOG_WARN(LogPhysics, "RigidBody on '{}' has no Box/Sphere/Capsule Collider: not simulated",
+            ZX_LOG_WARN(LogPhysics, "RigidBody on '{}' has no Box/Sphere/Capsule or convex Mesh Collider (with its mesh loaded): not simulated",
                         world.Get<const scene::EntityName>(e) ? world.Get<const scene::EntityName>(e)->value.View() : StringView("entity"));
             return false;
         }
     } else {
-        AppendShapes(world, e, bodyPose, d.shapes);
+        AppendShapes(world, e, bodyPose, d.shapes, m_assets, &makeHull);
         const MeshCollider* mc = world.Get<const MeshCollider>(e);
         const MeshRenderer* mr = world.Get<const MeshRenderer>(e);
-        if (((mc && mc->enabled) || ImplicitMeshCollision(world, e)) && mr) {
+        if (((mc && mc->enabled && !mc->convex) || ImplicitMeshCollision(world, e)) && mr) {
             const render::GpuMesh* mesh = m_assets ? m_assets->GetMesh(mr->mesh) : nullptr;
             if (!mesh || mesh->cpuIndices.Empty()) {
                 if (d.shapes.Empty()) {
@@ -655,6 +746,15 @@ void PhysicsSystem::Tick(ecs::World& world, f32 dt)
         } else {
             ++i;
         }
+    }
+
+    // Rigid bodies whose convex meshes arrived since.
+    if (!m_pendingBodies.Empty()) {
+        Array<Entity> waiting = move(m_pendingBodies);
+        m_pendingBodies.Clear();
+        for (Entity e : waiting)
+            if (world.IsAlive(e))
+                CreateBody(world, e, true); // re-queues itself while a mesh is still loading
     }
 
     // The game moved an entity: kinematic bodies follow it, dynamic ones are teleported.

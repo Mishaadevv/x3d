@@ -86,6 +86,10 @@ Tools/bake_flipbooks.py into Engine/Content/StarterContent/Flipbooks (copied int
 Velocity: RenderInstance::id/prevWorld (ViewportRenderer pairs instances by entity), instance stride 192 (prev world
 rows at +128), SceneRenderer Velocity pass (Shaders/Forward/Velocity.hlsl, RG16F, sentinel -1000 = use the camera) only
 for moved instances; read by MotionBlurCS and TAA. -exec chains accept "wait N".
+Convex hulls: Physics/Private/ConvexHull.h (quickhull, <= 32 vertices, GJK), ShapeType::ConvexHull (PhysicsWorld::
+CreateConvexHull); Collide.cpp Poly = box / hull / triangle (SAT + clipping), PolyRounded for spheres/capsules.
+MeshCollider::convex -> PhysicsSystem::HullOf (cached per mesh + scale); bodies whose convex mesh is loading wait in
+m_pendingBodies. Tests ZXTests Hull.*; -physicstest drops a convex cylinder.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

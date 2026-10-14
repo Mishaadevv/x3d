@@ -122,16 +122,16 @@ void ReduceTo4(Vec3 normal, Array<ContactPoint>& pts, Manifold& m)
 
 struct Poly
 {
-    Vec3 v[8];
+    Vec3 v[ConvexHull::MaxVertices];
     u32 nv = 0;
-    Vec3 fn[6];
-    u8 face[6][4];
-    u8 fcount[6];
+    Vec3 fn[ConvexHull::MaxFaces];
+    u8 face[ConvexHull::MaxFaces][ConvexHull::MaxFaceVertices];
+    u8 fcount[ConvexHull::MaxFaces];
     u32 nf = 0;
-    u8 edge[12][2];
-    u8 edgeDir[12];
+    u8 edge[ConvexHull::MaxEdges][2];
+    u8 edgeDir[ConvexHull::MaxEdges];
     u32 ne = 0;
-    Vec3 dirs[3];
+    Vec3 dirs[ConvexHull::MaxDirections];
     u32 ndirs = 0;
     Vec3 center;
 
@@ -172,6 +172,48 @@ void MakeBoxPoly(Vec3 pos, const Quat& rot, Vec3 e, Poly& p)
     p.dirs[1] = ay;
     p.dirs[2] = az;
     p.center = pos;
+}
+
+void MakeHullPoly(Vec3 pos, const Quat& rot, const ConvexHull& h, Poly& p)
+{
+    p.nv = u32(h.vertices.Size());
+    p.center = Vec3();
+    for (u32 i = 0; i < p.nv; ++i) {
+        p.v[i] = pos + rot * h.vertices[i];
+        p.center += p.v[i];
+    }
+    p.center = p.center / f32(Max(p.nv, 1u));
+    p.nf = u32(h.faces.Size());
+    for (u32 f = 0; f < p.nf; ++f) {
+        const ConvexHull::Face& face = h.faces[f];
+        p.fn[f] = rot * face.normal;
+        p.fcount[f] = face.count;
+        for (u32 k = 0; k < face.count; ++k)
+            p.face[f][k] = h.faceVertices[face.first + k];
+    }
+    p.ne = u32(h.edges.Size() / 2);
+    for (u32 e = 0; e < p.ne; ++e) {
+        p.edge[e][0] = h.edges[e * 2];
+        p.edge[e][1] = h.edges[e * 2 + 1];
+        p.edgeDir[e] = h.edgeDir[e];
+    }
+    p.ndirs = u32(h.directions.Size());
+    for (u32 d = 0; d < p.ndirs; ++d)
+        p.dirs[d] = rot * h.directions[d];
+}
+
+/// Polyhedral shapes (box, convex hull) as a Poly.
+bool MakeShapePoly(const PosedShape& s, Poly& p)
+{
+    if (s.desc->type == ShapeType::Box) {
+        MakeBoxPoly(s.position, s.rotation, s.desc->halfExtents, p);
+        return true;
+    }
+    if (s.desc->type == ShapeType::ConvexHull && s.hull) {
+        MakeHullPoly(s.position, s.rotation, *s.hull, p);
+        return true;
+    }
+    return false;
 }
 
 void MakeTrianglePoly(Vec3 a, Vec3 b, Vec3 c, Vec3 n, Poly& p)
@@ -311,7 +353,7 @@ bool CollidePolys(const Poly& A, const Poly& B, f32 margin, Manifold& m, bool& f
             fi = f;
         }
     }
-    Vec3 bufA[16], bufB[16];
+    Vec3 bufA[64], bufB[64];
     u32 count = I.fcount[fi];
     for (u32 k = 0; k < count; ++k)
         bufA[k] = I.v[I.face[fi][k]];
@@ -326,9 +368,9 @@ bool CollidePolys(const Poly& A, const Poly& B, f32 margin, Manifold& m, bool& f
         for (u32 i = 0; i < count; ++i) {
             const Vec3 p = in[i], q = in[(i + 1) % count];
             const f32 dp = Dot(side, p - v0), dq = Dot(side, q - v0);
-            if (dp <= Tol && n < 16)
+            if (dp <= Tol && n < 64)
                 out[n++] = p;
-            if (((dp < -Tol && dq > Tol) || (dp > Tol && dq < -Tol)) && n < 16)
+            if (((dp < -Tol && dq > Tol) || (dp > Tol && dq < -Tol)) && n < 64)
                 out[n++] = p + (q - p) * (dp / (dp - dq));
         }
         swap(in, out);
@@ -414,6 +456,100 @@ void RoundedRounded(const Rounded& a, const Rounded& b, f32 margin, Manifold& m)
         return;
     m.normal = n;
     AddPoint(m, ca + n * a.radius, cb - n * b.radius, sep);
+}
+
+/// Convex polyhedron (A, e.g. a hull) vs rounded shape (B); normal from A to B. Points of the core outside the hull:
+/// GJK closest points; inside: the least-penetrated face. A capsule contributes its two ends (and the closest point of
+/// its segment when that is nearer), so it rests flat on faces.
+void PolyRounded(const Poly& H, const Rounded& r, f32 margin, Manifold& m)
+{
+    m.count = 0;
+    struct Candidate
+    {
+        Vec3 onHull, core, normal;
+        f32 separation;
+    };
+    Candidate cands[3];
+    u32 nc = 0;
+    auto faceDistance = [&](Vec3 p, u32& face) {
+        f32 best = -Infinity;
+        face = 0;
+        for (u32 f = 0; f < H.nf; ++f) {
+            const f32 s = Dot(H.fn[f], p) - Dot(H.fn[f], H.v[H.face[f][0]]);
+            if (s > best) {
+                best = s;
+                face = f;
+            }
+        }
+        return best;
+    };
+    auto addPoint = [&](Vec3 p) {
+        u32 face;
+        const f32 s = faceDistance(p, face);
+        Candidate c;
+        c.core = p;
+        if (s <= 0.0f) { // inside the hull: out through the nearest face
+            c.normal = H.fn[face];
+            c.onHull = p - c.normal * s;
+            c.separation = s - r.radius;
+        } else {
+            const GjkResult g = Gjk(Span<const Vec3>(H.v, H.nv), Span<const Vec3>(&p, 1));
+            c.normal = g.distance > 1e-6f ? (p - g.pointA) / g.distance : H.fn[face];
+            c.onHull = g.distance > 1e-6f ? g.pointA : p - H.fn[face] * s;
+            c.separation = Max(g.distance, 0.0f) - r.radius;
+        }
+        cands[nc++] = c;
+    };
+    addPoint(r.p0);
+    const bool segment = DistanceSq(r.p0, r.p1) > 1e-10f;
+    if (segment) {
+        addPoint(r.p1);
+        const Vec3 core[2] = {r.p0, r.p1};
+        const GjkResult g = Gjk(Span<const Vec3>(H.v, H.nv), Span<const Vec3>(core, 2));
+        if (g.distance > 1e-5f) {
+            Candidate c;
+            c.onHull = g.pointA;
+            c.core = g.pointB;
+            c.normal = (g.pointB - g.pointA) / g.distance;
+            c.separation = g.distance - r.radius;
+            cands[nc++] = c;
+        } else if (cands[0].separation > -r.radius && cands[1].separation > -r.radius) {
+            // The segment passes through the hull with both ends outside: least-penetrated face axis.
+            f32 best = -Infinity;
+            u32 bestFace = 0;
+            for (u32 f = 0; f < H.nf; ++f) {
+                const f32 d = Dot(H.fn[f], H.v[H.face[f][0]]);
+                const f32 s = Min(Dot(H.fn[f], r.p0), Dot(H.fn[f], r.p1)) - d;
+                if (s > best) {
+                    best = s;
+                    bestFace = f;
+                }
+            }
+            Candidate c;
+            c.normal = H.fn[bestFace];
+            c.core = Dot(c.normal, r.p0) < Dot(c.normal, r.p1) ? r.p0 : r.p1;
+            c.onHull = c.core - c.normal * best;
+            c.separation = best - r.radius;
+            cands[nc++] = c;
+        }
+    }
+    u32 deepest = 0;
+    for (u32 i = 1; i < nc; ++i)
+        if (cands[i].separation < cands[deepest].separation)
+            deepest = i;
+    if (cands[deepest].separation > margin)
+        return;
+    m.normal = cands[deepest].normal;
+    for (u32 i = 0; i < nc; ++i) {
+        const Candidate& c = cands[i];
+        if (c.separation > margin || (i != deepest && Dot(c.normal, m.normal) < 0.95f))
+            continue;
+        bool duplicate = false;
+        for (u32 k = 0; k < m.count; ++k)
+            duplicate |= DistanceSq(m.points[k].pointA, c.onHull) < 1e-8f;
+        if (!duplicate)
+            AddPoint(m, c.onHull, c.core - m.normal * r.radius, c.separation);
+    }
 }
 
 /// Box (A) vs rounded shape (B); normal from the box to B.
@@ -635,9 +771,7 @@ void ShapeMesh(const PosedShape& s, const PosedShape& meshShape, f32 margin, Arr
     const usize first = out.Size();
     Array<bool> faceFlags;
     Poly shapePoly;
-    const bool isBox = s.desc->type == ShapeType::Box;
-    if (isBox)
-        MakeBoxPoly(s.position, s.rotation, s.desc->halfExtents, shapePoly);
+    const bool isBox = MakeShapePoly(s, shapePoly); // box or convex hull
     const Rounded rounded = isBox ? Rounded{} : MakeRounded(s);
     mesh.Query(local, [&](u32 tri) {
         Vec3 a, b, c;
@@ -828,6 +962,24 @@ void Collide(const PosedShape& a, const PosedShape& b, f32 margin, Array<Manifol
         if (ta != ShapeType::TriangleMesh && b.mesh)
             ShapeMesh(a, b, margin, out);
         return;
+    case ShapeType::ConvexHull: {
+        if (!b.hull)
+            return;
+        Poly hb;
+        MakeHullPoly(b.position, b.rotation, *b.hull, hb);
+        if (ta == ShapeType::Box || ta == ShapeType::ConvexHull) {
+            Poly pa;
+            if (!MakeShapePoly(a, pa))
+                return;
+            bool faceOfA = false;
+            if (!CollidePolys(pa, hb, margin, m, faceOfA))
+                return;
+        } else { // sphere / capsule vs hull
+            PolyRounded(hb, MakeRounded(a), margin, m);
+            FlipManifold(m);
+        }
+        break;
+    }
     case ShapeType::Box:
         if (ta == ShapeType::Box) {
             Poly pa, pb;
@@ -867,6 +1019,14 @@ AABB ShapeBounds(const PosedShape& s)
         const Vec3 axis = s.rotation * Vec3(0.0f, s.desc->halfHeight, 0.0f);
         return AABB(Min(s.position - axis, s.position + axis) - Vec3(s.desc->radius), Max(s.position - axis, s.position + axis) + Vec3(s.desc->radius));
     }
+    case ShapeType::ConvexHull: {
+        AABB box;
+        if (!s.hull)
+            return AABB(s.position, s.position);
+        for (Vec3 v : s.hull->vertices)
+            box.Expand(s.position + s.rotation * v);
+        return box;
+    }
     case ShapeType::TriangleMesh: {
         AABB box;
         if (!s.mesh || s.mesh->nodes.Empty())
@@ -898,6 +1058,37 @@ bool RaySphere(Vec3 o, Vec3 d, Vec3 c, f32 r, f32 maxT, f32& t)
 bool RaycastShape(const PosedShape& s, Vec3 origin, Vec3 dir, f32 maxT, f32& t, Vec3& normal)
 {
     switch (s.desc->type) {
+    case ShapeType::ConvexHull: {
+        // Clip the ray against every face plane (Cyrus-Beck).
+        if (!s.hull)
+            return false;
+        const Vec3 o = InvRotate(s.rotation, origin - s.position), d = InvRotate(s.rotation, dir);
+        f32 t0 = 0.0f, t1 = maxT;
+        i32 enter = -1;
+        for (u32 f = 0; f < s.hull->faces.Size(); ++f) {
+            const ConvexHull::Face& face = s.hull->faces[f];
+            const f32 denom = Dot(face.normal, d), dist = face.d - Dot(face.normal, o);
+            if (Abs(denom) < 1e-12f) {
+                if (dist < 0.0f)
+                    return false;
+                continue;
+            }
+            const f32 th = dist / denom;
+            if (denom < 0.0f) {
+                if (th > t0) {
+                    t0 = th;
+                    enter = i32(f);
+                }
+            } else {
+                t1 = Min(t1, th);
+            }
+            if (t0 > t1)
+                return false;
+        }
+        t = t0;
+        normal = enter >= 0 ? s.rotation * s.hull->faces[u32(enter)].normal : -dir;
+        return true;
+    }
     case ShapeType::Sphere:
         if (!RaySphere(origin, dir, s.position, s.desc->radius, maxT, t))
             return false;
