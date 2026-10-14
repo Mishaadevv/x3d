@@ -174,7 +174,7 @@ RGTexture ParticleRenderer::AddPass(RenderGraph& graph, RGTexture color, RGTextu
     // Heat haze: offsets from the heat particles, then the scene resampled through them into a new color target.
     bool anyHeat = false;
     for (u32 i = 0; i < count && !anyHeat; ++i)
-        anyHeat = particles[i].shape == ParticleShape::Heat;
+        anyHeat = (particles[i].shape & 0xFFu) == u32(ParticleShape::Heat);
     if (!anyHeat || !m_heatPipeline || !m_distortPipeline)
         return color;
     TextureDesc od;

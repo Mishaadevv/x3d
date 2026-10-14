@@ -12,6 +12,15 @@
 
 namespace zx::render {
 
+enum ParticleFlags : u32
+{
+    ParticleEmissive = 1, // glows (not lit by the sun and sky)
+    ParticleAdditive = 2, // adds light instead of covering what is behind
+};
+
+/// Packs a shape and a flipbook grid into GpuParticle::shape.
+constexpr u32 PackParticleShape(u32 shape, u32 columns = 0, u32 rows = 0) { return shape | (columns << 8) | (rows << 16); }
+
 enum class ParticleShape : u32
 {
     Soft,  // round puff (smoke, dust, fog)
@@ -27,11 +36,11 @@ struct GpuParticle
     f32 size = 1.0f;      // quad width (m)
     Vec4 color;           // linear rgb (emissive: multiplied by the intensity reference), a = opacity
     f32 rotation = 0.0f;  // radians
-    f32 emissive = 0.0f;  // 0 = lit by sun and sky, 1 = glows
-    f32 additive = 0.0f;  // 0 = covers what is behind (alpha), 1 = adds light
-    ParticleShape shape = ParticleShape::Soft;
+    u32 flags = 0;        // ParticleFlags
+    u32 texture = 0xFFFFFFFFu; // flipbook atlas (SRV) or invalid: procedural shape
+    u32 shape = 0;        // ParticleShape | flipbook columns << 8 | rows << 16
     Vec3 velocity;        // m/s (sparks stretch along it)
-    f32 seed = 0.0f;      // 0..1, varies the procedural shape
+    f32 seed = 0.0f;      // 0..1: varies the procedural shape; flipbooks: position in the animation
 };
 static_assert(sizeof(GpuParticle) == 64);
 

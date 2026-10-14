@@ -36,7 +36,8 @@ struct VSOut
     float4 position : SV_Position;
     float2 uv : TEXCOORD0;            // -1..1 across the quad
     nointerpolation float4 color : COLOR0;
-    nointerpolation float4 info : TEXCOORD1; // x = emissive, y = additive, z = shape, w = seed
+    nointerpolation float4 info : TEXCOORD1; // x = emissive, y = additive, z = shape, w = seed (flipbook: frame 0..1)
+    nointerpolation uint3 flipbook : TEXCOORD5; // atlas SRV (invalid = procedural), columns, rows
     float viewDepth : TEXCOORD2;
     nointerpolation float radius : TEXCOORD3;
     float3 worldPos : TEXCOORD4;
@@ -52,9 +53,12 @@ VSOut ParticleVS(uint vertexId : SV_VertexID)
     const float size = asfloat(b.Load(offset + 12));
     const float4 color = asfloat(b.Load4(offset + 16));
     const float rotation = asfloat(b.Load(offset + 32));
-    const float emissive = asfloat(b.Load(offset + 36));
-    const float additive = asfloat(b.Load(offset + 40));
-    const uint shape = b.Load(offset + 44);
+    const uint flags = b.Load(offset + 36);
+    const uint atlas = b.Load(offset + 40);
+    const uint packedShape = b.Load(offset + 44);
+    const uint shape = packedShape & 0xFF;
+    const float emissive = (flags & 1u) ? 1.0 : 0.0;
+    const float additive = (flags & 2u) ? 1.0 : 0.0;
     const float3 velocity = asfloat(b.Load3(offset + 48));
     const float seed = asfloat(b.Load(offset + 60));
 
@@ -79,7 +83,8 @@ VSOut ParticleVS(uint vertexId : SV_VertexID)
             u = g_P.cameraUp; // looking straight down at it
         up = normalize(u);
         right = normalize(cross(up, toCam));
-        extent.y *= 1.6;
+        if (atlas == ZX_INVALID_INDEX)
+            extent.y *= 1.6; // procedural tongues are tall; flipbook frames are drawn square
     } else {
         float s, c;
         sincos(rotation, s, c);
@@ -93,6 +98,7 @@ VSOut ParticleVS(uint vertexId : SV_VertexID)
     o.uv = corner;
     o.color = color;
     o.info = float4(emissive, additive, float(shape), seed);
+    o.flipbook = uint3(atlas, max((packedShape >> 8) & 0xFF, 1u), max((packedShape >> 16) & 0xFF, 1u));
     o.viewDepth = dot(world - g_P.cameraPosition, g_P.cameraForward);
     o.radius = size * 0.5;
     o.worldPos = world;
@@ -118,7 +124,28 @@ float4 ParticlePS(VSOut i) : SV_Target0
     float2 uv = i.uv;
     float mask;
     float3 tint = i.color.rgb;
-    if (shape == 1) {
+    if (i.flipbook.x != ZX_INVALID_INDEX) {
+        // Flipbook (baked from a fluid simulation): frame `seed` of a columns x rows atlas, blended with the next.
+        const float count = float(i.flipbook.y * i.flipbook.z);
+        const float f = frac(seed) * count;
+        const float f0 = floor(f), f1 = fmod(f0 + 1.0, count);
+        const float2 local = float2(uv.x * 0.5 + 0.5, 0.5 - uv.y * 0.5);
+        const float2 cell = 1.0 / float2(i.flipbook.yz);
+        const float2 uv0 = (float2(fmod(f0, float(i.flipbook.y)), floor(f0 / float(i.flipbook.y))) + local) * cell;
+        const float2 uv1 = (float2(fmod(f1, float(i.flipbook.y)), floor(f1 / float(i.flipbook.y))) + local) * cell;
+        Texture2D<float4> atlasTex = GetTexture2D(i.flipbook.x);
+        const float4 s = lerp(atlasTex.SampleLevel(g_LinearClamp, uv0, 0), atlasTex.SampleLevel(g_LinearClamp, uv1, 0), f - f0);
+        mask = s.a;
+        if (shape == 1) {
+            // Fire: r = temperature -> deep orange edges to a yellow-white core.
+            const float peak = max(i.color.r, max(i.color.g, i.color.b));
+            const float3 edge = i.color.rgb * float3(1.0, 0.45, 0.2);
+            const float3 hot = float3(1.0, 0.78, 0.42) * peak * 1.2;
+            tint = lerp(edge, hot, saturate(s.r * s.r)) * (0.35 + 0.65 * s.r);
+        } else {
+            tint = i.color.rgb * s.rgb; // smoke: baked self-shadowing
+        }
+    } else if (shape == 1) {
         // Flame: a tongue (round at the bottom, licking up to a point), torn by noise rising through it. Hot core
         // (yellow-white) to cooler edges and tip (deep orange-red), like a real flame.
         const float t = g_P.time * 2.6 + seed * 37.0;

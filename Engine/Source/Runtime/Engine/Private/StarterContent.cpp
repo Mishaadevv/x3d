@@ -893,6 +893,7 @@ u32 WriteStarterContent(StringView contentDir)
     // Textures (relief demos) and color grading LUTs shipped with the engine, and the materials using them.
     written += CopyLibrary("Textures", root + "/Textures");
     written += CopyLibrary("LUTs", root + "/LUTs");
+    written += CopyLibrary("Flipbooks", root + "/Flipbooks");
     const render::MaterialGraph textured[] = {MakeReliefMaterial("M_Bricks", "T_Bricks", 2.0f, 0.04f, 0.85f),
                                               MakeReliefMaterial("M_Cobblestone", "T_Cobble", 1.0f, 0.05f, 0.75f),
                                               MakeLeavesMaterial()};

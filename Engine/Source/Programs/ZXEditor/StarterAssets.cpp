@@ -93,6 +93,11 @@ ParticleEmitter Flames()
     p.look = ParticleLook::Flame;
     p.blend = ParticleBlend::Additive;
     p.intensity = 4.0f;
+    p.flipbook = "StarterContent/Flipbooks/T_Flipbook_Fire.png"; // baked from a fluid simulation
+    p.flipbookFps = 24.0f;
+    p.startSize = 0.8f;
+    p.endSize = 0.35f;
+    p.spin = 0.0f;
     p.lightFlicker = 0.35f;
     return p;
 }
@@ -119,6 +124,7 @@ ParticleEmitter Smoke(f32 density = 1.0f)
     p.look = ParticleLook::Soft;
     p.blend = ParticleBlend::Alpha;
     p.emissive = false;
+    p.flipbook = "StarterContent/Flipbooks/T_Flipbook_Smoke.png"; // a billowing puff over each particle's life
     return p;
 }
 

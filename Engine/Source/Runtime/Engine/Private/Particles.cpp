@@ -63,6 +63,11 @@ ZX_REFLECT_STRUCT_BEGIN(ParticleEmitter)
     ZX_FIELD(emissive, Meta::Tooltip("Glows by itself instead of being lit by the sun and sky"))
     ZX_FIELD(intensity, Meta::Range(0, 100), Meta::Tooltip("Brightness of emissive particles"))
     ZX_FIELD(lightFlicker, Meta::Range(0, 1), Meta::Tooltip("Flickers the Point Light on this entity (fire)"))
+    ZX_FIELD(flipbook, Meta::Category("Flipbook"),
+             Meta::Tooltip("Animated texture atlas, e.g. StarterContent/Flipbooks/T_Flipbook_Fire.png (Flame: r = heat, a = mask; Soft: rgb = shading, a = mask)"))
+    ZX_FIELD(flipbookColumns, Meta::Range(1, 16))
+    ZX_FIELD(flipbookRows, Meta::Range(1, 16))
+    ZX_FIELD(flipbookFps, Meta::Range(0, 120), Meta::Tooltip("0 = play once over each particle's life; otherwise frames per second, looping"))
     ZX_FIELD(collision, Meta::Category("Collision"), Meta::Tooltip("Particles hit the world: bounce off it or disappear"))
     ZX_FIELD(bounciness, Meta::Range(0, 1), Meta::Tooltip("Bounce: fraction of the speed kept"))
     ZX_FIELD(onHitEmitter, Meta::Tooltip("Entity whose Particle Emitter bursts where particles hit (rain splashes)"))
@@ -290,7 +295,7 @@ void ParticleSystem::AppendLights(Array<render::LightDesc>& lights) const
         lights.PushBack(l);
 }
 
-void ParticleSystem::Gather(Vec3 cameraPosition, Array<render::GpuParticle>& out) const
+void ParticleSystem::Gather(Vec3 cameraPosition, Array<render::GpuParticle>& out, const Function<u32(StringView), 32>* textures) const
 {
     const usize first = out.Size();
     auto gather = [&](const Emitter& em) {
@@ -300,6 +305,9 @@ void ParticleSystem::Gather(Vec3 cameraPosition, Array<render::GpuParticle>& out
                                             : d.look == ParticleLook::Spark ? render::ParticleShape::Spark
                                             : d.look == ParticleLook::Heat  ? render::ParticleShape::Heat
                                                                             : render::ParticleShape::Soft;
+        const u32 atlas = !d.flipbook.Empty() && textures && *textures ? (*textures)(d.flipbook) : 0xFFFFFFFFu;
+        const u32 columns = u32(Clamp(d.flipbookColumns, 1, 16)), rows = u32(Clamp(d.flipbookRows, 1, 16));
+        const u32 packedShape = atlas != 0xFFFFFFFFu ? render::PackParticleShape(u32(shape), columns, rows) : u32(shape);
         for (const Particle& p : em.particles) {
             const f32 t = Clamp(p.age / p.life, 0.0f, 1.0f);
             const f32 fade = d.fadeIn > 0.0f ? Min(t / d.fadeIn, 1.0f) : 1.0f;
@@ -309,11 +317,13 @@ void ParticleSystem::Gather(Vec3 cameraPosition, Array<render::GpuParticle>& out
             const Vec3 rgb = Lerp(d.startColor, d.endColor, t) * (d.emissive ? d.intensity : 1.0f);
             g.color = Vec4(rgb.x, rgb.y, rgb.z, Clamp(Lerp(d.startAlpha, d.endAlpha, t) * fade, 0.0f, 1.0f));
             g.rotation = p.rotation;
-            g.emissive = d.emissive ? 1.0f : 0.0f;
-            g.additive = additive ? 1.0f : 0.0f;
-            g.shape = shape;
+            g.flags = (d.emissive ? u32(render::ParticleEmissive) : 0u) | (additive ? u32(render::ParticleAdditive) : 0u);
+            g.texture = atlas;
+            g.shape = packedShape;
             g.velocity = d.worldSpace ? p.velocity : em.world.TransformVector(p.velocity);
             g.seed = p.seed;
+            if (atlas != 0xFFFFFFFFu) // animation position: over the life, or looping from a random frame
+                g.seed = d.flipbookFps > 0.0f ? Frac(p.seed + p.age * d.flipbookFps / f32(columns * rows)) : Min(t, 0.999f);
             if (g.size > 0.0f && g.color.w > 0.001f)
                 out.PushBack(g);
         }

@@ -80,6 +80,9 @@ scalars ping-pong; ~25 compute passes per step; FluidDraw raymarch after the vol
 Materials: graph output pin 8 = Subsurface (SurfaceData::subsurface, SubsurfaceLight in BRDF.hlsli); ParallaxOcclusion node
 (MaterialGraph.hlsli, needs MaterialInputs::tangent). Color LUTs: PostProcessVolume::colorLut -> FindColorLut ->
 PostSettings::colorLut (applied after tonemapping). LUT PNGs must not be block-compressed (ship a .zmeta with compression None).
+Flipbooks: ParticleEmitter::flipbook (Content path, resolved by ViewportRenderer through decalTextures); GpuParticle
+flags / texture / packed shape (shape | cols << 8 | rows << 16), seed = animation position. Atlases baked by
+Tools/bake_flipbooks.py into Engine/Content/StarterContent/Flipbooks (copied into new projects).
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

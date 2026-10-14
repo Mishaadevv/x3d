@@ -327,8 +327,12 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
                        f32(std::fmod(m_time, 3600.0)));
     // Particles over the fogged scene (they don't write depth, so the fog couldn't place them).
     m_particleList.Clear();
-    if (features.particles && m_particleSource)
-        m_particleSource->Gather(view.position, m_particleList);
+    if (features.particles && m_particleSource) {
+        const Function<u32(StringView), 32> textures = [this](StringView path) {
+            return decalTextures ? m_assets.GetTextureSrv(decalTextures(path, false)) : InvalidDescriptor;
+        };
+        m_particleSource->Gather(view.position, m_particleList, &textures);
+    }
     render::ParticleRenderer::FogVolumes particleFog;
     if (m_volumetric.IsActive()) {
         particleFog.lighting = m_volumetric.LightingVolume();

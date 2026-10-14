@@ -1,0 +1,9 @@
+{
+  "guid": "57a20df4-07dd-5869-bf26-bd305051b9f2",
+  "importer": "Texture",
+  "settings": {
+    "srgb": false,
+    "normalMap": false,
+    "compression": "BC7"
+  }
+}

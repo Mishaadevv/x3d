@@ -73,6 +73,9 @@ ParticleEmitter FlameLook(const Flammable& f)
     d.endAlpha = 0.0f;
     d.fadeIn = 0.12f;
     d.intensity = 4.0f;
+    // Baked fluid-simulation flames when the project has the Starter Content (else the procedural tongues).
+    d.flipbook = "StarterContent/Flipbooks/T_Flipbook_Fire.png";
+    d.flipbookFps = 24.0f;
     d.acceleration = Vec3(0.0f, 2.2f * Clamp(f.flameHeight / 0.6f, 0.3f, 4.0f), 0.0f);
     d.drag = 1.6f;
     d.turbulence = 1.8f;

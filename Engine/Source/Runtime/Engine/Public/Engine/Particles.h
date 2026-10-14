@@ -84,6 +84,10 @@ struct ParticleEmitter
     bool emissive = true;  // glows (not lit by the sun)
     bool worldSpace = true; // particles stay where they were emitted when the entity moves
     f32 lightFlicker = 0.0f; // 0..1: flickers the Point Light on this entity (fire)
+    String flipbook;          // animated texture atlas (Content-relative), e.g. StarterContent/Flipbooks/T_Flipbook_Fire.png
+    i32 flipbookColumns = 8;
+    i32 flipbookRows = 8;
+    f32 flipbookFps = 0.0f;   // 0 = the whole animation once over a particle's life; > 0 = frames per second, looping
     ParticleCollision collision = ParticleCollision::None; // against the world (physics, else meshes)
     f32 bounciness = 0.35f;  // Bounce: fraction of the speed kept
     String onHitEmitter;     // name of an entity whose Particle Emitter bursts where particles hit (splashes)
@@ -102,8 +106,9 @@ class ParticleSystem
 public:
     /// Advances every emitter: all of them while `playing`, otherwise those with Simulate In Editor.
     void Tick(ecs::World& world, f32 dt, bool playing);
-    /// Every live particle for drawing, sorted back to front from `cameraPosition`.
-    void Gather(Vec3 cameraPosition, Array<render::GpuParticle>& out) const;
+    /// Every live particle for drawing, sorted back to front from `cameraPosition`. `textures` turns flipbook paths into
+    /// texture SRVs (none: flipbooks fall back to the procedural shapes).
+    void Gather(Vec3 cameraPosition, Array<render::GpuParticle>& out, const Function<u32(StringView path), 32>* textures = nullptr) const;
     /// Point Lights on entities with a flickering emitter: intensity modulated (render-side only).
     void ModulateLights(Span<render::LightDesc> lights) const;
     /// Emits `count` particles from the entity's emitter right away (scripts: entity.emit(n)), from `position` (world)
