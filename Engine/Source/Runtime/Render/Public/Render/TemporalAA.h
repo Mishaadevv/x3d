@@ -38,7 +38,8 @@ public:
     /// With an outputSize larger than the input (and settings.upscale) it upscales temporally (ZTSR): the history and
     /// the result are at outputSize. `jitterNdc` is this frame's NextJitter value.
     RGTexture AddPass(RenderGraph& graph, RGTexture color, RGTexture depth, const Mat4& viewProjNoJitter, f32 exposure,
-                      const TAASettings& settings, UVec2 outputSize = UVec2(0, 0), Vec2 jitterNdc = Vec2(0.0f, 0.0f));
+                      const TAASettings& settings, UVec2 outputSize = UVec2(0, 0), Vec2 jitterNdc = Vec2(0.0f, 0.0f),
+                      RGTexture velocity = RGTexture()); // moving objects (SceneRenderer::VelocityTexture)
     bool IsUpscaling() const { return m_upscaling; }
     /// Drops the history (camera cut, resolution change).
     void Reset() { m_historyValid = false; }
@@ -57,7 +58,7 @@ private:
         f32 historyScale;
         f32 blend;
         u32 catmullRom;
-        f32 pad;
+        u32 velocity; // SRV or invalid
         Vec2 inputSize;
         Vec2 jitter;
     };

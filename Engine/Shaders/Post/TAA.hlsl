@@ -17,7 +17,7 @@ struct TAAParams
     float historyScale;     // exposure(prev -> current) ratio
     float blend;            // weight of the current frame (0.05 .. 0.2)
     uint catmullRom;
-    float pad;
+    uint velocity;          // SRV: motion of moving objects (uv units, < -100 = none) or invalid
     float2 inputSize;       // ZTSR: render resolution (size = output resolution)
     float2 jitter;          // ZTSR: this frame's jitter in input pixels (screen space, y down)
 };
@@ -90,7 +90,13 @@ void ResolveCS(uint2 id : SV_DispatchThreadID)
     const float4 world = mul(g_TAA.invViewProj, float4(ndc, closest, 1.0));
     const float4 prevClip = mul(g_TAA.prevViewProj, world);
     const float2 prevNdc = prevClip.xy / prevClip.w;
-    const float2 prevUv = float2(prevNdc.x * 0.5 + 0.5, 0.5 - prevNdc.y * 0.5) - duv;
+    float2 prevUv = float2(prevNdc.x * 0.5 + 0.5, 0.5 - prevNdc.y * 0.5) - duv;
+    // Moving objects: follow their own motion (no ghost trails behind them).
+    if (g_TAA.velocity != ZX_INVALID_INDEX) {
+        const float2 objectMotion = GetTexture2D(g_TAA.velocity).SampleLevel(g_PointClamp, uv + duv, 0).rg;
+        if (objectMotion.x > -100.0)
+            prevUv = uv - objectMotion;
+    }
     if (any(prevUv < 0.0) || any(prevUv > 1.0) || prevClip.w <= 0.0) {
         output[id] = float4(current, 1);
         return;
@@ -165,7 +171,13 @@ void UpscaleCS(uint2 id : SV_DispatchThreadID)
     const float4 world = mul(g_TAA.invViewProj, float4(ndc, closest, 1.0));
     const float4 prevClip = mul(g_TAA.prevViewProj, world);
     const float2 prevNdc = prevClip.xy / prevClip.w;
-    const float2 prevUv = float2(prevNdc.x * 0.5 + 0.5, 0.5 - prevNdc.y * 0.5) - duv;
+    float2 prevUv = float2(prevNdc.x * 0.5 + 0.5, 0.5 - prevNdc.y * 0.5) - duv;
+    // Moving objects: follow their own motion (no ghost trails behind them).
+    if (g_TAA.velocity != ZX_INVALID_INDEX) {
+        const float2 objectMotion = GetTexture2D(g_TAA.velocity).SampleLevel(g_PointClamp, uv + duv, 0).rg;
+        if (objectMotion.x > -100.0)
+            prevUv = uv - objectMotion;
+    }
     if (any(prevUv < 0.0) || any(prevUv > 1.0) || prevClip.w <= 0.0) {
         output[id] = float4(current, 1);
         return;

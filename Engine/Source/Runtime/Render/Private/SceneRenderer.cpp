@@ -15,7 +15,7 @@ using namespace rhi;
 
 namespace {
 
-constexpr u32 InstanceStride = 128; // keep in sync with ForwardPBR.hlsl
+constexpr u32 InstanceStride = 192; // keep in sync with ForwardPBR.hlsl (+ previous world rows at 128, Velocity.hlsl)
 constexpr u32 MaxLights = 1024;
 constexpr u32 MaxDecals = 256;
 
@@ -112,6 +112,7 @@ SceneRenderer::~SceneRenderer()
     m_device.Destroy(m_clearTilePipeline);
     m_device.Destroy(m_clusterBuffer);
     m_device.Destroy(m_clusterPipeline);
+    m_device.Destroy(m_velocityPipeline);
     m_device.Destroy(m_gtaoPipeline);
     m_device.Destroy(m_aoBlurPipeline);
 }
@@ -156,6 +157,31 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
             return false;
         }
         *j.out = move(*r);
+    }
+    const Job velocityJobs[] = {{&m_velocityVS, "VelocityVS", ShaderStage::Vertex, {}}, {&m_velocityPS, "VelocityPS", ShaderStage::Pixel, {}}};
+    for (const Job& j : velocityJobs) {
+        ShaderCompileDesc vd;
+        vd.path = "/Shaders/Forward/Velocity.hlsl";
+        vd.entryPoint = j.entry;
+        vd.stage = j.stage;
+        Result<ShaderBytecode> r = ShaderCompiler::Compile(vd);
+        if (!r) {
+            ZX_LOG_ERROR(LogSceneRenderer, "{}", r.GetError().message);
+            return false;
+        }
+        *j.out = move(*r);
+    }
+    {
+        GraphicsPipelineDesc vp;
+        vp.vertexShader = &m_velocityVS;
+        vp.pixelShader = &m_velocityPS;
+        vp.rasterizer.cullMode = CullMode::None; // two-sided parts too
+        vp.depthFormat = m_depthFormat;
+        vp.depthStencil.depthWrite = false;     // tested against the scene: only visible surfaces write
+        vp.colorFormats[0] = Format::R16G16_FLOAT;
+        vp.colorCount = 1;
+        vp.debugName = "Velocity";
+        m_velocityPipeline = m_device.CreateGraphicsPipeline(vp);
     }
     ShaderCompileDesc cd;
     cd.path = "/Shaders/Lighting/ClusterLights.hlsl";
@@ -630,6 +656,7 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
     m_stats.instances = u32(instances.Size());
     m_opaque.Clear();
     m_translucent.Clear();
+    m_velocityDraws.Clear();
     for (Array<DrawItem>& s : m_shadowDraws)
         s.Clear();
     m_casters.Clear();
@@ -683,6 +710,13 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
         }
         const Vec4 burn(inst.burnOrigin, inst.burnRadius);
         MemCopy(dst + 112, &burn, 16);
+        // Last frame's world rows (velocity of moving objects).
+        const Mat4 prevRows = Transpose(inst.hasPrevWorld ? inst.prevWorld : inst.world);
+        MemCopy(dst + 128, &prevRows, 64);
+        bool moved = false;
+        if (inst.hasPrevWorld)
+            for (u32 c = 0; c < 4 && !moved; ++c)
+                moved = LengthSq(inst.world.columns[c] - inst.prevWorld.columns[c]) > 1e-10f;
         if (inst.castShadows)
             m_casters.PushBack(InstanceRef{index, mesh, inst.world, scale, inst.materials});
 
@@ -767,6 +801,8 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
                 // Pipeline, then front to back, then material.
                 d.sortKey = (u64(d.pipeline) << 56) | (u64(depthBits) << 24) | (material & 0xFFFFFF);
                 m_opaque.PushBack(d);
+                if (moved)
+                    m_velocityDraws.PushBack(d);
             }
             ++m_stats.draws;
             m_stats.triangles += range.indexCount / 3;
@@ -1130,6 +1166,42 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
             for (const DrawItem& d : m_opaque)
                 Draw(ctx.cmd, d, variant, bound);
         });
+    // Velocity of the objects that moved (motion blur, TAA); everything else keeps the "use the camera" sentinel.
+    m_velocityTexture = RGTexture();
+    if (m_motion && !m_velocityDraws.Empty() && m_velocityPipeline) {
+        TextureDesc vd;
+        vd.width = m_renderSize.x;
+        vd.height = m_renderSize.y;
+        vd.format = Format::R16G16_FLOAT;
+        vd.usage = TextureUsage::RenderTarget | TextureUsage::ShaderResource;
+        vd.debugName = "Velocity";
+        const RGTexture velocity = graph.CreateTexture(vd);
+        m_velocityTexture = velocity;
+        struct VelocityParams
+        {
+            Mat4 viewProj, viewProjNoJitter, prevViewProj;
+            u32 instanceBuffer, instanceStride, pad[2];
+        } vp = {m_viewConstants.viewProj, m_viewProjNoJitter, m_prevViewProjNoJitter, m_viewConstants.instanceBuffer, InstanceStride, {}};
+        const UVec2 size = m_renderSize;
+        graph.AddPass(
+            "Velocity", PassType::Graphics,
+            [velocity, depth](PassBuilder& b) {
+                b.RenderTarget(velocity, LoadOp::Clear, LinearColor(-1000.0f, -1000.0f, 0, 0));
+                b.DepthStencil(depth, LoadOp::Load, 0.0f, true);
+            },
+            [this, vp, size](PassContext& ctx) {
+                ctx.cmd.SetViewport(Viewport{0, 0, f32(size.x), f32(size.y), 0, 1});
+                ctx.cmd.SetScissor(0, 0, size.x, size.y);
+                ctx.cmd.SetPipeline(m_velocityPipeline);
+                ctx.cmd.SetConstants(0, &vp, sizeof(vp));
+                for (const DrawItem& d : m_velocityDraws) {
+                    ctx.cmd.SetIndexBuffer(d.mesh->indexBuffer, d.mesh->index16 ? IndexFormat::UInt16 : IndexFormat::UInt32);
+                    const DrawPush push{d.instance, d.material, d.mesh->vertexBuffer->GetSrvIndex(), d.lod};
+                    ctx.cmd.SetPushConstants(push);
+                    ctx.cmd.DrawIndexed(d.indexCount, 1, d.indexOffset, 0, 0);
+                }
+            });
+    }
     if (afterOpaque)
         afterOpaque(graph, color, depth, normals);
     if (!m_translucent.Empty()) {

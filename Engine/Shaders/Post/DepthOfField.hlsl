@@ -23,7 +23,7 @@ struct DofParams
     float motionMax;       // pixels
     uint samples;          // motion blur samples
     uint viewMode;         // 5 = CoC visualization
-    float pad;
+    uint velocity;         // SRV: motion of moving objects (uv units, < -100 = none) or invalid
 };
 ZX_PASS_CONSTANTS(DofParams, g_Dof);
 
@@ -135,7 +135,13 @@ void MotionBlurCS(uint2 id : SV_DispatchThreadID)
         return;
     }
     const float2 prevNdc = prevClip.xy / prevClip.w;
-    const float2 prevUv = float2(prevNdc.x * 0.5 + 0.5, 0.5 - prevNdc.y * 0.5);
+    float2 prevUv = float2(prevNdc.x * 0.5 + 0.5, 0.5 - prevNdc.y * 0.5);
+    // Moving objects: their own motion instead of the camera's.
+    if (g_Dof.velocity != ZX_INVALID_INDEX) {
+        const float2 objectMotion = GetTexture2D(g_Dof.velocity).SampleLevel(g_PointClamp, uv, 0).rg;
+        if (objectMotion.x > -100.0)
+            prevUv = uv - objectMotion;
+    }
     float2 velocity = (uv - prevUv) * g_Dof.size * g_Dof.motionScale; // pixels
     const float len = length(velocity);
     // A camera cut (or a huge jump) is not motion.

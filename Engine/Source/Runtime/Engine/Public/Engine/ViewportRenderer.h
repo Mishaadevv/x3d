@@ -178,6 +178,9 @@ private:
     bool m_hdriHasSun = false;
     f32 m_dynamicTimer = 0.0f;
     Array<render::RenderInstance> m_instances;
+    HashMap<u64, Mat4> m_prevWorlds;                 // instance id -> last frame's world (object motion)
+    Mat4 m_prevViewProjNoJitter = Mat4::Identity();
+    bool m_hasPrevView = false;
     Array<render::LightDesc> m_lights;
 };
 

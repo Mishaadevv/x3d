@@ -56,6 +56,7 @@ struct PostView
     f32 fovY = 1.0f; // radians
     f32 nearPlane = 0.05f;
     bool cut = false; // camera cut: no motion blur this frame
+    RGTexture velocity; // motion of moving objects (SceneRenderer::VelocityTexture), invalid = camera motion only
 };
 
 /// Signed circle of confusion in pixels for an image `imageHeight` pixels high (< 0 in front of the focus).
@@ -126,10 +127,10 @@ private:
         f32 motionMax;
         u32 samples;
         u32 viewMode;
-        f32 pad;
+        u32 velocity; // SRV or invalid
     };
     RGTexture AddDepthOfField(RenderGraph& graph, RGTexture color, RGTexture depth, const DofParams& base);
-    RGTexture AddMotionBlur(RenderGraph& graph, RGTexture color, RGTexture depth, const DofParams& base);
+    RGTexture AddMotionBlur(RenderGraph& graph, RGTexture color, RGTexture depth, RGTexture velocity, const DofParams& base);
 
     rhi::Device& m_device;
     rhi::ShaderBytecode m_histogramCS, m_exposureCS, m_vs, m_bloomDownPS, m_bloomUpPS, m_tonemapPS, m_fxaaPS;

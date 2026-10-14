@@ -28,6 +28,10 @@ struct RenderInstance
     f32 charring = 0.0f;   // 0..1 how black
     f32 burnGlow = 0.0f;   // 0..1 glowing edge of the flames
     f32 embers = 0.0f;     // 0..1 embers in the charred part
+    // Motion (per-object motion blur, TAA): last frame's world matrix when the instance existed then.
+    Mat4 prevWorld = Mat4::Identity();
+    bool hasPrevWorld = false;
+    u64 id = 0; // stable identity (entity): pairs this frame's instance with last frame's
 };
 
 struct RenderView
@@ -209,6 +213,17 @@ public:
     };
     const LightingInputs& GetLightingInputs() const { return m_lightingInputs; }
 
+    /// Camera matrices without jitter (this frame and last) for the velocity of moving objects.
+    void SetMotionMatrices(const Mat4& viewProjNoJitter, const Mat4& prevViewProjNoJitter)
+    {
+        m_viewProjNoJitter = viewProjNoJitter;
+        m_prevViewProjNoJitter = prevViewProjNoJitter;
+        m_motion = true;
+    }
+    /// Screen-space motion of objects that moved this frame (RG16F, uv units, sentinel < -100 = not a moving object:
+    /// use the camera's reprojection); invalid when nothing moved. Valid after AddPasses, within the same graph.
+    RGTexture VelocityTexture() const { return m_velocityTexture; }
+
     struct Stats
     {
         u32 instances = 0;
@@ -280,6 +295,12 @@ private:
     rhi::Buffer* m_instanceBuffers[rhi::FramesInFlight] = {};
     u32 m_instanceCapacity = 0;
     Array<DrawItem> m_opaque;
+    Array<DrawItem> m_velocityDraws; // opaque sections of instances that moved
+    rhi::ShaderBytecode m_velocityVS, m_velocityPS;
+    rhi::Pipeline* m_velocityPipeline = nullptr;
+    Mat4 m_viewProjNoJitter = Mat4::Identity(), m_prevViewProjNoJitter = Mat4::Identity();
+    RGTexture m_velocityTexture;
+    bool m_motion = false; // SetMotionMatrices was called (the main view; probe captures don't need velocity)
     Array<DrawItem> m_translucent;
     Array<DrawItem> m_shadowDraws[MaxCascades];
     SceneRenderSettings m_settings;

@@ -217,6 +217,18 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
 
     m_instances.Clear();
     GatherRenderInstances(world, m_instances);
+    // Object motion: pair each instance with its world matrix of last frame (none after a cut).
+    for (render::RenderInstance& inst : m_instances)
+        if (const Mat4* prev = m_prevWorlds.Find(inst.id); prev && !camera.cut) {
+            inst.prevWorld = *prev;
+            inst.hasPrevWorld = true;
+        }
+    m_prevWorlds.Clear();
+    for (const render::RenderInstance& inst : m_instances)
+        m_prevWorlds.InsertOrAssign(inst.id, inst.world);
+    m_scene.SetMotionMatrices(m_viewProjNoJitter, m_hasPrevView && !camera.cut ? m_prevViewProjNoJitter : m_viewProjNoJitter);
+    m_prevViewProjNoJitter = m_viewProjNoJitter;
+    m_hasPrevView = true;
     const f32 exposure = ExposureFromEV100(m_lighting.exposureEV100);
     if (m_settings.useSky)
         m_sky.AddPrePasses(graph, view, m_dirToSun, exposure, m_settings.sky, m_lighting);
@@ -360,13 +372,15 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     }
     m_settings.post.fxaa = !m_settings.taa.enabled;
     const RGTexture resolved = m_settings.taa.enabled
-                                   ? m_taa.AddPass(graph, sceneColor, sceneDepth, m_viewProjNoJitter, exposure, m_settings.taa, outputSize, jitter)
+                                   ? m_taa.AddPass(graph, sceneColor, sceneDepth, m_viewProjNoJitter, exposure, m_settings.taa, outputSize, jitter,
+                                                  m_scene.VelocityTexture())
                                    : sceneColor;
     PostView postView;
     postView.viewProj = m_viewProjNoJitter;
     postView.fovY = camera.fovY;
     postView.nearPlane = camera.nearPlane;
     postView.cut = camera.cut;
+    postView.velocity = m_scene.VelocityTexture();
     m_post.AddPasses(graph, resolved, sceneDepth, output, m_lighting.exposureEV100, deltaTime, m_settings.post, &postView);
     m_lastPost = m_settings.post;
     m_clouds.AddShadowPass(graph); // last: this frame's passes read the previous map

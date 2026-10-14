@@ -215,7 +215,7 @@ RGTexture PostProcess::AddDepthOfField(RenderGraph& graph, RGTexture color, RGTe
     return result;
 }
 
-RGTexture PostProcess::AddMotionBlur(RenderGraph& graph, RGTexture color, RGTexture depth, const DofParams& base)
+RGTexture PostProcess::AddMotionBlur(RenderGraph& graph, RGTexture color, RGTexture depth, RGTexture velocity, const DofParams& base)
 {
     const TextureDesc& cd = graph.GetDesc(color);
     TextureDesc td;
@@ -231,12 +231,15 @@ RGTexture PostProcess::AddMotionBlur(RenderGraph& graph, RGTexture color, RGText
         [=](PassBuilder& b) {
             b.ReadTexture(color);
             b.ReadTexture(depth);
+            if (velocity.IsValid())
+                b.ReadTexture(velocity);
             b.WriteTexture(result);
         },
-        [this, base, color, depth, result, size](PassContext& ctx) {
+        [this, base, color, depth, velocity, result, size](PassContext& ctx) {
             DofParams p = base;
             p.color = ctx.Texture(color)->GetSrvIndex();
             p.depth = ctx.Texture(depth)->GetSrvIndex();
+            p.velocity = velocity.IsValid() ? ctx.Texture(velocity)->GetSrvIndex() : InvalidDescriptor;
             p.output = ctx.Texture(result)->GetUavIndex();
             p.size = size;
             p.invSize = Vec2(1.0f / size.x, 1.0f / size.y);
@@ -268,10 +271,11 @@ void PostProcess::AddPasses(RenderGraph& graph, RGTexture sceneColor, RGTexture 
         dp.samples = Clamp(settings.motionBlurSamples, 2u, 32u);
         dp.viewMode = settings.viewMode;
         dp.input = InvalidDescriptor;
+        dp.velocity = InvalidDescriptor;
         if (settings.depthOfField || settings.viewMode == 5)
             sceneColor = AddDepthOfField(graph, sceneColor, sceneDepth, dp);
         if (settings.motionBlur && settings.motionBlurAmount > 0.0f && m_hasPrevView && !view->cut)
-            sceneColor = AddMotionBlur(graph, sceneColor, sceneDepth, dp);
+            sceneColor = AddMotionBlur(graph, sceneColor, sceneDepth, view->velocity, dp);
         m_prevViewProj = view->viewProj;
         m_hasPrevView = true;
     }

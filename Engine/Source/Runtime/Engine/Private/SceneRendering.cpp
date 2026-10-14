@@ -168,6 +168,7 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out)
         if (!mr.visible || !mr.mesh.IsValid())
             return;
         render::RenderInstance& inst = out.AddDefaulted();
+        inst.id = e.Pack();
         inst.world = wt.matrix;
         inst.mesh = mr.mesh;
         inst.materials = mr.materials.View();

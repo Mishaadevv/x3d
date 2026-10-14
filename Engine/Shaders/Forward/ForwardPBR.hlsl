@@ -94,7 +94,7 @@ ZX_PUSH_CONSTANTS(DrawData, g_Draw);
 #define MATERIAL_ALPHA_TEST 2u
 #define MATERIAL_DOUBLE_SIDED 4u
 #define MATERIAL_GRAPH 8u
-#define INSTANCE_STRIDE 128
+#define INSTANCE_STRIDE 192 // world, normal + burn rows, burn sphere, previous world (Velocity.hlsl)
 
 struct Material
 {

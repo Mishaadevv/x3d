@@ -424,7 +424,8 @@ private:
     ecs::Entity FindByName(StringView name);
     String CanonicalScene();
     bool m_undoTest = false;
-    String m_execCommands; // -exec="cmd; cmd": console commands run once the UI is up
+    String m_execCommands; // -exec="cmd; cmd": console commands run once the UI is up ("wait N" delays the rest)
+    u64 m_execAtFrame = 2;
 
     bool m_continuousEdit = false;
     JsonValue m_pieSnapshot;

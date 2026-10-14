@@ -78,7 +78,7 @@ Mat4 TemporalAA::ApplyJitter(const Mat4& projection, Vec2 jitterNdc)
 }
 
 RGTexture TemporalAA::AddPass(RenderGraph& graph, RGTexture color, RGTexture depth, const Mat4& viewProjNoJitter, f32 exposure,
-                              const TAASettings& settings, UVec2 outputSize, Vec2 jitterNdc)
+                              const TAASettings& settings, UVec2 outputSize, Vec2 jitterNdc, RGTexture velocity)
 {
     const TextureDesc& inDesc = graph.GetDesc(color);
     const UVec2 inSize(inDesc.width, inDesc.height);
@@ -122,15 +122,18 @@ RGTexture TemporalAA::AddPass(RenderGraph& graph, RGTexture color, RGTexture dep
     const bool hasHistory = m_historyValid && settings.enabled;
     graph.AddPass(
         "TAA", PassType::Compute,
-        [color, depth, history, output, hasHistory](PassBuilder& b) {
+        [color, depth, history, output, hasHistory, velocity](PassBuilder& b) {
             b.ReadTexture(color);
             b.ReadTexture(depth);
+            if (velocity.IsValid())
+                b.ReadTexture(velocity);
             if (hasHistory)
                 b.ReadTexture(history);
             b.WriteTexture(output);
         },
-        [this, p, color, depth, history, output, hasHistory, upscale](PassContext& ctx) {
+        [this, p, color, depth, history, output, hasHistory, upscale, velocity](PassContext& ctx) {
             Params q = p;
+            q.velocity = velocity.IsValid() ? ctx.Texture(velocity)->GetSrvIndex() : InvalidDescriptor;
             q.color = ctx.Texture(color)->GetSrvIndex();
             q.depth = ctx.Texture(depth)->GetSrvIndex();
             q.history = hasHistory ? ctx.Texture(history)->GetSrvIndex() : InvalidDescriptor;

@@ -2810,10 +2810,27 @@ bool Editor::Frame()
         m_undoTest = false;
         selfTestFailed |= !RunUndoSelfTest();
     }
-    if (!m_execCommands.Empty() && frameIndex >= 2 && pendingImports.Empty()) {
-        ZX_LOG_INFO(LogEditor, "> {}", m_execCommands);
-        Console::Execute(m_execCommands);
-        m_execCommands.Clear();
+    if (!m_execCommands.Empty() && frameIndex >= m_execAtFrame && pendingImports.Empty()) {
+        // Up to the first "wait N": the rest runs N frames later (scripted captures of Play, timings after warm-up).
+        String now = m_execCommands, later;
+        for (usize start = 0; start < m_execCommands.Size();) {
+            usize end = m_execCommands.View().Find(';', start);
+            if (end == StringView::NPos)
+                end = m_execCommands.Size();
+            const StringView statement = m_execCommands.View().SubStr(start, end - start).Trim();
+            if (statement.StartsWith("wait ")) {
+                now = String(m_execCommands.View().SubStr(0, start));
+                later = end < m_execCommands.Size() ? String(m_execCommands.View().SubStr(end + 1)) : String();
+                m_execAtFrame = frameIndex + u64(Max<i64>(1, ParseInt(statement.SubStr(5).Trim()).ValueOr(1)));
+                break;
+            }
+            start = end + 1;
+        }
+        if (!now.View().Trim().Empty()) {
+            ZX_LOG_INFO(LogEditor, "> {}", now);
+            Console::Execute(now);
+        }
+        m_execCommands = later;
         ui::FocusDockedWindow(LogTitle);
     }
     sceneDirty = undo.IsDirty();
