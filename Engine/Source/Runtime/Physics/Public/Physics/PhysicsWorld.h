@@ -88,6 +88,7 @@ struct BodyDesc
     f32 mass = 0.0f;           // > 0 overrides the mass from the shape densities (inertia scales with it)
     f32 friction = 0.6f;
     f32 restitution = 0.0f;    // bounciness 0..1
+    f32 rollingFriction = 0.0f; // resists rolling: torque = this * radius * normal force (0.02..0.1 for balls on grass)
     f32 linearDamping = 0.05f;
     f32 angularDamping = 0.05f;
     f32 gravityScale = 1.0f;
@@ -177,6 +178,15 @@ struct PhysicsSettings
     f32 restitutionThreshold = 1.0f; // m/s: slower impacts don't bounce
     f32 sleepVelocity = 0.05f;       // m/s (and rad/s) below which bodies count as resting
     f32 timeToSleep = 0.5f;          // seconds an island must rest before it sleeps
+    bool stayEvents = false;         // report TouchStay / SensorStay for every pair still touching, every Step
+};
+
+/// One ray of a batch (RaycastBatch).
+struct RayQuery
+{
+    Ray ray;
+    f32 maxDistance = 1000.0f;
+    u32 layerMask = ~0u;
 };
 
 struct RaycastHit
@@ -197,6 +207,7 @@ struct PhysicsStats
     u32 contacts = 0; // touching manifolds
     u32 points = 0;   // contact points
     u32 islands = 0;
+    bool parallelIslands = false; // the last step solved its islands on several threads
     f64 stepMs = 0.0;
     f64 broadphaseMs = 0.0;
     f64 boundsMs = 0.0; // part of the broadphase: bounds + tree updates
@@ -210,6 +221,8 @@ enum class ContactEventType : u8
     TouchEnd,
     SensorEnter, // a body entered a sensor shape (of either body)
     SensorExit,
+    TouchStay,   // still touching (every Step, when PhysicsSettings::stayEvents)
+    SensorStay,  // still inside a sensor
 };
 
 /// Begin/end of contact between two bodies (per body pair, not per shape), gathered over Steps until TakeEvents.
@@ -228,6 +241,15 @@ struct DebugContact
     Vec3 position;
     Vec3 normal;
     f32 separation;
+};
+
+/// A body for debug drawing: its bounds, kind and which island of the last step it was solved in.
+struct DebugBody
+{
+    AABB bounds;
+    MotionType motion = MotionType::Static;
+    bool sleeping = false;
+    u32 island = ~0u; // ~0u: not solved (static, kinematic, sleeping)
 };
 
 class PhysicsWorld
@@ -321,12 +343,20 @@ public:
     /// Starting inside something reports a hit at distance 0 with the push-out normal.
     bool ShapeCast(const ShapeDesc& shape, Vec3 position, Quat rotation, Vec3 direction, f32 maxDistance, RaycastHit& hit,
                    u32 layerMask = ~0u, BodyId ignore = {}) const;
+    /// Nearest point on any solid body within maxDistance of `point`: hit.point on the surface, hit.normal from the
+    /// surface towards `point`, hit.distance (0 when `point` is inside a body).
+    bool ClosestPoint(Vec3 point, f32 maxDistance, RaycastHit& hit, u32 layerMask = ~0u, BodyId ignore = {}) const;
+    /// Many rays at once, spread over the job system (queries only read the world: safe while no Step runs).
+    /// `found[i]` tells whether `hits[i]` is valid.
+    void RaycastBatch(Span<const RayQuery> rays, Span<RaycastHit> hits, Span<bool> found) const;
     /// Contact events of the Steps since the last call.
     void TakeEvents(Array<ContactEvent>& out);
 
     const PhysicsStats& Stats() const { return m_stats; }
     /// Contact points of the last step (debug drawing).
     void GetDebugContacts(Array<DebugContact>& out) const;
+    /// Every body's bounds, motion, sleep state and island of the last step (debug drawing).
+    void GetDebugBodies(Array<DebugBody>& out) const;
     /// Every body id (in index order).
     void GetBodies(Array<BodyId>& out) const;
 

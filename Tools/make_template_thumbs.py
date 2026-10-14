@@ -5,6 +5,7 @@ down to Engine/Content/Templates/<Template>.png. Pure Python (zlib only).
 
     python Tools/make_template_thumbs.py            # capture with Binaries/Win64/Development/ZXEditor.exe + convert
     python Tools/make_template_thumbs.py --convert  # only convert existing captures in Saved/Thumbs
+    python Tools/make_template_thumbs.py physics    # only the named templates
 """
 import os
 import shutil
@@ -21,6 +22,7 @@ TEMPLATES = {  # -template value -> output name, extra console commands (camera 
     'firstperson': ('FirstPerson', ''),
     'thirdperson': ('ThirdPerson', ''),
     'water': ('Water', ''),
+    'physics': ('Physics', ''),
 }
 
 
@@ -114,10 +116,12 @@ def main():
     out_dir = os.path.join(ROOT, 'Engine', 'Content', 'Templates')
     os.makedirs(shots, exist_ok=True)
     os.makedirs(out_dir, exist_ok=True)
+    only = [a for a in sys.argv[1:] if not a.startswith('--')]
+    templates = {k: v for k, v in TEMPLATES.items() if not only or k in only}
     if '--convert' not in sys.argv:
         exe = os.path.join(ROOT, 'Binaries', 'Win64', 'Development', 'ZXEditor.exe')
         root = short_path(ROOT)
-        for templ, (name, exec_cmds) in TEMPLATES.items():
+        for templ, (name, exec_cmds) in templates.items():
             project = os.path.join(ROOT, 'Saved', 'TestProjects', 'Shot_' + templ)
             shutil.rmtree(project, ignore_errors=True)
             args = [exe, f'-newproject={root}/Saved/TestProjects/Shot_{templ}', f'-template={templ}', '-nodocs', '-autotest=240',
@@ -128,7 +132,7 @@ def main():
             if templ == 'blank':
                 args.append('-starter')  # the default in the New Project page: Starter Content showcase
             print(templ, subprocess.call(args))
-    for templ, (name, _) in TEMPLATES.items():
+    for templ, (name, _) in templates.items():
         src = os.path.join(shots, templ + '.png')
         if os.path.exists(src):
             thumbnail(src, os.path.join(out_dir, name + '.png'))

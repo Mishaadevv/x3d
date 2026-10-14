@@ -70,6 +70,7 @@ void RegisterEngineComponents()
     RegisterComponent<BoxCollider>("Box Collider", "\xEE\x87\x8B");                 // square-dashed
     RegisterComponent<SphereCollider>("Sphere Collider", "\xEE\x92\xB0");           // circle-dashed
     RegisterComponent<CapsuleCollider>("Capsule Collider", "\xEE\x8E\xBD");         // pill
+    RegisterComponent<CylinderCollider>("Cylinder Collider", "\xEE\x94\xA5");       // cylinder
     RegisterComponent<MeshCollider>("Mesh Collider", "\xEE\x86\x92");               // triangle
     RegisterComponent<HingeJoint>("Hinge Joint", "\xEE\x8F\x96");                   // door-open
     RegisterComponent<FixedJoint>("Fixed Joint", "\xEE\x84\x82");                   // link

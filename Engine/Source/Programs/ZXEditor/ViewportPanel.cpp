@@ -361,6 +361,7 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
         ui::OpenPopup("##showflags");
     if (ui::BeginPopup("##showflags")) {
         ui::MenuItem("Grid", {}, &ed.showGrid);
+        ui::MenuItem("Physics Debug", {}, &ed.showPhysicsDebug);
         ui::MenuItem("Sky & Fog", {}, &vs.useSky);
         ui::MenuItem("Sun Shadows", {}, &vs.scene.shadows.enabled);
         ui::MenuItem("Local Shadows", {}, &vs.scene.shadows.localEnabled);

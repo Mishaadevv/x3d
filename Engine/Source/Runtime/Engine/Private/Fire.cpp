@@ -202,6 +202,9 @@ void FireSystem::Setup(ecs::World& world, ecs::Entity e, Burn& b)
     } else if (const CapsuleCollider* c = world.Get<const CapsuleCollider>(e)) {
         b.center = c->center;
         b.half = Vec3(c->radius, Max(c->height * 0.5f, c->radius), c->radius);
+    } else if (const CylinderCollider* cy = world.Get<const CylinderCollider>(e)) {
+        b.center = cy->center;
+        b.half = Vec3(cy->radius, cy->height * 0.5f, cy->radius);
     } else {
         const MeshRenderer* mr = world.Get<const MeshRenderer>(e);
         AABB box;

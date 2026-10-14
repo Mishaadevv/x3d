@@ -27,6 +27,7 @@ struct RigidBody
     f32 mass = 0.0f;          // kg; 0 = from the collider volumes (density of water, 1000 kg/m^3)
     f32 friction = 0.6f;
     f32 bounciness = 0.0f;    // 0..1
+    f32 rollingFriction = 0.0f; // slows rolling (balls on grass ~0.05)
     f32 linearDamping = 0.05f;
     f32 angularDamping = 0.05f;
     f32 gravityScale = 1.0f;
@@ -57,6 +58,16 @@ struct CapsuleCollider
     Vec3 center;
     f32 radius = 0.5f;
     f32 height = 2.0f; // end to end
+    bool isTrigger = false;
+    i32 layer = 0;
+};
+
+/// Upright cylinder along the local Y axis (a 32-vertex convex hull; non-uniform scale makes it elliptic).
+struct CylinderCollider
+{
+    Vec3 center;
+    f32 radius = 0.5f;
+    f32 height = 1.0f;
     bool isTrigger = false;
     i32 layer = 0;
 };
@@ -184,6 +195,7 @@ ZX_DECLARE_TYPE(RigidBody);
 ZX_DECLARE_TYPE(BoxCollider);
 ZX_DECLARE_TYPE(SphereCollider);
 ZX_DECLARE_TYPE(CapsuleCollider);
+ZX_DECLARE_TYPE(CylinderCollider);
 ZX_DECLARE_TYPE(MeshCollider);
 
 /// True if the entity has any collider component.
@@ -264,6 +276,8 @@ public:
     bool SphereCast(Vec3 origin, f32 radius, Vec3 direction, f32 maxDistance, PhysicsHit& hit, u32 layerMask = ~0u,
                     ecs::Entity ignore = {}) const;
     void OverlapSphere(Vec3 center, f32 radius, Array<ecs::Entity>& out, u32 layerMask = ~0u) const;
+    /// Nearest point on a solid collider within maxDistance (distance 0 inside one).
+    bool ClosestPoint(Vec3 point, f32 maxDistance, PhysicsHit& hit, u32 layerMask = ~0u, ecs::Entity ignore = {}) const;
     /// Contact / trigger events of the last Tick.
     Span<const PhysicsEvent> Events() const { return m_events.View(); }
 
@@ -302,7 +316,7 @@ private:
     void CreateBodies(ecs::World& world);
     void CreateJoints(ecs::World& world);
     bool CreateBody(ecs::World& world, ecs::Entity e, bool dynamic);
-    physics::HullId HullOf(const render::GpuMesh& mesh, Vec3 scale);
+    physics::HullId HullOf(const render::GpuMesh* mesh, Vec3 scale); // null mesh: unit cylinder (diameter 1, height 1)
 
     UniquePtr<physics::PhysicsWorld> m_world;
     render::RenderAssets* m_assets = nullptr;

@@ -737,6 +737,8 @@ void GameModuleSystem::DispatchPhysicsEvents(Span<const PhysicsEvent> events)
                 case physics::ContactEventType::TouchEnd: in.object->OnCollisionExit(ToId(other)); break;
                 case physics::ContactEventType::SensorEnter: in.object->OnTriggerEnter(ToId(other)); break;
                 case physics::ContactEventType::SensorExit: in.object->OnTriggerExit(ToId(other)); break;
+                case physics::ContactEventType::TouchStay: in.object->OnCollisionStay(ToId(other)); break;
+                case physics::ContactEventType::SensorStay: in.object->OnTriggerStay(ToId(other)); break;
                 }
             }
         }

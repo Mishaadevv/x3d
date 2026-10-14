@@ -738,6 +738,7 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
 
     // physics: raycast(origin, direction[, maxDistance[, layers]]) / sphereCast(origin, radius, direction[, maxDistance[,
     // layers]]) -> hit (entity, point, normal, distance) or nil; overlapSphere(center, radius[, layers]) -> [entities];
+    // closestPoint(point[, maxDistance[, layers]]) -> hit (nearest surface point; distance 0 inside) or nil;
     // gravity (vec3). `layers` is a layer number or a list of them (default: all).
     script::NativeType& hitType = vm.AddType("PhysicsHit");
     hitType.get = [this](script::VM& v, script::NativeObject& o, StringView m, Value& out) {
@@ -807,6 +808,15 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             PhysicsHit h;
             if (physics && physics->SphereCast(a[0].AsVec3(), a[1].AsFloat(), a[2].AsVec3(), maxDistance, h,
                                                layerMask(a.Size() > 4 ? &a[4] : nullptr)))
+                hitValue(h);
+            return true;
+        }
+        if (m == "closestPoint") {
+            if (a.Size() < 1 || a[0].Type() != ValueType::Vec3)
+                return v.Fail("physics.closestPoint(point: vec3[, maxDistance[, layers]])");
+            const f32 maxDistance = a.Size() > 1 && a[1].IsNumber() ? a[1].AsFloat() : 10.0f;
+            PhysicsHit h;
+            if (physics && physics->ClosestPoint(a[0].AsVec3(), maxDistance, h, layerMask(a.Size() > 2 ? &a[2] : nullptr)))
                 hitValue(h);
             return true;
         }
@@ -1094,7 +1104,13 @@ void ScriptSystem::DispatchPhysicsEvents(ecs::World& world, Span<const PhysicsEv
     if (!m_running || events.Empty())
         return;
     context.world = &world;
-    for (const PhysicsEvent& ev : events)
+    // Stay events come every step for every touching pair: skip them unless some script listens.
+    bool stayListeners = false;
+    for (UniquePtr<RunningScript>& rs : m_instances)
+        stayListeners |= !rs->failed && (rs->instance->HasFunction("collisionStay") || rs->instance->HasFunction("triggerStay"));
+    for (const PhysicsEvent& ev : events) {
+        if (!stayListeners && (ev.type == physics::ContactEventType::TouchStay || ev.type == physics::ContactEventType::SensorStay))
+            continue;
         for (u32 side = 0; side < 2; ++side) {
             const ecs::Entity self = side == 0 ? ev.a : ev.b, other = side == 0 ? ev.b : ev.a;
             const char* fn = nullptr;
@@ -1103,6 +1119,8 @@ void ScriptSystem::DispatchPhysicsEvents(ecs::World& world, Span<const PhysicsEv
             case physics::ContactEventType::TouchEnd: fn = "collisionExit"; break;
             case physics::ContactEventType::SensorEnter: fn = "triggerEnter"; break;
             case physics::ContactEventType::SensorExit: fn = "triggerExit"; break;
+            case physics::ContactEventType::TouchStay: fn = "collisionStay"; break;
+            case physics::ContactEventType::SensorStay: fn = "triggerStay"; break;
             }
             const Value args[2] = {script::MakeNative(*m_entityType, this, other.Pack()), Value(ev.speed)};
             for (UniquePtr<RunningScript>& rs : m_instances) {
@@ -1115,6 +1133,7 @@ void ScriptSystem::DispatchPhysicsEvents(ecs::World& world, Span<const PhysicsEv
                 }
             }
         }
+    }
 }
 
 void ScriptSystem::End()

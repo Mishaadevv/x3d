@@ -20,6 +20,7 @@ ZX_REFLECT_STRUCT_BEGIN(RigidBody)
     ZX_FIELD(mass, Meta::Range(0, 100000), Meta::Units("kg"), Meta::Tooltip("0 = from the collider volumes (water density)"))
     ZX_FIELD(friction, Meta::Range(0, 2))
     ZX_FIELD(bounciness, Meta::Range(0, 1))
+    ZX_FIELD(rollingFriction, Meta::Range(0, 1), Meta::Tooltip("Slows rolling: 0 = rolls forever, ~0.05 = a ball on grass"))
     ZX_FIELD(linearDamping, Meta::Range(0, 10))
     ZX_FIELD(angularDamping, Meta::Range(0, 10))
     ZX_FIELD(gravityScale, Meta::Range(-2, 5))
@@ -46,6 +47,13 @@ ZX_REFLECT_STRUCT_BEGIN(CapsuleCollider)
     ZX_FIELD(center, Meta::Units("m"))
     ZX_FIELD(radius, Meta::Range(0.01, 100), Meta::Units("m"))
     ZX_FIELD(height, Meta::Range(0.02, 200), Meta::Units("m"), Meta::Tooltip("End to end, along the local Y axis"))
+    ZX_COLLIDER_COMMON_FIELDS
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(CylinderCollider)
+    ZX_FIELD(center, Meta::Units("m"))
+    ZX_FIELD(radius, Meta::Range(0.01, 100), Meta::Units("m"))
+    ZX_FIELD(height, Meta::Range(0.02, 200), Meta::Units("m"), Meta::Tooltip("Along the local Y axis"))
     ZX_COLLIDER_COMMON_FIELDS
 ZX_REFLECT_STRUCT_END()
 
@@ -165,7 +173,7 @@ Pose WorldPose(const ecs::World& world, Entity e)
 }
 
 /// Hull of a mesh at a scale (convex Mesh Colliders); InvalidHull when the mesh isn't loaded or is flat.
-using HullMaker = Function<HullId(const render::GpuMesh&, Vec3)>;
+using HullMaker = Function<HullId(const render::GpuMesh*, Vec3)>; // null mesh: unit cylinder
 
 /// The mesh of a convex Mesh Collider when it is loaded, else null.
 const render::GpuMesh* ConvexMesh(const ecs::World& world, Entity e, render::RenderAssets* assets)
@@ -205,9 +213,15 @@ void AppendShapes(const ecs::World& world, Entity e, const Pose& body, Array<Sha
         const f32 half = Max(c->height * s.y * 0.5f - r, 0.0f);
         place(sensor(ShapeDesc::Capsule(r, half), c->isTrigger), c->center);
     }
+    if (const CylinderCollider* c = world.Get<const CylinderCollider>(e); c && makeHull) {
+        const Vec3 size = Max(Vec3(c->radius * 2.0f * s.x, c->height * s.y, c->radius * 2.0f * s.z), Vec3(0.01f));
+        const HullId hull = (*makeHull)(nullptr, size);
+        if (hull != InvalidHull)
+            place(sensor(ShapeDesc::Hull(hull), c->isTrigger), c->center);
+    }
     if (makeHull)
         if (const render::GpuMesh* mesh = ConvexMesh(world, e, assets)) {
-            const HullId hull = (*makeHull)(*mesh, p.scale);
+            const HullId hull = (*makeHull)(mesh, p.scale);
             if (hull != InvalidHull)
                 place(ShapeDesc::Hull(hull), Vec3());
         }
@@ -220,6 +234,7 @@ u32 LayerOf(const ecs::World& world, Entity e)
     const BoxCollider* box = world.Get<const BoxCollider>(e);
     const SphereCollider* sphere = world.Get<const SphereCollider>(e);
     const CapsuleCollider* capsule = world.Get<const CapsuleCollider>(e);
+    const CylinderCollider* cylinder = world.Get<const CylinderCollider>(e);
     const MeshCollider* mesh = world.Get<const MeshCollider>(e);
     if (box)
         layer = box->layer;
@@ -227,6 +242,8 @@ u32 LayerOf(const ecs::World& world, Entity e)
         layer = sphere->layer;
     else if (capsule)
         layer = capsule->layer;
+    else if (cylinder)
+        layer = cylinder->layer;
     else if (mesh)
         layer = mesh->layer;
     return u32(Clamp(layer, 0, 31));
@@ -399,6 +416,7 @@ bool HasRigidBodyAbove(const ecs::World& world, Entity e)
 bool HasCollider(const ecs::World& world, Entity e)
 {
     return world.Get<const BoxCollider>(e) || world.Get<const SphereCollider>(e) || world.Get<const CapsuleCollider>(e) ||
+           world.Get<const CylinderCollider>(e) ||
            world.Get<const MeshCollider>(e);
 }
 
@@ -443,6 +461,26 @@ void GatherColliderOutlines(ecs::World& world, Entity e, Array<ColliderOutline>&
         o.halfHeight = s.halfHeight;
         out.PushBack(o);
     }
+    if (const CylinderCollider* c = world.Get<const CylinderCollider>(e)) {
+        const Vec3 s = Abs(p.scale);
+        const f32 rx = c->radius * s.x, rz = c->radius * s.z, hy = c->height * s.y * 0.5f;
+        const Vec3 center = p.position + p.rotation * (p.scale * c->center);
+        ColliderOutline o;
+        o.type = ShapeType::ConvexHull;
+        o.transform = Mat4::TRS(center, p.rotation, Vec3(1.0f));
+        for (u32 i = 0; i < 24; ++i) {
+            const f32 a0 = f32(i) * (TwoPi / 24.0f), a1 = f32(i + 1) * (TwoPi / 24.0f);
+            for (f32 y : {-hy, hy}) {
+                o.lines.PushBack(center + p.rotation * Vec3(Cos(a0) * rx, y, Sin(a0) * rz));
+                o.lines.PushBack(center + p.rotation * Vec3(Cos(a1) * rx, y, Sin(a1) * rz));
+            }
+            if (i % 6 == 0) {
+                o.lines.PushBack(center + p.rotation * Vec3(Cos(a0) * rx, -hy, Sin(a0) * rz));
+                o.lines.PushBack(center + p.rotation * Vec3(Cos(a0) * rx, hy, Sin(a0) * rz));
+            }
+        }
+        out.PushBack(move(o));
+    }
     // Convex Mesh Collider: the hull's edges (rebuilt only when the mesh or the scale changes).
     if (const render::GpuMesh* mesh = ConvexMesh(world, e, assets)) {
         struct Cached
@@ -482,17 +520,26 @@ void GatherColliderOutlines(ecs::World& world, Entity e, Array<ColliderOutline>&
     }
 }
 
-HullId PhysicsSystem::HullOf(const render::GpuMesh& mesh, Vec3 scale)
+HullId PhysicsSystem::HullOf(const render::GpuMesh* mesh, Vec3 scale)
 {
     for (const CachedHull& c : m_hulls)
-        if (c.mesh == &mesh && c.scale == scale)
+        if (c.mesh == mesh && c.scale == scale)
             return c.hull;
     Array<Vec3> points;
-    points.Reserve(mesh.cpuPositions.Size());
-    for (Vec3 v : mesh.cpuPositions)
-        points.PushBack(v * scale);
+    if (mesh) {
+        points.Reserve(mesh->cpuPositions.Size());
+        for (Vec3 v : mesh->cpuPositions)
+            points.PushBack(v * scale);
+    } else {
+        // Cylinder: two rings of 16 (exactly the hull's 32-vertex budget).
+        for (u32 i = 0; i < 16; ++i) {
+            const f32 a = f32(i) * (TwoPi / 16.0f);
+            for (f32 y : {-0.5f, 0.5f})
+                points.PushBack(Vec3(Cos(a) * 0.5f, y, Sin(a) * 0.5f) * scale);
+        }
+    }
     CachedHull c;
-    c.mesh = &mesh;
+    c.mesh = mesh;
     c.scale = scale;
     c.hull = m_world->CreateConvexHull(points.View());
     m_hulls.PushBack(c);
@@ -506,6 +553,7 @@ void PhysicsSystem::Begin(ecs::World& world, render::RenderAssets* renderAssets)
 {
     End();
     m_world.Reset(new PhysicsWorld());
+    m_world->Settings().stayEvents = true; // collisionStay / triggerStay callbacks
     m_assets = renderAssets;
     m_accumulator = 0.0f;
     CreateBodies(world);
@@ -537,13 +585,14 @@ bool PhysicsSystem::CreateBody(ecs::World& world, Entity e, bool dynamic)
     d.rotation = pose.rotation;
     d.userData = e.Pack();
     d.layer = LayerOf(world, e);
-    HullMaker makeHull = [this](const render::GpuMesh& mesh, Vec3 scale) { return HullOf(mesh, scale); };
+    HullMaker makeHull = [this](const render::GpuMesh* mesh, Vec3 scale) { return HullOf(mesh, scale); };
     const RigidBody* rb = world.Get<const RigidBody>(e);
     if (dynamic && rb) {
         d.motion = rb->type == RigidBodyType::Kinematic ? MotionType::Kinematic : MotionType::Dynamic;
         d.mass = rb->mass;
         d.friction = rb->friction;
         d.restitution = rb->bounciness;
+        d.rollingFriction = rb->rollingFriction;
         d.linearDamping = rb->linearDamping;
         d.angularDamping = rb->angularDamping;
         d.gravityScale = rb->gravityScale;
@@ -639,6 +688,7 @@ void PhysicsSystem::CreateBodies(ecs::World& world)
     world.Query<const BoxCollider>().Each([&](Entity e, const BoxCollider&) { addStatic(e); });
     world.Query<const SphereCollider>().Each([&](Entity e, const SphereCollider&) { addStatic(e); });
     world.Query<const CapsuleCollider>().Each([&](Entity e, const CapsuleCollider&) { addStatic(e); });
+    world.Query<const CylinderCollider>().Each([&](Entity e, const CylinderCollider&) { addStatic(e); });
     world.Query<const MeshCollider>().Each([&](Entity e, const MeshCollider&) { addStatic(e); });
     world.Query<const Terrain>().Each([&](Entity e, const Terrain&) { addStatic(e); });
     world.Query<const MeshRenderer>().Each([&](Entity e, const MeshRenderer&) {
@@ -906,6 +956,21 @@ bool PhysicsSystem::SphereCast(Vec3 origin, f32 radius, Vec3 direction, f32 maxD
     physics::RaycastHit h;
     const physics::BodyId skip = ignore ? BodyOf(ignore) : physics::BodyId{};
     if (!m_world->ShapeCast(ShapeDesc::Sphere(Max(radius, 0.001f)), origin, Quat(), direction, maxDistance, h, layerMask, skip))
+        return false;
+    hit.entity = EntityOf(h.body);
+    hit.point = h.point;
+    hit.normal = h.normal;
+    hit.distance = h.distance;
+    return true;
+}
+
+bool PhysicsSystem::ClosestPoint(Vec3 point, f32 maxDistance, PhysicsHit& hit, u32 layerMask, Entity ignore) const
+{
+    if (!m_world)
+        return false;
+    physics::RaycastHit h;
+    const physics::BodyId skip = ignore ? BodyOf(ignore) : physics::BodyId{};
+    if (!m_world->ClosestPoint(point, maxDistance, h, layerMask, skip))
         return false;
     hit.entity = EntityOf(h.body);
     hit.point = h.point;

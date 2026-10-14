@@ -173,6 +173,7 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "tool.scale", "Scale Tool", "Tools", ZX_ICON_SCALE_3D, "R", [](Editor& e) { e.tool = TransformTool::Scale; });
     Add(ed, "tool.space", "Toggle Local / World Space", "Tools", ZX_ICON_GLOBE, "", [](Editor& e) { e.localSpace = !e.localSpace; });
     Add(ed, "tool.snap", "Toggle Grid Snapping", "Tools", ZX_ICON_MAGNET, "", [](Editor& e) { e.snapEnabled = !e.snapEnabled; });
+    Add(ed, "view.physicsDebug", "Toggle Physics Debug", "View", ZX_ICON_BOXES, "", [](Editor& e) { e.showPhysicsDebug = !e.showPhysicsDebug; });
     Add(ed, "view.grid", "Toggle Grid", "View", ZX_ICON_GRID_3X3, "", [](Editor& e) { e.showGrid = !e.showGrid; });
     // Play
     Add(ed, "play.toggle", "Play / Stop", "Play", ZX_ICON_PLAY, "F5", [](Editor& e) { e.IsPlaying() ? e.EndPlay() : e.BeginPlay(); });

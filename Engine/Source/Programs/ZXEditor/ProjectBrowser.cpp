@@ -302,6 +302,8 @@ const TemplateInfo Templates[] = {
     {ProjectTemplate::FirstPerson, "First Person", "A first-person character with mouse look, walking, sprinting and jumping on a small playground.", {}},
     {ProjectTemplate::ThirdPerson, "Third Person", "A visible character with an orbiting follow camera, walking and jumping on a playground.", {}},
     {ProjectTemplate::Water, "Water", "An island in the sea with realistic water: waves, reflections, refraction, foam. Walk around in first person.", {}},
+    {ProjectTemplate::Physics, "Physics Playground",
+     "Stacks, dominoes, a ramp of balls and rocks, joints (bridge, chain, door, seesaw), raycasts and a physics gun. First person.", {}},
 };
 
 Color Hex(u32 rgb, u8 a = 255) { return Color(u8(rgb >> 16), u8(rgb >> 8), u8(rgb), a); }

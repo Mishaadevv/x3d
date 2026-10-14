@@ -253,6 +253,7 @@ bool ConvexHull::Build(Span<const Vec3> input, u32 maxVertices)
         }
         // Boundary loop: directed edges of the group whose reverse is not in the group.
         HashMap<u32, u32> next;
+        u32 start = 0;
         Vec3 normal;
         for (u32 mi : members) {
             const Tri& t = alive[mi];
@@ -260,18 +261,16 @@ bool ConvexHull::Build(Span<const Vec3> input, u32 maxVertices)
             for (u32 k = 0; k < 3; ++k) {
                 const u32 a = t.v[k], b = t.v[(k + 1) % 3];
                 const u32* nb = owner.Find(EdgeKey(b, a));
-                if (!nb || group[*nb] != g)
+                if (!nb || group[*nb] != g) {
+                    if (next.Empty())
+                        start = a;
                     next.InsertOrAssign(a, b);
+                }
             }
         }
         Array<u8> loop;
         bool ok = !next.Empty();
         if (ok) {
-            u32 start = 0;
-            for (const auto& [from, to] : next) {
-                start = from;
-                break;
-            }
             u32 cur = start;
             do {
                 loop.PushBack(u8(cur));

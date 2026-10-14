@@ -344,8 +344,38 @@ ZX_TEST(ManualPhysics, Pile500Bodies)
         }
     }
     const PhysicsStats& s = w.Stats();
-    std::printf("500 bodies: %.2f ms average (broadphase %.2f [bounds %.2f], narrowphase %.2f, solver %.2f), %.2f ms worst; awake %u, contacts %u, points %u\n",
-                total / steps, bp / steps, bounds / steps, np / steps, sv / steps, worst, s.awake, s.contacts, s.points);
+    std::printf("500 bodies: %.2f ms average (broadphase %.2f [bounds %.2f], narrowphase %.2f, solver %.2f), %.2f ms worst; awake %u, contacts %u, points %u, islands %u\n",
+                total / steps, bp / steps, bounds / steps, np / steps, sv / steps, worst, s.awake, s.contacts, s.points, s.islands);
+}
+
+ZX_TEST(ManualPhysics, ManyIslands)
+{
+    // 24 separate stacks of 20 boxes: islands solved in parallel.
+    for (u32 pass = 0; pass < 2; ++pass) {
+        const bool withJobs = pass == 1;
+        if (withJobs)
+            jobs::Initialize();
+        PhysicsWorld w;
+        w.Settings().timeToSleep = 1e9f; // keep them awake: measure the solver
+        Ground(w);
+        for (u32 s = 0; s < 24; ++s)
+            for (u32 i = 0; i < 20; ++i)
+                DynamicBox(w, Vec3(f32(s % 6) * 4.0f - 10.0f, 0.5f + f32(i) * 1.0f, f32(s / 6) * 4.0f - 6.0f), Vec3(0.5f));
+        f64 total = 0.0, sv = 0.0;
+        u32 steps = 0;
+        for (u32 i = 0; i < 300; ++i) {
+            w.Step(Dt);
+            if (i >= 30) {
+                total += w.Stats().stepMs;
+                sv += w.Stats().solverMs;
+                ++steps;
+            }
+        }
+        std::printf("480 boxes in 24 stacks (%s): %.2f ms average, solver %.2f; awake %u, islands %u\n", withJobs ? "jobs" : "serial", total / steps,
+                    sv / steps, w.Stats().awake, w.Stats().islands);
+        if (withJobs)
+            jobs::Shutdown();
+    }
 }
 
 ZX_TEST(Physics, ContactAndSensorEvents)

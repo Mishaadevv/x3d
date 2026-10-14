@@ -85,7 +85,7 @@ struct Body
     f32 invMass = 0.0f;
     Mat3 invInertiaLocal = Mat3::Scale(Vec3(0.0f));
     Mat3 invInertiaWorld = Mat3::Scale(Vec3(0.0f));
-    f32 friction = 0.6f, restitution = 0.0f;
+    f32 friction = 0.6f, restitution = 0.0f, rollingFriction = 0.0f;
     f32 linearDamping = 0.0f, angularDamping = 0.0f, gravityScale = 1.0f;
     u32 layer = 0;
     bool allowSleep = true;
@@ -167,6 +167,9 @@ struct SolverContact
     Vec3 normal, t1, t2;
     f32 friction = 0.0f;
     f32 restitution = 0.0f;
+    f32 rolling = 0.0f;  // rolling resistance arm (coefficient * radius); 0 = none
+    Mat3 rollingMass;    // inverse of the summed inverse inertias
+    Vec3 rollingImpulse; // accumulated over the step
     SolverPoint pts[4];
 };
 
@@ -180,6 +183,15 @@ struct SolverJoint
     u32 joint = 0;
     u32 ia = 0, ib = 0; // solver bodies (ib may be the world body)
     u32 firstRow = 0, rowCount = 0;
+};
+
+/// Awake dynamic bodies connected by contacts / joints, with their constraints: islands share no moving body, so
+/// they are solved in parallel (same result as one after the other).
+struct SolverIsland
+{
+    Array<u32> bodies;   // active solver bodies
+    Array<u32> contacts; // into Impl::solver
+    Array<u32> joints;   // into Impl::solverJoints
 };
 
 u64 PairKey(u32 a, u32 b) { return (u64(Min(a, b)) << 32) | Max(a, b); }
@@ -252,8 +264,11 @@ struct PhysicsWorld::Impl
     Array<u32> freeJoints;
     HashMap<u64, u32> noCollidePairs; // body pairs joined without collideConnected -> joint count
     Array<SolverJoint> solverJoints;
-    Array<JointRow> jointRows;
+    Array<JointRow> jointRows; // MaxRows slots per solver joint
     Array<JointId> brokenJoints;
+    Array<SolverIsland> islands;
+    Array<u32> islandOf; // body -> island (this step)
+    Array<JointRow> rowScratch;
 
     /// Solver view of a body (or of the world for ~0u) for joint frames outside the step.
     SolverBody Snapshot(u32 index) const
@@ -443,6 +458,7 @@ BodyId PhysicsWorld::CreateBody(const BodyDesc& desc)
         s.rotation = Normalize(s.rotation);
     b.friction = desc.friction;
     b.restitution = desc.restitution;
+    b.rollingFriction = Max(desc.rollingFriction, 0.0f);
     b.linearDamping = desc.linearDamping;
     b.angularDamping = desc.angularDamping;
     b.gravityScale = desc.gravityScale;
@@ -1094,10 +1110,12 @@ void PhysicsWorld::Step(f32 dt)
                 continue;
             }
             now.InsertOrAssign(key, c.sensor);
-            if (I.touching.Contains(key))
+            const bool stay = I.touching.Contains(key);
+            if (stay && !S.stayEvents)
                 continue;
             ContactEvent e;
-            e.type = c.sensor ? ContactEventType::SensorEnter : ContactEventType::TouchBegin;
+            e.type = c.sensor ? (stay ? ContactEventType::SensorStay : ContactEventType::SensorEnter)
+                              : (stay ? ContactEventType::TouchStay : ContactEventType::TouchBegin);
             e.a = BodyId{c.a, bodies[c.a].generation};
             e.b = BodyId{c.b, bodies[c.b].generation};
             e.point = c.manifold.points[0].pointB;
@@ -1199,6 +1217,11 @@ void PhysicsWorld::Step(f32 dt)
         sc.normal = c.manifold.normal;
         sc.friction = Sqrt(A.friction * B.friction);
         sc.restitution = Max(A.restitution, B.restitution);
+        const f32 rollingCoefficient = Max(A.rollingFriction, B.rollingFriction);
+        if (rollingCoefficient > 0.0f) {
+            const f32 radius = Max(A.IsDynamic() ? A.extent : 0.0f, B.IsDynamic() ? B.extent : 0.0f);
+            sc.rolling = rollingCoefficient * radius;
+        }
         const Vec3 n = sc.normal;
         sc.t1 = Abs(n.x) > 0.57f ? Normalize(Vec3(n.y, -n.x, 0.0f)) : Normalize(Vec3(0.0f, n.z, -n.y));
         sc.t2 = Cross(n, sc.t1);
@@ -1209,6 +1232,8 @@ void PhysicsWorld::Step(f32 dt)
             const f32 k = a.invMass + b.invMass + Dot(ra, a.invI * ra) + Dot(rb, b.invI * rb);
             return k > 0.0f ? 1.0f / k : 0.0f;
         };
+        if (sc.rolling > 0.0f)
+            sc.rollingMass = Inverse(Mat3(a.invI.columns[0] + b.invI.columns[0], a.invI.columns[1] + b.invI.columns[1], a.invI.columns[2] + b.invI.columns[2]));
         for (u32 k = 0; k < sc.count; ++k) {
             SolverPoint& sp = sc.pts[k];
             sp.rA = c.manifold.points[k].pointA - A.x;
@@ -1277,36 +1302,84 @@ void PhysicsWorld::Step(f32 dt)
     auto rowVelocity = [](const JointRow& r, const SolverBody& A, const SolverBody& B) {
         return Dot(r.linA, A.v) + Dot(r.angA, A.w) + Dot(r.linB, B.v) + Dot(r.angB, B.w);
     };
+    // Only active bodies change: static / kinematic / sleeping ones are shared between islands solved in parallel.
     auto applyRow = [](const JointRow& r, SolverBody& A, SolverBody& B, f32 impulse) {
-        A.v += r.linA * (A.invMass * impulse);
-        A.w += A.invI * (r.angA * impulse);
-        B.v += r.linB * (B.invMass * impulse);
-        B.w += B.invI * (r.angB * impulse);
+        if (A.active) {
+            A.v += r.linA * (A.invMass * impulse);
+            A.w += A.invI * (r.angA * impulse);
+        }
+        if (B.active) {
+            B.v += r.linB * (B.invMass * impulse);
+            B.w += B.invI * (r.angB * impulse);
+        }
     };
-    // Rows of every joint for the current poses; unused slots forget their impulse; warm start applies the
-    // accumulated impulses with the new Jacobians.
-    auto buildJointRows = [&](bool warmStart) {
-        I.jointRows.Clear();
-        for (SolverJoint& sj : I.solverJoints) {
+    // Islands: one per root of the union-find over awake dynamic bodies, with the constraints that move them.
+    Array<SolverIsland>& islands = I.islands;
+    for (SolverIsland& isl : islands) {
+        isl.bodies.Clear();
+        isl.contacts.Clear();
+        isl.joints.Clear();
+    }
+    u32 islandCount = 0;
+    I.islandOf.Resize(bodies.Size());
+    for (u32& v : I.islandOf)
+        v = ~0u;
+    auto islandFor = [&](u32 body) {
+        u32& slot = I.islandOf[find(body)];
+        if (slot == ~0u) {
+            slot = islandCount++;
+            if (islands.Size() < islandCount)
+                islands.AddDefaulted();
+        }
+        return slot;
+    };
+    for (Body& b : bodies)
+        b.island = ~0u;
+    for (u32 si = 0; si < sbodies.Size(); ++si)
+        if (sbodies[si].active) {
+            const u32 il = islandFor(sbodies[si].body);
+            islands[il].bodies.PushBack(si);
+            bodies[sbodies[si].body].island = il;
+        }
+    for (u32 ci = 0; ci < I.solver.Size(); ++ci) {
+        const SolverContact& sc = I.solver[ci];
+        const SolverBody& a = sbodies[sc.ia];
+        islands[islandFor(a.active ? a.body : sbodies[sc.ib].body)].contacts.PushBack(ci);
+    }
+    for (u32 ji = 0; ji < I.solverJoints.Size(); ++ji) {
+        const SolverJoint& sj = I.solverJoints[ji];
+        const SolverBody& a = sbodies[sj.ia];
+        islands[islandFor(a.active ? a.body : sbodies[sj.ib].body)].joints.PushBack(ji);
+    }
+    I.jointRows.Resize(I.solverJoints.Size() * JointData::MaxRows);
+    // Rows of the island's joints for the current poses (each joint has its own MaxRows slots); unused slots forget
+    // their impulse; warm start applies the accumulated impulses with the new Jacobians.
+    auto buildJointRows = [&](const SolverIsland& isl, bool warmStart, Array<JointRow>& scratch) {
+        for (u32 ji : isl.joints) {
+            SolverJoint& sj = I.solverJoints[ji];
             JointData& j = I.joints[sj.joint];
             SolverBody& A = sbodies[sj.ia];
             SolverBody& B = sbodies[sj.ib];
-            sj.firstRow = u32(I.jointRows.Size());
-            BuildJointRows(j, A, B, I.jointRows);
-            sj.rowCount = u32(I.jointRows.Size()) - sj.firstRow;
+            scratch.Clear();
+            BuildJointRows(j, A, B, scratch);
+            sj.firstRow = ji * JointData::MaxRows;
+            sj.rowCount = u32(Min<usize>(scratch.Size(), JointData::MaxRows));
             u32 used = 0;
-            for (u32 r = sj.firstRow; r < sj.firstRow + sj.rowCount; ++r)
-                used |= 1u << I.jointRows[r].slot;
-            for (u32 s = 0; s < JointData::MaxRows; ++s)
-                if (!((used >> s) & 1u))
-                    j.impulses[s] = 0.0f;
+            for (u32 r = 0; r < sj.rowCount; ++r) {
+                I.jointRows[sj.firstRow + r] = scratch[r];
+                used |= 1u << scratch[r].slot;
+            }
+            for (u32 sl = 0; sl < JointData::MaxRows; ++sl)
+                if (!((used >> sl) & 1u))
+                    j.impulses[sl] = 0.0f;
             if (warmStart)
                 for (u32 r = sj.firstRow; r < sj.firstRow + sj.rowCount; ++r)
                     applyRow(I.jointRows[r], A, B, j.impulses[I.jointRows[r].slot]);
         }
     };
-    auto solveJoints = [&](bool useBias) {
-        for (const SolverJoint& sj : I.solverJoints) {
+    auto solveJoints = [&](const SolverIsland& isl, bool useBias) {
+        for (u32 ji : isl.joints) {
+            const SolverJoint& sj = I.solverJoints[ji];
             JointData& j = I.joints[sj.joint];
             SolverBody& A = sbodies[sj.ia];
             SolverBody& B = sbodies[sj.ib];
@@ -1356,24 +1429,28 @@ void PhysicsWorld::Step(f32 dt)
         }
     };
     auto applyImpulse = [](SolverBody& a, SolverBody& b, const SolverPoint& sp, Vec3 P) {
-        a.v -= P * a.invMass;
-        a.w -= a.invI * Cross(sp.rA, P);
-        b.v += P * b.invMass;
-        b.w += b.invI * Cross(sp.rB, P);
+        if (a.active) {
+            a.v -= P * a.invMass;
+            a.w -= a.invI * Cross(sp.rA, P);
+        }
+        if (b.active) {
+            b.v += P * b.invMass;
+            b.w += b.invI * Cross(sp.rB, P);
+        }
     };
     // Current separation of every point from its anchors on the moved bodies (once per substep: poses only change
     // when they are integrated).
-    auto updateSeparations = [&] {
-        for (SolverContact& sc : I.solver) {
-            const SolverBody& A = sbodies[sc.ia];
-            const SolverBody& B = sbodies[sc.ib];
-            for (u32 k = 0; k < sc.count; ++k)
-                sc.pts[k].separation = Dot((B.x + B.q * sc.pts[k].localB) - (A.x + A.q * sc.pts[k].localA), sc.normal);
-        }
+    auto updateSeparation = [&](SolverContact& sc) {
+        const SolverBody& A = sbodies[sc.ia];
+        const SolverBody& B = sbodies[sc.ib];
+        for (u32 k = 0; k < sc.count; ++k)
+            sc.pts[k].separation = Dot((B.x + B.q * sc.pts[k].localB) - (A.x + A.q * sc.pts[k].localA), sc.normal);
     };
-    updateSeparations();
-    auto solve = [&](bool useBias) {
-        for (SolverContact& sc : I.solver) {
+    for (SolverContact& sc : I.solver)
+        updateSeparation(sc);
+    auto solve = [&](const SolverIsland& isl, bool useBias) {
+        for (u32 ci : isl.contacts) {
+            SolverContact& sc = I.solver[ci];
             SolverBody& A = sbodies[sc.ia];
             SolverBody& B = sbodies[sc.ib];
             for (u32 k = 0; k < sc.count; ++k) {
@@ -1404,19 +1481,40 @@ void PhysicsWorld::Step(f32 dt)
                 sp.tangentImpulse[1] = Clamp(o2 + l2, -limit, limit);
                 applyImpulse(A, B, sp, sc.t1 * (sp.tangentImpulse[0] - o1) + sc.t2 * (sp.tangentImpulse[1] - o2));
             }
+            if (sc.rolling > 0.0f) {
+                // Rolling resistance: an angular impulse against the relative spin, at most rolling * normal impulse.
+                f32 normal = 0.0f;
+                for (u32 k = 0; k < sc.count; ++k)
+                    normal += sc.pts[k].normalImpulse;
+                const f32 limit = sc.rolling * normal;
+                const Vec3 old = sc.rollingImpulse;
+                Vec3 total = old - sc.rollingMass * (B.w - A.w);
+                const f32 len = Length(total);
+                if (len > limit)
+                    total = total * (limit / len);
+                const Vec3 delta = total - old;
+                sc.rollingImpulse = total;
+                if (A.active)
+                    A.w -= A.invI * delta;
+                if (B.active)
+                    B.w += B.invI * delta;
+            }
         }
     };
-    for (u32 sub = 0; sub < substeps; ++sub) {
-        for (SolverBody& b : sbodies) {
-            if (!b.active)
-                continue;
+    // Per substep: phase 1 (velocities, warm start, solve with bias, positions of the island's bodies), kinematic
+    // bodies move (shared, so between the phases), phase 2 (new separations, relax without bias).
+    auto phase1 = [&](const SolverIsland& isl, Array<JointRow>& scratch) {
+        for (u32 bi : isl.bodies) {
+            SolverBody& b = sbodies[bi];
             b.v += b.gravity * h;
             b.w += b.angularAccel * h;
             b.v = b.v * (1.0f / (1.0f + h * b.linearDamping));
             b.w = b.w * (1.0f / (1.0f + h * b.angularDamping));
         }
-        buildJointRows(true);
-        for (SolverContact& sc : I.solver) {
+        buildJointRows(isl, true, scratch);
+        for (u32 ci : isl.contacts) {
+            I.solver[ci].rollingImpulse = Vec3(); // bounded by this substep's normal impulse
+            const SolverContact& sc = I.solver[ci];
             SolverBody& A = sbodies[sc.ia];
             SolverBody& B = sbodies[sc.ib];
             for (u32 k = 0; k < sc.count; ++k) {
@@ -1424,26 +1522,58 @@ void PhysicsWorld::Step(f32 dt)
                 applyImpulse(A, B, sp, sc.normal * sp.normalImpulse + sc.t1 * sp.tangentImpulse[0] + sc.t2 * sp.tangentImpulse[1]);
             }
         }
-        solveJoints(true);
-        solve(true);
-        for (SolverBody& b : sbodies) {
-            if (!b.moves)
-                continue;
+        solveJoints(isl, true);
+        solve(isl, true);
+        for (u32 bi : isl.bodies) {
+            SolverBody& b = sbodies[bi];
             b.x += b.v * h;
             b.q = IntegrateRotation(b.q, b.w * h);
-            if (b.active) {
-                const Mat3 r = Mat3::FromQuat(b.q);
-                b.invI = r * b.invILocal * Transpose(r);
-            }
+            const Mat3 r = Mat3::FromQuat(b.q);
+            b.invI = r * b.invILocal * Transpose(r);
         }
-        updateSeparations();
-        if (!I.solverJoints.Empty())
-            buildJointRows(false);
+    };
+    auto phase2 = [&](const SolverIsland& isl, Array<JointRow>& scratch) {
+        for (u32 ci : isl.contacts)
+            updateSeparation(I.solver[ci]);
+        if (!isl.joints.Empty())
+            buildJointRows(isl, false, scratch);
         for (u32 it = 0; it < Max(S.relaxIterations, 1u); ++it) {
-            solveJoints(false);
-            solve(false);
+            solveJoints(isl, false);
+            solve(isl, false);
         }
+    };
+    // Parallel only when it pays: enough work, and not one island holding most of it (a single pile can't split).
+    u32 constraints = 0, largest = 0;
+    for (u32 il = 0; il < islandCount; ++il) {
+        const u32 c = u32(islands[il].contacts.Size() + islands[il].joints.Size());
+        constraints += c;
+        largest = Max(largest, c);
     }
+    const bool parallelIslands = jobs::IsInitialized() && islandCount > 1 && constraints > 256 && largest * 2 < constraints;
+    auto runIslands = [&](auto& phase) {
+        if (parallelIslands) {
+            jobs::ParallelFor(islandCount, 1, [&](u32 begin, u32 end) {
+                Array<JointRow> scratch;
+                for (u32 il = begin; il < end; ++il)
+                    phase(islands[il], scratch);
+            });
+        } else {
+            Array<JointRow>& scratch = I.rowScratch;
+            for (u32 il = 0; il < islandCount; ++il)
+                phase(islands[il], scratch);
+        }
+    };
+    for (u32 sub = 0; sub < substeps; ++sub) {
+        runIslands(phase1);
+        for (SolverBody& b : sbodies)
+            if (b.moves && !b.active) {
+                b.x += b.v * h;
+                b.q = IntegrateRotation(b.q, b.w * h);
+            }
+        runIslands(phase2);
+    }
+    m_stats.islands = islandCount;
+    m_stats.parallelIslands = parallelIslands;
 
     // 6. Restitution: points that approached fast and pushed get the bounce velocity.
     for (SolverContact& sc : I.solver) {
@@ -1575,7 +1705,6 @@ void PhysicsWorld::Step(f32 dt)
     m_stats.pairs = u32(pairs.Size());
     m_stats.contacts = u32(I.contacts.Size());
     m_stats.points = pointCount;
-    m_stats.islands = u32(islandRest.Size());
     m_stats.stepMs = timer.ElapsedMilliseconds();
 }
 
@@ -1622,6 +1751,62 @@ void PhysicsWorld::QueryAabb(const AABB& box, Array<BodyId>& out) const
     };
     I.staticTree.Query(box, add);
     I.movingTree.Query(box, add);
+}
+
+bool PhysicsWorld::ClosestPoint(Vec3 point, f32 maxDistance, RaycastHit& hit, u32 layerMask, BodyId ignore) const
+{
+    // A tiny sphere at the point: the narrowphase's closest points within maxDistance (its speculative margin).
+    const Impl& I = *m_impl;
+    constexpr f32 Radius = 1e-3f;
+    const ShapeDesc probe = ShapeDesc::Sphere(Radius);
+    PosedShape query;
+    query.desc = &probe;
+    query.position = point;
+    const AABB box = AABB::FromCenterExtents(point, Vec3(maxDistance + Radius));
+    f32 best = maxDistance;
+    bool found = false;
+    Array<Manifold> scratch;
+    auto test = [&](u32 index) {
+        const Body& b = I.bodies[index];
+        if (!b.alive || !((layerMask >> b.layer) & 1u) || (ignore.IsValid() && ignore.index == index) || !b.bounds.Intersects(box))
+            return true;
+        for (u32 s = 0; s < b.shapes.Size(); ++s) {
+            if (b.shapes[s].isSensor || !b.shapeBounds[s].Intersects(box))
+                continue;
+            scratch.Clear();
+            Collide(query, I.Pose(b, s), best, scratch);
+            for (const Manifold& m : scratch)
+                for (u32 k = 0; k < m.count; ++k) {
+                    const f32 d = Max(m.points[k].separation + Radius, 0.0f);
+                    if (d > best || (found && d == best && d > 0.0f))
+                        continue;
+                    best = d;
+                    found = true;
+                    hit.body = BodyId{index, b.generation};
+                    hit.point = m.points[k].pointB;
+                    hit.normal = -m.normal;
+                    hit.distance = d;
+                    hit.shape = s;
+                }
+        }
+        return true;
+    };
+    I.staticTree.Query(box, test);
+    I.movingTree.Query(box, test);
+    return found;
+}
+
+void PhysicsWorld::RaycastBatch(Span<const RayQuery> rays, Span<RaycastHit> hits, Span<bool> found) const
+{
+    const u32 n = u32(Min(rays.Size(), Min(hits.Size(), found.Size())));
+    auto run = [&](u32 begin, u32 end) {
+        for (u32 i = begin; i < end; ++i)
+            found[i] = Raycast(rays[i].ray, rays[i].maxDistance, hits[i], rays[i].layerMask);
+    };
+    if (jobs::IsInitialized() && n > 32)
+        jobs::ParallelFor(n, 16, run);
+    else
+        run(0, n);
 }
 
 void PhysicsWorld::Overlap(const ShapeDesc& shape, Vec3 position, Quat rotation, Array<BodyId>& out, u32 layerMask, BodyId ignore) const
@@ -1732,6 +1917,13 @@ void PhysicsWorld::GetDebugContacts(Array<DebugContact>& out) const
         for (u32 k = 0; k < c.manifold.count; ++k)
             out.PushBack(DebugContact{(c.manifold.points[k].pointA + c.manifold.points[k].pointB) * 0.5f, c.manifold.normal,
                                       c.manifold.points[k].separation});
+}
+
+void PhysicsWorld::GetDebugBodies(Array<DebugBody>& out) const
+{
+    for (const Body& b : m_impl->bodies)
+        if (b.alive)
+            out.PushBack(DebugBody{b.bounds, b.motion, b.sleeping, b.sleeping ? ~0u : b.island});
 }
 
 void PhysicsWorld::GetBodies(Array<BodyId>& out) const

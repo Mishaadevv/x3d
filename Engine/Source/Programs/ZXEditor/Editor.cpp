@@ -167,7 +167,7 @@ bool Editor::Initialize()
         if (Result<rhi::Texture*> t = render::LoadTexture(*device, "/Engine/Branding/ZeqouX3D_Logo.png", brand))
             appLogo = t.Value();
         // Template thumbnails: real captures of each template level (Tools/make_template_thumbs.py).
-        static const char* const TemplateNames[] = {"Blank", "Sample", "FirstPerson", "ThirdPerson", "Water"};
+        static const char* const TemplateNames[] = {"Blank", "Sample", "FirstPerson", "ThirdPerson", "Water", "Physics"};
         static_assert(ZX_ARRAY_COUNT(TemplateNames) == u32(ProjectTemplate::Count));
         render::TextureLoadOptions art;
         art.compression = render::TextureCompression::None;
@@ -319,6 +319,7 @@ bool Editor::Initialize()
                         : templateArg == "firstperson" ? ProjectTemplate::FirstPerson
                         : templateArg == "thirdperson" ? ProjectTemplate::ThirdPerson
                         : templateArg == "water"       ? ProjectTemplate::Water
+                        : templateArg == "physics"     ? ProjectTemplate::Physics
                                                        : ProjectTemplate::Blank;
         options.starterContent = CommandLine::HasFlag("starter");
         options.documentation = !CommandLine::HasFlag("nodocs");
@@ -413,7 +414,7 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
     if (options.starterContent || options.templ != ProjectTemplate::Blank)
         ZX_LOG_INFO(LogEditor, "Starter Content: {} files", WriteStarterContent(created->contentDir));
     const bool characterTemplate = options.templ == ProjectTemplate::FirstPerson || options.templ == ProjectTemplate::ThirdPerson ||
-                                   options.templ == ProjectTemplate::Water;
+                                   options.templ == ProjectTemplate::Water || options.templ == ProjectTemplate::Physics;
     if (characterTemplate)
         WriteGameplayScripts(created->contentDir);
     if (options.language == ProjectLanguage::Cpp) {
@@ -451,7 +452,12 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
     }
     if (!OpenProject(created->descriptorPath))
         return false;
-    const u32 starterPrefabs = options.starterContent ? WriteStarterPrefabs(options) : 0u;
+    // The Physics Playground places the joint props (door, bridge, lamp, elevator, jump pad) from the prefabs.
+    NewProjectOptions prefabOptions = options;
+    if (options.templ == ProjectTemplate::Physics)
+        prefabOptions.starterProps = true;
+    const u32 starterPrefabs =
+        options.starterContent || options.templ == ProjectTemplate::Physics ? WriteStarterPrefabs(prefabOptions) : 0u;
     const String mainScene = ScenesDirectory() + "/Main.zscene";
     if (!helmet.Empty()) {
         ImportAsset(helmet, Vec3(0.0f, 1.2f, 0.0f), false);
@@ -487,6 +493,8 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
     } else {
         if (options.templ == ProjectTemplate::Water)
             BuildWaterLevel();
+        else if (options.templ == ProjectTemplate::Physics)
+            BuildPhysicsLevel();
         else if (characterTemplate)
             BuildCharacterLevel(options.templ == ProjectTemplate::ThirdPerson);
         else if (options.starterContent)
@@ -629,6 +637,210 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
     environment.sunElevation = DegToRad(48.0f);
     environment.sunAzimuth = DegToRad(135.0f);
     AddAtmosphere(0.004f, 0.3f);
+}
+
+void Editor::BuildPhysicsLevel()
+{
+    // Physics Playground (outside the undo history): stations around a grid floor in rolling hills - stacks, dominoes,
+    // a ramp with balls / cylinders / rocks (convex hulls), joints (bridge, door, lamp, elevator, chain, seesaw), a
+    // raycast scanner and a first-person player with a physics gun (left click pushes, hold right to carry).
+    auto material = [&](StringView name) {
+        const String path = String::Format("{}/StarterContent/Materials/{}.zmat", contentRoot, name);
+        if (!platform::FileExists(path) || !materials)
+            return Guid();
+        const MaterialLibrary::Material* m = materials->FindByPath(path);
+        return m ? m->guid : materials->LoadFile(path);
+    };
+    auto shape = [&](StringView label, BuiltinShape s, Vec3 center, Vec3 size, StringView mat, Quat rotation = {}, ecs::Entity parent = {}) {
+        Transform t(center, rotation);
+        t.scale = size;
+        const ecs::Entity e = CreateEntity(label, t, parent);
+        MeshRenderer mr;
+        mr.mesh = builtin::Mesh(s);
+        if (const Guid g = material(mat); g.IsValid())
+            mr.materials.PushBack(g);
+        world.Add(e, mr);
+        EnsureEntityGuid(world, e);
+        return e;
+    };
+    auto body = [&](ecs::Entity e, f32 mass, StringView sound) {
+        RigidBody rb;
+        rb.mass = mass;
+        world.Add(e, rb);
+        if (!sound.Empty()) {
+            ImpactSound s;
+            s.sound = String::Format("StarterContent/Sounds/Impacts/{}", sound);
+            world.Add(e, s);
+        }
+        return e;
+    };
+    auto box = [&](StringView label, Vec3 center, Vec3 size, StringView mat, f32 mass, StringView sound, Quat rotation = {}) {
+        const ecs::Entity e = shape(label, BuiltinShape::Cube, center, size, mat, rotation);
+        world.Add(e, BoxCollider{});
+        return body(e, mass, sound);
+    };
+    auto prefab = [&](StringView name, Vec3 position, f32 yaw) {
+        const String rel = String::Format("StarterContent/Prefabs/{}.zprefab", name);
+        if (prefabs && platform::FileExists(Path::Join(contentRoot, rel)))
+            InstantiatePrefabFile(world, *prefabs, rel, Transform(position, Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(yaw))));
+    };
+
+    // Ground: a grid floor in the flat middle of a terrain.
+    shape("Floor", BuiltinShape::Cube, Vec3(0, -0.5f, 0), Vec3(64, 1, 64), "M_Proto_Grey");
+    {
+        Terrain t;
+        t.size = 360.0f;
+        t.height = 40.0f;
+        t.flatCenter = 50.0f;
+        t.featureSize = 120.0f;
+        t.material = material("M_Terrain");
+        Array<f32> heights;
+        GenerateTerrainHeights(t, heights);
+        const u32 n = TerrainSamples(t);
+        const ecs::Entity terrain = CreateEntity("Terrain", Transform(Vec3(0.0f, -heights[usize(n / 2) * n + n / 2] - 0.2f, 0.0f)));
+        world.Add(terrain, t);
+        EnsureEntityGuid(world, terrain);
+    }
+
+    // 1. Stacks (north-west): a tower, a pyramid and a brick wall.
+    for (u32 i = 0; i < 10; ++i)
+        box(String::Format("Tower {}", i + 1), Vec3(-20.0f, 0.4f + f32(i) * 0.8f, 14.0f), Vec3(0.8f), i % 2 ? "M_Proto_Orange" : "M_Proto_Blue", 12.0f,
+            "Impact_Plank", Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(f32(i) * 9.0f)));
+    for (u32 row = 0; row < 5; ++row)
+        for (u32 i = 0; i < 5 - row; ++i)
+            box(String::Format("Pyramid {}-{}", row + 1, i + 1), Vec3(-15.0f + f32(i) * 0.72f + f32(row) * 0.36f, 0.35f + f32(row) * 0.7f, 14.0f),
+                Vec3(0.7f), "M_Wood", 15.0f, "Impact_Wood_Medium");
+    for (u32 row = 0; row < 6; ++row)
+        for (u32 i = 0; i < 8 - (row % 2); ++i)
+            box(String::Format("Brick {}-{}", row + 1, i + 1),
+                Vec3(-21.0f + f32(i) * 0.92f + (row % 2 ? 0.46f : 0.0f), 0.23f + f32(row) * 0.46f, 20.0f), Vec3(0.9f, 0.45f, 0.45f), "M_Bricks", 9.0f,
+                "Impact_Wood_Light");
+
+    // 2. Dominoes (north-east): an arc; the first one leans, so the chain falls when Play starts.
+    for (u32 i = 0; i < 36; ++i) {
+        const f32 a = DegToRad(-60.0f + f32(i) * 3.8f), r = 9.0f;
+        const Vec3 p(12.0f + Sin(a) * r, 0.0f, 12.0f + Cos(a) * r - 6.0f);
+        Quat rot = Quat::FromAxisAngle(Vec3(0, 1, 0), a + Pi * 0.5f);
+        if (i == 0)
+            rot = rot * Quat::FromAxisAngle(Vec3(1, 0, 0), DegToRad(24.0f));
+        box(String::Format("Domino {}", i + 1), p + Vec3(0, 0.62f, 0), Vec3(0.5f, 1.2f, 0.12f), i % 2 ? "M_Proto_Light" : "M_Plastic_Red", 2.0f,
+            "Impact_Plank", rot);
+    }
+
+    // 3. Ramp (west): balls with rolling friction and cylinders lying across roll down; convex rocks tumble nearby.
+    {
+        const f32 angle = DegToRad(20.0f), length = 14.0f;
+        const Quat tilt = Quat::FromAxisAngle(Vec3(0, 0, 1), -angle);
+        const Vec3 center(-18.0f, Sin(angle) * length * 0.5f, 2.0f);
+        shape("Ramp Support", BuiltinShape::Cube, center + Vec3(-Cos(angle) * length * 0.5f + 0.4f, -Sin(angle) * length * 0.25f - 0.2f, 0.0f),
+              Vec3(0.8f, Sin(angle) * length * 0.5f, 4.0f), "M_Proto_Light");
+        shape("Ramp", BuiltinShape::Cube, center, Vec3(length, 0.4f, 5.0f), "M_Proto_Teal", tilt);
+        shape("Ramp Rail L", BuiltinShape::Cube, center + Vec3(0, 0.4f, 2.6f), Vec3(length, 1.0f, 0.2f), "M_Proto_Light", tilt);
+        shape("Ramp Rail R", BuiltinShape::Cube, center + Vec3(0, 0.4f, -2.6f), Vec3(length, 1.0f, 0.2f), "M_Proto_Light", tilt);
+        const Vec3 down = tilt * Vec3(1, 0, 0), up = tilt * Vec3(0, 1, 0);
+        auto onRamp = [&](f32 along, f32 across, f32 lift) { return center + down * along + up * (0.2f + lift) + Vec3(0, 0, across); };
+        const char* const ballMats[] = {"M_Metal_Gold", "M_Plastic_Red", "M_Proto_Blue", "M_Rubber_Black"};
+        for (u32 i = 0; i < 4; ++i) {
+            const ecs::Entity ball = shape(String::Format("Ball {}", i + 1), BuiltinShape::Sphere, onRamp(-5.5f + f32(i) * 0.2f, -1.8f + f32(i) * 1.2f, 0.4f),
+                                           Vec3(0.8f), ballMats[i]);
+            world.Add(ball, SphereCollider{});
+            body(ball, 6.0f, "Impact_Soft");
+            world.Get<RigidBody>(ball)->rollingFriction = 0.04f;
+            world.Get<RigidBody>(ball)->bounciness = i == 3 ? 0.6f : 0.2f;
+        }
+        for (u32 i = 0; i < 3; ++i) {
+            // Lying across the ramp (axis along Z): they roll down.
+            const ecs::Entity c = shape(String::Format("Barrel {}", i + 1), BuiltinShape::Cylinder, onRamp(-2.5f + f32(i) * 1.6f, 0.0f, 0.45f),
+                                        Vec3(0.9f, 1.6f, 0.9f), "M_Paint_Olive", Quat::FromAxisAngle(Vec3(1, 0, 0), Pi * 0.5f));
+            world.Add(c, CylinderCollider{});
+            body(c, 20.0f, "Impact_Metal_Light");
+        }
+        for (u32 i = 0; i < 5; ++i) {
+            // Rocks: squashed spheres colliding as convex hulls of their mesh, dropped onto a heap.
+            const ecs::Entity rock = shape(String::Format("Rock {}", i + 1), BuiltinShape::Sphere,
+                                           Vec3(-8.0f + f32(i % 3) * 0.7f, 1.0f + f32(i) * 1.1f, 9.0f + f32(i % 2) * 0.6f), Vec3(1.1f, 0.6f, 0.8f),
+                                           "M_Rock", Quat::FromAxisAngle(Normalize(Vec3(1, 2, 0.5f)), f32(i) * 0.9f));
+            world.Add(rock, MeshCollider{.convex = true});
+            body(rock, 40.0f, "Impact_Stone");
+        }
+    }
+
+    // 4. Joints (east): the Starter Content props, a chain, a seesaw.
+    prefab("Props/P_RopeBridge", Vec3(18.0f, 0.35f, -16.0f), 0.0f);
+    prefab("Props/P_Door", Vec3(10.0f, 0.0f, -14.0f), 0.0f);
+    prefab("Props/P_Elevator", Vec3(24.0f, 0.0f, 2.0f), 0.0f);
+    prefab("Props/P_SwingingLamp", Vec3(4.0f, 4.5f, -18.0f), 0.0f);
+    prefab("Props/P_JumpPad", Vec3(-4.0f, 0.0f, 4.0f), 0.0f);
+    {
+        shape("Chain Beam", BuiltinShape::Cube, Vec3(16.0f, 6.0f, -4.0f), Vec3(3.0f, 0.3f, 0.3f), "M_Metal_Steel");
+        String previous;
+        for (u32 i = 0; i < 6; ++i) {
+            const String name = String::Format("Chain Link {}", i + 1);
+            const ecs::Entity link = shape(name, BuiltinShape::Sphere, Vec3(16.0f + f32(i + 1) * 0.55f, 6.0f, -4.0f), Vec3(0.45f), "M_Metal_Steel");
+            world.Add(link, SphereCollider{});
+            body(link, 4.0f, "Impact_Metal_Light");
+            BallJoint j;
+            j.anchor = Vec3(-0.55f / 0.45f, 0, 0); // towards the previous link (local, scaled space)
+            j.connectedBody = previous;
+            world.Add(link, j);
+            previous = name;
+        }
+        const ecs::Entity weight = shape("Chain Weight", BuiltinShape::Cube, Vec3(16.0f + 7.0f * 0.55f + 0.2f, 6.0f, -4.0f), Vec3(0.7f), "M_Metal_Gold");
+        world.Add(weight, BoxCollider{});
+        body(weight, 20.0f, "Impact_Metal_Heavy");
+        BallJoint j;
+        j.anchor = Vec3(-0.75f / 0.7f, 0, 0);
+        j.connectedBody = previous;
+        world.Add(weight, j);
+    }
+    {
+        shape("Seesaw Base", BuiltinShape::Cube, Vec3(4.0f, 0.4f, 16.0f), Vec3(0.6f, 0.8f, 1.6f), "M_Proto_Light");
+        const ecs::Entity plank = box("Seesaw", Vec3(4.0f, 0.9f, 16.0f), Vec3(6.0f, 0.2f, 1.2f), "M_Wood", 30.0f, "Impact_Wood_Heavy");
+        HingeJoint h;
+        h.axis = Vec3(0, 0, 1);
+        world.Add(plank, h);
+        box("Seesaw Weight", Vec3(6.6f, 6.0f, 16.0f), Vec3(0.8f), "M_Metal_Steel", 60.0f, "Impact_Metal_Heavy");
+        box("Seesaw Crate", Vec3(1.6f, 1.4f, 16.0f), Vec3(0.6f), "M_Wood", 6.0f, "Impact_Wood_Medium");
+    }
+
+    // 5. Raycasts (south-west): a scanner sweeping a beam; the dot marks where its ray hits.
+    {
+        const ecs::Entity scanner = shape("Scanner", BuiltinShape::Cylinder, Vec3(-12.0f, 1.0f, -20.0f), Vec3(0.5f, 2.0f, 0.5f), "M_Proto_Light");
+        world.Add(scanner, Script{String("StarterContent/Scripts/Scanner.zs"), String()});
+        const ecs::Entity head = CreateEntity("Head", Transform(Vec3(0, 0.6f, 0)), scanner);
+        EnsureEntityGuid(world, head);
+        auto visual = [&](StringView label, BuiltinShape s, Vec3 size, StringView mat, ecs::Entity parent) {
+            const ecs::Entity e = shape(label, s, Vec3(), size, mat, {}, parent);
+            world.Get<MeshRenderer>(e)->collision = false; // the ray must not hit the beam
+            return e;
+        };
+        visual("Beam", BuiltinShape::Cube, Vec3(0.04f, 0.04f, 1.0f), "M_Emissive_Cyan", head);
+        const ecs::Entity dot = visual("Dot", BuiltinShape::Sphere, Vec3(0.25f), "M_Emissive_Cyan", head);
+        PointLight glow;
+        glow.color = Vec3(0.3f, 0.9f, 1.0f);
+        glow.lumens = 300.0f;
+        glow.range = 3.0f;
+        world.Add(dot, glow);
+        for (u32 i = 0; i < 5; ++i)
+            box(String::Format("Target {}", i + 1), Vec3(-16.0f + f32(i) * 2.0f, 0.6f, -12.0f + f32(i % 2) * 1.5f), Vec3(1.2f), "M_Proto_Orange", 40.0f,
+                "Impact_Plank");
+    }
+
+    // Player: first person, the camera carries the physics gun.
+    const ecs::Entity player = CreateEntity("Player", Transform(Vec3(0, 0, -6)));
+    world.Add(player, CharacterController{});
+    world.Add(player, Script{String("Scripts/FirstPersonController.zs"), String()});
+    EnsureEntityGuid(world, player);
+    const ecs::Entity cam = CreateEntity("Camera", Transform(Vec3(0, 1.65f, 0)), player);
+    world.Add(cam, Camera{});
+    world.Add(cam, Script{String("StarterContent/Scripts/PhysicsGun.zs"), String()});
+    EnsureEntityGuid(world, cam);
+
+    camera.position = Vec3(-6.0f, 12.0f, -30.0f);
+    camera.LookAt(Vec3(-2.0f, 0.5f, 4.0f));
+    environment.sunElevation = DegToRad(42.0f);
+    environment.sunAzimuth = DegToRad(140.0f);
+    AddAtmosphere(0.003f, 0.35f);
 }
 
 void Editor::AddAtmosphere(f32 fogDensity, f32 cloudCoverage)
@@ -1095,6 +1307,43 @@ void Editor::CreateDecal(Vec3 position, ecs::Entity parent)
     CommitCreated(e, "Create Decal");
 }
 
+void Editor::DrawPhysicsDebug()
+{
+    // Moving bodies: bounds colored per island (asleep: grey, kinematic: blue); contacts: point + normal; joints:
+    // anchor to anchor.
+    physics::PhysicsWorld& w = *physics.World();
+    Array<physics::DebugBody> bodies;
+    w.GetDebugBodies(bodies);
+    const Color islandColors[6] = {Color(255, 120, 90), Color(120, 220, 120), Color(110, 170, 255),
+                              Color(240, 210, 90), Color(220, 120, 240), Color(90, 220, 220)};
+    for (const physics::DebugBody& b : bodies) {
+        if (b.motion == physics::MotionType::Static)
+            continue;
+        const Color c = b.motion == physics::MotionType::Kinematic ? Color(80, 140, 255)
+                        : b.sleeping || b.island == ~0u         ? Color(120, 120, 120)
+                                                                : islandColors[b.island % 6];
+        debugDraw->Box(b.bounds, Mat4::Identity(), c);
+    }
+    Array<physics::DebugContact> contacts;
+    w.GetDebugContacts(contacts);
+    for (const physics::DebugContact& c : contacts) {
+        const Color pc = c.separation <= 0.0f ? Color(255, 60, 60) : Color(255, 170, 60); // touching / speculative
+        for (Vec3 axis : {Vec3(0.04f, 0, 0), Vec3(0, 0.04f, 0), Vec3(0, 0, 0.04f)})
+            debugDraw->Line(c.position - axis, c.position + axis, pc);
+        debugDraw->Line(c.position, c.position + c.normal * 0.2f, Color(255, 235, 80));
+    }
+    Array<physics::JointId> joints;
+    w.GetJoints(joints);
+    for (physics::JointId j : joints) {
+        if (!w.IsValid(j))
+            continue;
+        Vec3 a, b;
+        w.GetJointAnchors(j, a, b);
+        debugDraw->Line(a, b, Color(255, 160, 60));
+        debugDraw->Sphere(a, 0.05f, Color(255, 160, 60), 8);
+    }
+}
+
 void Editor::CreateTerrain()
 {
     // Centered under the scene: the flat middle covers what is already there (meshes within 150 m) and sits just
@@ -1294,7 +1543,7 @@ void Editor::CreateShape(BuiltinShape shape, Vec3 position, ecs::Entity parent)
     switch (shape) {
     case BuiltinShape::Sphere: world.Add(e, SphereCollider{}); break;
     case BuiltinShape::Plane: world.Add(e, BoxCollider{Vec3(0.0f, -0.005f, 0.0f), Vec3(1.0f, 0.01f, 1.0f)}); break;
-    case BuiltinShape::Cylinder: world.Add(e, CapsuleCollider{Vec3(), 0.5f, 1.0f}); break;
+    case BuiltinShape::Cylinder: world.Add(e, CylinderCollider{}); break;
     default: world.Add(e, BoxCollider{}); break;
     }
     CommitCreated(e, String::Format("Create {}", builtin::ShapeName(shape)));
@@ -1849,6 +2098,7 @@ void Editor::RunPhysicsSelfTest()
         // A cylinder on top colliding through a convex Mesh Collider (hull of its mesh).
         CreateShape(BuiltinShape::Cylinder, Vec3(floorHit.point.x, m_physicsTestFloor + 1.0f + 5.0f * 1.3f, floorHit.point.z));
         world.Remove<CapsuleCollider>(selected);
+        world.Remove<CylinderCollider>(selected);
         world.Remove<BoxCollider>(selected);
         world.Remove<SphereCollider>(selected);
         world.Add(selected, MeshCollider{.convex = true});
@@ -3014,6 +3264,8 @@ void Editor::RenderFrame()
                                     debugDraw->Line(Vec3(0, 0.002f, -20), Vec3(0, 0.002f, 20), Color(50, 80, 160));
                                 }
                                 DrawToolOverlay(*this, *debugDraw);
+                                if (showPhysicsDebug && physics.IsRunning() && !m_screenshotViewport)
+                                    DrawPhysicsDebug();
                                 if (world.IsAlive(selected) && !m_screenshotViewport) {
                                     const Mat4 m = scene::ComputeWorldMatrix(world, selected);
                                     // Colliders of the selection (and its children): green wireframes.

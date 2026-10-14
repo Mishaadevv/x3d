@@ -95,6 +95,13 @@ shapes up), PhysicsWorld::CreateHeightField/UpdateHeightField; tests HeightField
 GenerateTerrainHeights, TerrainSystem ticked by the editor: CookTerrainMesh -> AddMemoryMesh(TerrainMeshId(guid)) +
 RenderAssets::ReloadMesh, keeps the entity's MeshRenderer in sync); PhysicsSystem adds a HeightField; tests Terrain.*.
 M_Terrain in StarterContent.cpp (MakeTerrainMaterial). Console: create terrain.
+Solver islands: PhysicsWorld::Step builds SolverIsland lists (bodies / contacts / joints) and runs phase1 / kinematic
+integration / phase2 per substep, in parallel only when no island holds half the work (stats.parallelIslands); only
+active solver bodies are written (shared static / kinematic ones are read-only). Queries: ClosestPoint (1 mm probe
+sphere), RaycastBatch; PhysicsSettings::stayEvents (PhysicsSystem turns it on). Tests ZXTests Queries.*,
+ManualPhysics.ManyIslands. Editor Show -> Physics Debug (DrawPhysicsDebug). CylinderCollider = hull via
+PhysicsSystem::HullOf(nullptr, size). Template physics = BuildPhysicsLevel (Physics Playground; scripts PhysicsGun.zs,
+Scanner.zs). Tools/make_template_thumbs.py accepts template names to capture only those.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

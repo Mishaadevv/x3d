@@ -29,7 +29,7 @@
 
 namespace zx::game {
 
-inline constexpr uint32_t ApiVersion = 2; // 2: physics (Host forces/velocity/raycast, collision callbacks)
+inline constexpr uint32_t ApiVersion = 3; // 2: physics (Host forces/velocity/raycast, collision callbacks); 3: Stay callbacks
 
 // --- Math --------------------------------------------------------------------------------------------------------------
 
@@ -162,6 +162,9 @@ public:
     virtual void OnCollisionExit(EntityId other) { (void)other; }
     virtual void OnTriggerEnter(EntityId other) { (void)other; }
     virtual void OnTriggerExit(EntityId other) { (void)other; }
+    // Every physics step while still touching / inside.
+    virtual void OnCollisionStay(EntityId other) { (void)other; }
+    virtual void OnTriggerStay(EntityId other) { (void)other; }
 
     // Set by the engine before OnStart.
     EntityId entity = 0;

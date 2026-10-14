@@ -118,6 +118,7 @@ enum class ProjectTemplate : u8
     FirstPerson,
     ThirdPerson,
     Water,
+    Physics,     // Physics Playground
     Count
 };
 
@@ -293,6 +294,7 @@ public:
     void SetGameInputCaptured(bool captured);
     void ToggleEject();
     bool showGrid = true;
+    bool showPhysicsDebug = false; // while playing: body bounds by island (grey = asleep), contacts, joints
     // Viewport show flags for post-processing (motion blur only while playing).
     bool showPostVolumes = true, showDepthOfField = true, showMotionBlur = true;
     bool lastViewWasGame = false; // camera cut detection (editor <-> game camera)
@@ -361,6 +363,7 @@ public:
     void CreateReflectionProbe(Vec3 position, ecs::Entity parent = {});
     void CreateDecal(Vec3 position, ecs::Entity parent = {}); // on the surface under / in front of the point
     void CreateTerrain();                                      // 200 m procedural terrain under the scene
+    void DrawPhysicsDebug();
     void CreateHeightFog(f32 density = 0.0f);                  // replaces the scene's one; density 0 = default
     void CreateFogVolume(Vec3 position, ecs::Entity parent = {});
     void CreateClouds(); // the scene's Volumetric Clouds (selects the existing one)
@@ -423,6 +426,7 @@ private:
     u32 WriteStarterPrefabs(const NewProjectOptions& options);
     void BuildCharacterLevel(bool thirdPerson);
     void BuildWaterLevel();
+    void BuildPhysicsLevel();
     /// Template atmosphere: a volumetric Height Fog and Volumetric Clouds (outside the undo history).
     void AddAtmosphere(f32 fogDensity, f32 cloudCoverage);
     JsonValue SceneSettings() const;

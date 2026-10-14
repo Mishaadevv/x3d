@@ -268,3 +268,24 @@ ZX_TEST(PhysicsSystem, JointComponents)
     ZX_EXPECT(Abs(p.GetVelocity(door).x) < 0.01f && Abs(p.GetAngularVelocity(door).y) < 0.01f);
     p.End();
 }
+
+ZX_TEST(PhysicsSystem, CylinderColliderStandsOnItsEnd)
+{
+    Scene s;
+    s.Floor();
+    // Scaled 2x in Y: a 1 m wide, 2 m tall cylinder standing upright, its center 1 m up.
+    const ecs::Entity c = scene::CreateNode(s.world, "Cylinder", Transform(Vec3(0, 2, 0), Quat(), Vec3(1, 2, 1)));
+    s.world.Add(c, CylinderCollider{});
+    s.world.Add(c, RigidBody{});
+    scene::UpdateWorldTransforms(s.world);
+    PhysicsSystem p;
+    p.Begin(s.world, nullptr);
+    s.Run(p, 3.0f);
+    const Transform* t = s.world.Get<Transform>(c);
+    ZX_EXPECT_NEAR(t->position.y, 1.0f, 0.03f);
+    ZX_EXPECT(Abs((t->rotation * Vec3(0, 1, 0)).y) > 0.99f); // still upright
+    Array<ColliderOutline> outlines;
+    GatherColliderOutlines(s.world, c, outlines);
+    ZX_EXPECT(outlines.Size() == 1u && !outlines[0].lines.Empty());
+    p.End();
+}

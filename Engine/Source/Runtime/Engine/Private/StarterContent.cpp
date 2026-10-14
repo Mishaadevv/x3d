@@ -767,6 +767,82 @@ script Coin {
     }
 }
 )zs"},
+    {"PhysicsGun.zs", R"zs(// Physics gun: left click pushes what you look at, hold the right button to carry a Rigid Body.
+// Put it on a camera (it aims along the entity's forward axis).
+script PhysicsGun {
+    @range(0, 5000) @tooltip("Push impulse (N*s)")
+    prop push = 300.0
+    @range(1, 100) @tooltip("How far you can reach (m)")
+    prop reach = 30.0
+    @range(1, 30) @tooltip("How firmly a carried body follows (1/s)")
+    prop grip = 12.0
+
+    var held = nil
+    var holdDistance = 3.0
+
+    fn update(dt) {
+        let dir = entity.worldForward
+        let eye = entity.worldPosition + dir * 0.4
+        if input.mousePressed("left") {
+            let hit = physics.raycast(eye, dir, reach)
+            if hit != nil {
+                hit.entity.addImpulse(dir * push, hit.point)
+            }
+        }
+        if input.mousePressed("right") {
+            let hit = physics.raycast(eye, dir, 8.0)
+            if hit != nil {
+                held = hit.entity
+                holdDistance = max(hit.distance, 2.0)
+            }
+        }
+        if not input.mouse("right") {
+            held = nil
+        }
+        if held != nil {
+            held.velocity = (eye + dir * holdDistance - held.worldPosition) * grip
+            held.angularVelocity = held.angularVelocity * 0.8
+        }
+    }
+}
+)zs"},
+    {"Scanner.zs", R"zs(// Raycast demo: sweeps the child "Head" back and forth; its "Beam" reaches as far as the ray goes and "Dot"
+// sits where it hits.
+script Scanner {
+    @range(0, 180) @tooltip("Sweep angle each way (degrees)")
+    prop sweep = 50.0
+    @range(0, 5) prop speed = 0.7
+    @range(1, 200) prop range = 25.0
+
+    var head = nil
+    var beam = nil
+    var dot = nil
+
+    fn start() {
+        head = entity.child("Head")
+        beam = entity.child("Beam")
+        dot = entity.child("Dot")
+    }
+
+    fn update(dt) {
+        if head == nil { return }
+        head.rotation = quat.euler(0, sin(time.elapsed * speed) * sweep, 0)
+        let dir = head.worldForward
+        let hit = physics.raycast(head.worldPosition + dir * 0.4, dir, range)
+        var length = range
+        if hit != nil {
+            length = hit.distance + 0.4
+        }
+        if beam != nil {
+            beam.position = vec3(0, 0, length * 0.5)
+            beam.scale = vec3(0.04, 0.04, length)
+        }
+        if dot != nil {
+            dot.position = vec3(0, 0, length)
+        }
+    }
+}
+)zs"},
     {"FireStarter.zs", R"zs(// Lighter and water: F sets what you look at on fire (Flammable objects), G pours water on it.
 // Put it on a camera (it aims along the entity's forward axis).
 script FireStarter {
