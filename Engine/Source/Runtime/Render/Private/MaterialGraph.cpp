@@ -34,6 +34,9 @@ const MaterialPinDesc DesaturateIn[] = {{"Color", 3, Vec4(1)}, {"Fraction", 1, V
 const MaterialPinDesc Vec3OutResult[] = {{"Result", 3, {}}};
 const MaterialPinDesc FresnelIn[] = {{"Exponent", 1, Vec4(5)}, {"Base Reflect", 1, Vec4(0.04f)}};
 const MaterialPinDesc MaskIn[] = {{"X", 4, Vec4(0)}};
+const MaterialPinDesc GridIn[] = {{"Cell Size", 1, Vec4(1)}, {"Line Width", 1, Vec4(0.03f)}};
+const MaterialPinDesc GridOut[] = {{"Lines", 1, {}}, {"Checker", 1, {}}};
+const MaterialPinDesc NoiseIn[] = {{"Position", 3, Vec4(0)}, {"Scale", 1, Vec4(1)}};
 
 #define ZX_PINS(a) Span<const MaterialPinDesc>(a, ZX_ARRAY_COUNT(a))
 const Span<const MaterialPinDesc> NoPins;
@@ -52,6 +55,10 @@ const MaterialNodeType NodeTypes[] = {
     {"VertexNormal", "Vertex Normal", "Inputs", MaterialNodeKind::Input, NoPins, ZX_PINS(Vec3Out), "Interpolated world-space normal"},
     {"Panner", "Panner", "Utility", MaterialNodeKind::Utility, ZX_PINS(PannerIn), ZX_PINS(TexCoordOut), "UV + Speed * Time"},
     {"Fresnel", "Fresnel", "Utility", MaterialNodeKind::Utility, ZX_PINS(FresnelIn), ZX_PINS(OneOut), "Schlick Fresnel term (edges -> 1)"},
+    {"WorldGrid", "World Grid", "Utility", MaterialNodeKind::Utility, ZX_PINS(GridIn), ZX_PINS(GridOut),
+     "World-aligned grid lines and checker (no UVs needed; prototype surfaces)"},
+    {"Noise", "Noise", "Utility", MaterialNodeKind::Utility, ZX_PINS(NoiseIn), ZX_PINS(OneOut),
+     "Fractal noise 0..1 (Position defaults to the world position)"},
     {"Desaturate", "Desaturate", "Utility", MaterialNodeKind::Utility, ZX_PINS(DesaturateIn), ZX_PINS(Vec3OutResult), "Blends towards grey"},
     {"ComponentMask", "Component Mask", "Utility", MaterialNodeKind::Utility, ZX_PINS(MaskIn), ZX_PINS(DynOut),
      "Keeps the channels enabled in the node value (R, G, B, A)"},
@@ -277,6 +284,13 @@ private:
         } else if (type == "Fresnel") {
             Set(id, 0,
                 Local(n, 1, String::Format("Fresnel(mi, {}, {})", Convert(in(0), 1), Convert(in(1), 1))), 1);
+        } else if (type == "WorldGrid") {
+            const String grid = Local(n, 2, String::Format("WorldGrid(mi, {}, {})", Convert(in(0), 1), Convert(in(1), 1)));
+            Set(id, 0, grid + ".x", 1);
+            Set(id, 1, grid + ".y", 1);
+        } else if (type == "Noise") {
+            const String pos = Connected(n, 0) ? Convert(in(0), 3) : String("mi.worldPos");
+            Set(id, 0, Local(n, 1, String::Format("FractalNoise({}, {})", pos, Convert(in(1), 1))), 1);
         } else if (type == "Desaturate") {
             Set(id, 0, Local(n, 3, String::Format("Desaturate({}, {})", Convert(in(0), 3), Convert(in(1), 1))), 3);
         } else if (type == "ComponentMask") {

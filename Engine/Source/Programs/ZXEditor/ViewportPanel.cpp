@@ -513,7 +513,8 @@ void DrawViewportPanel(Editor& ed)
         Distance(ui::GetMousePos(), s_pressPos) < 4.0f * s)
         ed.Select(Pick(ed, vp.MouseRay(ui::GetMousePos())));
 
-    ViewportToolbar(ed, r, s);
+    if (!ed.CleanViewportShot())
+        ViewportToolbar(ed, r, s);
     if (ed.flying) {
         const ui::FontHandle font = ctx.Fonts().FindFont("Inter");
         dl.AddTextInRect(font, 12.0f * s, Rect(Vec2(r.min.x, r.max.y - 26.0f * s), r.max), Color(230, 230, 230, 200),

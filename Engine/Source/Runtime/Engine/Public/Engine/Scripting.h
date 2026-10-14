@@ -27,6 +27,7 @@ class InputState;
 class InputActionState;
 class AudioSystem;
 class PhysicsSystem;
+class ParticleSystem;
 struct PhysicsEvent;
 
 /// Runs a .zs file on the entity. `properties` holds the values of the script's `prop` fields that differ from the
@@ -78,6 +79,8 @@ public:
     const InputActionState* actions = nullptr;
     /// Rigid bodies and queries for entity.velocity / addForce and the physics global (null = no physics).
     PhysicsSystem* physics = nullptr;
+    /// Particle Emitters for entity.emit(n) (null = no bursts).
+    ParticleSystem* particles = nullptr;
     /// Calls collisionEnter / collisionExit / triggerEnter / triggerExit on the scripts of both entities of each event.
     void DispatchPhysicsEvents(ecs::World& world, Span<const PhysicsEvent> events);
 

@@ -10,6 +10,7 @@
 //     viewport.AddPasses(graph, world, cam, environment, output, outputSize, dt);
 
 #include "Engine/SceneRendering.h"
+#include "Render/Particles.h"
 #include "Render/PostProcess.h"
 #include "Render/Reflections.h"
 #include "Render/RenderGraph.h"
@@ -52,6 +53,7 @@ struct ViewportFeatures
     bool reflections = true;            // sky cube + reflection probes
     bool screenSpaceReflections = true;
     bool decals = true;
+    bool particles = true;
 };
 
 /// Dynamic resolution: the render scale follows the GPU frame time towards a target (5 % steps, 4 times a second).
@@ -123,6 +125,8 @@ public:
 
     /// Entities whose meshes get the selection outline (editor). Pass the selected entity and its descendants.
     void SetOutlinedEntities(Span<const ecs::Entity> entities) { m_outlined.Clear(); m_outlined.Append(entities); }
+    /// Particles drawn (and flickering lights modulated) each frame; null = none.
+    void SetParticleSystem(const class ParticleSystem* particles) { m_particleSource = particles; }
     render::OutlineSettings& Outline() { return m_outlineSettings; }
 
 private:
@@ -134,6 +138,9 @@ private:
     render::SceneRenderer m_scene;
     render::SkyRenderer m_sky;
     render::WaterRenderer m_water;
+    render::ParticleRenderer m_particleRenderer;
+    const class ParticleSystem* m_particleSource = nullptr;
+    Array<render::GpuParticle> m_particleList;
     Array<render::WaterSurface> m_waterSurfaces;
     render::TemporalAA m_taa;
     render::ReflectionRenderer m_reflections;

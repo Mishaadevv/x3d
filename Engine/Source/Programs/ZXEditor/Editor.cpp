@@ -164,6 +164,15 @@ bool Editor::Initialize()
             appIcon = t.Value();
         if (Result<rhi::Texture*> t = render::LoadTexture(*device, "/Engine/Branding/ZeqouX3D_Logo.png", brand))
             appLogo = t.Value();
+        // Template thumbnails: real captures of each template level (Tools/make_template_thumbs.py).
+        static const char* const TemplateNames[] = {"Blank", "Sample", "FirstPerson", "ThirdPerson", "Water"};
+        static_assert(ZX_ARRAY_COUNT(TemplateNames) == u32(ProjectTemplate::Count));
+        render::TextureLoadOptions art;
+        art.compression = render::TextureCompression::None;
+        art.srgb = false; // captured from the UNORM back buffer: the bytes are already display values
+        for (u32 i = 0; i < u32(ProjectTemplate::Count); ++i)
+            if (Result<rhi::Texture*> t = render::LoadTexture(*device, String::Format("/Engine/Templates/{}.png", TemplateNames[i]), art))
+                templateArt[i] = t.Value();
     }
     if (Result<ui::SvgImage> svg = ui::LoadSvg("/Engine/Icons/ZeqouLogo.svg"))
         logo = move(svg.Value());
@@ -229,6 +238,7 @@ bool Editor::Initialize()
     };
     debugDraw.Reset(new DebugDraw(*device));
     pool.Reset(new TransientResourcePool(*device));
+    viewport->SetParticleSystem(&particles);
     if (!renderAssets->Init() || !viewport->Init(lite, Format::R8G8B8A8_UNORM) ||
         !debugDraw->Init(viewport->HdrFormat(), viewport->DepthFormat()))
         return false;
@@ -376,8 +386,8 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
         browser.error = created.GetError().message;
         return false;
     }
-    // The Water template builds its island from the Starter Content materials.
-    if (options.starterContent || options.templ == ProjectTemplate::Water)
+    // Template levels are built from the Starter Content materials.
+    if (options.starterContent || options.templ != ProjectTemplate::Blank)
         ZX_LOG_INFO(LogEditor, "Starter Content: {} files", WriteStarterContent(created->contentDir));
     const bool characterTemplate = options.templ == ProjectTemplate::FirstPerson || options.templ == ProjectTemplate::ThirdPerson ||
                                    options.templ == ProjectTemplate::Water;
@@ -418,6 +428,7 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
     }
     if (!OpenProject(created->descriptorPath))
         return false;
+    const u32 starterPrefabs = options.starterContent ? WriteStarterPrefabs(options) : 0u;
     const String mainScene = ScenesDirectory() + "/Main.zscene";
     if (!helmet.Empty()) {
         ImportAsset(helmet, Vec3(0.0f, 1.2f, 0.0f), false);
@@ -429,8 +440,26 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
             l.color = i == 0 ? Vec3(1.0f, 0.85f, 0.7f) : Vec3(0.6f, 0.75f, 1.0f);
             world.Add(e, l);
         }
-        camera.position = Vec3(0.0f, 1.6f, 4.0f);
-        camera.LookAt(Vec3(0.0f, 1.2f, 0.0f));
+        // A grid floor and a pedestal under the model.
+        auto starterMaterial = [&](StringView name) {
+            const String path = String::Format("{}/StarterContent/Materials/{}.zmat", contentRoot, name);
+            return materials && platform::FileExists(path) ? materials->LoadFile(path) : Guid();
+        };
+        auto block = [&](StringView label, BuiltinShape shape, Vec3 center, Vec3 size, StringView mat) {
+            Transform t(center);
+            t.scale = size;
+            const ecs::Entity e = CreateEntity(label, t);
+            MeshRenderer mr;
+            mr.mesh = builtin::Mesh(shape);
+            if (const Guid g = starterMaterial(mat); g.IsValid())
+                mr.materials.PushBack(g);
+            world.Add(e, mr);
+            EnsureEntityGuid(world, e);
+        };
+        block("Floor", BuiltinShape::Cube, Vec3(0, -0.25f, 0), Vec3(20, 0.5f, 20), "M_Proto_Grey");
+        block("Pedestal", BuiltinShape::Cylinder, Vec3(0, 0.33f, 0), Vec3(1.2f, 0.66f, 1.2f), "M_Proto_Light");
+        camera.position = Vec3(2.3f, 2.0f, 4.2f);
+        camera.LookAt(Vec3(0.0f, 1.15f, 0.0f));
         m_saveAfterImports = mainScene;
     } else {
         if (options.templ == ProjectTemplate::Water)
@@ -438,7 +467,7 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
         else if (characterTemplate)
             BuildCharacterLevel(options.templ == ProjectTemplate::ThirdPerson);
         else if (options.starterContent)
-            BuildStarterShowcase();
+            BuildStarterShowcase(starterPrefabs > 0);
         SaveSceneTo(mainScene);
     }
     return true;
@@ -446,8 +475,9 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
 
 void Editor::BuildCharacterLevel(bool thirdPerson)
 {
-    // A small playground (outside the undo history): floor, stairs, jumpable platforms, crates and walls, plus the
-    // player set up for the template. Materials come from the Starter Content when it was added.
+    // A prototype arena (outside the undo history), in the spirit of the UE template levels: grid-textured floor and
+    // walls, ramps, stairs to a balcony, jump platforms, physics crates and balls to push around, plus the player set
+    // up for the template.
     auto material = [&](StringView name) {
         const String path = String::Format("{}/StarterContent/Materials/{}.zmat", contentRoot, name);
         if (!platform::FileExists(path) || !materials)
@@ -455,61 +485,91 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
         const MaterialLibrary::Material* m = materials->FindByPath(path);
         return m ? m->guid : materials->LoadFile(path);
     };
-    auto block = [&](StringView label, BuiltinShape shape, Vec3 min, Vec3 max, StringView mat, ecs::Entity parent = {}) {
-        Transform t((min + max) * 0.5f);
-        t.scale = max - min;
+    auto shape = [&](StringView label, BuiltinShape s, Vec3 center, Vec3 size, StringView mat, Quat rotation = {}, ecs::Entity parent = {}) {
+        Transform t(center, rotation);
+        t.scale = size;
         const ecs::Entity e = CreateEntity(label, t, parent);
         MeshRenderer mr;
-        mr.mesh = builtin::Mesh(shape);
+        mr.mesh = builtin::Mesh(s);
         if (const Guid g = material(mat); g.IsValid())
             mr.materials.PushBack(g);
         world.Add(e, mr);
         EnsureEntityGuid(world, e);
         return e;
     };
-    // Reflections of the playground (floor and walls).
+    auto block = [&](StringView label, Vec3 min, Vec3 max, StringView mat) {
+        return shape(label, BuiltinShape::Cube, (min + max) * 0.5f, max - min, mat);
+    };
+    auto physicsBox = [&](StringView label, Vec3 center, Vec3 size, StringView mat, f32 mass) {
+        const ecs::Entity e = shape(label, BuiltinShape::Cube, center, size, mat);
+        RigidBody rb;
+        rb.mass = mass;
+        world.Add(e, rb);
+        world.Add(e, BoxCollider{});
+        return e;
+    };
+    // Reflections of the arena.
     {
-        const ecs::Entity probe = CreateEntity("Playground Reflections", Transform(Vec3(0.0f, 2.0f, 0.0f)));
+        const ecs::Entity probe = CreateEntity("Arena Reflections", Transform(Vec3(0.0f, 3.0f, 0.0f)));
         ReflectionProbe rp;
-        rp.extent = Vec3(20.0f, 6.0f, 20.0f);
-        rp.blendDistance = 2.0f;
+        rp.extent = Vec3(25.0f, 6.0f, 25.0f);
+        rp.blendDistance = 3.0f;
         world.Add(probe, rp);
         EnsureEntityGuid(world, probe);
     }
-    // Ground and boundary walls.
-    {
-        Transform t(Vec3(0.0f));
-        t.scale = Vec3(40.0f, 1.0f, 40.0f);
-        const ecs::Entity floor = CreateEntity("Floor", t);
-        MeshRenderer mr;
-        mr.mesh = builtin::Mesh(BuiltinShape::Plane);
-        if (const Guid g = material("M_Concrete"); g.IsValid())
-            mr.materials.PushBack(g);
-        world.Add(floor, mr);
-        EnsureEntityGuid(world, floor);
-    }
-    block("Wall North", BuiltinShape::Cube, Vec3(-20, 0, 19.5f), Vec3(20, 3, 20), "M_Plastic_White");
-    block("Wall South", BuiltinShape::Cube, Vec3(-20, 0, -20), Vec3(20, 3, -19.5f), "M_Plastic_White");
-    block("Wall East", BuiltinShape::Cube, Vec3(19.5f, 0, -19.5f), Vec3(20, 3, 19.5f), "M_Plastic_White");
-    block("Wall West", BuiltinShape::Cube, Vec3(-20, 0, -19.5f), Vec3(-19.5f, 3, 19.5f), "M_Plastic_White");
-    // Stairs up to a platform.
+    // Floor and walls.
+    block("Floor", Vec3(-25, -1, -25), Vec3(25, 0, 25), "M_Proto_Grey");
+    block("Wall North", Vec3(-25, 0, 24), Vec3(25, 4, 25), "M_Proto_Light");
+    block("Wall South", Vec3(-25, 0, -25), Vec3(25, 4, -24), "M_Proto_Light");
+    block("Wall East", Vec3(24, 0, -24), Vec3(25, 4, 24), "M_Proto_Light");
+    block("Wall West", Vec3(-25, 0, -24), Vec3(-24, 4, 24), "M_Proto_Light");
+
+    // Balcony along the north wall: stairs on one side, a ramp on the other.
+    block("Balcony", Vec3(-12, 0, 16), Vec3(12, 2, 24), "M_Proto_Light");
+    block("Balcony Trim", Vec3(-12, 2, 15.8f), Vec3(12, 2.15f, 16.2f), "M_Proto_Orange");
     for (u32 i = 0; i < 8; ++i)
-        block(String::Format("Stair {}", i + 1), BuiltinShape::Cube, Vec3(4, 0, 2 + f32(i) * 0.5f), Vec3(7, 0.25f * f32(i + 1), 2.5f + f32(i) * 0.5f),
-              "M_Concrete");
-    block("Upper Platform", BuiltinShape::Cube, Vec3(4, 0, 6), Vec3(10, 2, 10), "M_Concrete");
-    // Jumpable platforms.
-    block("Platform A", BuiltinShape::Cube, Vec3(-6, 0, 3), Vec3(-3, 0.8f, 6), "M_Wood");
-    block("Platform B", BuiltinShape::Cube, Vec3(-9, 0, 7), Vec3(-6, 1.6f, 10), "M_Wood");
-    block("Platform C", BuiltinShape::Cube, Vec3(-12, 0, 11), Vec3(-9, 2.4f, 14), "M_Wood");
-    // Crates.
-    block("Crate 1", BuiltinShape::Cube, Vec3(-2, 0, 10), Vec3(-1, 1, 11), "M_Wood");
-    block("Crate 2", BuiltinShape::Cube, Vec3(-1, 0, 10), Vec3(0, 1, 11), "M_Wood");
-    block("Crate 3", BuiltinShape::Cube, Vec3(-1.5f, 1, 10), Vec3(-0.5f, 2, 11), "M_Wood");
-    block("Pillar", BuiltinShape::Cylinder, Vec3(10, 0, -6), Vec3(11.5f, 4, -4.5f), "M_Metal_Steel");
-    block("Gold Sphere", BuiltinShape::Sphere, Vec3(-0.5f, 0, -8), Vec3(0.5f, 1, -7), "M_Metal_Gold");
+        block(String::Format("Stair {}", i + 1), Vec3(12, 0, 16 + f32(i) * 1.0f), Vec3(16, 0.25f * f32(i + 1), 17 + f32(i) * 1.0f), "M_Proto_Light");
+    {
+        // A 20 degree ramp from the floor up to the balcony's west end.
+        const f32 angle = DegToRad(20.0f), rise = 2.0f, run = rise / Tan(angle), len = Sqrt(run * run + rise * rise);
+        const Quat tilt = Quat::FromAxisAngle(Vec3(0, 0, 1), angle);
+        shape("Ramp", BuiltinShape::Cube, Vec3(-12.0f - run * 0.5f, rise * 0.5f - Cos(angle) * 0.25f, 20.0f), Vec3(len, 0.5f, 6.0f), "M_Proto_Teal", tilt);
+    }
+
+    // Jump course: platforms rising towards the east wall.
+    const char* const jumpMats[] = {"M_Proto_Blue", "M_Proto_Orange", "M_Proto_Blue", "M_Proto_Orange"};
+    for (u32 i = 0; i < 4; ++i) {
+        const f32 x = 8.0f + f32(i) * 3.5f, h = 0.6f + f32(i) * 0.6f;
+        block(String::Format("Jump Platform {}", i + 1), Vec3(x - 1.25f, 0, -2 - f32(i) * 2.5f), Vec3(x + 1.25f, h, 0.5f - f32(i) * 2.5f), jumpMats[i]);
+    }
+    // Low walls and pillars for cover on the west side.
+    block("Cover 1", Vec3(-14, 0, -6), Vec3(-8, 1.2f, -5.5f), "M_Proto_Light");
+    block("Cover 2", Vec3(-18, 0, 2), Vec3(-17.5f, 1.2f, 8), "M_Proto_Light");
+    shape("Pillar 1", BuiltinShape::Cylinder, Vec3(-6, 2, 6), Vec3(1.2f, 4, 1.2f), "M_Proto_Teal");
+    shape("Pillar 2", BuiltinShape::Cylinder, Vec3(6, 2, 6), Vec3(1.2f, 4, 1.2f), "M_Proto_Teal");
+
+    // Physics props: a stack of crates, a pyramid of blue cubes and two balls.
+    for (u32 i = 0; i < 3; ++i)
+        physicsBox(String::Format("Crate {}", i + 1), Vec3(-3.0f + f32(i) * 1.05f, 0.5f, 10.0f), Vec3(1.0f), "M_Wood", 30.0f);
+    physicsBox("Crate 4", Vec3(-2.47f, 1.5f, 10.0f), Vec3(1.0f), "M_Wood", 30.0f);
+    physicsBox("Crate 5", Vec3(-1.42f, 1.5f, 10.0f), Vec3(1.0f), "M_Wood", 30.0f);
+    physicsBox("Crate 6", Vec3(-1.95f, 2.5f, 10.0f), Vec3(1.0f), "M_Wood", 30.0f);
+    for (u32 row = 0; row < 3; ++row)
+        for (u32 i = 0; i < 3 - row; ++i)
+            physicsBox(String::Format("Cube {}-{}", row + 1, i + 1), Vec3(-12.0f + f32(i) * 0.62f + f32(row) * 0.31f, 0.3f + f32(row) * 0.6f, 12.0f),
+                       Vec3(0.6f), "M_Proto_Blue", 8.0f);
+    for (u32 i = 0; i < 2; ++i) {
+        const ecs::Entity ball = shape(String::Format("Ball {}", i + 1), BuiltinShape::Sphere, Vec3(3.0f + f32(i) * 2.0f, 0.5f, 4.0f), Vec3(1.0f),
+                                       i == 0 ? "M_Metal_Gold" : "M_Plastic_Red");
+        RigidBody rb;
+        rb.mass = 10.0f;
+        rb.bounciness = 0.3f;
+        world.Add(ball, rb);
+        world.Add(ball, SphereCollider{});
+    }
 
     // Player: feet at the entity, a Character Controller and the template's controller script.
-    const ecs::Entity player = CreateEntity("Player", Transform(Vec3(0, 0, -4)));
+    const ecs::Entity player = CreateEntity("Player", Transform(Vec3(0, 0, -6)));
     world.Add(player, CharacterController{});
     EnsureEntityGuid(world, player);
     if (!thirdPerson) {
@@ -517,19 +577,27 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
         const ecs::Entity cam = CreateEntity("Camera", Transform(Vec3(0, 1.65f, 0)), player);
         world.Add(cam, Camera{});
         EnsureEntityGuid(world, cam);
-        camera.position = Vec3(0.0f, 6.0f, -14.0f);
+        camera.position = Vec3(-14.0f, 7.0f, -20.0f);
+        camera.LookAt(Vec3(0.0f, 0.5f, 8.0f));
     } else {
         world.Add(player, Script{String("Scripts/ThirdPersonController.zs"), String()});
-        // Visible body (part of the player, so it doesn't block it): a capsule-like cylinder and a "nose" for facing.
-        block("Body", BuiltinShape::Cylinder, Vec3(-0.35f, 0, -0.35f), Vec3(0.35f, 1.8f, 0.35f), "M_Plastic_Red", player);
-        block("Visor", BuiltinShape::Cube, Vec3(-0.2f, 1.35f, 0.25f), Vec3(0.2f, 1.55f, 0.45f), "M_Rubber_Black", player);
-        const ecs::Entity cam = CreateEntity("Camera", Transform(Vec3(0, 3, -9)));
+        // A simple mannequin (part of the player, so it doesn't block it): body, head, visor, arms.
+        shape("Body", BuiltinShape::Cylinder, Vec3(0, 0.95f, 0), Vec3(0.55f, 1.1f, 0.4f), "M_Proto_Light", {}, player);
+        shape("Head", BuiltinShape::Sphere, Vec3(0, 1.7f, 0), Vec3(0.36f), "M_Proto_Light", {}, player);
+        shape("Visor", BuiltinShape::Cube, Vec3(0, 1.72f, 0.15f), Vec3(0.26f, 0.09f, 0.08f), "M_Emissive_Cyan", {}, player);
+        shape("Arm L", BuiltinShape::Cylinder, Vec3(-0.36f, 1.05f, 0), Vec3(0.14f, 0.7f, 0.14f), "M_Proto_Grey", {}, player);
+        shape("Arm R", BuiltinShape::Cylinder, Vec3(0.36f, 1.05f, 0), Vec3(0.14f, 0.7f, 0.14f), "M_Proto_Grey", {}, player);
+        shape("Leg L", BuiltinShape::Cylinder, Vec3(-0.13f, 0.25f, 0), Vec3(0.17f, 0.5f, 0.17f), "M_Proto_Grey", {}, player);
+        shape("Leg R", BuiltinShape::Cylinder, Vec3(0.13f, 0.25f, 0), Vec3(0.17f, 0.5f, 0.17f), "M_Proto_Grey", {}, player);
+        const ecs::Entity cam = CreateEntity("Camera", Transform(Vec3(0, 3, -11)));
         world.Add(cam, Camera{});
         world.Add(cam, Script{String("Scripts/ThirdPersonCamera.zs"), String()});
         EnsureEntityGuid(world, cam);
-        camera.position = Vec3(0.0f, 8.0f, -16.0f);
+        camera.position = Vec3(3.0f, 2.6f, -11.0f);
+        camera.LookAt(Vec3(0.0f, 1.2f, -2.0f));
     }
-    camera.LookAt(Vec3(0.0f, 0.0f, 4.0f));
+    environment.sunElevation = DegToRad(48.0f);
+    environment.sunAzimuth = DegToRad(135.0f);
 }
 
 void Editor::BuildWaterLevel()
@@ -555,27 +623,128 @@ void Editor::BuildWaterLevel()
         EnsureEntityGuid(world, e);
         return e;
     };
-    block("Sea Floor", BuiltinShape::Cube, Vec3(-150, -7, -150), Vec3(150, -6, 150), "M_Sand");
-    block("Shallows", BuiltinShape::Cube, Vec3(-26, -6, -20), Vec3(26, -1.2f, 20), "M_Sand");
-    block("Beach", BuiltinShape::Cube, Vec3(-20, -6, -14), Vec3(20, 0.3f, 14), "M_Sand");
-    block("Meadow", BuiltinShape::Cube, Vec3(-13, 0.3f, -8), Vec3(13, 0.9f, 8), "M_Grass");
-    block("Hill", BuiltinShape::Cube, Vec3(-6, 0.9f, -4), Vec3(6, 1.6f, 4), "M_Grass");
-    block("Rock 1", BuiltinShape::Sphere, Vec3(14, -0.5f, 6), Vec3(18, 2.5f, 9), "M_Rock");
-    block("Rock 2", BuiltinShape::Sphere, Vec3(-19, -1.0f, -11), Vec3(-15, 1.8f, -7), "M_Rock");
-    block("Rock 3", BuiltinShape::Sphere, Vec3(22, -2.5f, -14), Vec3(25, 0.8f, -11), "M_Rock");
+    auto shape = [&](StringView label, BuiltinShape sh, Vec3 center, Vec3 size, StringView mat, Quat rotation = {}, ecs::Entity parent = {}) {
+        Transform t(center, rotation);
+        t.scale = size;
+        const ecs::Entity e = CreateEntity(label, t, parent);
+        MeshRenderer mr;
+        mr.mesh = builtin::Mesh(sh);
+        if (const Guid g = material(mat); g.IsValid())
+            mr.materials.PushBack(g);
+        world.Add(e, mr);
+        EnsureEntityGuid(world, e);
+        return e;
+    };
+    // Sea floor, then the island as overlapping flattened domes: a wide sandy shelf, the beach, grassy hills.
+    block("Sea Floor", BuiltinShape::Cube, Vec3(-200, -9, -200), Vec3(200, -8, 200), "M_Sand");
+    struct Dome
+    {
+        const char* name;
+        Vec3 center, size;
+        const char* material;
+    };
+    const Dome domes[] = {
+        {"Sand Shelf", Vec3(0, -6.5f, 2), Vec3(90, 12, 70), "M_Sand"}, {"Beach", Vec3(0, -3.4f, 0), Vec3(54, 8, 40), "M_Sand"},
+        {"Meadow", Vec3(-3, -2.2f, -3), Vec3(38, 6, 26), "M_Grass"},   {"Hill", Vec3(-8, -1.0f, -6), Vec3(18, 7, 14), "M_Grass"},
+        {"Dune", Vec3(13, -1.6f, 5), Vec3(12, 4, 8), "M_Sand"},
+    };
+    for (const Dome& d : domes)
+        shape(d.name, BuiltinShape::Sphere, d.center, d.size, d.material);
+    // Height of the island surface (the highest dome) at x, z.
+    auto ground = [&](f32 x, f32 z) {
+        f32 y = -8.0f;
+        for (const Dome& d : domes) {
+            const f32 u = (x - d.center.x) / (d.size.x * 0.5f), v = (z - d.center.z) / (d.size.z * 0.5f), r = u * u + v * v;
+            if (r < 1.0f)
+                y = Max(y, d.center.y + d.size.y * 0.5f * Sqrt(1.0f - r));
+        }
+        return y;
+    };
+    // Rocks: squashed, turned spheres along the shore.
+    struct RockDesc
+    {
+        Vec3 position, size, euler;
+    };
+    const RockDesc rocks[] = {
+        {Vec3(21, -0.2f, 6), Vec3(4.5f, 3.2f, 3.6f), Vec3(10, 30, 5)},  {Vec3(23.5f, -0.6f, 3), Vec3(2.4f, 1.8f, 2.2f), Vec3(-8, 70, 12)},
+        {Vec3(-22, -0.5f, -10), Vec3(5, 3.6f, 4), Vec3(5, -20, -8)},    {Vec3(-19, -0.9f, -14), Vec3(2.8f, 2, 2.4f), Vec3(14, 40, 0)},
+        {Vec3(-12, 3.2f, -10), Vec3(3, 2.2f, 2.6f), Vec3(-6, 10, 18)},  {Vec3(8, -1.2f, -17), Vec3(3.6f, 2.4f, 3), Vec3(0, 55, -10)},
+        {Vec3(34, -3.0f, 26), Vec3(4, 5, 4), Vec3(6, 0, 10)},           {Vec3(-30, -2.6f, 18), Vec3(3.4f, 4, 3), Vec3(-10, 30, 4)},
+    };
+    for (u32 i = 0; i < ZX_ARRAY_COUNT(rocks); ++i)
+        shape(String::Format("Rock {}", i + 1), BuiltinShape::Sphere, rocks[i].position, rocks[i].size, "M_Rock",
+              Quat::FromEulerDegrees(rocks[i].euler));
+    // Palm trees: a curved trunk of tilted segments and a crown of long leaves.
+    auto palm = [&](StringView label, Vec3 base, f32 height, f32 lean, f32 heading) {
+        base.y = ground(base.x, base.z) - 0.2f;
+        const ecs::Entity root = CreateEntity(label, Transform(base, Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(heading))));
+        EnsureEntityGuid(world, root);
+        Vec3 p(0.0f);
+        const u32 segments = 6;
+        const f32 segment = height / f32(segments);
+        for (u32 i = 0; i < segments; ++i) {
+            const f32 tilt = DegToRad(lean * (0.3f + 0.7f * f32(i) / f32(segments)));
+            const Vec3 dir(0.0f, Cos(tilt), Sin(tilt));
+            const f32 width = 0.42f - 0.035f * f32(i);
+            shape(String::Format("Trunk {}", i + 1), BuiltinShape::Cylinder, p + dir * (segment * 0.5f), Vec3(width, segment * 1.04f, width),
+                  "M_Wood", Quat::FromAxisAngle(Vec3(1, 0, 0), tilt), root);
+            p += dir * segment;
+        }
+        // Fronds: an inner part rising slightly and an outer part drooping (rotation about the local X axis turns
+        // +Z downwards for positive angles).
+        for (u32 i = 0; i < 8; ++i) {
+            const Quat yaw = Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(f32(i) * 45.0f + 12.0f * f32(i % 2)));
+            const Quat inner = yaw * Quat::FromAxisAngle(Vec3(1, 0, 0), DegToRad(-8.0f + 6.0f * f32(i % 3)));
+            const Quat outer = yaw * Quat::FromAxisAngle(Vec3(1, 0, 0), DegToRad(38.0f + 5.0f * f32(i % 3)));
+            const Vec3 mid = p + inner * Vec3(0.0f, 0.0f, 2.0f);
+            shape(String::Format("Frond {}", i + 1), BuiltinShape::Sphere, p + inner * Vec3(0.0f, 0.0f, 1.0f), Vec3(0.75f, 0.1f, 2.3f), "M_Grass", inner, root);
+            shape(String::Format("Frond {} Tip", i + 1), BuiltinShape::Sphere, mid + outer * Vec3(0.0f, 0.0f, 0.9f), Vec3(0.55f, 0.08f, 2.0f), "M_Grass", outer, root);
+        }
+        shape("Coconuts", BuiltinShape::Sphere, p - Vec3(0, 0.25f, 0), Vec3(0.55f), "M_Dirt", {}, root);
+    };
+    palm("Palm 1", Vec3(9, 1.2f, -4), 7.5f, 18.0f, 30.0f);
+    palm("Palm 2", Vec3(12, 0.9f, 1), 6.0f, 26.0f, 110.0f);
+    palm("Palm 3", Vec3(-4, 2.0f, 3), 8.0f, 12.0f, -40.0f);
+    palm("Palm 4", Vec3(-15, 2.2f, -2), 6.5f, 22.0f, 200.0f);
+    palm("Palm 5", Vec3(3, 1.4f, 9), 5.5f, 30.0f, 0.0f);
     // Pier towards the open sea (+Z).
-    block("Pier", BuiltinShape::Cube, Vec3(-1.5f, 0.55f, 13), Vec3(1.5f, 0.75f, 34), "M_Wood");
+    block("Pier", BuiltinShape::Cube, Vec3(-1.5f, 0.55f, 11), Vec3(1.5f, 0.75f, 34), "M_Wood");
     for (u32 i = 0; i < 6; ++i) {
         const f32 z = 15.0f + f32(i) * 3.8f;
-        block(String::Format("Pier Post {}", i * 2 + 1), BuiltinShape::Cylinder, Vec3(-1.6f, -6, z), Vec3(-1.2f, 0.9f, z + 0.4f), "M_Wood");
-        block(String::Format("Pier Post {}", i * 2 + 2), BuiltinShape::Cylinder, Vec3(1.2f, -6, z), Vec3(1.6f, 0.9f, z + 0.4f), "M_Wood");
+        block(String::Format("Pier Post {}", i * 2 + 1), BuiltinShape::Cylinder, Vec3(-1.6f, -8, z), Vec3(-1.2f, 0.9f, z + 0.4f), "M_Wood");
+        block(String::Format("Pier Post {}", i * 2 + 2), BuiltinShape::Cylinder, Vec3(1.2f, -8, z), Vec3(1.6f, 0.9f, z + 0.4f), "M_Wood");
     }
-    block("Hut", BuiltinShape::Cube, Vec3(-11, 0.9f, -6), Vec3(-7, 3.4f, -3), "M_Wood");
+    // A small boat tied at the end of the pier.
+    {
+        const ecs::Entity boat = CreateEntity("Boat", Transform(Vec3(3.6f, 0.15f, 30.0f), Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(8.0f))));
+        EnsureEntityGuid(world, boat);
+        shape("Hull", BuiltinShape::Sphere, Vec3(0, 0, 0), Vec3(1.8f, 0.9f, 5.0f), "M_Plastic_White", {}, boat);
+        shape("Deck", BuiltinShape::Cube, Vec3(0, 0.38f, 0), Vec3(1.4f, 0.06f, 3.6f), "M_Wood", {}, boat);
+        shape("Bench", BuiltinShape::Cube, Vec3(0, 0.6f, -0.6f), Vec3(1.3f, 0.08f, 0.4f), "M_Wood", {}, boat);
+    }
+    // Hut on the meadow: walls, a door and a two-slab roof.
+    {
+        const ecs::Entity hut = CreateEntity("Hut", Transform(Vec3(-9, ground(-9, -4.5f) - 0.15f, -4.5f)));
+        EnsureEntityGuid(world, hut);
+        shape("Walls", BuiltinShape::Cube, Vec3(0, 1.2f, 0), Vec3(4, 2.4f, 3), "M_Wood", {}, hut);
+        shape("Door", BuiltinShape::Cube, Vec3(0.6f, 0.9f, 1.52f), Vec3(0.9f, 1.8f, 0.06f), "M_Dirt", {}, hut);
+        const Quat left = Quat::FromAxisAngle(Vec3(0, 0, 1), DegToRad(32.0f)), right = Quat::FromAxisAngle(Vec3(0, 0, 1), DegToRad(-32.0f));
+        shape("Roof L", BuiltinShape::Cube, Vec3(-1.1f, 3.05f, 0), Vec3(2.7f, 0.12f, 3.6f), "M_Grass", left, hut);
+        shape("Roof R", BuiltinShape::Cube, Vec3(1.1f, 3.05f, 0), Vec3(2.7f, 0.12f, 3.6f), "M_Grass", right, hut);
+    }
 
     // The sea: level at y = 0, with its sound all around the island.
     const ecs::Entity sea = CreateEntity("Sea", Transform(Vec3(0, 0, 0)));
     Water w;
     w.size = Vec2(300.0f, 300.0f);
+    w.waveHeight = 0.22f;
+    w.waveLength = 10.0f;
+    w.choppiness = 0.45f;
+    w.foam = 0.35f;
+    w.shoreFoam = 0.6f;
+    w.clarity = 6.0f;
+    w.shallowColor = Vec3(0.08f, 0.6f, 0.58f);
+    w.deepColor = Vec3(0.01f, 0.09f, 0.16f);
     world.Add(sea, w);
     AudioSource surf;
     surf.clip = "StarterContent/Sounds/Ocean_Loop.wav";
@@ -592,7 +761,7 @@ void Editor::BuildWaterLevel()
         world.Add(windEntity, wind);
         EnsureEntityGuid(world, windEntity);
         // The hut sounds like a small room inside.
-        const ecs::Entity room = CreateEntity("Hut Reverb", Transform(Vec3(-9, 2, -4.5f)));
+        const ecs::Entity room = CreateEntity("Hut Reverb", Transform(Vec3(-9, 3.4f, -4.5f)));
         ReverbZone zone;
         zone.radius = 3.0f;
         zone.fade = 1.5f;
@@ -602,7 +771,7 @@ void Editor::BuildWaterLevel()
     }
     {
         // Reflections inside the hut (its floor and walls line up with the box).
-        const ecs::Entity probe = CreateEntity("Hut Reflections", Transform(Vec3(-9, 1.6f, -4.5f)));
+        const ecs::Entity probe = CreateEntity("Hut Reflections", Transform(Vec3(-9, 3.4f, -4.5f)));
         ReflectionProbe rp;
         rp.extent = Vec3(2.6f, 1.8f, 2.6f);
         rp.blendDistance = 0.5f;
@@ -620,15 +789,75 @@ void Editor::BuildWaterLevel()
     world.Add(cam, Camera{});
     EnsureEntityGuid(world, cam);
 
-    // Low sun over the sea for a glitter path.
-    environment.sunElevation = DegToRad(18.0f);
-    environment.sunAzimuth = DegToRad(38.0f);
-    camera.position = Vec3(-6.0f, 5.0f, 6.0f);
-    camera.LookAt(Vec3(4.0f, 0.0f, 40.0f));
+    // Afternoon sun over the sea (a glitter path towards the camera's view of the pier).
+    environment.sunElevation = DegToRad(32.0f);
+    environment.sunAzimuth = DegToRad(20.0f);
+    camera.position = Vec3(17.0f, 4.5f, 40.0f);
+    camera.LookAt(Vec3(-2.0f, 1.5f, 2.0f));
 }
 
-void Editor::BuildStarterShowcase()
+void Editor::BuildStarterShowcase(bool withPrefabs)
 {
+    if (withPrefabs) {
+        // The Starter Content assets laid out on a grid floor, with a third-person character ready for Play.
+        auto material = [&](StringView name) {
+            const String path = String::Format("{}/StarterContent/Materials/{}.zmat", contentRoot, name);
+            const MaterialLibrary::Material* m = materials ? materials->FindByPath(path) : nullptr;
+            return m ? m->guid : (materials ? materials->LoadFile(path) : Guid());
+        };
+        {
+            Transform t(Vec3(0, -0.5f, 0));
+            t.scale = Vec3(60, 1, 60);
+            const ecs::Entity floor = CreateEntity("Floor", t);
+            MeshRenderer mr;
+            mr.mesh = builtin::Mesh(BuiltinShape::Cube);
+            if (const Guid g = material("M_Proto_Grey"); g.IsValid())
+                mr.materials.PushBack(g);
+            world.Add(floor, mr);
+            EnsureEntityGuid(world, floor);
+        }
+        struct Placement
+        {
+            const char* prefab;
+            Vec3 position;
+            f32 yaw;
+        };
+        const Placement placements[] = {
+            {"Effects/P_Campfire", Vec3(0, 0, 4), 0},          {"Effects/P_Torch", Vec3(-2.5f, 0, 8), 0},
+            {"Effects/P_Torch", Vec3(2.5f, 0, 8), 0},           {"Effects/P_Fountain", Vec3(-9, 0, 6), 0},
+            {"Effects/P_WaterPool", Vec3(10, 0.8f, 8), 0},      {"Effects/P_Magic", Vec3(-5, 1.6f, -1), 0},
+            {"Effects/P_Steam", Vec3(5, 0, 1), 0},              {"Effects/P_Sparks", Vec3(8, 2.5f, -3), 0},
+            {"Effects/P_Smoke", Vec3(-14, 0, 14), 0},           {"Effects/P_GroundFog", Vec3(-12, 0, 14), 0},
+            {"Props/P_Door", Vec3(-3, 0, -6), 0},               {"Props/P_Elevator", Vec3(-12, 0, -6), 0},
+            {"Props/P_JumpPad", Vec3(4, 0, -6), 0},             {"Props/P_CrateStack", Vec3(-6, 0, 12), 0},
+            {"Props/P_SwingingLamp", Vec3(0, 4.5f, -10), 0},    {"Props/P_RopeBridge", Vec3(14, 0.35f, -8), 0},
+            {"Props/P_Coin", Vec3(-1, 1, 1), 0},                {"Props/P_Coin", Vec3(1, 1, 1), 0},
+            {"Props/P_Coin", Vec3(3, 1, 1), 0},                 {"Characters/P_Tank", Vec3(-16, 0, 2), 90},
+            {"Characters/P_ThirdPersonCharacter", Vec3(0, 0, -2), 0},
+        };
+        for (const Placement& p : placements) {
+            const String rel = String::Format("StarterContent/Prefabs/{}.zprefab", p.prefab);
+            if (!platform::FileExists(Path::Join(contentRoot, rel)))
+                continue;
+            const ecs::Entity root =
+                InstantiatePrefabFile(world, *prefabs, rel, Transform(p.position, Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(p.yaw))));
+            if (root && StringView(p.prefab) == "Characters/P_Tank") {
+                // The character is the player here: the tank waits (Controlled off, its camera inactive).
+                if (Script* sc = world.Get<Script>(root))
+                    sc->properties = R"json({"controlled":false})json";
+                Array<ecs::Entity> members;
+                CollectHierarchy(world, root, members);
+                for (ecs::Entity m : members)
+                    if (Camera* c = world.Get<Camera>(m))
+                        c->active = false;
+            }
+        }
+        environment.sunElevation = DegToRad(40.0f);
+        environment.sunAzimuth = DegToRad(150.0f);
+        camera.position = Vec3(7.0f, 5.0f, -13.0f);
+        camera.LookAt(Vec3(-2.0f, 0.8f, 3.0f));
+        return;
+    }
     // A floor and a few shapes using the Starter Content materials and scripts (outside the undo history).
     auto material = [&](StringView name) {
         const String path = String::Format("{}/StarterContent/Materials/{}.zmat", contentRoot, name);
@@ -650,7 +879,7 @@ void Editor::BuildStarterShowcase()
         EnsureEntityGuid(world, e);
         return e;
     };
-    shape(BuiltinShape::Plane, "Floor", Vec3(0, 0, 0), Vec3(12, 1, 12), "M_Concrete", {}, {});
+    shape(BuiltinShape::Plane, "Floor", Vec3(0, 0, 0), Vec3(4, 1, 4), "M_Proto_Grey", {}, {});
     const ecs::Entity cube = shape(BuiltinShape::Cube, "Spinning Cube", Vec3(-2.5f, 0.75f, 0), Vec3(1), "M_Plastic_Red", "Rotator.zs", {});
     {
         AudioSource hum; // a 3D sound: walk around the cube in Play to hear it move between the speakers
@@ -662,8 +891,8 @@ void Editor::BuildStarterShowcase()
     shape(BuiltinShape::Sphere, "Floating Sphere", Vec3(0, 1.0f, 0), Vec3(1), "M_Metal_Gold", "Bobbing.zs", {});
     shape(BuiltinShape::Cylinder, "Player (WASD)", Vec3(2.5f, 0.5f, 0), Vec3(0.8f, 1, 0.8f), "M_Metal_Steel", "SimpleMover.zs", {});
     shape(BuiltinShape::Cube, "Watcher", Vec3(0, 0.5f, -3), Vec3(0.6f), "M_Emissive_Cyan", "LookAt.zs", R"json({"target":"Player (WASD)"})json");
-    camera.position = Vec3(0.0f, 3.0f, 7.0f);
-    camera.LookAt(Vec3(0.0f, 0.6f, 0.0f));
+    camera.position = Vec3(4.5f, 3.2f, 7.5f);
+    camera.LookAt(Vec3(0.0f, 0.6f, -0.5f));
 }
 
 void Editor::UpdateStartupScene(StringView savedScene)
@@ -2327,6 +2556,7 @@ bool Editor::Frame()
         if (scripts && FeatureEnabled("scripts")) {
             scripts->actions = &inputActionState;
             scripts->physics = physics.IsRunning() ? &physics : nullptr;
+            scripts->particles = &particles;
             scripts->Tick(world, gameDt, gameInput);
         }
         if (game) {
@@ -2367,6 +2597,11 @@ bool Editor::Frame()
         m_pieStep = false;
     } else if (audio && !IsPlaying()) {
         audio->TickIdle(dt); // previews
+    }
+    // Particles: emitters with Simulate In Editor run live while editing, all of them while playing (frozen when paused).
+    if (FeatureEnabled("particles")) {
+        scene::UpdateWorldTransforms(world);
+        particles.Tick(world, playState == PlayState::Paused ? 0.0f : dt, IsPlaying());
     }
     if (!IsPlaying() && scripts && (m_scriptCheckTimer += dt) > 0.5) {
         m_scriptCheckTimer = 0.0; // edit mode: keep the Details panel in sync with files edited elsewhere
@@ -2469,6 +2704,7 @@ void Editor::RenderFrame()
         vf.reflections = FeatureEnabled("reflections");
         vf.screenSpaceReflections = FeatureEnabled("screenSpaceReflections");
         vf.decals = FeatureEnabled("decals");
+        vf.particles = FeatureEnabled("particles");
         ViewportCamera cam{camera.ViewMatrix(), camera.position, camera.fovY, camera.nearPlane};
         if (UsingGameCamera()) {
             // Game view: the Camera entity's world position and orientation (+Z forward), scale ignored.
@@ -2654,6 +2890,10 @@ void Editor::Shutdown()
     viewportTexture = nullptr;
     device->Destroy(appIcon);
     device->Destroy(appLogo);
+    for (rhi::Texture*& t : templateArt) {
+        device->Destroy(t);
+        t = nullptr;
+    }
     appIcon = appLogo = nullptr;
     pool->Clear();
     UnregisterEditorConsole();

@@ -421,7 +421,7 @@ void DrawTemplateArt(DrawList& dl, const Rect& r, ProjectTemplate t, f32 s)
 }
 
 /// Template tile: illustration + title; "coming in x.y.z" templates are dimmed with a badge.
-bool TemplateTile(const TemplateInfo& info, bool selected, Vec2 size)
+bool TemplateTile(const TemplateInfo& info, bool selected, Vec2 size, u32 artSrv)
 {
     ui::Context& ctx = *ui::GetCurrentContext();
     const f32 s = ctx.GetScale();
@@ -440,7 +440,11 @@ bool TemplateTile(const TemplateInfo& info, bool selected, Vec2 size)
                selected ? 2.0f : 1.0f, selected ? c.accent : (hovered ? c.borderStrong : c.border));
     const f32 pad = Round(6.0f * s);
     const Rect art(r.min + Vec2(pad), Vec2(r.max.x - pad, r.max.y - Round(34.0f * s)));
-    DrawTemplateArt(dl, art, info.templ, s);
+    if (artSrv != rhi::InvalidDescriptor) {
+        dl.AddImage(artSrv, art, Vec2(0, 0), Vec2(1, 1), Color(255, 255, 255), 6.0f * s);
+    } else {
+        DrawTemplateArt(dl, art, info.templ, s); // thumbnail missing: drawn illustration
+    }
     if (soon) {
         dl.AddRect(art, Color(0x18, 0x18, 0x18, 140), ui::CornerRadii(6.0f * s));
         const String badge = version ? String::Format("COMING IN {}", info.availableIn) : String(info.availableIn);
@@ -524,7 +528,7 @@ void DrawNewProjectPage(Editor& ed)
             TemplateInfo info = t;
             if (t.templ == ProjectTemplate::Sample && !sampleAvailable)
                 info.availableIn = "NEEDS SAMPLE CONTENT";
-            if (TemplateTile(info, o.templ == t.templ, tile))
+            if (TemplateTile(info, o.templ == t.templ, tile, ed.TemplateArtSrv(t.templ)))
                 o.templ = t.templ;
             col = (col + 1) % perRow;
             if (col == 0)
@@ -570,8 +574,23 @@ void DrawNewProjectPage(Editor& ed)
 
         ui::TextDisabled("CONTENT");
         ui::Checkbox("Starter Content", &o.starterContent);
-        ui::ItemTooltip("Adds Content/StarterContent: 10 PBR materials with editable parameters and ready-made scripts\n"
-                        "(Rotator, Bobbing, SimpleMover, LookAt, Blinker). Blank projects also get a small showcase scene.");
+        ui::ItemTooltip("Adds Content/StarterContent: PBR and prototype-grid materials with editable parameters, scripts,\n"
+                        "sounds and the ready-made assets below (prefabs: drag them from the Content Browser into the level).\n"
+                        "Blank projects also get a showcase level with them.");
+        if (o.starterContent) {
+            ui::Indent(18.0f);
+            ui::Checkbox("Effects", &o.starterEffects);
+            ui::ItemTooltip("Particle effects, all fully configurable (Particle Emitter) and previewed live in the editor\n"
+                            "(Simulate In Editor): fire, campfire, torch, smoke, sparks, steam, ground fog, magic, rain,\n"
+                            "fountain, water pool.");
+            ui::Checkbox("Characters & Vehicles", &o.starterCharacters);
+            ui::ItemTooltip("A light third-person character with its camera, a first-person character, and a drivable tank\n"
+                            "(W/S/A/D, the mouse aims the turret, click fires).");
+            ui::Checkbox("Gameplay Props", &o.starterProps);
+            ui::ItemTooltip("A door that opens with E (hinge joint), an elevator (slider joint), a jump pad, a coin pickup,\n"
+                            "a stack of physics crates, a swinging lamp and a rope bridge.");
+            ui::Unindent(18.0f);
+        }
         ui::Checkbox("Documentation", &o.documentation);
         ui::ItemTooltip("README.md and Docs/ (getting started, ZeqouScript reference) for your team,\n"
                         "plus AGENTS.md / CLAUDE.md so AI coding assistants understand the project.");

@@ -57,6 +57,12 @@ Collider, implicit mesh collision of MeshRenderer.collision, PIE ticking with in
 Characters on physics: Gameplay.cpp TickCharacters(world, dt, PhysicsSystem&) (capsule shape casts, step up/down,
 supportNormal under the contact for step edges, platforms, mass-based pushes); tests CharacterPhysics.*. Script/C++
 physics API + collision callbacks: Scripting.cpp (physics global, DispatchPhysicsEvents), GameModule.cpp (SDK v2).
+Particles: Engine/Particles.h (Particle Emitter component, ParticleSystem CPU simulation owned by the editor, ticked live
+for Simulate In Editor emitters), Render/Particles.h + Shaders/Particles/Particles.hlsl (64-byte GpuParticle, premultiplied,
+soft depth fade). Starter Content: StarterContent.cpp (materials incl. WorldGrid/Noise patterns, scripts, sounds) +
+ZXEditor/StarterAssets.cpp (prefabs built in a scratch world: Effects / Characters / Props), showcase level in
+BuildStarterShowcase. Template thumbnails: Engine/Content/Templates/*.png from `python Tools/make_template_thumbs.py`
+(captures with -screenshotviewport = viewport only, no grid/gizmos/toolbar; loaded with srgb=false).
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).
@@ -93,6 +99,8 @@ UI headless interaction tests: `ZXTests.exe UI.*` (synthetic mouse/keys drive re
 - Bash heredocs choke on some Python patch scripts: write the script to the scratchpad and run it instead.
 - Git Bash rewrites exe arguments: `/Saved/x.png` becomes `C:/Program Files/Git/Saved/x.png` and `$(pwd)` is `/c/...`
   (the editor then creates `C:/c/...`). Use `MSYS_NO_PATHCONV=1` and `$(cygpath -m "$(pwd)")` for path arguments.
+- The editor's command line splits at spaces: pass project paths in 8.3 form (`cygpath -d`), or -newproject fails
+  silently and the test runs on the default project.
 - Commas inside template arguments break test macros: `ZX_EXPECT_EQ((w.Query<A, B>().Count()), 1u)`.
 - ZUI GPU cost is fill-bound on UHD 620 (~0.5-1 Gpix/s blended): keep overlapping layers few; border-only rects and
   shadows are drawn hollow automatically. Lucide icons: macros in UI/Icons.h (regenerate with Tools/gen_lucide_icons.py).

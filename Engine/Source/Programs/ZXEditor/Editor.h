@@ -12,6 +12,7 @@
 #include "Engine/FlyCamera.h"
 #include "Engine/GameModule.h"
 #include "Engine/InputActions.h"
+#include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/PostProcessVolume.h"
 #include "Engine/Materials.h"
@@ -123,6 +124,10 @@ struct NewProjectOptions
     ProjectTemplate templ = ProjectTemplate::Blank;
     ProjectLanguage language = ProjectLanguage::ZeqouScript;
     bool starterContent = true; // StarterContent/ materials + scripts (and a small showcase in a blank scene)
+    // Ready-made prefabs in StarterContent/Prefabs (with Starter Content):
+    bool starterEffects = true;    // fire, campfire, torch, smoke, sparks, steam, ground fog, magic, rain, fountain, pool
+    bool starterCharacters = true; // first / third person characters, tank
+    bool starterProps = true;      // door, elevator, jump pad, coin, crates, swinging lamp, rope bridge
     bool documentation = true;  // README.md, Docs/ for the team, AGENTS.md / CLAUDE.md for AI assistants
     bool gitRepository = false; // git init + .gitattributes + an initial commit (needs git on PATH)
 };
@@ -216,6 +221,12 @@ public:
     ui::SvgImage logo; // Engine/Content/Icons/ZeqouLogo.svg (fallback when the brand images are missing)
     rhi::Texture* appIcon = nullptr; // Engine/Content/Branding/ZeqouX3D_Icon.png (title bar, Project Browser)
     rhi::Texture* appLogo = nullptr; // Engine/Content/Branding/ZeqouX3D_Logo.png (About)
+    rhi::Texture* templateArt[u32(ProjectTemplate::Count)] = {}; // Engine/Content/Templates/<Name>.png (editor captures)
+    u32 TemplateArtSrv(ProjectTemplate t) const
+    {
+        const rhi::Texture* tex = templateArt[u32(t)];
+        return tex ? tex->GetSrvIndex() : rhi::InvalidDescriptor;
+    }
     bool CleanViewportShot() const { return m_screenshotViewport; } // no overlays over the scene
     u32 AppIconSrv() const { return appIcon ? appIcon->GetSrvIndex() : rhi::InvalidDescriptor; }
     UniquePtr<ui::Context> ui;
@@ -229,6 +240,7 @@ public:
     UniquePtr<audio::AudioEngine> audioEngine; // WASAPI output (-noaudio: null backend)
     UniquePtr<AudioSystem> audio;         // Audio Sources of the scene while playing, previews
     PhysicsSystem physics;                // rigid bodies and colliders while playing
+    ParticleSystem particles;             // Particle Emitters (live in the editor too)
     UniquePtr<GameModuleSystem> game;     // C++ game module of the open project (Source/<Name>), hot-reloaded
     i64 gameDllTime = 0;                  // modification time of the loaded Binaries/<Name>.dll
     GameBuildState gameBuildState = GameBuildState::Idle;
@@ -391,7 +403,9 @@ private:
     void UpdateImports();
     void RenderFrame();
     void BuildDefaultScene();
-    void BuildStarterShowcase();
+    void BuildStarterShowcase(bool withPrefabs);
+    /// Starter Content prefabs (StarterAssets.cpp) for the categories chosen in the New Project page; returns the count.
+    u32 WriteStarterPrefabs(const NewProjectOptions& options);
     void BuildCharacterLevel(bool thirdPerson);
     void BuildWaterLevel();
     JsonValue SceneSettings() const;

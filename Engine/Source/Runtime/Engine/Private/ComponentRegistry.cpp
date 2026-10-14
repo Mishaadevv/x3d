@@ -2,6 +2,7 @@
 #include "Core/Memory/Memory.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/GameModule.h"
+#include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/Gameplay.h"
 #include "Engine/PostProcessVolume.h"
@@ -50,6 +51,7 @@ void RegisterEngineComponents()
     RegisterComponent<AudioListener>("Audio Listener", "\xEE\x8E\x82");              // ear
     RegisterComponent<ReverbZone>("Reverb Zone", "\xEE\x95\x9A");                    // audio-lines
     RegisterComponent<Water>("Water", "\xEE\x82\xB5");                                // droplets
+    RegisterComponent<ParticleEmitter>("Particle Emitter", "\xEE\x90\x92");        // sparkles
     RegisterComponent<Decal>("Decal", "\xEE\x8E\xBB");                                 // stamp
     RegisterComponent<ReflectionProbe>("Reflection Probe", "\xEE\x8D\x85");           // circle-dot
     RegisterComponent<HdriSky>("HDRI Sky", "\xEE\x88\x96");                          // cloud-sun

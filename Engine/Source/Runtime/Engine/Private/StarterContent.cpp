@@ -31,11 +31,8 @@ const StarterMaterial Materials[] = {
     {"M_Metal_Steel", Vec4(0.62f, 0.64f, 0.66f, 1), 1.0f, 0.3f, Vec4(0)},
     {"M_Metal_Gold", Vec4(1.0f, 0.77f, 0.34f, 1), 1.0f, 0.2f, Vec4(0)},
     {"M_Metal_Copper", Vec4(0.95f, 0.64f, 0.54f, 1), 1.0f, 0.35f, Vec4(0)},
-    {"M_Concrete", Vec4(0.5f, 0.49f, 0.46f, 1), 0.0f, 0.85f, Vec4(0)},
-    {"M_Grass", Vec4(0.16f, 0.36f, 0.08f, 1), 0.0f, 0.8f, Vec4(0)},
-    {"M_Wood", Vec4(0.45f, 0.28f, 0.14f, 1), 0.0f, 0.6f, Vec4(0)},
-    {"M_Sand", Vec4(0.76f, 0.66f, 0.47f, 1), 0.0f, 0.9f, Vec4(0)},
-    {"M_Rock", Vec4(0.32f, 0.31f, 0.3f, 1), 0.0f, 0.75f, Vec4(0)},
+    {"M_Gold_Glow", Vec4(1.0f, 0.77f, 0.34f, 1), 1.0f, 0.25f, Vec4(0.9f, 0.55f, 0.08f, 1)},
+    {"M_Paint_Olive", Vec4(0.2f, 0.24f, 0.12f, 1), 0.0f, 0.55f, Vec4(0)},
     {"M_Emissive_Cyan", Vec4(0.02f, 0.05f, 0.06f, 1), 0.0f, 0.5f, Vec4(0.2f, 3.0f, 4.0f, 1)},
 };
 
@@ -66,6 +63,104 @@ render::MaterialGraph MakeMaterial(const StarterMaterial& m)
         emissive->value = m.emissive;
         g.Connect(emissive->id, 0, output, 4);
     }
+    return g;
+}
+
+/// Procedural surfaces: a world-aligned grid (prototype blocks, like the UE template levels) or two colors mixed by
+/// fractal noise (natural surfaces). Every value is a named parameter, so material instances can retint them.
+enum class Pattern : u8
+{
+    Grid,
+    Noise,
+};
+
+struct PatternMaterial
+{
+    const char* name;
+    Pattern pattern;
+    Vec4 colorA;      // base color
+    Vec4 colorB;      // grid lines / second noise color
+    f32 scale;        // grid cell size (m) / noise frequency (1/m)
+    f32 detail;       // grid line width (fraction of a cell) / weight of a 6x finer noise
+    f32 roughnessA, roughnessB;
+};
+
+const PatternMaterial Patterns[] = {
+    {"M_Proto_Grey", Pattern::Grid, Vec4(0.42f, 0.42f, 0.42f, 1), Vec4(0.2f, 0.2f, 0.2f, 1), 1.0f, 0.025f, 0.7f, 0.7f},
+    {"M_Proto_Light", Pattern::Grid, Vec4(0.72f, 0.72f, 0.7f, 1), Vec4(0.45f, 0.45f, 0.44f, 1), 1.0f, 0.025f, 0.6f, 0.6f},
+    {"M_Proto_Orange", Pattern::Grid, Vec4(0.85f, 0.36f, 0.08f, 1), Vec4(0.5f, 0.18f, 0.03f, 1), 0.5f, 0.04f, 0.5f, 0.5f},
+    {"M_Proto_Blue", Pattern::Grid, Vec4(0.12f, 0.32f, 0.75f, 1), Vec4(0.05f, 0.14f, 0.4f, 1), 0.5f, 0.04f, 0.45f, 0.45f},
+    {"M_Proto_Teal", Pattern::Grid, Vec4(0.08f, 0.55f, 0.5f, 1), Vec4(0.03f, 0.28f, 0.25f, 1), 0.5f, 0.04f, 0.45f, 0.45f},
+    {"M_Concrete", Pattern::Noise, Vec4(0.52f, 0.51f, 0.48f, 1), Vec4(0.36f, 0.35f, 0.33f, 1), 0.7f, 0.45f, 0.8f, 0.95f},
+    {"M_Grass", Pattern::Noise, Vec4(0.13f, 0.3f, 0.05f, 1), Vec4(0.32f, 0.42f, 0.1f, 1), 0.25f, 0.4f, 0.85f, 0.95f},
+    {"M_Wood", Pattern::Noise, Vec4(0.42f, 0.25f, 0.12f, 1), Vec4(0.25f, 0.14f, 0.06f, 1), 1.6f, 0.5f, 0.55f, 0.75f},
+    {"M_Sand", Pattern::Noise, Vec4(0.78f, 0.67f, 0.48f, 1), Vec4(0.62f, 0.52f, 0.36f, 1), 0.6f, 0.6f, 0.85f, 0.95f},
+    {"M_Rock", Pattern::Noise, Vec4(0.36f, 0.35f, 0.33f, 1), Vec4(0.16f, 0.16f, 0.15f, 1), 0.9f, 0.55f, 0.65f, 0.9f},
+    {"M_Dirt", Pattern::Noise, Vec4(0.3f, 0.21f, 0.13f, 1), Vec4(0.18f, 0.12f, 0.07f, 1), 0.5f, 0.5f, 0.9f, 1.0f},
+};
+
+render::MaterialGraph MakePatternMaterial(const PatternMaterial& m)
+{
+    render::MaterialGraph g;
+    g.guid = Guid::FromName(Guid(), m.name);
+    const u32 output = g.AddNode("Output", Vec2(720, 0))->id;
+    auto value = [&](StringView type, StringView name, Vec4 v, Vec2 pos) {
+        render::MaterialGraphNode* n = g.AddNode(type, pos);
+        n->name = String(name);
+        n->value = v;
+        return n->id;
+    };
+    const u32 a = value("Color", "Base Color", m.colorA, Vec2(0, -160));
+    const u32 b = value("Color", m.pattern == Pattern::Grid ? "Line Color" : "Color B", m.colorB, Vec2(0, -60));
+    const u32 roughA = value("Scalar", "Roughness", Vec4(m.roughnessA, 0, 0, 0), Vec2(0, 260));
+    const u32 roughB = value("Scalar", "Roughness B", Vec4(m.roughnessB, 0, 0, 0), Vec2(0, 340));
+    u32 mask = 0, maskPin = 0;
+    if (m.pattern == Pattern::Grid) {
+        const u32 grid = g.AddNode("WorldGrid", Vec2(220, 60))->id;
+        g.Connect(value("Scalar", "Cell Size", Vec4(m.scale, 0, 0, 0), Vec2(0, 60)), 0, grid, 0);
+        g.Connect(value("Scalar", "Line Width", Vec4(m.detail, 0, 0, 0), Vec2(0, 140)), 0, grid, 1);
+        // Every other cell slightly darker, like the classic prototype grid.
+        const u32 tint = g.AddNode("Lerp", Vec2(420, -140))->id;
+        g.Connect(a, 0, tint, 0);
+        const u32 dark = g.AddNode("Multiply", Vec2(220, -200))->id;
+        g.Connect(a, 0, dark, 0);
+        g.Connect(value("Scalar", "", Vec4(0.88f, 0, 0, 0), Vec2(0, -240)), 0, dark, 1);
+        g.Connect(dark, 0, tint, 1);
+        g.Connect(grid, 1, tint, 2);
+        const u32 color = g.AddNode("Lerp", Vec2(560, -100))->id;
+        g.Connect(tint, 0, color, 0);
+        g.Connect(b, 0, color, 1);
+        g.Connect(grid, 0, color, 2);
+        g.Connect(color, 0, output, 0);
+        mask = grid;
+        maskPin = 0;
+    } else {
+        // Large-scale noise blended with a finer one.
+        const u32 coarse = g.AddNode("Noise", Vec2(220, 60))->id;
+        const u32 scale = value("Scalar", "Scale", Vec4(m.scale, 0, 0, 0), Vec2(0, 60));
+        g.Connect(scale, 0, coarse, 1);
+        const u32 fineScale = g.AddNode("Multiply", Vec2(220, 160))->id;
+        g.Connect(scale, 0, fineScale, 0);
+        g.Connect(value("Scalar", "", Vec4(6.0f, 0, 0, 0), Vec2(0, 160)), 0, fineScale, 1);
+        const u32 fine = g.AddNode("Noise", Vec2(400, 160))->id;
+        g.Connect(fineScale, 0, fine, 1);
+        const u32 mix = g.AddNode("Lerp", Vec2(560, 100))->id;
+        g.Connect(coarse, 0, mix, 0);
+        g.Connect(fine, 0, mix, 1);
+        g.Connect(value("Scalar", "Detail", Vec4(m.detail, 0, 0, 0), Vec2(220, 260)), 0, mix, 2);
+        const u32 color = g.AddNode("Lerp", Vec2(560, -100))->id;
+        g.Connect(a, 0, color, 0);
+        g.Connect(b, 0, color, 1);
+        g.Connect(mix, 0, color, 2);
+        g.Connect(color, 0, output, 0);
+        mask = mix;
+        maskPin = 0;
+    }
+    const u32 rough = g.AddNode("Lerp", Vec2(560, 300))->id;
+    g.Connect(roughA, 0, rough, 0);
+    g.Connect(roughB, 0, rough, 1);
+    g.Connect(mask, maskPin, rough, 2);
+    g.Connect(rough, 0, output, 2);
     return g;
 }
 
@@ -295,6 +390,202 @@ script ThirdPersonCamera {
 )zs"},
 };
 
+/// Scripts of the Starter Content prefabs (vehicles and gameplay props).
+const StarterScript PropScripts[] = {
+    {"TankController.zs", R"zs(// Tank: W/S drive, A/D turn the hull, the mouse aims the turret and the barrel, left click fires.
+// Needs a Character Controller on this entity and descendants named "Turret", "Barrel", "Muzzle" (with a Particle
+// Emitter for the muzzle flash) and "Impact" (a Particle Emitter moved to where the shell hits).
+script TankController {
+    @tooltip("Reads the keyboard and mouse (off: the tank stands still, e.g. while another player is driven)")
+    prop controlled = true
+    @range(0, 30) @tooltip("Forward speed (m/s)")
+    prop speed = 6.0
+    @range(0, 30) prop reverseSpeed = 3.0
+    @range(0, 180) @tooltip("Hull turn rate (degrees per second)")
+    prop turnRate = 60.0
+    @range(0.01, 1) prop mouseSensitivity = 0.12
+    @range(-30, 0) prop minElevation = -6.0
+    @range(0, 60) prop maxElevation = 20.0
+    @range(0.05, 5) @tooltip("Seconds between shots")
+    prop reload = 0.8
+    @range(0, 100000) @tooltip("Impulse given to what the shell hits (N*s)")
+    prop impactImpulse = 6000.0
+    @range(10, 2000) prop range = 300.0
+
+    var yaw = 0.0
+    var turretYaw = 0.0
+    var elevation = 0.0
+    var cooldown = 0.0
+    var turret = nil
+    var barrel = nil
+    var muzzle = nil
+    var impact = nil
+
+    fn start() {
+        yaw = entity.rotation.euler().y
+        turret = entity.child("Turret")
+        barrel = entity.child("Barrel")
+        muzzle = entity.child("Muzzle")
+        impact = entity.child("Impact")
+    }
+
+    fn update(dt) {
+        if not controlled { return }
+        // Hull: tracks drive along its forward axis and turn it in place.
+        let move = input.move
+        var s = speed
+        if move.z < 0 { s = reverseSpeed }
+        character.move(entity.forward * (move.z * s))
+        yaw += move.x * turnRate * dt
+        entity.rotation = quat.euler(0, yaw, 0)
+
+        // Turret and barrel follow the mouse (relative to the hull).
+        let look = input.look
+        turretYaw += look.x * mouseSensitivity
+        elevation = clamp(elevation - look.y * mouseSensitivity, minElevation, maxElevation)
+        if turret != nil { turret.rotation = quat.euler(0, turretYaw, 0) }
+        if barrel != nil { barrel.rotation = quat.euler(-elevation, 0, 0) }
+
+        cooldown -= dt
+        if input.mousePressed("left") and cooldown <= 0 {
+            cooldown = reload
+            fire()
+        }
+    }
+
+    fn fire() {
+        if muzzle == nil { return }
+        let origin = muzzle.worldPosition
+        let dir = muzzle.worldForward
+        muzzle.emit()
+        let hit = physics.raycast(origin, dir, range)
+        if hit == nil { return }
+        if impact != nil {
+            impact.worldPosition = hit.point
+            impact.emit()
+        }
+        hit.entity.addImpulse(dir * impactImpulse, hit.point)
+    }
+}
+)zs"},
+    {"Door.zs", R"zs(// A door on a Hinge Joint: press E near it to open or close (the joint's motor turns it).
+script Door {
+    @tooltip("Name of the player entity")
+    prop player = "Player"
+    @range(0.5, 10) @tooltip("How close the player must be (m)")
+    prop reach = 2.5
+    @range(0.1, 10) @tooltip("Turning speed (radians per second)")
+    prop speed = 1.8
+    @range(1, 100000) prop torque = 600.0
+    prop key = "E"
+
+    var open = false
+
+    fn start() {
+        entity.setMotor(-speed, torque) // held shut against the hinge's lower limit
+    }
+
+    fn update(dt) {
+        let p = find(player)
+        if p == nil { return }
+        if input.pressed(key) and p.worldPosition.distance(entity.worldPosition) < reach {
+            open = not open
+            if open { entity.setMotor(speed, torque) } else { entity.setMotor(-speed, torque) }
+        }
+    }
+}
+)zs"},
+    {"Elevator.zs", R"zs(// A platform on a Slider Joint going up and down between its limits, waiting at each end.
+script Elevator {
+    @range(0.5, 50) @tooltip("Travel (m): the slider's upper limit")
+    prop height = 4.0
+    @range(0.1, 10) @tooltip("Meters per second")
+    prop speed = 1.5
+    @range(0, 30) @tooltip("Seconds at each end")
+    prop wait = 2.0
+    @range(100, 10000000) prop force = 200000.0
+
+    var dir = 1
+    var timer = 0.0
+
+    fn start() {
+        timer = wait
+        entity.setMotor(0, force) // hold
+    }
+
+    fn update(dt) {
+        if timer > 0 {
+            timer -= dt
+            if timer <= 0 { entity.setMotor(speed * dir, force) }
+            return
+        }
+        let at = entity.jointValue
+        if (dir > 0 and at >= height - 0.02) or (dir < 0 and at <= 0.02) {
+            dir = -dir
+            timer = wait
+            entity.setMotor(0, force)
+        }
+    }
+}
+)zs"},
+    {"Push.zs", R"zs(// Gives the entity's Rigid Body a push when the game starts (swinging lamps, rolling balls).
+script Push {
+    @tooltip("Impulse in world space (N*s)")
+    prop impulse = vec3(8, 0, 4)
+
+    fn start() {
+        entity.addImpulse(impulse)
+    }
+}
+)zs"},
+    {"JumpPad.zs", R"zs(// Throws whatever enters this trigger upwards (characters and Rigid Bodies), with a burst of particles.
+script JumpPad {
+    @range(1, 50) @tooltip("Upward speed (m/s)")
+    prop strength = 14.0
+
+    fn triggerEnter(other) {
+        other.launch(vec3(0, strength, 0))
+        entity.emit(30)
+    }
+}
+)zs"},
+    {"Coin.zs", R"zs(// A spinning pickup: the player collects it by walking through (it bursts into sparkles).
+script Coin {
+    @range(0, 720) @tooltip("Degrees per second")
+    prop spinSpeed = 120.0
+    @tooltip("Name of the player entity")
+    prop player = "Player"
+
+    var base = vec3(0)
+    var collected = false
+    var timer = 0.0
+
+    fn start() {
+        base = entity.position
+    }
+
+    fn update(dt) {
+        if collected {
+            timer -= dt
+            if timer <= 0 { entity.destroy() }
+            return
+        }
+        entity.rotate(vec3(0, 1, 0), spinSpeed * dt)
+        entity.position = base + vec3(0, sin(time.elapsed * 2.5) * 0.12, 0)
+    }
+
+    fn triggerEnter(other) {
+        if collected or other.name != player { return }
+        collected = true
+        timer = 1.5
+        entity.emit(40)
+        entity.scale = vec3(0.001) // hidden; the sparkles finish before it is removed
+        log("Coin collected")
+    }
+}
+)zs"},
+};
+
 u32 WriteScripts(const String& dir, Span<const StarterScript> scripts)
 {
     platform::CreateDirectoryTree(dir);
@@ -394,6 +685,25 @@ u32 WriteSounds(const String& dir)
         MakeLoop(ocean, 22050 / 2);
         save("Ocean_Loop.wav", ocean);
     }
+    // Fire: a soft roar (low-passed noise) with random crackles (short decaying clicks).
+    {
+        f32 roar = 0.0f, roar2 = 0.0f, crackle = 0.0f, crackleFreq = 0.0f, phase = 0.0f;
+        audio::PcmData fire = Synth(22050, 6.0f, [&](f32 t, u32) {
+            const f32 n = rng.Range(-1.0f, 1.0f);
+            roar += (n - roar) * 0.03f;
+            roar2 += (roar - roar2) * 0.05f;
+            if (rng.NextFloat() < 0.0009f) {
+                crackle = rng.Range(0.3f, 1.0f);
+                crackleFreq = rng.Range(900.0f, 3200.0f);
+            }
+            crackle *= 0.9965f;
+            phase += TwoPi * crackleFreq / 22050.0f;
+            const f32 breath = 0.8f + 0.2f * std::sin(TwoPi * 0.3f * t);
+            return roar2 * 2.5f * breath + crackle * (0.5f * std::sin(phase) + 0.5f * n) * 0.5f;
+        });
+        MakeLoop(fire, 22050 / 4);
+        save("Fire_Loop.wav", fire);
+    }
     return written;
 }
 
@@ -409,8 +719,13 @@ u32 WriteStarterContent(StringView contentDir)
         const render::MaterialGraph g = MakeMaterial(m);
         written += fs::WriteTextFile(String::Format("{}/Materials/{}.zmat", root, m.name), ToJsonString(g.ToJson())) ? 1u : 0u;
     }
+    for (const PatternMaterial& m : Patterns) {
+        const render::MaterialGraph g = MakePatternMaterial(m);
+        written += fs::WriteTextFile(String::Format("{}/Materials/{}.zmat", root, m.name), ToJsonString(g.ToJson())) ? 1u : 0u;
+    }
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(Scripts, ZX_ARRAY_COUNT(Scripts)));
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(GameplayScripts, ZX_ARRAY_COUNT(GameplayScripts)));
+    written += WriteScripts(root + "/Scripts", Span<const StarterScript>(PropScripts, ZX_ARRAY_COUNT(PropScripts)));
     written += WriteSounds(root + "/Sounds");
     return written;
 }

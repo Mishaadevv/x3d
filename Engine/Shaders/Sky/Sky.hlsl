@@ -321,7 +321,16 @@ float4 FogPS(VSOutput i) : SV_Target0
     const float cosTheta = dot(dir, g_Sky.sunDirection);
     const float g = g_Fog.sunG;
     const float hg = (1.0 - g * g) / (4.0 * ATM_PI * pow(max(1.0 + g * g - 2.0 * g * cosTheta, 1e-4), 1.5));
-    const float3 inscatter = g_Fog.albedo * (EvalSH(dir) * g_Fog.skyScale + g_Fog.sunColor * hg);
+    float3 inscatter = g_Fog.albedo * (EvalSH(dir) * g_Fog.skyScale + g_Fog.sunColor * hg);
+    if (g_Sky.hdri == ZX_INVALID_INDEX) {
+        // Distant fog takes the color of the sky just above the horizon in the same direction, so the far scene
+        // melts into the sky instead of ending in a grey band.
+        float3 horizonDir = dir;
+        horizonDir.y = max(horizonDir.y, 0.03);
+        const float3 sky = GetTexture2D(g_Sky.skyViewLut).SampleLevel(g_LinearClamp, SkyViewUV(normalize(horizonDir)), 0).rgb *
+                           g_Sky.sunColor * (g_Sky.sunIlluminance * g_Sky.exposure);
+        inscatter = lerp(inscatter, sky + g_Fog.albedo * g_Fog.sunColor * hg * 0.5, saturate(dist / 1500.0) * 0.8);
+    }
     // Premultiplied: result = inscatter * (1 - T) + scene * T (blend: src One, dst SrcAlpha).
     return float4(min(inscatter * (1.0 - transmittance), 60000.0), transmittance);
 }

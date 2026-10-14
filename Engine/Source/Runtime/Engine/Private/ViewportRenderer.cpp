@@ -1,4 +1,5 @@
 #include "Engine/ViewportRenderer.h"
+#include "Engine/Particles.h"
 #include "Core/Profiler/Profiler.h"
 #include "Engine/PostProcessVolume.h"
 
@@ -8,7 +9,7 @@ using namespace rhi;
 using namespace render;
 
 ViewportRenderer::ViewportRenderer(Device& device, RenderAssets& assets)
-    : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_taa(device), m_reflections(device), m_captureScene(device, assets), m_post(device), m_outline(device)
+    : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_particleRenderer(device), m_taa(device), m_reflections(device), m_captureScene(device, assets), m_post(device), m_outline(device)
 {
 }
 
@@ -45,7 +46,8 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     s.reflections.maxProbes = lite ? 8 : 16;
     s.reflections.ssr = !lite; // Lite: probes + sky only (the iGPU is bandwidth bound)
     return m_scene.Init(m_hdrFormat, DepthFormat()) && m_captureScene.Init(m_hdrFormat, DepthFormat()) && m_reflections.Init() && m_sky.Init(m_hdrFormat, DepthFormat()) && m_post.Init(outputFormat) &&
-           m_taa.Init() && m_outline.Init(outputFormat) && m_water.Init(m_hdrFormat, DepthFormat(), lite);
+           m_taa.Init() && m_outline.Init(outputFormat) && m_water.Init(m_hdrFormat, DepthFormat(), lite) &&
+           m_particleRenderer.Init(m_hdrFormat);
 }
 
 void ViewportRenderer::ResolveHdriSky(ecs::World& world)
@@ -158,6 +160,8 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     ApplyEnvironment(env);
     m_lights.Clear();
     GatherLights(world, m_lights);
+    if (m_particleSource)
+        m_particleSource->ModulateLights(m_lights.View());
     m_lighting.lights = m_lights.View();
 
     const f32 scale = Clamp(m_settings.renderScale, 0.25f, 2.0f);
@@ -258,6 +262,11 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
                       f32(std::fmod(m_time, 3600.0)), exposure);
     if (m_settings.useSky)
         m_sky.AddFogPass(graph, sceneColor, sceneDepth, m_lighting, m_settings.sky);
+    // Particles over the fogged scene (they don't write depth, so the fog couldn't place them).
+    m_particleList.Clear();
+    if (features.particles && m_particleSource)
+        m_particleSource->Gather(view.position, m_particleList);
+    m_particleRenderer.AddPass(graph, sceneColor, sceneDepth, view, m_particleList.View(), m_lighting, exposure, f32(std::fmod(m_time, 3600.0)));
     // After every pass that samples the cubes: sky cube update, the probe face, prefiltering.
     m_reflections.AddUpdatePasses(graph, m_settings.useSky ? m_sky.SkyViewTexture() : RGTexture(), m_sky.SkyRadianceScale(), faceColor,
                                   faceDepth, exposure, m_settings.useSky ? &m_settings.sky.hdri : nullptr);

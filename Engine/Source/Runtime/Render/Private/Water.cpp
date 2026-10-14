@@ -11,7 +11,7 @@ ZX_DEFINE_LOG_CATEGORY_STATIC(LogWater, Info);
 
 namespace {
 
-constexpr u32 WaveCount = 4;
+constexpr u32 WaveCount = 8;
 
 struct WaterParams
 {
@@ -46,12 +46,13 @@ struct CopyParams
     u32 srcColor, srcDepth, dstColor, dstDepth, width, height;
 };
 
-/// Four Gerstner waves around the wind direction, from the longest (waveLength) to short chop.
-void SetupWaves(const WaterSurface& s, WaterParams& p)
+/// Eight Gerstner waves spread around the wind direction, from the longest (waveLength) to short chop, with
+/// incommensurate lengths so the pattern never visibly repeats. Waves shorter than four grid cells only shade.
+void SetupWaves(const WaterSurface& s, WaterParams& p, f32 cellSize)
 {
-    static const f32 LengthScale[WaveCount] = {1.0f, 0.61f, 0.37f, 0.21f};
-    static const f32 AngleOffset[WaveCount] = {0.0f, 0.55f, -0.45f, 1.1f};
-    static const f32 AmplitudeScale[WaveCount] = {1.0f, 0.55f, 0.3f, 0.14f};
+    static const f32 LengthScale[WaveCount] = {1.0f, 0.73f, 0.53f, 0.41f, 0.29f, 0.21f, 0.15f, 0.11f};
+    static const f32 AngleOffset[WaveCount] = {0.0f, 0.62f, -0.48f, 1.12f, -1.03f, 0.31f, -0.27f, 1.65f};
+    static const f32 AmplitudeScale[WaveCount] = {1.0f, 0.68f, 0.48f, 0.36f, 0.25f, 0.17f, 0.12f, 0.08f};
     for (u32 i = 0; i < WaveCount; ++i) {
         const f32 length = Max(s.waveLength * LengthScale[i], 0.1f);
         const f32 k = TwoPi / length;
@@ -61,7 +62,7 @@ void SetupWaves(const WaterSurface& s, WaterParams& p)
         // Steepness: the sum over all waves stays below 1 so crests never loop.
         const f32 q = amplitude > 0.0f ? Min(Clamp(s.choppiness, 0.0f, 1.0f) / (k * amplitude * f32(WaveCount)), 1.0f / (k * amplitude * f32(WaveCount))) : 0.0f;
         p.waves[i] = Vec4(Cos(angle), Sin(angle), k, amplitude);
-        p.waveMotion[i] = Vec4(omega, q, 0.0f, 0.0f);
+        p.waveMotion[i] = Vec4(omega, q, length >= cellSize * 4.0f ? 1.0f : 0.0f, 0.0f);
     }
 }
 
@@ -192,7 +193,7 @@ void WaterRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 p.foam = s.foam;
                 p.shoreFoam = s.shoreFoam;
                 p.roughness = Clamp(s.roughness, 0.01f, 1.0f);
-                SetupWaves(s, p);
+                SetupWaves(s, p, Max(s.size.x, s.size.y) / f32(m_grid));
                 p.sceneColor = ctx.Texture(colorCopy)->GetSrvIndex();
                 p.sceneDepth = ctx.Texture(depthCopy)->GetSrvIndex();
                 if (skyView.IsValid())

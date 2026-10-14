@@ -336,10 +336,13 @@ void SkyRenderer::AddFogPass(RenderGraph& graph, RGTexture color, RGTexture dept
     fp.sunColor = lighting.sunColor * (lighting.sunIlluminance * m_params.exposure);
     fp.skyScale = lighting.skyIrradianceScale.x;
     const RGBuffer sh = m_rgSH;
+    const RGTexture skyView = m_rgSkyView;
     graph.AddPass(
         "HeightFog", PassType::Graphics,
-        [color, depth, sh](PassBuilder& b) {
+        [color, depth, sh, skyView](PassBuilder& b) {
             b.ReadTexture(depth);
+            if (skyView.IsValid())
+                b.ReadTexture(skyView);
             b.ReadBuffer(sh, ResourceState::ConstantBuffer);
             b.RenderTarget(color, LoadOp::Load);
         },

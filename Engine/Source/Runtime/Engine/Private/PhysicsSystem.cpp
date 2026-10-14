@@ -224,29 +224,40 @@ bool ImplicitMeshCollision(const ecs::World& world, Entity e)
 }
 
 /// The entity a joint connects to (by name; prefers one with a body), or none.
-Entity FindConnected(ecs::World& world, StringView name, const HashMap<u64, u32>* bodies)
+/// The entity a joint connects to: by name, preferring one with a body, then the nearest to `near` (several
+/// instances of a prefab share names; each connects within itself).
+Entity FindConnected(ecs::World& world, StringView name, const HashMap<u64, u32>* bodies, Vec3 near)
 {
     if (name.Empty())
         return {};
     Entity found;
+    f32 best = Infinity;
+    bool foundHasBody = false;
     world.Query<const scene::EntityName>().Each([&](Entity e, const scene::EntityName& n) {
         if (n.value.View() != name)
             return;
-        if (!found || (bodies && bodies->Contains(e.Pack()) && !bodies->Contains(found.Pack())))
+        const bool hasBody = bodies && bodies->Contains(e.Pack());
+        const f32 d = DistanceSq(WorldPose(world, e).position, near);
+        if (!found || (hasBody && !foundHasBody) || (hasBody == foundHasBody && d < best)) {
             found = e;
+            best = d;
+            foundHasBody = hasBody;
+        }
     });
     return found;
 }
 
 /// Joint description of the entity's joint component in world space (bodies not set); false without one.
-bool DescribeJoint(const ecs::World& world, Entity e, JointDesc& d, StringView& connectedName, Vec3& connectedAnchor, bool& autoAnchor)
+/// `kind`: 0..5 = only that joint component (Hinge, Fixed, Slider, Ball, Distance, Configurable), ~0u = the first one.
+bool DescribeJoint(const ecs::World& world, Entity e, JointDesc& d, StringView& connectedName, Vec3& connectedAnchor, bool& autoAnchor,
+                   u32 kind = ~0u)
 {
     const Pose p = WorldPose(world, e);
     auto point = [&](Vec3 local) { return p.position + p.rotation * (local * p.scale); };
     auto direction = [&](Vec3 local) { return SafeNormalize(p.rotation * local, Vec3::Up()); };
     autoAnchor = false;
     connectedAnchor = Vec3();
-    if (const HingeJoint* j = world.Get<const HingeJoint>(e)) {
+    if (const HingeJoint* j = kind == ~0u || kind == 0 ? world.Get<const HingeJoint>(e) : nullptr) {
         d.type = JointType::Hinge;
         d.anchor = point(j->anchor);
         d.axis = direction(j->axis);
@@ -262,7 +273,7 @@ bool DescribeJoint(const ecs::World& world, Entity e, JointDesc& d, StringView& 
         connectedName = j->connectedBody.View();
         return true;
     }
-    if (const FixedJoint* j = world.Get<const FixedJoint>(e)) {
+    if (const FixedJoint* j = kind == ~0u || kind == 1 ? world.Get<const FixedJoint>(e) : nullptr) {
         d.type = JointType::Fixed;
         d.anchor = p.position;
         d.breakForce = j->breakForce;
@@ -271,7 +282,7 @@ bool DescribeJoint(const ecs::World& world, Entity e, JointDesc& d, StringView& 
         connectedName = j->connectedBody.View();
         return true;
     }
-    if (const SliderJoint* j = world.Get<const SliderJoint>(e)) {
+    if (const SliderJoint* j = kind == ~0u || kind == 2 ? world.Get<const SliderJoint>(e) : nullptr) {
         d.type = JointType::Slider;
         d.anchor = p.position;
         d.axis = direction(j->axis);
@@ -287,7 +298,7 @@ bool DescribeJoint(const ecs::World& world, Entity e, JointDesc& d, StringView& 
         connectedName = j->connectedBody.View();
         return true;
     }
-    if (const BallJoint* j = world.Get<const BallJoint>(e)) {
+    if (const BallJoint* j = kind == ~0u || kind == 3 ? world.Get<const BallJoint>(e) : nullptr) {
         d.type = JointType::Ball;
         d.anchor = point(j->anchor);
         d.axis = direction(j->axis);
@@ -299,7 +310,7 @@ bool DescribeJoint(const ecs::World& world, Entity e, JointDesc& d, StringView& 
         connectedName = j->connectedBody.View();
         return true;
     }
-    if (const DistanceJoint* j = world.Get<const DistanceJoint>(e)) {
+    if (const DistanceJoint* j = kind == ~0u || kind == 4 ? world.Get<const DistanceJoint>(e) : nullptr) {
         d.type = JointType::Distance;
         d.anchor = point(j->anchor);
         d.restLength = j->restLength;
@@ -315,7 +326,7 @@ bool DescribeJoint(const ecs::World& world, Entity e, JointDesc& d, StringView& 
         autoAnchor = j->autoConnectedAnchor;
         return true;
     }
-    if (const ConfigurableJoint* j = world.Get<const ConfigurableJoint>(e)) {
+    if (const ConfigurableJoint* j = kind == ~0u || kind == 5 ? world.Get<const ConfigurableJoint>(e) : nullptr) {
         d.type = JointType::Configurable;
         d.anchor = point(j->anchor);
         d.axis = direction(j->axis);
@@ -373,20 +384,22 @@ bool HasJoint(const ecs::World& world, Entity e)
 
 void GatherJointGizmos(ecs::World& world, Entity e, Array<JointGizmo>& out)
 {
-    JointDesc d;
-    StringView name;
-    Vec3 connectedAnchor;
-    bool autoAnchor = false;
-    if (!DescribeJoint(world, e, d, name, connectedAnchor, autoAnchor))
-        return;
-    JointGizmo g;
-    g.anchor = d.anchor;
-    g.axis = d.type == JointType::Fixed || d.type == JointType::Distance ? Vec3() : d.axis;
-    g.linear = d.type == JointType::Slider;
-    const Entity connected = FindConnected(world, name, nullptr);
-    g.hasConnected = connected || d.type == JointType::Distance;
-    g.connected = ConnectedPoint(world, connected, d, connectedAnchor, autoAnchor);
-    out.PushBack(g);
+    for (u32 kind = 0; kind < 6; ++kind) {
+        JointDesc d;
+        StringView name;
+        Vec3 connectedAnchor;
+        bool autoAnchor = false;
+        if (!DescribeJoint(world, e, d, name, connectedAnchor, autoAnchor, kind))
+            continue;
+        JointGizmo g;
+        g.anchor = d.anchor;
+        g.axis = d.type == JointType::Fixed || d.type == JointType::Distance ? Vec3() : d.axis;
+        g.linear = d.type == JointType::Slider;
+        const Entity connected = FindConnected(world, name, nullptr, d.anchor);
+        g.hasConnected = connected || d.type == JointType::Distance;
+        g.connected = ConnectedPoint(world, connected, d, connectedAnchor, autoAnchor);
+        out.PushBack(g);
+    }
 }
 
 void GatherColliderOutlines(ecs::World& world, Entity e, Array<ColliderOutline>& out)
@@ -573,30 +586,37 @@ void PhysicsSystem::CreateJoints(ecs::World& world)
         return n ? n->value.View() : StringView("entity");
     };
     for (Entity e : owners) {
-        JointDesc d;
-        StringView connectedName;
-        Vec3 connectedAnchor;
-        bool autoAnchor = false;
-        DescribeJoint(world, e, d, connectedName, connectedAnchor, autoAnchor);
-        d.a = BodyOf(e);
-        if (!d.a.IsValid() || m_world->GetMotionType(d.a) != MotionType::Dynamic) {
-            ZX_LOG_WARN(LogPhysics, "Joint on '{}' needs a dynamic Rigid Body with a collider: ignored", nameOf(e));
-            continue;
-        }
-        const Entity connected = FindConnected(world, connectedName, &m_byEntity);
-        if (!connectedName.Empty() && !connected)
-            ZX_LOG_WARN(LogPhysics, "Joint on '{}': no entity named '{}', connected to the world", nameOf(e), connectedName);
-        if (connected) {
-            d.b = BodyOf(connected);
-            if (!d.b.IsValid()) {
-                ZX_LOG_WARN(LogPhysics, "Joint on '{}': '{}' has no Rigid Body or collider, connected to the world", nameOf(e), connectedName);
-            } else if (d.b == d.a) {
-                ZX_LOG_WARN(LogPhysics, "Joint on '{}' is connected to itself: ignored", nameOf(e));
+        // Every joint component of the entity (e.g. a bridge plank hinged to its neighbour and pinned to a post);
+        // scripts drive the first one.
+        for (u32 kind = 0; kind < 6; ++kind) {
+            JointDesc d;
+            StringView connectedName;
+            Vec3 connectedAnchor;
+            bool autoAnchor = false;
+            if (!DescribeJoint(world, e, d, connectedName, connectedAnchor, autoAnchor, kind))
                 continue;
+            d.a = BodyOf(e);
+            if (!d.a.IsValid() || m_world->GetMotionType(d.a) != MotionType::Dynamic) {
+                ZX_LOG_WARN(LogPhysics, "Joint on '{}' needs a dynamic Rigid Body with a collider: ignored", nameOf(e));
+                break;
             }
+            const Entity connected = FindConnected(world, connectedName, &m_byEntity, d.anchor);
+            if (!connectedName.Empty() && !connected)
+                ZX_LOG_WARN(LogPhysics, "Joint on '{}': no entity named '{}', connected to the world", nameOf(e), connectedName);
+            if (connected) {
+                d.b = BodyOf(connected);
+                if (!d.b.IsValid()) {
+                    ZX_LOG_WARN(LogPhysics, "Joint on '{}': '{}' has no Rigid Body or collider, connected to the world", nameOf(e), connectedName);
+                } else if (d.b == d.a) {
+                    ZX_LOG_WARN(LogPhysics, "Joint on '{}' is connected to itself: ignored", nameOf(e));
+                    continue;
+                }
+            }
+            d.anchorB = ConnectedPoint(world, connected, d, connectedAnchor, autoAnchor);
+            const JointId id = m_world->CreateJoint(d);
+            if (!m_joints.Find(e.Pack())->IsValid())
+                m_joints.InsertOrAssign(e.Pack(), id);
         }
-        d.anchorB = ConnectedPoint(world, connected, d, connectedAnchor, autoAnchor);
-        m_joints.InsertOrAssign(e.Pack(), m_world->CreateJoint(d));
     }
 }
 

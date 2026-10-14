@@ -28,7 +28,7 @@ void CopySceneCS(uint2 id : SV_DispatchThreadID)
 
 // --- Surface ---------------------------------------------------------------------------------------------------------
 
-#define WAVE_COUNT 4
+#define WAVE_COUNT 8
 
 struct WaterParams
 {
@@ -40,7 +40,7 @@ struct WaterParams
     uint grid;
     float nearPlane;
     float4 waves[WAVE_COUNT];     // xy = direction, z = wavenumber k, w = amplitude
-    float4 waveMotion[WAVE_COUNT]; // x = angular frequency, y = steepness Q
+    float4 waveMotion[WAVE_COUNT]; // x = angular frequency, y = steepness Q, z = 1: displaces the grid (long enough for it)
     float3 shallowColor;
     float clarity;
     float3 deepColor;
@@ -67,13 +67,16 @@ struct VSOut
     float crest : TEXCOORD2; // 0..1: how folded the surface is (foam on wave tops)
 };
 
-/// Sum of Gerstner waves at a world xz (GPU Gems 1, ch. 1).
-void Gerstner(float2 xz, out float3 offset, out float3 normal, out float crest)
+/// Sum of Gerstner waves at a world xz (GPU Gems 1, ch. 1). `gridOnly`: only the waves long enough for the vertex
+/// grid (shorter ones would alias); the pixel shader adds every wave to the normal.
+void Gerstner(float2 xz, bool gridOnly, out float3 offset, out float3 normal, out float crest)
 {
     offset = 0;
     float3 n = float3(0, 1, 0);
     float fold = 0;
     [unroll] for (uint i = 0; i < WAVE_COUNT; ++i) {
+        if (gridOnly && g_Water.waveMotion[i].z < 0.5)
+            continue;
         const float2 d = g_Water.waves[i].xy;
         const float k = g_Water.waves[i].z;
         const float a = g_Water.waves[i].w;
@@ -106,7 +109,7 @@ VSOut WaterVS(uint vertexId : SV_VertexID)
     const float fade = saturate(min(edge.x, edge.y) / 3.0);
     float3 offset, normal;
     float crest;
-    Gerstner(world.xz, offset, normal, crest);
+    Gerstner(world.xz, true, offset, normal, crest);
     world += offset * fade;
     VSOut o;
     o.position = mul(g_Water.viewProj, float4(world, 1));
@@ -152,8 +155,15 @@ float4 WaterPS(VSOut i, bool front : SV_IsFrontFace) : SV_Target0
     const float2 p = i.worldPos.xz;
     const float t = g_Water.time;
     const float2 ripples = NoiseGradient(p * 0.9 + float2(t * 0.35, t * 0.2)) * 0.6 + NoiseGradient(p * 2.3 - float2(t * 0.25, -t * 0.4)) * 0.3;
-    const float detail = saturate(1.0 - length(toCamera) / 120.0); // calmer far away (less shimmering)
-    float3 n = normalize(i.normal + float3(-ripples.x, 0, -ripples.y) * 0.12 * detail);
+    const float distance = length(toCamera);
+    const float detail = saturate(1.0 - distance / 120.0); // calmer far away (less shimmering)
+    // Per-pixel normal from every wave (the grid only carries the long ones), flattened with distance where the
+    // waves get smaller than a pixel.
+    float3 waveOffset, waveNormal;
+    float waveCrest;
+    Gerstner(i.worldPos.xz, false, waveOffset, waveNormal, waveCrest);
+    waveNormal = normalize(lerp(waveNormal, float3(0, 1, 0), saturate(distance / 400.0) * 0.7));
+    float3 n = normalize(waveNormal + float3(-ripples.x, 0, -ripples.y) * 0.12 * detail);
     if (!front)
         n = -n;
 

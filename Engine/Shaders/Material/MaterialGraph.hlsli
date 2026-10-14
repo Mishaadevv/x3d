@@ -85,6 +85,51 @@ float3 Desaturate(float3 color, float fraction)
     return lerp(color, grey.xxx, fraction);
 }
 
+/// World-aligned grid, projected along the dominant axis of the normal (works on any scaled box without UVs).
+/// x = line mask (1 on a line, antialiased, fading to the average far away), y = checker (0 / 1).
+float2 WorldGrid(MaterialInputs mi, float cellSize, float lineWidth)
+{
+    const float3 n = abs(mi.normal);
+    const float3 p = mi.worldPos / max(cellSize, 1e-3);
+    const float2 uv = (n.y >= n.x && n.y >= n.z) ? p.xz : (n.x >= n.z ? p.zy : p.xy);
+    const float2 fw = max(fwidth(uv), 1e-5);
+    const float2 d = abs(frac(uv - 0.5) - 0.5);
+    const float halfWidth = saturate(lineWidth) * 0.5;
+    const float2 l = 1.0 - smoothstep(halfWidth - fw, halfWidth + fw, d);
+    const float lines = lerp(max(l.x, l.y), saturate(lineWidth * 2.0), saturate(max(fw.x, fw.y) * 2.0 - 0.5));
+    const float checker = fmod(floor(uv.x) + floor(uv.y) + 4096.0, 2.0);
+    return float2(lines, checker);
+}
+
+float NoiseHash(float3 p)
+{
+    p = frac(p * 0.3183099 + 0.1);
+    p *= 17.0;
+    return frac(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float ValueNoise(float3 p)
+{
+    const float3 i = floor(p);
+    float3 f = frac(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return lerp(lerp(lerp(NoiseHash(i), NoiseHash(i + float3(1, 0, 0)), f.x), lerp(NoiseHash(i + float3(0, 1, 0)), NoiseHash(i + float3(1, 1, 0)), f.x), f.y),
+                lerp(lerp(NoiseHash(i + float3(0, 0, 1)), NoiseHash(i + float3(1, 0, 1)), f.x), lerp(NoiseHash(i + float3(0, 1, 1)), NoiseHash(i + 1.0), f.x), f.y), f.z);
+}
+
+/// Fractal value noise 0..1 (4 octaves).
+float FractalNoise(float3 p, float scale)
+{
+    p *= max(scale, 1e-4);
+    float sum = 0.0, amplitude = 0.5;
+    [unroll] for (int o = 0; o < 4; ++o) {
+        sum += ValueNoise(p) * amplitude;
+        p = p * 2.03 + 17.1;
+        amplitude *= 0.5;
+    }
+    return saturate(sum / 0.9375);
+}
+
 float SafeNormalize(float x) { return x == 0.0 ? 0.0 : sign(x); }
 float2 SafeNormalize(float2 v) { const float l = dot(v, v); return l > 1e-12 ? v * rsqrt(l) : 0.0; }
 float3 SafeNormalize(float3 v) { const float l = dot(v, v); return l > 1e-12 ? v * rsqrt(l) : 0.0; }

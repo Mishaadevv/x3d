@@ -6,6 +6,7 @@
 #include "Engine/AudioSystem.h"
 #include "Engine/Gameplay.h"
 #include "Engine/InputActions.h"
+#include "Engine/Particles.h"
 #include "Platform/Input.h"
 #include "Scene/Hierarchy.h"
 
@@ -221,6 +222,21 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             out = Value(n ? n->value.View() : StringView());
             return true;
         }
+        if (m == "worldPosition" || m == "worldRotation" || m == "worldForward") {
+            // World space (positions, rotation and forward otherwise are relative to the parent).
+            ecs::World* w = SystemOf(o).context.world;
+            e = ecs::Entity::Unpack(o.id);
+            if (!w || !w->IsAlive(e))
+                return v.Fail("The entity was destroyed");
+            const Transform t = Transform::FromMatrix(scene::ComputeWorldMatrix(*w, e));
+            if (m == "worldPosition")
+                out = Value(t.position);
+            else if (m == "worldRotation")
+                out = Value(t.rotation);
+            else
+                out = Value(t.rotation.GetForward());
+            return true;
+        }
         if (m == "alive") {
             ecs::World* w = SystemOf(o).context.world;
             out = Value(w && w->IsAlive(ecs::Entity::Unpack(o.id)));
@@ -238,6 +254,14 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             ScriptSystem& sys = SystemOf(o);
             e = ecs::Entity::Unpack(o.id);
             out = Value(sys.physics ? (m == "velocity" ? sys.physics->GetVelocity(e) : sys.physics->GetAngularVelocity(e)) : Vec3());
+            return true;
+        }
+        if (m == "emitting") {
+            // The entity's Particle Emitter is emitting (false without one).
+            ecs::World* w = SystemOf(o).context.world;
+            e = ecs::Entity::Unpack(o.id);
+            const ParticleEmitter* pe = w && w->IsAlive(e) ? w->Get<const ParticleEmitter>(e) : nullptr;
+            out = Value(pe && pe->playing);
             return true;
         }
         if (m == "jointValue") {
@@ -278,6 +302,28 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             if (!w || !w->IsAlive(e))
                 return v.Fail("The entity was destroyed");
             w->Set(e, scene::EntityName{String(value.AsString())});
+            return true;
+        }
+        if (m == "worldPosition") {
+            if (value.Type() != ValueType::Vec3)
+                return v.Fail("worldPosition must be a vec3");
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = SystemOf(o).context.world;
+            Transform* t = w && w->IsAlive(e) ? w->Get<Transform>(e) : nullptr;
+            if (!t)
+                return v.Fail("The entity was destroyed");
+            const ecs::Entity parent = scene::GetParent(*w, e);
+            t->position = parent ? Transform::FromMatrix(scene::ComputeWorldMatrix(*w, parent)).Inverse().TransformPoint(value.AsVec3())
+                                 : value.AsVec3();
+            return true;
+        }
+        if (m == "emitting") {
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = SystemOf(o).context.world;
+            ParticleEmitter* pe = w && w->IsAlive(e) ? w->Get<ParticleEmitter>(e) : nullptr;
+            if (!pe)
+                return v.Fail("This entity has no Particle Emitter component (Add Component > Particle Emitter)");
+            pe->playing = value.AsBool();
             return true;
         }
         if (m == "velocity" || m == "angularVelocity") {
@@ -350,6 +396,37 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
                 sys.physics->AddImpulseAtPoint(e, a[0].AsVec3(), a[1].AsVec3());
             else
                 sys.physics->AddImpulse(e, a[0].AsVec3());
+            return true;
+        }
+        if (m == "launch") {
+            // launch(velocity): throws a character (vertical speed, e.g. jump pads) or sets a Rigid Body's velocity.
+            if (a.Size() != 1 || a[0].Type() != ValueType::Vec3)
+                return v.Fail("entity.launch(velocity: vec3)");
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = sys.context.world;
+            if (CharacterState* st = w && w->IsAlive(e) ? w->Get<CharacterState>(e) : nullptr) {
+                st->velocity.y = a[0].AsVec3().y;
+                st->jumpSpeed = 0.0f;
+                st->grounded = false;
+                st->groundBodyIndex = ~0u;
+            } else if (sys.physics) {
+                sys.physics->SetVelocity(e, a[0].AsVec3());
+            }
+            return true;
+        }
+        if (m == "emit") {
+            // emit([count]): a burst from the entity's Particle Emitter (default: its Burst setting, else 10).
+            if (a.Size() > 1 || (a.Size() == 1 && !a[0].IsNumber()))
+                return v.Fail("entity.emit([count])");
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            const ParticleEmitter* pe = sys.context.world ? sys.context.world->Get<const ParticleEmitter>(e) : nullptr;
+            if (!pe)
+                return v.Fail("This entity has no Particle Emitter component (Add Component > Particle Emitter)");
+            const u32 count = a.Size() == 1 ? u32(Clamp(a[0].AsNumber(), 0.0, 100000.0)) : u32(pe->burst > 0 ? pe->burst : 10);
+            if (sys.particles)
+                sys.particles->Emit(e, count);
             return true;
         }
         if (m == "setMotor") {
