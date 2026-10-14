@@ -9,7 +9,7 @@ using namespace rhi;
 using namespace render;
 
 ViewportRenderer::ViewportRenderer(Device& device, RenderAssets& assets)
-    : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_particleRenderer(device), m_taa(device), m_reflections(device), m_captureScene(device, assets), m_post(device), m_outline(device)
+    : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_particleRenderer(device), m_volumetric(device), m_taa(device), m_reflections(device), m_captureScene(device, assets), m_post(device), m_outline(device)
 {
 }
 
@@ -45,9 +45,11 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     s.reflections.probeResolution = lite ? 64 : 128;
     s.reflections.maxProbes = lite ? 8 : 16;
     s.reflections.ssr = !lite; // Lite: probes + sky only (the iGPU is bandwidth bound)
+    s.volumetricFog.tileSize = lite ? 16u : 10u;
+    s.volumetricFog.slices = lite ? 48u : 64u;
     return m_scene.Init(m_hdrFormat, DepthFormat()) && m_captureScene.Init(m_hdrFormat, DepthFormat()) && m_reflections.Init() && m_sky.Init(m_hdrFormat, DepthFormat()) && m_post.Init(outputFormat) &&
            m_taa.Init() && m_outline.Init(outputFormat) && m_water.Init(m_hdrFormat, DepthFormat(), lite) &&
-           m_particleRenderer.Init(m_hdrFormat);
+           m_particleRenderer.Init(m_hdrFormat) && m_volumetric.Init(m_hdrFormat);
 }
 
 void ViewportRenderer::ResolveHdriSky(ecs::World& world)
@@ -153,9 +155,28 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     m_settings.reflections.probes &= features.reflections;
     m_settings.reflections.ssr &= features.screenSpaceReflections;
     m_settings.scene.normalOutput = m_settings.reflections.ssr;
-    if (camera.cut)
+    if (camera.cut) {
         m_taa.Reset();
+        m_volumetric.ResetHistory();
+    }
     ResolveHdriSky(world);
+    // Height Fog component (without one: the default fog, volumetric).
+    bool volumetric = features.volumetricFog && m_settings.volumetricFog.enabled && m_settings.useSky;
+    f32 fogHeight = 0.0f;
+    if (const HeightFog* hf = FindHeightFog(world, &fogHeight)) {
+        render::FogSettings& f = m_settings.sky.fog;
+        f.density = Max(hf->density, 0.0f);
+        f.falloff = Max(hf->falloff, 1e-5f);
+        f.baseHeight = fogHeight;
+        f.albedo = hf->color;
+        f.sunAnisotropy = hf->sunAnisotropy;
+        f.maxDistance = hf->maxDistance;
+        m_settings.volumetricFog.distance = hf->volumetricDistance;
+        m_settings.volumetricFog.scattering = hf->extinctionScale;
+        m_settings.volumetricFog.localLights = hf->localLights;
+        volumetric &= hf->volumetric;
+    }
+    m_settings.sky.fog.startDistance = volumetric ? m_settings.volumetricFog.distance : 0.0f;
     m_settings.reflections.skyResolution = m_settings.sky.hdri.IsActive() ? 128u : 64u;
     ApplyEnvironment(env);
     m_lights.Clear();
@@ -244,7 +265,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     hdrDesc.format = m_hdrFormat;
     hdrDesc.usage = TextureUsage::RenderTarget | TextureUsage::ShaderResource;
     hdrDesc.debugName = "SceneColor";
-    const RGTexture sceneColor = graph.CreateTexture(hdrDesc);
+    RGTexture sceneColor = graph.CreateTexture(hdrDesc); // replaced by the heat-haze composite when there is one
     TextureDesc depthDesc = hdrDesc;
     depthDesc.format = DepthFormat();
     depthDesc.usage = TextureUsage::DepthStencil | TextureUsage::ShaderResource;
@@ -264,11 +285,34 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
                       f32(std::fmod(m_time, 3600.0)), exposure);
     if (m_settings.useSky)
         m_sky.AddFogPass(graph, sceneColor, sceneDepth, m_lighting, m_settings.sky);
+    // Volumetric fog over the near part (the analytic fog above started where it ends).
+    {
+        render::VolumetricFogSettings vs = m_settings.volumetricFog;
+        vs.enabled = volumetric;
+        m_fogVolumes.Clear();
+        if (volumetric) {
+            GatherFogVolumes(world, m_fogVolumes);
+            if (m_particleSource)
+                m_particleSource->AppendFogVolumes(m_fogVolumes); // smoke over burning objects
+        } else {
+            m_volumetric.ResetHistory();
+        }
+        m_volumetric.AddPasses(graph, sceneColor, sceneDepth, view, m_viewProjNoJitter, m_lighting, m_scene.GetLightingInputs(),
+                               m_settings.sky.fog, vs, m_fogVolumes.View(), exposure, f32(std::fmod(m_time, 3600.0)), &m_sky);
+    }
     // Particles over the fogged scene (they don't write depth, so the fog couldn't place them).
     m_particleList.Clear();
     if (features.particles && m_particleSource)
         m_particleSource->Gather(view.position, m_particleList);
-    m_particleRenderer.AddPass(graph, sceneColor, sceneDepth, view, m_particleList.View(), m_lighting, exposure, f32(std::fmod(m_time, 3600.0)));
+    render::ParticleRenderer::FogVolumes particleFog;
+    if (m_volumetric.IsActive()) {
+        particleFog.lighting = m_volumetric.LightingVolume();
+        particleFog.integrated = m_volumetric.IntegratedVolume();
+        particleFog.distance = m_volumetric.Distance();
+        particleFog.slices = m_volumetric.Slices();
+    }
+    sceneColor = m_particleRenderer.AddPass(graph, sceneColor, sceneDepth, view, m_particleList.View(), m_lighting, exposure, f32(std::fmod(m_time, 3600.0)),
+                               particleFog);
     // After every pass that samples the cubes: sky cube update, the probe face, prefiltering.
     m_reflections.AddUpdatePasses(graph, m_settings.useSky ? m_sky.SkyViewTexture() : RGTexture(), m_sky.SkyRadianceScale(), faceColor,
                                   faceDepth, exposure, m_settings.useSky ? &m_settings.sky.hdri : nullptr);

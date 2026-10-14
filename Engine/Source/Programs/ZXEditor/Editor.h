@@ -358,6 +358,8 @@ public:
     void CreatePostProcessVolume(Vec3 position, ecs::Entity parent = {});
     void CreateReflectionProbe(Vec3 position, ecs::Entity parent = {});
     void CreateDecal(Vec3 position, ecs::Entity parent = {}); // on the surface under / in front of the point
+    void CreateHeightFog(f32 density = 0.0f);                  // replaces the scene's one; density 0 = default
+    void CreateFogVolume(Vec3 position, ecs::Entity parent = {});
     /// Sets the scene's HDRI Sky to the Content-relative panorama (creates the entity when there is none; undoable).
     void UseHdriSky(StringView texture);
     /// The listener while playing: the game camera when it is shown, else the editor camera.

@@ -101,3 +101,58 @@ ZX_TEST(Particles, SortedBackToFront)
             break;
         }
 }
+
+ZX_TEST(Particles, CollisionBounceDieAndSplash)
+{
+    ecs::World world;
+    scene::InstallHierarchyHooks(world);
+    // Falling particles over a floor at y = 0.
+    ParticleEmitter drops;
+    drops.shape = EmitterShape::Point;
+    drops.rate = 0.0f;
+    drops.burst = 50;
+    drops.speed = 0.0f;
+    drops.speedVariation = 0.0f;
+    drops.acceleration = Vec3(0.0f, -10.0f, 0.0f);
+    drops.drag = 0.0f;
+    drops.turbulence = 0.0f;
+    drops.lifetime = 5.0f;
+    drops.lifetimeVariation = 0.0f;
+    drops.collision = ParticleCollision::Die;
+    drops.onHitEmitter = "Splash";
+    drops.onHitCount = 2;
+    AddEmitter(world, drops, Vec3(0, 3, 0));
+    ParticleEmitter bouncy = drops;
+    bouncy.collision = ParticleCollision::Bounce;
+    bouncy.onHitEmitter.Clear();
+    AddEmitter(world, bouncy, Vec3(10, 3, 0));
+    ParticleEmitter splash;
+    splash.rate = 0.0f;
+    splash.lifetime = 10.0f;
+    splash.maxParticles = 1000;
+    const ecs::Entity splashEntity = scene::CreateNode(world, "Splash", Transform(Vec3(0, -50, 0)));
+    world.Add(splashEntity, splash);
+    scene::UpdateWorldTransforms(world);
+    ParticleSystem ps;
+    ps.raycast = [](Vec3 from, Vec3 to, Vec3& point, Vec3& normal) {
+        if (from.y < 0.0f || to.y >= 0.0f)
+            return false;
+        const f32 t = from.y / (from.y - to.y);
+        point = Lerp(from, to, t);
+        normal = Vec3(0, 1, 0);
+        return true;
+    };
+    Run(ps, world, 1.5f, true); // ~0.77 s to fall 3 m
+    Array<render::GpuParticle> out;
+    ps.Gather(Vec3(0, 0, -10), out);
+    u32 bounce = 0, splashes = 0;
+    for (const render::GpuParticle& g : out) {
+        ZX_EXPECT(g.position.y > -0.05f); // nothing fell through the floor
+        if (g.position.x > 5.0f)
+            ++bounce;
+        else
+            ++splashes; // the drops died: what is left near them are the splashes
+    }
+    ZX_EXPECT_EQ(bounce, 50u);    // bounced, still alive
+    ZX_EXPECT_EQ(splashes, 100u); // 50 drops x 2 splash particles, from the floor
+}

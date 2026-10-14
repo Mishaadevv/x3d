@@ -108,6 +108,24 @@ ParticleEmitter SmokeLook(const Flammable& f, bool smouldering)
     return d;
 }
 
+ParticleEmitter HeatLook(const Flammable& f)
+{
+    ParticleEmitter d;
+    d.look = ParticleLook::Heat;
+    d.emissive = false;
+    d.lifetime = 1.2f;
+    d.startSize = Max(f.flameHeight * 1.4f, 0.4f);
+    d.endSize = Max(f.flameHeight * 2.4f, 0.8f);
+    d.startAlpha = 1.0f;
+    d.endAlpha = 0.0f;
+    d.fadeIn = 0.25f;
+    d.acceleration = Vec3(0.0f, 0.6f, 0.0f);
+    d.drag = 0.8f;
+    d.turbulence = 0.4f;
+    d.maxParticles = 120;
+    return d;
+}
+
 ParticleEmitter EmberLook()
 {
     ParticleEmitter d;
@@ -369,6 +387,7 @@ void FireSystem::Tick(ecs::World& world, f32 dt, ParticleSystem& particles)
     dt = Clamp(dt, 0.0f, 0.1f);
     m_time += dt;
     m_lights.Clear();
+    m_smoke.Clear();
     m_burningCount = 0;
 
     struct Item
@@ -546,6 +565,14 @@ void FireSystem::Tick(ecs::World& world, f32 dt, ParticleSystem& particles)
                     const Vec3 p = burningPoint(n) + up * (f->flameHeight * 0.9f);
                     particles.SpawnFree(FreeKey(it.entity, 1), smoke, p, up * 0.9f + b.rng.InsideUnitSphere() * 0.25f);
                 }
+                // Heat haze rising over the flames.
+                const ParticleEmitter heatHaze = HeatLook(*f);
+                b.emitHeat += (4.0f + 6.0f * Sqrt(activeArea)) * dt;
+                for (; b.emitHeat >= 1.0f; b.emitHeat -= 1.0f) {
+                    Vec3 n;
+                    const Vec3 p = burningPoint(n) + up * (f->flameHeight * 1.1f);
+                    particles.SpawnFree(FreeKey(it.entity, 4), heatHaze, p, up * 0.8f + b.rng.InsideUnitSphere() * 0.2f);
+                }
                 const ParticleEmitter ember = EmberLook();
                 b.emitEmber += 3.0f * areaTerm * dt;
                 for (; b.emitEmber >= 1.0f; b.emitEmber -= 1.0f) {
@@ -566,6 +593,21 @@ void FireSystem::Tick(ecs::World& world, f32 dt, ParticleSystem& particles)
                 l.range = Clamp(3.0f + 3.0f * Sqrt(activeArea), 3.0f, 12.0f);
                 l.id = 0x40000000u | it.entity.index;
                 m_lights.PushBack(l);
+            }
+            // Volumetric smoke: a column of drifting wisps rising over the flames (lit by the fire's light).
+            if (active && f->smoke > 0.0f) {
+                const f32 width = 0.6f + Sqrt(activeArea) * 0.6f, height = 2.5f + f->flameHeight * 3.0f + Sqrt(activeArea);
+                const Vec3 base = centroid / f32(active) + up * (f->flameHeight * 0.6f);
+                render::FogVolumeDesc v;
+                v.shape = render::FogVolumeShape::Sphere;
+                v.worldToVolume = Inverse(Mat4::Translation(base + up * (height * 0.45f)) * Mat4::Scale(Vec3(width, height, width)));
+                v.density = 0.9f * f->smoke * f->intensity;
+                v.albedo = f->smokeColor * 2.0f;
+                v.edgeFade = 0.6f;
+                v.noiseScale = 1.4f;
+                v.noiseAmount = 0.75f;
+                v.wind = Vec3(0.1f, 1.6f, 0.05f); // rising
+                m_smoke.PushBack(v);
             }
             if (b.addedSound)
                 if (AudioSource* a = world.Get<AudioSource>(it.entity))
@@ -614,6 +656,7 @@ void FireSystem::Tick(ecs::World& world, f32 dt, ParticleSystem& particles)
     }
 
     particles.SetExtraLights(m_lights.View());
+    particles.SetExtraFogVolumes(m_smoke.View());
 
     // Structural changes last (they move components between archetypes).
     for (const SoundChange& c : m_soundChanges) {

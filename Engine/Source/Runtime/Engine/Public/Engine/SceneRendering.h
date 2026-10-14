@@ -9,6 +9,7 @@
 #include "Asset/CookedAssets.h"
 #include "Render/Reflections.h"
 #include "Render/SceneRenderer.h"
+#include "Render/VolumetricFog.h"
 #include "Render/Water.h"
 #include "Scene/Hierarchy.h"
 
@@ -65,6 +66,47 @@ struct Water
     f32 roughness = 0.04f;
 };
 ZX_DECLARE_TYPE(Water);
+
+/// Exponential height fog for the whole scene (the first one counts), densest at the entity's height and thinning out
+/// above it. Volumetric: near the camera the fog is a real volume - lit by the sun through the shadows (light shafts),
+/// by point and spot lights (halos, fire glowing in smoke) and filled by Fog Volumes.
+struct HeightFog
+{
+    f32 density = 0.003f;      // 1/m at the entity's height
+    f32 falloff = 0.08f;       // how fast it thins out with height (1/m)
+    Vec3 color = Vec3(0.9f, 0.95f, 1.0f); // albedo: the fraction of light scattered
+    f32 sunAnisotropy = 0.6f;  // forward scattering: brighter towards the sun
+    f32 maxDistance = 3000.0f; // meters
+    bool volumetric = true;
+    f32 volumetricDistance = 80.0f; // meters of volume in front of the camera
+    f32 extinctionScale = 1.0f;     // denser (more visible light shafts) inside the volume
+    f32 localLights = 1.0f;         // how strongly point / spot lights light the fog
+};
+ZX_DECLARE_TYPE(HeightFog);
+
+/// A local volume of fog, mist, steam or smoke (needs a Height Fog with Volumetric on - or none: the default fog is
+/// volumetric). Its size is the entity's scale (a 1 m box / sphere), density fades out at the edge and is broken up by
+/// drifting noise.
+enum class FogShape : u8
+{
+    Box,
+    Sphere,
+};
+
+struct FogVolume
+{
+    FogShape shape = FogShape::Box;
+    f32 density = 0.3f;            // 1/m
+    Vec3 color = Vec3(0.85f);      // albedo (dark for smoke)
+    Vec3 emissive = Vec3(0.0f);    // glow color
+    f32 emissiveIntensity = 0.0f;  // cd/m2 per meter
+    f32 edgeFade = 0.3f;           // fraction of the size
+    f32 noiseScale = 0.5f;         // 1/m
+    f32 noiseAmount = 0.6f;        // 0 = uniform
+    Vec3 wind = Vec3(0.3f, 0.05f, 0.1f); // m/s the noise drifts
+};
+ZX_DECLARE_ENUM(FogShape);
+ZX_DECLARE_TYPE(FogVolume);
 
 /// Reflection Probe: captures the scene around it into a cubemap (automatically, again when the scene changes) that
 /// surfaces inside its box reflect - box-projected, so floors and walls of rooms line up with the reflection.
@@ -136,6 +178,9 @@ void GatherReflectionProbes(ecs::World& world, Array<render::ReflectionProbeDesc
 void GatherDecals(ecs::World& world, Array<render::DecalDesc>& out, const Function<u32(StringView path, bool normalMap)>& texture);
 /// The scene's HDRI Sky (first one found); null when there is none.
 const HdriSky* FindHdriSky(ecs::World& world);
+/// The scene's Height Fog and the world height of its entity (null when there is none).
+const HeightFog* FindHeightFog(ecs::World& world, f32* height = nullptr);
+void GatherFogVolumes(ecs::World& world, Array<render::FogVolumeDesc>& out);
 /// Hash of what reflection captures see (mesh instances and lights): a change recaptures the probes.
 u64 SceneContentKey(Span<const render::RenderInstance> instances, Span<const render::LightDesc> lights);
 

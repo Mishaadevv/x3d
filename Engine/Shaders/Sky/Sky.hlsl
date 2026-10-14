@@ -287,7 +287,8 @@ struct FogParams
     float3 sunColor; // pre-exposed sun illuminance x color reaching the ground
     float skyScale;  // pre-exposed sky irradiance scale
     uint depth;      // SRV of the scene depth
-    uint3 pad;
+    float startDistance; // volumetric fog covers the ray up to here
+    uint2 pad;
 };
 ZX_PUSH_CONSTANTS(FogParams, g_Fog);
 
@@ -314,9 +315,13 @@ float4 FogPS(VSOutput i) : SV_Target0
     dist = d <= 0.0 ? g_Fog.maxDistance : min(dist, g_Fog.maxDistance);
     // Optical depth: integral of density along the ray.
     const float camY = g_Sky.cameraPosition.y - g_Fog.baseHeight;
-    const float dy = dir.y * dist * g_Fog.falloff;
-    const float lineFactor = abs(dy) > 1e-4 ? (1.0 - exp(-dy)) / dy : 1.0;
-    const float opticalDepth = g_Fog.density * exp(-g_Fog.falloff * camY) * lineFactor * dist;
+    // Integral of the density from the camera to x along the ray.
+    const float k = dir.y * g_Fog.falloff;
+    const float scale = g_Fog.density * exp(-g_Fog.falloff * camY);
+    const float start = min(g_Fog.startDistance, dist);
+    const float opticalDepth = abs(k) > 1e-6 ? scale * (exp(-k * start) - exp(-k * dist)) / k : scale * (dist - start);
+    if (opticalDepth <= 1e-6)
+        discard;
     const float transmittance = exp(-max(opticalDepth, 0.0));
     const float cosTheta = dot(dir, g_Sky.sunDirection);
     const float g = g_Fog.sunG;

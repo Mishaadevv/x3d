@@ -17,6 +17,7 @@
 #include "Render/SelectionOutline.h"
 #include "Render/Sky.h"
 #include "Render/TemporalAA.h"
+#include "Render/VolumetricFog.h"
 
 namespace zx {
 
@@ -54,6 +55,7 @@ struct ViewportFeatures
     bool screenSpaceReflections = true;
     bool decals = true;
     bool particles = true;
+    bool volumetricFog = true;
 };
 
 /// Dynamic resolution: the render scale follows the GPU frame time towards a target (5 % steps, 4 times a second).
@@ -76,6 +78,7 @@ struct ViewportSettings
     render::TAASettings taa;
     render::ReflectionSettings reflections;
     bool useSky = true; // physical sky + fog
+    render::VolumetricFogSettings volumetricFog;
     f32 renderScale = 1.0f; // below 1 with TAA: ZTSR temporal upscaling to the output resolution
     DynamicResolutionSettings dynamicResolution;
 };
@@ -139,6 +142,8 @@ private:
     render::SkyRenderer m_sky;
     render::WaterRenderer m_water;
     render::ParticleRenderer m_particleRenderer;
+    render::VolumetricFogRenderer m_volumetric;
+    Array<render::FogVolumeDesc> m_fogVolumes;
     const class ParticleSystem* m_particleSource = nullptr;
     Array<render::GpuParticle> m_particleList;
     Array<render::WaterSurface> m_waterSurfaces;

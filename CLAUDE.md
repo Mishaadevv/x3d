@@ -66,6 +66,10 @@ BuildStarterShowcase. Template thumbnails: Engine/Content/Templates/*.png from `
 Fire: Engine/Fire.h (Flammable component with runtime state fields; FireSystem ticked by the editor in Play before the
 particles: heat flux between surface samples, burn band between inner/outer radii, emits through ParticleSystem::SpawnFree
 and SetExtraLights). Char is drawn by ForwardPBR ApplyBurn from instance row 7 (burn sphere) + normal rows' w.
+Volumetric fog: Render/VolumetricFog.h + Shaders/Volumetric/VolumetricFog.hlsl (inject / integrate / apply; froxel
+t = sqrt(viewDepth / distance)); lights + cascades come from SceneRenderer::GetLightingInputs(), sky light from the sky SH.
+HeightFog / FogVolume components in Engine/SceneRendering.h; ParticleSystem/FireSystem add extra fog volumes. Particles
+sample the lighting + integrated volumes; Heat look = distortion pass (ParticleRenderer::AddPass returns the new color).
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

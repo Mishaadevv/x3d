@@ -264,7 +264,7 @@ This is a game project for the **ZeqouX3D** engine ({version}). Read this before
   component (`Transform`, `MeshRenderer`, `PointLight`, `SpotLight`, `Camera`, `CharacterController`, `Water`, `Script`,
   `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`, `PostProcessVolume`, `ReflectionProbe`, `Decal`, `HdriSky`,
   `RigidBody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `MeshCollider`, `HingeJoint`, `FixedJoint`,
-  `SliderJoint`, `BallJoint`, `DistanceJoint`, `ConfigurableJoint` (`connectedBody` = entity name, empty = world), `ParticleEmitter`, `Flammable`, `ImpactSound`,
+  `SliderJoint`, `BallJoint`, `DistanceJoint`, `ConfigurableJoint` (`connectedBody` = entity name, empty = world), `ParticleEmitter`, `Flammable`, `ImpactSound`, `HeightFog`, `FogVolume`,
   `Rotator`, `Oscillator`, ...). Prefer editing scenes in the editor; when editing JSON keep guids unique and stable.
 - `Content/Scripts/*.zs` - gameplay code in **ZeqouScript** (see `Docs/ZeqouScript.md`). This is where most work happens.
 - `Content/**/*.zmat` / `.zmati` - material graphs / instances (JSON node graphs). `.zprefab` - prefabs.

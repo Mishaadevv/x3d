@@ -324,13 +324,15 @@ void SkyRenderer::AddFogPass(RenderGraph& graph, RGTexture color, RGTexture dept
         Vec3 sunColor;
         f32 skyScale;
         u32 depth;
-        u32 pad[3];
+        f32 startDistance;
+        u32 pad[2];
     } fp = {};
     const FogSettings& f = settings.fog;
     fp.density = f.density;
     fp.falloff = Max(f.falloff, 1e-5f);
     fp.baseHeight = f.baseHeight;
     fp.maxDistance = f.maxDistance;
+    fp.startDistance = Max(f.startDistance, 0.0f);
     fp.albedo = f.albedo;
     fp.sunG = f.sunAnisotropy;
     fp.sunColor = lighting.sunColor * (lighting.sunIlluminance * m_params.exposure);

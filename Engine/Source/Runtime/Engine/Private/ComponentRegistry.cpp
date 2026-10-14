@@ -52,6 +52,8 @@ void RegisterEngineComponents()
     RegisterComponent<AudioListener>("Audio Listener", "\xEE\x8E\x82");              // ear
     RegisterComponent<ImpactSound>("Impact Sound", "\xEE\x86\xAB");                  // volume-2
     RegisterComponent<ReverbZone>("Reverb Zone", "\xEE\x95\x9A");                    // audio-lines
+    RegisterComponent<HeightFog>("Height Fog", "\xEE\x88\x94");                      // cloud-fog
+    RegisterComponent<FogVolume>("Fog Volume", "\xEE\x83\xB0");                      // haze
     RegisterComponent<Water>("Water", "\xEE\x82\xB5");                                // droplets
     RegisterComponent<ParticleEmitter>("Particle Emitter", "\xEE\x90\x92");        // sparkles
     RegisterComponent<Flammable>("Flammable", "\xEE\x83\x92");                     // flame

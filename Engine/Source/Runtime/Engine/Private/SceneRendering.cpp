@@ -12,6 +12,35 @@ ZX_REFLECT_STRUCT_BEGIN(MeshRenderer)
     ZX_FIELD(collision, Meta::Tooltip("Solid: blocks Character Controllers and rigid bodies (as a static triangle mesh unless the entity has colliders)"))
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_STRUCT_BEGIN(HeightFog)
+    ZX_FIELD(density, Meta::Range(0, 1), Meta::Units("1/m"), Meta::Tooltip("Fog density at the entity's height"))
+    ZX_FIELD(falloff, Meta::Range(0.0001, 2), Meta::Units("1/m"), Meta::Tooltip("How fast it thins out with height"))
+    ZX_FIELD(color, Meta::Color(), Meta::Tooltip("Albedo: the fraction of light the fog scatters"))
+    ZX_FIELD(sunAnisotropy, Meta::Range(-0.9, 0.95), Meta::Tooltip("Forward scattering: brighter looking towards the sun"))
+    ZX_FIELD(maxDistance, Meta::Range(10, 100000), Meta::Units("m"))
+    ZX_FIELD(volumetric, Meta::Category("Volumetric"), Meta::Tooltip("Light shafts, lit by lights, Fog Volumes (costs GPU time)"))
+    ZX_FIELD(volumetricDistance, Meta::Range(10, 500), Meta::Units("m"), Meta::Tooltip("Depth of the volume in front of the camera"))
+    ZX_FIELD(extinctionScale, Meta::Range(0, 50), Meta::Tooltip("Denser inside the volume: stronger light shafts"))
+    ZX_FIELD(localLights, Meta::Range(0, 20), Meta::Tooltip("How strongly point and spot lights light the fog"))
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_ENUM_BEGIN(FogShape)
+    ZX_ENUM_VALUE(Box)
+    ZX_ENUM_VALUE(Sphere)
+ZX_REFLECT_ENUM_END()
+
+ZX_REFLECT_STRUCT_BEGIN(FogVolume)
+    ZX_FIELD(shape, Meta::Tooltip("A 1 m box or sphere, sized by the entity's scale"))
+    ZX_FIELD(density, Meta::Range(0, 20), Meta::Units("1/m"))
+    ZX_FIELD(color, Meta::Color(), Meta::Tooltip("Albedo: light fog / steam ~0.9, smoke ~0.1"))
+    ZX_FIELD(emissive, Meta::Color())
+    ZX_FIELD(emissiveIntensity, Meta::Range(0, 100000), Meta::Units("nits/m"), Meta::Tooltip("Glow (smoke lit from inside by a fire)"))
+    ZX_FIELD(edgeFade, Meta::Range(0.01, 1), Meta::Tooltip("Fraction of the size over which it fades out"))
+    ZX_FIELD(noiseScale, Meta::Category("Noise"), Meta::Range(0.01, 20), Meta::Units("1/m"))
+    ZX_FIELD(noiseAmount, Meta::Range(0, 1), Meta::Tooltip("0 = uniform, 1 = only wisps"))
+    ZX_FIELD(wind, Meta::Units("m/s"), Meta::Tooltip("How the wisps drift"))
+ZX_REFLECT_STRUCT_END()
+
 ZX_REFLECT_STRUCT_BEGIN(Water)
     ZX_FIELD(size, Meta::Tooltip("Width and length in meters"))
     ZX_FIELD(waveHeight, Meta::Range(0, 5), Meta::Units("m"))
@@ -202,6 +231,37 @@ const HdriSky* FindHdriSky(World& world)
             found = &s;
     });
     return found;
+}
+
+const HeightFog* FindHeightFog(World& world, f32* height)
+{
+    const HeightFog* found = nullptr;
+    world.Query<const WorldTransform, const HeightFog>().Each([&](const WorldTransform& wt, const HeightFog& f) {
+        if (found)
+            return;
+        found = &f;
+        if (height)
+            *height = wt.matrix.GetTranslation().y;
+    });
+    return found;
+}
+
+void GatherFogVolumes(World& world, Array<render::FogVolumeDesc>& out)
+{
+    world.Query<const WorldTransform, const FogVolume>().Each([&](const WorldTransform& wt, const FogVolume& v) {
+        if (v.density <= 0.0f)
+            return;
+        render::FogVolumeDesc& d = out.AddDefaulted();
+        d.worldToVolume = Inverse(wt.matrix);
+        d.shape = v.shape == FogShape::Sphere ? render::FogVolumeShape::Sphere : render::FogVolumeShape::Box;
+        d.density = v.density;
+        d.albedo = v.color;
+        d.emissive = v.emissive * v.emissiveIntensity;
+        d.edgeFade = v.edgeFade;
+        d.noiseScale = v.noiseScale;
+        d.noiseAmount = v.noiseAmount;
+        d.wind = v.wind;
+    });
 }
 
 void GatherDecals(World& world, Array<render::DecalDesc>& out, const Function<u32(StringView, bool)>& texture)

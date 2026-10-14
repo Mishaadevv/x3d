@@ -19,6 +19,7 @@
 #include "Engine/Gameplay.h"
 #include "Scene/ECS/World.h"
 #include "Render/SceneRenderer.h"
+#include "Render/VolumetricFog.h"
 
 namespace zx {
 
@@ -116,7 +117,7 @@ private:
         Vec3 scale = Vec3(1.0f);
         Vec3 position;       // where it started crumbling (local)
         f32 flicker = 1.0f;
-        f32 emitFlame = 0.0f, emitSmoke = 0.0f, emitEmber = 0.0f;
+        f32 emitFlame = 0.0f, emitSmoke = 0.0f, emitEmber = 0.0f, emitHeat = 0.0f;
         Random rng;
         bool initialized = false;
         bool addedSound = false;
@@ -131,6 +132,7 @@ private:
 
     HashMap<u64, Burn> m_burns; // entity -> state
     Array<render::LightDesc> m_lights;
+    Array<render::FogVolumeDesc> m_smoke; // volumetric smoke over the fires
     struct SoundChange
     {
         ecs::Entity entity;

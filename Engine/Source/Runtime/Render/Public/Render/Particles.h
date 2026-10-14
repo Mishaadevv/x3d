@@ -17,6 +17,7 @@ enum class ParticleShape : u32
     Soft,  // round puff (smoke, dust, fog)
     Flame, // flickering teardrop
     Spark, // bright core, stretched along the velocity
+    Heat,  // invisible: bends the light behind it (heat haze over fires)
 };
 
 /// One particle as the GPU reads it.
@@ -46,14 +47,25 @@ public:
 
     bool Init(rhi::Format colorFormat);
 
-    /// Draws `particles` (back to front) over `color`, depth-tested against `depth` in the shader.
-    void AddPass(RenderGraph& graph, RGTexture color, RGTexture depth, const RenderView& view, Span<const GpuParticle> particles,
-                 const SceneLighting& lighting, f32 exposure, f32 time);
+    /// Volumetric fog of this frame: smoke is lit by its lighting volume (sun shadows, point lights) and fogged.
+    struct FogVolumes
+    {
+        RGTexture lighting, integrated; // invalid: no volumetric fog
+        f32 distance = 0.0f;
+        u32 slices = 64;
+    };
+    /// Draws `particles` (back to front) over `color`, depth-tested against `depth` in the shader. Heat haze particles
+    /// distort the scene: the result is then a new texture - use the returned one from here on.
+    RGTexture AddPass(RenderGraph& graph, RGTexture color, RGTexture depth, const RenderView& view, Span<const GpuParticle> particles,
+                 const SceneLighting& lighting, f32 exposure, f32 time, const FogVolumes& fog = {});
 
 private:
     rhi::Device& m_device;
-    rhi::ShaderBytecode m_vs, m_ps;
+    rhi::ShaderBytecode m_vs, m_ps, m_heatPS, m_distortVS, m_distortPS;
     rhi::Pipeline* m_pipeline = nullptr;
+    rhi::Pipeline* m_heatPipeline = nullptr;
+    rhi::Pipeline* m_distortPipeline = nullptr;
+    rhi::Format m_colorFormat = rhi::Format::R16G16B16A16_FLOAT;
     rhi::Buffer* m_buffers[rhi::FramesInFlight] = {};
     u32 m_count = 0;
 };

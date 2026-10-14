@@ -187,6 +187,24 @@ public:
     /// Forces all shadow cascades to re-render next frame (scene content changed).
     void InvalidateShadows();
 
+    /// The lights and sun shadows of this frame for passes that light other things the same way (volumetric fog).
+    /// Valid after AddPasses, within the same render graph.
+    struct LightingInputs
+    {
+        u32 lightBuffer = rhi::InvalidDescriptor;   // GpuLight x lightCount (pre-exposed)
+        u32 clusterBuffer = rhi::InvalidDescriptor; // light indices per cluster
+        u32 lightCount = 0;
+        f32 clusterDepthScale = 0.0f, clusterDepthBias = 0.0f;
+        Vec2 clusterTileScale;                      // clusters per render-resolution pixel
+        u32 cascadeCount = 0;
+        Mat4 shadowMatrices[MaxCascades];           // world -> shadow uv + depth
+        Vec4 cascadeSplits;                         // view-space far distance per cascade
+        u32 shadowMaps[MaxCascades] = {rhi::InvalidDescriptor, rhi::InvalidDescriptor, rhi::InvalidDescriptor, rhi::InvalidDescriptor};
+        RGTexture shadowTextures[MaxCascades];      // read them in your pass setup
+        RGBuffer clusters;
+    };
+    const LightingInputs& GetLightingInputs() const { return m_lightingInputs; }
+
     struct Stats
     {
         u32 instances = 0;
@@ -408,6 +426,7 @@ private:
         bool update = false;
     };
     Cascade m_cascades[MaxCascades];
+    LightingInputs m_lightingInputs;
     u32 m_cascadeCount = 0;
     u32 m_shadowResolution = 0;
     Vec3 m_shadowLightDir;

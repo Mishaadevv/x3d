@@ -214,6 +214,27 @@ bool Editor::Initialize()
             return RaycastMeshes(world, *renderAssets, Ray(from, d / dist), hit, dist - 0.5f) ? 1.0f : 0.0f;
         };
     }
+    // Colliding particles: the physics world while playing, else the meshes.
+    particles.raycast = [this](Vec3 from, Vec3 to, Vec3& point, Vec3& normal) {
+        const Vec3 d = to - from;
+        const f32 dist = Length(d);
+        if (dist < 1e-3f)
+            return false;
+        if (physics.IsRunning()) {
+            PhysicsHit hit;
+            if (!physics.Raycast(from, d / dist, dist, hit))
+                return false;
+            point = hit.point;
+            normal = hit.normal;
+            return true;
+        }
+        RaycastHit hit;
+        if (!renderAssets || !RaycastMeshes(world, *renderAssets, Ray(from, d / dist), hit, dist))
+            return false;
+        point = hit.point;
+        normal = hit.normal;
+        return true;
+    };
     scripts.Reset(new ScriptSystem());
     scripts->SetContentRoot(contentRoot);
     scripts->audio = audio.Get();
@@ -1021,6 +1042,36 @@ void Editor::CreateDecal(Vec3 position, ecs::Entity parent)
     const ecs::Entity e = CreateEntity("Decal", Transform(position), parent);
     world.Add(e, Decal{});
     CommitCreated(e, "Create Decal");
+}
+
+void Editor::CreateHeightFog(f32 density)
+{
+    ecs::Entity existing;
+    world.Query<const HeightFog>().Each([&](ecs::Entity e, const HeightFog&) {
+        if (existing.IsNull())
+            existing = e;
+    });
+    if (existing) {
+        if (density > 0.0f)
+            world.Get<HeightFog>(existing)->density = density;
+        selected = existing;
+        return;
+    }
+    const ecs::Entity e = CreateEntity("Height Fog", Transform(Vec3(0.0f)));
+    HeightFog fog;
+    if (density > 0.0f)
+        fog.density = density;
+    world.Add(e, fog);
+    CommitCreated(e, "Create Height Fog");
+}
+
+void Editor::CreateFogVolume(Vec3 position, ecs::Entity parent)
+{
+    Transform t(position);
+    t.scale = Vec3(8.0f, 3.0f, 8.0f);
+    const ecs::Entity e = CreateEntity("Fog Volume", t, parent);
+    world.Add(e, FogVolume{});
+    CommitCreated(e, "Create Fog Volume");
 }
 
 void Editor::UseHdriSky(StringView texture)
@@ -2738,6 +2789,7 @@ void Editor::RenderFrame()
         vf.screenSpaceReflections = FeatureEnabled("screenSpaceReflections");
         vf.decals = FeatureEnabled("decals");
         vf.particles = FeatureEnabled("particles");
+        vf.volumetricFog = FeatureEnabled("volumetricFog");
         ViewportCamera cam{camera.ViewMatrix(), camera.position, camera.fovY, camera.nearPlane};
         if (UsingGameCamera()) {
             // Game view: the Camera entity's world position and orientation (+Z forward), scale ignored.

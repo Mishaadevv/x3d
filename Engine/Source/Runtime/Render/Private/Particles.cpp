@@ -27,6 +27,13 @@ struct ParticleParams
     f32 pad0;
     Vec3 cameraForward;
     f32 pad1;
+    u32 lightingVolume;   // volumetric fog (invalid: none)
+    u32 integratedVolume;
+    f32 fogDistance;
+    f32 fogSlices;
+    u32 sceneColor;
+    u32 distortion;
+    Vec2 invSize;
 };
 
 } // namespace
@@ -36,6 +43,8 @@ ParticleRenderer::ParticleRenderer(Device& device) : m_device(device) {}
 ParticleRenderer::~ParticleRenderer()
 {
     m_device.Destroy(m_pipeline);
+    m_device.Destroy(m_heatPipeline);
+    m_device.Destroy(m_distortPipeline);
     for (Buffer* b : m_buffers)
         m_device.Destroy(b);
 }
@@ -47,7 +56,10 @@ bool ParticleRenderer::Init(Format colorFormat)
         ShaderBytecode* out;
         StringView entry;
         ShaderStage stage;
-    } jobs[] = {{&m_vs, "ParticleVS", ShaderStage::Vertex}, {&m_ps, "ParticlePS", ShaderStage::Pixel}};
+    } jobs[] = {{&m_vs, "ParticleVS", ShaderStage::Vertex},     {&m_ps, "ParticlePS", ShaderStage::Pixel},
+                {&m_heatPS, "HeatPS", ShaderStage::Pixel},       {&m_distortVS, "DistortVS", ShaderStage::Vertex},
+                {&m_distortPS, "DistortPS", ShaderStage::Pixel}};
+    m_colorFormat = colorFormat;
     for (const Job& j : jobs) {
         ShaderCompileDesc d;
         d.path = "/Shaders/Particles/Particles.hlsl";
@@ -74,20 +86,43 @@ bool ParticleRenderer::Init(Format colorFormat)
     pd.blend[0] = blend;
     pd.debugName = "Particles";
     m_pipeline = m_device.CreateGraphicsPipeline(pd);
+    // Heat haze: offsets summed into an RG16F target.
+    GraphicsPipelineDesc hd = pd;
+    hd.pixelShader = &m_heatPS;
+    hd.colorFormats[0] = Format::R16G16_FLOAT;
+    BlendTarget add;
+    add.enable = true;
+    add.srcColor = BlendFactor::One;
+    add.dstColor = BlendFactor::One;
+    add.srcAlpha = BlendFactor::One;
+    add.dstAlpha = BlendFactor::One;
+    hd.blend[0] = add;
+    hd.debugName = "HeatHaze";
+    m_heatPipeline = m_device.CreateGraphicsPipeline(hd);
+    GraphicsPipelineDesc dd;
+    dd.vertexShader = &m_distortVS;
+    dd.pixelShader = &m_distortPS;
+    dd.rasterizer.cullMode = CullMode::None;
+    dd.depthStencil.depthTest = false;
+    dd.depthStencil.depthWrite = false;
+    dd.colorFormats[0] = colorFormat;
+    dd.colorCount = 1;
+    dd.debugName = "HeatDistort";
+    m_distortPipeline = m_device.CreateGraphicsPipeline(dd);
     for (u32 i = 0; i < FramesInFlight; ++i)
         m_buffers[i] = m_device.CreateBuffer(
             BufferDesc{u64(MaxParticles) * sizeof(GpuParticle), BufferUsage::ShaderResource, MemoryType::Upload, 0, "Particles"});
-    return m_pipeline != nullptr;
+    return m_pipeline && m_heatPipeline && m_distortPipeline;
 }
 
-void ParticleRenderer::AddPass(RenderGraph& graph, RGTexture color, RGTexture depth, const RenderView& view, Span<const GpuParticle> particles,
-                               const SceneLighting& lighting, f32 exposure, f32 time)
+RGTexture ParticleRenderer::AddPass(RenderGraph& graph, RGTexture color, RGTexture depth, const RenderView& view, Span<const GpuParticle> particles,
+                               const SceneLighting& lighting, f32 exposure, f32 time, const FogVolumes& fog)
 {
     if (particles.Empty() || !m_pipeline)
-        return;
+        return color;
     Buffer* buffer = m_buffers[m_device.GetFrameIndex() % FramesInFlight];
     if (!buffer)
-        return;
+        return color;
     m_count = Min(u32(particles.Size()), MaxParticles);
     // The farthest particles are first: when capped, drop the nearest instead of popping holes in the middle.
     MemCopy(buffer->GetMappedData(), particles.Data(), usize(m_count) * sizeof(GpuParticle));
@@ -106,23 +141,89 @@ void ParticleRenderer::AddPass(RenderGraph& graph, RGTexture color, RGTexture de
     p.emissiveScale = EmissiveNits * exposure;
     p.time = time;
     p.particles = buffer->GetSrvIndex();
+    p.lightingVolume = p.integratedVolume = InvalidDescriptor;
+    p.fogDistance = fog.distance;
+    p.fogSlices = f32(Max(fog.slices, 1u));
     const UVec2 size(view.width, view.height);
     const u32 count = m_count;
+    const bool hasFog = fog.lighting.IsValid() && fog.integrated.IsValid() && fog.distance > 0.0f;
     graph.AddPass(
         "Particles", PassType::Graphics,
         [=](PassBuilder& b) {
             b.ReadTexture(depth);
+            if (hasFog) {
+                b.ReadTexture(fog.lighting);
+                b.ReadTexture(fog.integrated);
+            }
             b.RenderTarget(color, LoadOp::Load);
         },
         [=, this](PassContext& ctx) {
             ParticleParams params = p;
             params.depth = ctx.Texture(depth)->GetSrvIndex();
+            if (hasFog) {
+                params.lightingVolume = ctx.Texture(fog.lighting)->GetSrvIndex();
+                params.integratedVolume = ctx.Texture(fog.integrated)->GetSrvIndex();
+            }
             ctx.cmd.SetViewport(Viewport{0, 0, f32(size.x), f32(size.y), 0, 1});
             ctx.cmd.SetScissor(0, 0, size.x, size.y);
             ctx.cmd.SetPipeline(m_pipeline);
             ctx.cmd.SetConstants(0, &params, sizeof(params));
             ctx.cmd.Draw(count * 6);
         });
+
+    // Heat haze: offsets from the heat particles, then the scene resampled through them into a new color target.
+    bool anyHeat = false;
+    for (u32 i = 0; i < count && !anyHeat; ++i)
+        anyHeat = particles[i].shape == ParticleShape::Heat;
+    if (!anyHeat || !m_heatPipeline || !m_distortPipeline)
+        return color;
+    TextureDesc od;
+    od.width = size.x;
+    od.height = size.y;
+    od.format = Format::R16G16_FLOAT;
+    od.usage = TextureUsage::RenderTarget | TextureUsage::ShaderResource;
+    od.debugName = "HeatOffsets";
+    const RGTexture offsets = graph.CreateTexture(od);
+    graph.AddPass(
+        "HeatHaze", PassType::Graphics,
+        [=](PassBuilder& b) {
+            b.ReadTexture(depth);
+            b.RenderTarget(offsets, LoadOp::Clear, LinearColor(0, 0, 0, 0));
+        },
+        [=, this](PassContext& ctx) {
+            ParticleParams params = p;
+            params.depth = ctx.Texture(depth)->GetSrvIndex();
+            ctx.cmd.SetViewport(Viewport{0, 0, f32(size.x), f32(size.y), 0, 1});
+            ctx.cmd.SetScissor(0, 0, size.x, size.y);
+            ctx.cmd.SetPipeline(m_heatPipeline);
+            ctx.cmd.SetConstants(0, &params, sizeof(params));
+            ctx.cmd.Draw(count * 6);
+        });
+    TextureDesc cd;
+    cd.width = size.x;
+    cd.height = size.y;
+    cd.format = m_colorFormat;
+    cd.usage = TextureUsage::RenderTarget | TextureUsage::ShaderResource;
+    cd.debugName = "SceneColorDistorted";
+    const RGTexture distorted = graph.CreateTexture(cd);
+    graph.AddPass(
+        "HeatDistort", PassType::Graphics,
+        [=](PassBuilder& b) {
+            b.ReadTexture(color);
+            b.ReadTexture(offsets);
+            b.RenderTarget(distorted, LoadOp::Clear, LinearColor(0, 0, 0, 1));
+        },
+        [=, this](PassContext& ctx) {
+            ParticleParams params = p;
+            params.sceneColor = ctx.Texture(color)->GetSrvIndex();
+            params.distortion = ctx.Texture(offsets)->GetSrvIndex();
+            ctx.cmd.SetViewport(Viewport{0, 0, f32(size.x), f32(size.y), 0, 1});
+            ctx.cmd.SetScissor(0, 0, size.x, size.y);
+            ctx.cmd.SetPipeline(m_distortPipeline);
+            ctx.cmd.SetConstants(0, &params, sizeof(params));
+            ctx.cmd.Draw(3);
+        });
+    return distorted;
 }
 
 } // namespace zx::render

@@ -21,6 +21,13 @@ struct ParticleParams
     float pad0;
     float3 cameraForward;
     float pad1;
+    uint lightingVolume;   // volumetric fog: light per unit of scattering (invalid: none)
+    uint integratedVolume; // in-scatter + transmittance from the camera
+    float fogDistance;
+    float fogSlices;
+    uint sceneColor;   // distortion composite: the scene before
+    uint distortion;   // distortion composite: screen-space offsets
+    float2 invSize;
 };
 ZX_PASS_CONSTANTS(ParticleParams, g_P);
 
@@ -105,6 +112,8 @@ float Noise2(float2 p)
 float4 ParticlePS(VSOut i) : SV_Target0
 {
     const uint shape = uint(i.info.z + 0.5);
+    if (shape == 3)
+        discard; // heat haze: drawn by HeatPS into the distortion target
     const float seed = i.info.w;
     float2 uv = i.uv;
     float mask;
@@ -149,11 +158,68 @@ float4 ParticlePS(VSOut i) : SV_Target0
     // Lit (smoke): sky light plus the sun, brighter on the side facing it; emissive (fire, sparks): glows.
     const float3 n = normalize(float3(i.uv.x * g_P.cameraRight + i.uv.y * g_P.cameraUp) * 0.6 - g_P.cameraForward);
     const float sunWrap = saturate(dot(n, g_P.dirToSun) * 0.5 + 0.5);
-    const float3 lit = tint * (g_P.ambient + g_P.sunLight * (0.35 + 0.65 * sunWrap));
+    float3 lit = tint * (g_P.ambient + g_P.sunLight * (0.35 + 0.65 * sunWrap));
+    // Volumetric fog: the cell's light (sun through the shadows, point lights, fires) lights the smoke too.
+    float3 fogInscatter = 0.0;
+    float fogTransmittance = 1.0;
+    if (g_P.lightingVolume != ZX_INVALID_INDEX) {
+        const float4 clip = mul(g_P.viewProj, float4(i.worldPos, 1.0));
+        const float2 uv = float2(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+        const float t = sqrt(saturate(i.viewDepth / g_P.fogDistance));
+        if (t < 1.0 && clip.w > 0.0) {
+            const float3 coord = float3(saturate(uv), max(t - 0.5 / g_P.fogSlices, 0.5 / g_P.fogSlices));
+            const float3 L = GetTexture3D(g_P.lightingVolume).SampleLevel(g_LinearClamp, coord, 0).rgb;
+            lit = lerp(lit, tint * L * 4.0 * 3.14159, saturate((1.0 - t) * 8.0)); // L carries the phase (1/4pi)
+            const float4 f = GetTexture3D(g_P.integratedVolume).SampleLevel(g_LinearClamp, coord, 0);
+            fogInscatter = f.rgb;
+            fogTransmittance = f.a;
+        }
+    }
     const float3 glow = tint * g_P.emissiveScale;
-    const float3 rgb = lerp(lit, glow, i.info.x);
+    float3 rgb = lerp(lit, glow, i.info.x);
+    rgb = rgb * fogTransmittance + fogInscatter; // fogged like the scene behind it
     // Additive particles don't cover what is behind them, except flames: dense enough to partly hide it (otherwise a
     // bright sky washes them out to beige).
     const float cover = shape == 1 ? max(1.0 - i.info.y, 0.6) : 1.0 - i.info.y;
     return float4(min(rgb * alpha, 60000.0), alpha * cover);
+}
+
+// Heat haze: invisible particles that bend the light behind them. HeatPS accumulates screen-space offsets (noise
+// rising through each particle) into an RG16F target; DistortPS resamples the scene through them.
+float4 HeatPS(VSOut i) : SV_Target0
+{
+    if (uint(i.info.z + 0.5) != 3)
+        discard;
+    const float r2 = dot(i.uv, i.uv);
+    float mask = saturate(1.0 - r2);
+    mask *= mask;
+    const float sceneRaw = GetTexture2D(g_P.depth).Load(int3(i.position.xy, 0)).r;
+    const float sceneDepth = sceneRaw > 0.0 ? g_P.nearPlane / sceneRaw : 1e9;
+    const float soft = saturate((sceneDepth - i.viewDepth) / max(i.radius * 0.6, 0.02));
+    const float nearFade = saturate((i.viewDepth - g_P.nearPlane) / max(i.radius, 0.1));
+    const float2 p = i.uv * 2.5 + float2(i.info.w * 13.0, -g_P.time * 3.0);
+    const float2 n = float2(Noise2(p) - 0.5, Noise2(p + 17.3) - 0.5) + float2(Noise2(p * 2.3 + 5.1) - 0.5, Noise2(p * 2.3 - 3.7) - 0.5) * 0.5;
+    // Offset in screen uv: a few percent of the particle's size on screen at full strength.
+    const float strength = i.color.a * mask * soft * nearFade * 0.06 * i.radius / max(i.viewDepth, 0.1);
+    return float4(n * strength, 0.0, 0.0);
+}
+
+struct DistortOut
+{
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+};
+
+DistortOut DistortVS(uint vertexId : SV_VertexID)
+{
+    DistortOut o;
+    o.uv = float2((vertexId << 1) & 2, vertexId & 2);
+    o.position = float4(o.uv * float2(2, -2) + float2(-1, 1), 0.0, 1.0);
+    return o;
+}
+
+float4 DistortPS(DistortOut i) : SV_Target0
+{
+    const float2 offset = GetTexture2D(g_P.distortion).Load(int3(i.position.xy, 0)).rg;
+    return GetTexture2D(g_P.sceneColor).SampleLevel(g_LinearClamp, i.uv + offset, 0);
 }

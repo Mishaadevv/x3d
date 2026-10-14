@@ -17,6 +17,13 @@ ZX_REFLECT_ENUM_BEGIN(ParticleLook)
     ZX_ENUM_VALUE(Soft)
     ZX_ENUM_VALUE(Flame)
     ZX_ENUM_VALUE(Spark)
+    ZX_ENUM_VALUE(Heat)
+ZX_REFLECT_ENUM_END()
+
+ZX_REFLECT_ENUM_BEGIN(ParticleCollision)
+    ZX_ENUM_VALUE(None)
+    ZX_ENUM_VALUE(Bounce)
+    ZX_ENUM_VALUE(Die)
 ZX_REFLECT_ENUM_END()
 
 ZX_REFLECT_ENUM_BEGIN(ParticleBlend)
@@ -51,11 +58,15 @@ ZX_REFLECT_STRUCT_BEGIN(ParticleEmitter)
     ZX_FIELD(startAlpha, Meta::Range(0, 1))
     ZX_FIELD(endAlpha, Meta::Range(0, 1))
     ZX_FIELD(fadeIn, Meta::Range(0, 1), Meta::Tooltip("Fraction of the life spent fading in"))
-    ZX_FIELD(look, Meta::Tooltip("Soft puff, flickering flame or spark stretched along its motion"))
+    ZX_FIELD(look, Meta::Tooltip("Soft puff, flickering flame, spark stretched along its motion, or invisible heat haze (Alpha = strength)"))
     ZX_FIELD(blend, Meta::Tooltip("Additive glows and adds light; Alpha covers what is behind (smoke)"))
     ZX_FIELD(emissive, Meta::Tooltip("Glows by itself instead of being lit by the sun and sky"))
     ZX_FIELD(intensity, Meta::Range(0, 100), Meta::Tooltip("Brightness of emissive particles"))
     ZX_FIELD(lightFlicker, Meta::Range(0, 1), Meta::Tooltip("Flickers the Point Light on this entity (fire)"))
+    ZX_FIELD(collision, Meta::Category("Collision"), Meta::Tooltip("Particles hit the world: bounce off it or disappear"))
+    ZX_FIELD(bounciness, Meta::Range(0, 1), Meta::Tooltip("Bounce: fraction of the speed kept"))
+    ZX_FIELD(onHitEmitter, Meta::Tooltip("Entity whose Particle Emitter bursts where particles hit (rain splashes)"))
+    ZX_FIELD(onHitCount, Meta::Range(0, 100))
     ZX_FIELD(seed, Meta::Range(0, 100000))
 ZX_REFLECT_STRUCT_END()
 
@@ -71,7 +82,19 @@ Vec3 Swirl(Vec3 p, f32 t)
 
 } // namespace
 
-void ParticleSystem::Spawn(Emitter& em, u32 count)
+void ParticleSystem::PredictHit(const ParticleEmitter& d, Particle& p) const
+{
+    // One ray along the rest of the trajectory (chord of the drag-free parabola). Crossing the hit plane later is the
+    // impact, so the exact timing along the chord doesn't matter.
+    p.willHit = false;
+    if (d.collision == ParticleCollision::None || !raycast)
+        return;
+    const f32 t = Max(p.life - p.age, 0.0f);
+    const Vec3 end = p.position + p.velocity * t + d.acceleration * (0.5f * t * t);
+    p.willHit = raycast(p.position, end, p.hitPoint, p.hitNormal);
+}
+
+void ParticleSystem::Spawn(Emitter& em, u32 count, const Vec3* origin)
 {
     const ParticleEmitter& d = em.desc;
     const u32 room = u32(Max(d.maxParticles, 1)) > em.particles.Size() ? u32(Max(d.maxParticles, 1)) - u32(em.particles.Size()) : 0u;
@@ -100,6 +123,8 @@ void ParticleSystem::Spawn(Emitter& em, u32 count)
         }
         }
         p.position = d.worldSpace ? m.TransformPointAffine(local) : local;
+        if (origin && d.worldSpace)
+            p.position = *origin + m.TransformVector(local);
         Vec3 worldDir = d.shape == EmitterShape::Point ? dir : SafeNormalize(m.TransformVector(dir), up);
         if (!d.worldSpace)
             worldDir = dir;
@@ -109,6 +134,10 @@ void ParticleSystem::Spawn(Emitter& em, u32 count)
         p.rotation = em.rng.NextFloat() * TwoPi;
         p.spin = d.spin * em.rng.Range(-1.0f, 1.0f);
         p.seed = em.rng.NextFloat();
+        if (d.collision != ParticleCollision::None && d.worldSpace && m_raycastBudget > 0) {
+            --m_raycastBudget;
+            PredictHit(d, p);
+        }
         em.particles.PushBack(p);
     }
 }
@@ -121,6 +150,7 @@ void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
         m_wasPlaying = playing;
     }
     dt = Clamp(dt, 0.0f, 0.1f);
+    m_raycastBudget = 600; // rays per tick for colliding particles
     for (auto& [key, em] : m_emitters)
         em.alive = false;
     world.Query<const scene::WorldTransform, const ParticleEmitter>().Each(
@@ -166,8 +196,23 @@ void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
     // Scripted bursts.
     for (usize i = 0; i < m_pendingEmits.Size(); ++i)
         if (Emitter* em = m_emitters.Find(m_pendingEmits[i].Pack()))
-            Spawn(*em, m_pendingCounts[i]);
+            Spawn(*em, m_pendingCounts[i], m_pendingHasPosition[i] ? &m_pendingPositions[i] : nullptr);
     m_pendingEmits.Clear();
+    m_pendingPositions.Clear();
+    m_pendingHasPosition.Clear();
+    // Impacts burst their On Hit Emitters (by entity name) where they happened.
+    if (!m_hits.Empty()) {
+        HashMap<String, ecs::Entity> byName;
+        world.Query<const scene::EntityName, const ParticleEmitter>().Each([&](ecs::Entity e, const scene::EntityName& n, const ParticleEmitter&) {
+            if (!byName.Contains(n.value))
+                byName.InsertOrAssign(n.value, e);
+        });
+        for (const Hit& h : m_hits)
+            if (const ecs::Entity* target = byName.Find(h.emitter))
+                if (Emitter* em = m_emitters.Find(target->Pack()))
+                    Spawn(*em, h.count, &h.position);
+        m_hits.Clear();
+    }
     m_pendingCounts.Clear();
     m_emitters.RemoveIf([](u64, const Emitter& em) { return !em.alive; });
     for (auto& [key, em] : m_free)
@@ -192,6 +237,23 @@ void ParticleSystem::Advance(Emitter& em, f32 dt)
         p.velocity = (p.velocity + accel * dt) * dragFactor;
         p.position += p.velocity * dt;
         p.rotation += p.spin * dt;
+        if (p.willHit && Dot(p.position - p.hitPoint, p.hitNormal) < 0.0f) {
+            // Crossed the surface it was heading for.
+            const Vec3 at = p.position - p.hitNormal * Dot(p.position - p.hitPoint, p.hitNormal);
+            if (!desc.onHitEmitter.Empty() && desc.onHitCount > 0 && m_hits.Size() < 256)
+                m_hits.PushBack(Hit{desc.onHitEmitter, at, u32(desc.onHitCount)});
+            if (desc.collision == ParticleCollision::Die)
+                continue;
+            const f32 vn = Dot(p.velocity, p.hitNormal);
+            p.velocity = (p.velocity - p.hitNormal * (vn * (1.0f + desc.bounciness))) * (0.5f + 0.5f * desc.bounciness);
+            p.position = at + p.hitNormal * 0.01f;
+            if (Dot(p.velocity, p.velocity) > 0.04f && m_raycastBudget > 0) {
+                --m_raycastBudget;
+                PredictHit(desc, p);
+            } else {
+                p.velocity = Vec3(); // at rest on the surface (the same plane keeps holding it up)
+            }
+        }
         em.particles[w++] = p;
     }
     em.particles.Resize(w);
@@ -236,6 +298,7 @@ void ParticleSystem::Gather(Vec3 cameraPosition, Array<render::GpuParticle>& out
         const bool additive = d.blend == ParticleBlend::Additive;
         const render::ParticleShape shape = d.look == ParticleLook::Flame   ? render::ParticleShape::Flame
                                             : d.look == ParticleLook::Spark ? render::ParticleShape::Spark
+                                            : d.look == ParticleLook::Heat  ? render::ParticleShape::Heat
                                                                             : render::ParticleShape::Soft;
         for (const Particle& p : em.particles) {
             const f32 t = Clamp(p.age / p.life, 0.0f, 1.0f);
@@ -276,10 +339,12 @@ void ParticleSystem::ModulateLights(Span<render::LightDesc> lights) const
     }
 }
 
-void ParticleSystem::Emit(ecs::Entity e, u32 count)
+void ParticleSystem::Emit(ecs::Entity e, u32 count, const Vec3* position)
 {
     m_pendingEmits.PushBack(e);
     m_pendingCounts.PushBack(count);
+    m_pendingPositions.PushBack(position ? *position : Vec3());
+    m_pendingHasPosition.PushBack(position ? 1 : 0);
 }
 
 void ParticleSystem::Clear()
@@ -287,8 +352,12 @@ void ParticleSystem::Clear()
     m_emitters.Clear();
     m_free.Clear();
     m_extraLights.Clear();
+    m_extraFogVolumes.Clear();
     m_pendingEmits.Clear();
     m_pendingCounts.Clear();
+    m_pendingPositions.Clear();
+    m_pendingHasPosition.Clear();
+    m_hits.Clear();
 }
 
 u32 ParticleSystem::ParticleCount() const

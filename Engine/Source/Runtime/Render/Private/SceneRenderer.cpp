@@ -1058,6 +1058,24 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
             });
     }
     const u32 cascadeCount = m_cascadeCount;
+    {
+        LightingInputs& li = m_lightingInputs;
+        li = LightingInputs{};
+        li.lightBuffer = hasLights ? m_viewConstants.lightBuffer : InvalidDescriptor;
+        li.clusterBuffer = hasLights ? m_viewConstants.clusterBuffer : InvalidDescriptor;
+        li.lightCount = hasLights ? m_viewConstants.lightCount : 0u;
+        li.clusterDepthScale = m_viewConstants.clusterDepthScale;
+        li.clusterDepthBias = m_viewConstants.clusterDepthBias;
+        li.clusterTileScale = m_viewConstants.clusterTileScale;
+        li.clusters = clusters;
+        li.cascadeCount = cascadeCount;
+        li.cascadeSplits = m_viewConstants.cascadeSplits;
+        for (u32 c = 0; c < cascadeCount; ++c) {
+            li.shadowMatrices[c] = m_viewConstants.shadowMatrices[c];
+            li.shadowMaps[c] = m_viewConstants.shadowMaps[c];
+            li.shadowTextures[c] = shadowMaps[c];
+        }
+    }
     // Forward passes: view constants in b2, sky irradiance SH (GPU-written) bound directly as the b1 constant buffer.
     Buffer* skySH = m_skyIrradianceBuffer;
     const RGBuffer skySHHandle = skySH ? graph.ImportBuffer(skySH, ResourceState::ConstantBuffer) : RGBuffer();

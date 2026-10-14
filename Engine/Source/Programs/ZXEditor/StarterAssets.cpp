@@ -144,6 +144,28 @@ ParticleEmitter Embers()
     return p;
 }
 
+ParticleEmitter HeatHaze(f32 size = 1.0f)
+{
+    ParticleEmitter p;
+    p.look = ParticleLook::Heat;
+    p.emissive = false;
+    p.rate = 10.0f;
+    p.maxParticles = 40;
+    p.lifetime = 1.3f;
+    p.radius = 0.25f * size;
+    p.coneAngle = 0.2f;
+    p.speed = 0.8f;
+    p.acceleration = Vec3(0.0f, 0.6f, 0.0f);
+    p.drag = 0.8f;
+    p.turbulence = 0.4f;
+    p.startSize = 1.0f * size;
+    p.endSize = 1.8f * size;
+    p.startAlpha = 1.0f;
+    p.endAlpha = 0.0f;
+    p.fadeIn = 0.25f;
+    return p;
+}
+
 ParticleEmitter Sparks()
 {
     ParticleEmitter p;
@@ -165,6 +187,8 @@ ParticleEmitter Sparks()
     p.fadeIn = 0.0f;
     p.look = ParticleLook::Spark;
     p.intensity = 5.0f;
+    p.collision = ParticleCollision::Bounce; // they skitter over the floor
+    p.bounciness = 0.4f;
     return p;
 }
 
@@ -242,6 +266,7 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             b.world.Add(smoke, Smoke());
             const ecs::Entity embers = b.Node("Embers", Vec3(0, 0.2f, 0), root);
             b.world.Add(embers, Embers());
+            b.world.Add(b.Node("Heat Haze", Vec3(0, 0.9f, 0), root), HeatHaze());
             save(b, root, "Effects/P_Fire");
         }
         {
@@ -257,6 +282,7 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             b.world.Add(flames, light);
             b.world.Add(b.Node("Smoke", Vec3(0, 1.0f, 0), root), Smoke());
             b.world.Add(b.Node("Embers", Vec3(0, 0.3f, 0), root), Embers());
+            b.world.Add(b.Node("Heat Haze", Vec3(0, 1.0f, 0), root), HeatHaze(1.2f));
             for (u32 i = 0; i < 4; ++i) {
                 const Quat q = Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(f32(i) * 45.0f)) * Quat::FromAxisAngle(Vec3(0, 0, 1), DegToRad(78.0f));
                 b.Mesh(String::Format("Log {}", i + 1), BuiltinShape::Cylinder, Vec3(0, 0.12f, 0), Vec3(0.16f, 1.1f, 0.16f), "M_Wood", root, q);
@@ -409,7 +435,31 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             r.look = ParticleLook::Spark;
             r.blend = ParticleBlend::Alpha;
             r.emissive = false;
+            r.collision = ParticleCollision::Die; // drops end on whatever they hit...
+            r.onHitEmitter = "Rain Splash";      // ...in a little splash
+            r.onHitCount = 2;
             b.world.Add(cloud, r);
+            ParticleEmitter splash;
+            splash.rate = 0.0f;
+            splash.shape = EmitterShape::Cone;
+            splash.radius = 0.02f;
+            splash.coneAngle = 0.9f;
+            splash.speed = 1.6f;
+            splash.speedVariation = 0.5f;
+            splash.acceleration = Vec3(0.0f, -9.8f, 0.0f);
+            splash.drag = 0.5f;
+            splash.turbulence = 0.0f;
+            splash.lifetime = 0.3f;
+            splash.startSize = 0.025f;
+            splash.endSize = 0.015f;
+            splash.startColor = splash.endColor = Vec3(0.75f, 0.8f, 0.85f);
+            splash.startAlpha = 0.6f;
+            splash.fadeIn = 0.0f;
+            splash.maxParticles = 1500;
+            splash.look = ParticleLook::Spark;
+            splash.blend = ParticleBlend::Alpha;
+            splash.emissive = false;
+            b.world.Add(b.Node("Rain Splash", Vec3(), root), splash);
             AudioSource rain;
             rain.clip = "StarterContent/Sounds/Rain_Loop.ogg";
             rain.spatial = false; // all around the listener

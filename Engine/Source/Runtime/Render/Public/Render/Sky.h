@@ -27,6 +27,7 @@ struct FogSettings
     f32 maxDistance = 3000.0f;
     Vec3 albedo = Vec3(0.9f, 0.95f, 1.0f);
     f32 sunAnisotropy = 0.6f; // Henyey-Greenstein g
+    f32 startDistance = 0.0f; // set by the renderer: volumetric fog covers the ray up to here
 };
 
 /// HDR panorama replacing the physical sky (see HdriSky in Engine/SceneRendering.h).
@@ -84,6 +85,9 @@ public:
     /// pre-exposed radiance (sun color x illuminance x exposure); used by reflections.
     RGTexture SkyViewTexture() const { return m_rgSkyView; }
     Vec3 SkyRadianceScale() const { return m_radianceScale * m_params.exposure; }
+    /// Sky irradiance SH9 (9 x float4, GPU-written by AddPrePasses; bind as a constant buffer) and its graph handle.
+    rhi::Buffer* IrradianceSH() const { return m_irradianceSH; }
+    RGBuffer IrradianceSHHandle() const { return m_rgSH; }
     /// The HDRI sky of the last AddPrePasses (inactive = physical sky).
     const HdriSkySettings& Hdri() const { return m_hdri; }
 
