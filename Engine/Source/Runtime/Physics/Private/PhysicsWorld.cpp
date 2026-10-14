@@ -59,6 +59,16 @@ ShapeDesc ShapeDesc::Hull(HullId hull, Vec3 position, Quat rotation)
     return s;
 }
 
+ShapeDesc ShapeDesc::HeightField(HeightFieldId field, Vec3 position, Quat rotation)
+{
+    ShapeDesc s;
+    s.type = ShapeType::HeightField;
+    s.heightField = field;
+    s.position = position;
+    s.rotation = rotation;
+    return s;
+}
+
 namespace {
 
 struct Body
@@ -212,7 +222,8 @@ Mat3 ShapeInertia(const ShapeDesc& s, f32& mass, const ConvexHull* hull = nullpt
         const f32 ix = mc * (H * H / 12.0f + r * r * 0.25f) + ms * (0.4f * r * r + H * H * 0.25f + 0.375f * H * r);
         return Mat3::Scale(Vec3(ix, iy, ix));
     }
-    case ShapeType::TriangleMesh: mass = 0.0f; return Mat3::Scale(Vec3(0.0f));
+    case ShapeType::TriangleMesh:
+    case ShapeType::HeightField: mass = 0.0f; return Mat3::Scale(Vec3(0.0f));
     }
     mass = 0.0f;
     return Mat3::Scale(Vec3(0.0f));
@@ -226,6 +237,7 @@ struct PhysicsWorld::Impl
     Array<u32> freeBodies;
     Array<UniquePtr<TriangleMesh>> meshes;
     Array<UniquePtr<ConvexHull>> hulls;
+    Array<UniquePtr<HeightField>> heightFields;
     AabbTree staticTree, movingTree;
     Array<Contact> contacts;
     HashMap<u64, u32> contactIndex; // key -> index in `contacts`
@@ -285,6 +297,8 @@ struct PhysicsWorld::Impl
         p.desc = &b.shapes[s];
         p.mesh = p.desc->type == ShapeType::TriangleMesh && p.desc->mesh < meshes.Size() ? meshes[p.desc->mesh].Get() : nullptr;
         p.hull = p.desc->type == ShapeType::ConvexHull && p.desc->hull < hulls.Size() ? hulls[p.desc->hull].Get() : nullptr;
+        p.heightField = p.desc->type == ShapeType::HeightField && p.desc->heightField < heightFields.Size() ? heightFields[p.desc->heightField].Get()
+                                                                                                         : nullptr;
         const Vec3 origin = b.Origin();
         p.position = origin + b.q * p.desc->position;
         p.rotation = b.q * p.desc->rotation;
@@ -352,6 +366,48 @@ bool PhysicsWorld::BuildHullEdges(Span<const Vec3> points, Array<Vec3>& vertices
     for (u8 e : h.edges)
         edges.PushBack(e);
     return true;
+}
+
+HeightFieldId PhysicsWorld::CreateHeightField(u32 columns, u32 rows, Span<const f32> heights, f32 spacingX, f32 spacingZ)
+{
+    if (columns < 2 || rows < 2 || heights.Size() < usize(columns) * rows || spacingX <= 0.0f || spacingZ <= 0.0f)
+        return InvalidHeightField;
+    UniquePtr<HeightField> f = MakeUnique<HeightField>();
+    f->columns = columns;
+    f->rows = rows;
+    f->spacingX = spacingX;
+    f->spacingZ = spacingZ;
+    f->heights.Append(heights.First(usize(columns) * rows));
+    f->Build();
+    m_impl->heightFields.PushBack(move(f));
+    return HeightFieldId(m_impl->heightFields.Size() - 1);
+}
+
+void PhysicsWorld::UpdateHeightField(HeightFieldId id, u32 x, u32 z, u32 w, u32 h, Span<const f32> heights)
+{
+    Impl& I = *m_impl;
+    if (id >= I.heightFields.Size() || heights.Size() < usize(w) * h)
+        return;
+    HeightField& f = *I.heightFields[id];
+    for (u32 r = 0; r < h && z + r < f.rows; ++r)
+        for (u32 c = 0; c < w && x + c < f.columns; ++c)
+            f.heights[(z + r) * f.columns + x + c] = heights[r * w + c];
+    f.Build();
+    // Bodies on the field: new bounds; whatever rests on them wakes up.
+    for (u32 i = 0; i < I.bodies.Size(); ++i) {
+        Body& b = I.bodies[i];
+        bool uses = false;
+        for (const ShapeDesc& s : b.shapes)
+            uses |= b.alive && s.type == ShapeType::HeightField && s.heightField == id;
+        if (!uses)
+            continue;
+        I.UpdateBounds(b);
+        (b.motion == MotionType::Static ? I.staticTree : I.movingTree).Move(b.proxy, b.bounds, b.bounds.Inflated(0.1f));
+        I.movingTree.Query(b.bounds, [&](u32 other) {
+            I.WakeBody(I.bodies[other]);
+            return true;
+        });
+    }
 }
 
 MeshId PhysicsWorld::CreateTriangleMesh(Span<const Vec3> positions, Span<const u32> indices)

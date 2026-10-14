@@ -1095,6 +1095,44 @@ void Editor::CreateDecal(Vec3 position, ecs::Entity parent)
     CommitCreated(e, "Create Decal");
 }
 
+void Editor::CreateTerrain()
+{
+    // Centered under the scene: the flat middle covers what is already there (meshes within 150 m) and sits just
+    // below y = 0, so existing floors stay on top.
+    Terrain t;
+    f32 radius = 0.0f;
+    scene::UpdateWorldTransforms(world);
+    world.Query<const MeshRenderer, const scene::WorldTransform>().Each([&](const MeshRenderer& mr, const scene::WorldTransform& wt) {
+        const render::GpuMesh* mesh = mr.visible ? renderAssets->GetMesh(mr.mesh) : nullptr;
+        if (!mesh)
+            return;
+        for (u32 i = 0; i < 8; ++i) {
+            const Vec3 c = wt.matrix.TransformPoint(Vec3((i & 1) ? mesh->bounds.max.x : mesh->bounds.min.x, (i & 2) ? mesh->bounds.max.y : mesh->bounds.min.y,
+                                                         (i & 4) ? mesh->bounds.max.z : mesh->bounds.min.z));
+            const f32 r = Sqrt(c.x * c.x + c.z * c.z);
+            if (r < 150.0f)
+                radius = Max(radius, r);
+        }
+    });
+    t.flatCenter = Clamp(radius + 4.0f, t.flatCenter, 120.0f);
+    t.size = Max(t.size, t.flatCenter * 5.0f);
+    for (StringView name : {StringView("M_Terrain"), StringView("M_Grass")}) {
+        const String path = String::Format("{}/StarterContent/Materials/{}.zmat", contentRoot, name);
+        if (materials && platform::FileExists(path)) {
+            const MaterialLibrary::Material* m = materials->FindByPath(path);
+            t.material = m ? m->guid : materials->LoadFile(path);
+            break;
+        }
+    }
+    Array<f32> heights;
+    GenerateTerrainHeights(t, heights);
+    const u32 n = TerrainSamples(t);
+    const ecs::Entity e = CreateEntity("Terrain", Transform(Vec3(0.0f, -heights[usize(n / 2) * n + n / 2] - 0.15f, 0.0f)));
+    world.Add(e, t);
+    terrains.Update(world, *assets, renderAssets.Get());
+    CommitCreated(e, "Create Terrain");
+}
+
 void Editor::CreateHeightFog(f32 density)
 {
     ecs::Entity existing;
@@ -2818,6 +2856,8 @@ bool Editor::Frame()
     } else if (audio && !IsPlaying()) {
         audio->TickIdle(dt); // previews
     }
+    // Terrains: (re)built when one appears or its shape changes.
+    terrains.Update(world, *assets, renderAssets.Get());
     // Particles: emitters with Simulate In Editor run live while editing, all of them while playing (frozen when paused).
     if (FeatureEnabled("particles")) {
         scene::UpdateWorldTransforms(world);

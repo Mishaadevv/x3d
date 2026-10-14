@@ -44,6 +44,7 @@ enum class ShapeType : u8
     Capsule,      // segment along local Y (halfHeight) + radius
     ConvexHull,   // convex point cloud (CreateConvexHull): dynamic bodies of any convex shape
     TriangleMesh, // static bodies only
+    HeightField,  // grid of heights (terrain), static bodies only
 };
 
 /// Opaque handle of a triangle mesh registered in a world (CreateTriangleMesh).
@@ -52,6 +53,9 @@ inline constexpr MeshId InvalidMesh = ~0u;
 /// Opaque handle of a convex hull registered in a world (CreateConvexHull).
 using HullId = u32;
 inline constexpr HullId InvalidHull = ~0u;
+/// Opaque handle of a height field registered in a world (CreateHeightField).
+using HeightFieldId = u32;
+inline constexpr HeightFieldId InvalidHeightField = ~0u;
 
 struct ShapeDesc
 {
@@ -61,6 +65,7 @@ struct ShapeDesc
     f32 halfHeight = 0.5f;         // capsule: half length of the inner segment
     MeshId mesh = InvalidMesh;     // triangle mesh
     HullId hull = InvalidHull;     // convex hull
+    HeightFieldId heightField = InvalidHeightField;
     Vec3 position;                 // pose relative to the body origin
     Quat rotation;
     f32 density = 1000.0f; // kg/m^3 (water); a body's mass comes from its shapes unless BodyDesc::mass is set
@@ -71,6 +76,7 @@ struct ShapeDesc
     static ShapeDesc Capsule(f32 radius, f32 halfHeight, Vec3 position = {}, Quat rotation = {});
     static ShapeDesc Mesh(MeshId mesh, Vec3 position = {}, Quat rotation = {});
     static ShapeDesc Hull(HullId hull, Vec3 position = {}, Quat rotation = {});
+    static ShapeDesc HeightField(HeightFieldId field, Vec3 position = {}, Quat rotation = {});
 };
 
 struct BodyDesc
@@ -240,6 +246,11 @@ public:
     HullId CreateConvexHull(Span<const Vec3> points);
     /// Hull geometry for debug drawing: vertices and 2 indices per edge (empty for an invalid id).
     void GetHullEdges(HullId hull, Array<Vec3>& vertices, Array<u32>& edges) const;
+    /// Registers a height field: columns x rows samples (row-major, row = +Z, column = +X; heights in meters along +Y),
+    /// spacing between samples in meters, centered on the shape origin in X/Z. Two triangles per cell.
+    HeightFieldId CreateHeightField(u32 columns, u32 rows, Span<const f32> heights, f32 spacingX, f32 spacingZ);
+    /// Replaces the heights of a part of a field (sculpting): `heights` covers columns [x, x + w) of rows [z, z + h).
+    void UpdateHeightField(HeightFieldId field, u32 x, u32 z, u32 w, u32 h, Span<const f32> heights);
     /// The hull CreateConvexHull would make of `points`, as edges (editor gizmos without a world). False when flat.
     static bool BuildHullEdges(Span<const Vec3> points, Array<Vec3>& vertices, Array<u32>& edges);
 

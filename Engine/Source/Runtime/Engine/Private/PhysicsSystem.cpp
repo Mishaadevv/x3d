@@ -3,6 +3,7 @@
 #include "Core/Log/Log.h"
 #include "Core/Reflection/Reflection.h"
 #include "Engine/Gameplay.h"
+#include "Engine/Terrain.h"
 #include "Render/RenderAssets.h"
 
 ZX_DEFINE_LOG_CATEGORY_STATIC(LogPhysics, Info);
@@ -244,7 +245,8 @@ bool InCharacter(const ecs::World& world, Entity e)
 bool ImplicitMeshCollision(const ecs::World& world, Entity e)
 {
     const MeshRenderer* mr = world.Get<const MeshRenderer>(e);
-    return mr && mr->collision && mr->visible && !HasCollider(world, e) && !world.Get<const RigidBody>(e) && !InCharacter(world, e);
+    return mr && mr->collision && mr->visible && !HasCollider(world, e) && !world.Get<const RigidBody>(e) && !InCharacter(world, e) &&
+           !world.Get<const Terrain>(e); // terrains collide as height fields
 }
 
 /// The entity a joint connects to (by name; prefers one with a body), or none.
@@ -572,6 +574,17 @@ bool PhysicsSystem::CreateBody(ecs::World& world, Entity e, bool dynamic)
         }
     } else {
         AppendShapes(world, e, bodyPose, d.shapes, m_assets, &makeHull);
+        if (const Terrain* terrain = world.Get<const Terrain>(e); terrain && terrain->collision) {
+            Array<f32> heights;
+            GenerateTerrainHeights(*terrain, heights);
+            const Vec3 s = Abs(pose.scale);
+            for (f32& h : heights)
+                h *= s.y;
+            const u32 n = TerrainSamples(*terrain);
+            const HeightFieldId field = m_world->CreateHeightField(n, n, heights.View(), TerrainSpacing(*terrain) * s.x, TerrainSpacing(*terrain) * s.z);
+            if (field != InvalidHeightField)
+                d.shapes.PushBack(ShapeDesc::HeightField(field));
+        }
         const MeshCollider* mc = world.Get<const MeshCollider>(e);
         const MeshRenderer* mr = world.Get<const MeshRenderer>(e);
         if (((mc && mc->enabled && !mc->convex) || ImplicitMeshCollision(world, e)) && mr) {
@@ -627,6 +640,7 @@ void PhysicsSystem::CreateBodies(ecs::World& world)
     world.Query<const SphereCollider>().Each([&](Entity e, const SphereCollider&) { addStatic(e); });
     world.Query<const CapsuleCollider>().Each([&](Entity e, const CapsuleCollider&) { addStatic(e); });
     world.Query<const MeshCollider>().Each([&](Entity e, const MeshCollider&) { addStatic(e); });
+    world.Query<const Terrain>().Each([&](Entity e, const Terrain&) { addStatic(e); });
     world.Query<const MeshRenderer>().Each([&](Entity e, const MeshRenderer&) {
         if (ImplicitMeshCollision(world, e))
             addStatic(e);

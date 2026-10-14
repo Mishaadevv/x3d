@@ -262,7 +262,7 @@ This is a game project for the **ZeqouX3D** engine ({version}). Read this before
 - `{name}.zproj` - project descriptor (JSON). Don't rename it.
 - `Content/Scenes/*.zscene` - scenes as JSON: `entities[]` with a `guid`, optional `parent`, and one object per
   component (`Transform`, `MeshRenderer`, `PointLight`, `SpotLight`, `Camera`, `CharacterController`, `Water`, `Script`,
-  `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`, `PostProcessVolume`, `ReflectionProbe`, `Decal`, `HdriSky`,
+  `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`, `Terrain` (generated hills: size, height, seed, ...), `PostProcessVolume`, `ReflectionProbe`, `Decal`, `HdriSky`,
   `RigidBody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `MeshCollider` (`convex: true` = hull, works on a dynamic RigidBody), `HingeJoint`, `FixedJoint`,
   `SliderJoint`, `BallJoint`, `DistanceJoint`, `ConfigurableJoint` (`connectedBody` = entity name, empty = world), `ParticleEmitter`, `Flammable`, `ImpactSound`, `DirectionalLight` (the sun: its rotation), `SkyLight`, `HeightFog`, `FogVolume`, `VolumetricClouds`, `FluidVolume`,
   `Rotator`, `Oscillator`, ...). Prefer editing scenes in the editor; when editing JSON keep guids unique and stable.

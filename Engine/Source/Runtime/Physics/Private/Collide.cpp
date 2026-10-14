@@ -756,10 +756,38 @@ void TriangleRounded(Vec3 a, Vec3 b, Vec3 c, Vec3 n, const Rounded& r, f32 margi
     AddPoint(m, bestTri, bestCore - nn * r.radius, dist - r.radius);
 }
 
-/// Shape (A) against the triangles of a mesh (B): one manifold per touching triangle; normals from A to the mesh.
-void ShapeMesh(const PosedShape& s, const PosedShape& meshShape, f32 margin, Array<Manifold>& out)
+/// Height fields are solid below: a shape whose center sank under a triangle is pushed back up along its normal (from
+/// the corners / core points that lie over the triangle), never out through the bottom. Triangle = A, shape = B.
+void BelowSurface(const Poly* poly, const Rounded& r, Vec3 a, Vec3 b, Vec3 c, Vec3 n, f32 margin, Manifold& m)
 {
-    const TriangleMesh& mesh = *meshShape.mesh;
+    m = Manifold{};
+    m.normal = n;
+    auto over = [&](Vec3 p) {
+        constexpr f32 Tol = -1e-6f;
+        return Dot(Cross(b - a, p - a), n) >= Tol && Dot(Cross(c - b, p - b), n) >= Tol && Dot(Cross(a - c, p - c), n) >= Tol;
+    };
+    Array<ContactPoint> pts;
+    auto add = [&](Vec3 p, f32 radius) {
+        const f32 h = Dot(p - a, n);
+        if (h - radius < margin && over(p))
+            pts.PushBack(ContactPoint{p - n * h, p - n * radius, h - radius});
+    };
+    if (poly) {
+        for (u32 i = 0; i < poly->nv; ++i)
+            add(poly->v[i], 0.0f);
+    } else {
+        add(r.p0, r.radius);
+        if (DistanceSq(r.p0, r.p1) > 1e-12f)
+            add(r.p1, r.radius);
+    }
+    ReduceTo4(n, pts, m);
+}
+
+/// Shape (A) against the triangles of a mesh or height field (B): one manifold per touching triangle; normals from A
+/// to the mesh.
+template <typename Triangles>
+void ShapeMesh(const PosedShape& s, const PosedShape& meshShape, const Triangles& mesh, f32 margin, Array<Manifold>& out)
+{
     const AABB worldBox = ShapeBounds(s).Inflated(margin);
     // Query in mesh space: the world box's corners transformed back.
     AABB local;
@@ -786,7 +814,12 @@ void ShapeMesh(const PosedShape& s, const PosedShape& meshShape, f32 margin, Arr
         const Vec3 n = cr / len;
         Manifold m;
         bool face = false;
-        if (isBox) {
+        if (mesh.SolidBelow() && Dot(s.position - a, n) < 0.0f) {
+            BelowSurface(isBox ? &shapePoly : nullptr, rounded, a, b, c, n, margin, m);
+            if (m.count == 0)
+                return;
+            face = true;
+        } else if (isBox) {
             Poly tp;
             MakeTrianglePoly(a, b, c, n, tp);
             bool faceOfTri = false;
@@ -887,12 +920,14 @@ bool RayTriangle(Vec3 o, Vec3 d, Vec3 a, Vec3 b, Vec3 c, f32 maxT, f32& t)
         return false;
     const f32 inv = 1.0f / det;
     const Vec3 s = o - a;
+    // A little tolerance: rays through a shared edge or vertex must not slip between the triangles.
+    constexpr f32 Tol = 1e-5f;
     const f32 u = Dot(s, p) * inv;
-    if (u < 0.0f || u > 1.0f)
+    if (u < -Tol || u > 1.0f + Tol)
         return false;
     const Vec3 q = Cross(s, e1);
     const f32 v = Dot(d, q) * inv;
-    if (v < 0.0f || u + v > 1.0f)
+    if (v < -Tol || u + v > 1.0f + Tol)
         return false;
     t = Dot(e2, q) * inv;
     return t >= 0.0f && t <= maxT;
@@ -944,6 +979,81 @@ bool TriangleMesh::Raycast(Vec3 origin, Vec3 dir, f32 maxT, f32& tOut, Vec3& nor
     return hit;
 }
 
+// --- Height field ----------------------------------------------------------------------------------------------------
+
+void HeightField::Build()
+{
+    origin = Vec3(-f32(columns - 1) * spacingX * 0.5f, 0.0f, -f32(rows - 1) * spacingZ * 0.5f);
+    f32 lo = Infinity, hi = -Infinity;
+    for (f32 h : heights) {
+        lo = Min(lo, h);
+        hi = Max(hi, h);
+    }
+    if (heights.Empty())
+        lo = hi = 0.0f;
+    bounds = AABB(Vec3(origin.x, lo, origin.z), Vec3(-origin.x, hi, -origin.z));
+}
+
+bool HeightField::Raycast(Vec3 o, Vec3 dir, f32 maxT, f32& tOut, Vec3& normal) const
+{
+    if (columns < 2 || rows < 2)
+        return false;
+    // Clip to the bounds, then walk the cells under the ray (2D DDA) nearest first.
+    f32 t0 = 0.0f, t1 = maxT;
+    for (u32 ax = 0; ax < 3; ++ax) {
+        if (Abs(dir[ax]) < 1e-12f) {
+            if (o[ax] < bounds.min[ax] - 1e-4f || o[ax] > bounds.max[ax] + 1e-4f)
+                return false;
+            continue;
+        }
+        f32 a = (bounds.min[ax] - 1e-4f - o[ax]) / dir[ax], b = (bounds.max[ax] + 1e-4f - o[ax]) / dir[ax];
+        if (a > b)
+            swap(a, b);
+        t0 = Max(t0, a);
+        t1 = Min(t1, b);
+        if (t0 > t1)
+            return false;
+    }
+    const Vec3 p = o + dir * t0;
+    i32 x = Clamp(i32(Floor((p.x - origin.x) / spacingX)), 0, i32(columns) - 2);
+    i32 z = Clamp(i32(Floor((p.z - origin.z) / spacingZ)), 0, i32(rows) - 2);
+    const i32 stepX = dir.x > 0.0f ? 1 : -1, stepZ = dir.z > 0.0f ? 1 : -1;
+    const f32 dx = Abs(dir.x) > 1e-12f ? spacingX / Abs(dir.x) : Infinity, dz = Abs(dir.z) > 1e-12f ? spacingZ / Abs(dir.z) : Infinity;
+    f32 nextX = Abs(dir.x) > 1e-12f ? (origin.x + f32(x + (stepX > 0 ? 1 : 0)) * spacingX - o.x) / dir.x : Infinity;
+    f32 nextZ = Abs(dir.z) > 1e-12f ? (origin.z + f32(z + (stepZ > 0 ? 1 : 0)) * spacingZ - o.z) / dir.z : Infinity;
+    for (u32 guard = 0; guard < columns + rows + 4; ++guard) {
+        const u32 cell = u32(z) * CellsX() + u32(x);
+        bool hit = false;
+        for (u32 k = 0; k < 2; ++k) {
+            Vec3 a, b, c;
+            Triangle(cell * 2 + k, a, b, c);
+            f32 t;
+            if (RayTriangle(o, dir, a, b, c, maxT, t)) {
+                maxT = t;
+                tOut = t;
+                normal = Normalize(Cross(b - a, c - a));
+                if (Dot(normal, dir) > 0.0f)
+                    normal = -normal;
+                hit = true;
+            }
+        }
+        if (hit)
+            return true; // later cells are farther along the ray
+        if (Min(nextX, nextZ) > t1)
+            return false;
+        if (nextX < nextZ) {
+            x += stepX;
+            nextX += dx;
+        } else {
+            z += stepZ;
+            nextZ += dz;
+        }
+        if (x < 0 || z < 0 || x > i32(columns) - 2 || z > i32(rows) - 2)
+            return false;
+    }
+    return false;
+}
+
 // --- Dispatch ----------------------------------------------------------------------------------------------------------
 
 void Collide(const PosedShape& a, const PosedShape& b, f32 margin, Array<Manifold>& out)
@@ -960,7 +1070,11 @@ void Collide(const PosedShape& a, const PosedShape& b, f32 margin, Array<Manifol
     switch (tb) {
     case ShapeType::TriangleMesh:
         if (ta != ShapeType::TriangleMesh && b.mesh)
-            ShapeMesh(a, b, margin, out);
+            ShapeMesh(a, b, *b.mesh, margin, out);
+        return;
+    case ShapeType::HeightField:
+        if (ta != ShapeType::TriangleMesh && ta != ShapeType::HeightField && b.heightField)
+            ShapeMesh(a, b, *b.heightField, margin, out);
         return;
     case ShapeType::ConvexHull: {
         if (!b.hull)
@@ -1027,11 +1141,13 @@ AABB ShapeBounds(const PosedShape& s)
             box.Expand(s.position + s.rotation * v);
         return box;
     }
-    case ShapeType::TriangleMesh: {
+    case ShapeType::TriangleMesh:
+    case ShapeType::HeightField: {
         AABB box;
-        if (!s.mesh || s.mesh->nodes.Empty())
+        const bool mesh = s.desc->type == ShapeType::TriangleMesh;
+        if (mesh ? (!s.mesh || s.mesh->nodes.Empty()) : !s.heightField)
             return AABB(s.position, s.position);
-        const AABB& lb = s.mesh->nodes[0].box;
+        const AABB& lb = mesh ? s.mesh->nodes[0].box : s.heightField->bounds;
         for (u32 i = 0; i < 8; ++i)
             box.Expand(s.position + s.rotation * Vec3((i & 1) ? lb.max.x : lb.min.x, (i & 2) ? lb.max.y : lb.min.y, (i & 4) ? lb.max.z : lb.min.z));
         return box;
@@ -1173,6 +1289,16 @@ bool RaycastShape(const PosedShape& s, Vec3 origin, Vec3 dir, f32 maxT, f32& t, 
         const Vec3 o = InvRotate(s.rotation, origin - s.position), d = InvRotate(s.rotation, dir);
         Vec3 nl;
         if (!s.mesh->Raycast(o, d, maxT, t, nl))
+            return false;
+        normal = s.rotation * nl;
+        return true;
+    }
+    case ShapeType::HeightField: {
+        if (!s.heightField)
+            return false;
+        const Vec3 o = InvRotate(s.rotation, origin - s.position), d = InvRotate(s.rotation, dir);
+        Vec3 nl;
+        if (!s.heightField->Raycast(o, d, maxT, t, nl))
             return false;
         normal = s.rotation * nl;
         return true;

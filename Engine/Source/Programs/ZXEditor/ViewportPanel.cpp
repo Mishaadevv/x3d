@@ -401,19 +401,33 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
         f32 elevation = RadToDeg(ed.environment.sunElevation), azimuth = RadToDeg(ed.environment.sunAzimuth);
         if (azimuth < 0.0f)
             azimuth += 360.0f;
-        bool changed = false;
+        // Turning the scene's sun is one undo step per drag.
+        static bool sunUndoOpen = false;
+        bool changed = false, released = false;
         ui::SetNextItemWidth(160.0f);
         if (ui::SliderFloat("Elevation", &elevation, -5.0f, 89.0f, "{:.0f}°")) {
             ed.environment.sunElevation = DegToRad(elevation);
             changed = true;
         }
+        released |= ui::IsItemDeactivated();
         ui::SetNextItemWidth(160.0f);
         if (ui::SliderFloat("Azimuth", &azimuth, 0.0f, 360.0f, "{:.0f}°")) {
             ed.environment.sunAzimuth = DegToRad(azimuth);
             changed = true;
         }
-        if (changed && sunTransform)
+        released |= ui::IsItemDeactivated();
+        if (changed && sunTransform) {
+            if (!sunUndoOpen && !ed.undo.InTransaction()) {
+                ed.undo.Begin("Turn Sun");
+                ed.undo.Record(sunEntity);
+                sunUndoOpen = true;
+            }
             sunTransform->rotation = Editor::SunRotation(ed.environment.sunElevation, ed.environment.sunAzimuth);
+        }
+        if (released && sunUndoOpen) {
+            ed.undo.End();
+            sunUndoOpen = false;
+        }
         ui::EndPopup();
     }
     // Right: camera speed + frame stats.

@@ -196,6 +196,7 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.audioSource", "Create Audio Source", "Create", ZX_ICON_VOLUME_2, "", [spawn](Editor& e) { e.CreateAudioSource(spawn(e)); });
     Add(ed, "create.reverbZone", "Create Reverb Zone", "Create", ZX_ICON_AUDIO_LINES, "", [spawn](Editor& e) { e.CreateReverbZone(spawn(e)); });
     Add(ed, "create.decal", "Create Decal", "Create", ZX_ICON_STAMP, "", [spawn](Editor& e) { e.CreateDecal(spawn(e)); });
+    Add(ed, "create.terrain", "Create Terrain", "Create", ZX_ICON_MOUNTAIN, "", [](Editor& e) { e.CreateTerrain(); });
     Add(ed, "create.heightfog", "Create Height Fog", "Create", ZX_ICON_CLOUD_FOG, "", [](Editor& e) { e.CreateHeightFog(); });
     Add(ed, "create.fluidfire", "Create Fluid Fire", "Create", ZX_ICON_FLAME, "", [spawn](Editor& e) { e.CreateFluid(spawn(e), true); });
     Add(ed, "create.fluidsmoke", "Create Fluid Smoke", "Create", ZX_ICON_CLOUD, "", [spawn](Editor& e) { e.CreateFluid(spawn(e), false); });

@@ -124,6 +124,7 @@ void DrawMenus(Editor& ed)
         ActionMenuItem(ed, "create.spotLight");
         ui::Separator();
         ActionMenuItem(ed, "create.water");
+        ActionMenuItem(ed, "create.terrain");
         ActionMenuItem(ed, "create.audioSource");
         ActionMenuItem(ed, "create.reverbZone");
         ActionMenuItem(ed, "create.postProcessVolume");

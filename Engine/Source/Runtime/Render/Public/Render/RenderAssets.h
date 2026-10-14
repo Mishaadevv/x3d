@@ -82,6 +82,9 @@ public:
 
     /// Null until resident.
     const GpuMesh* GetMesh(AssetId id);
+    /// Forgets a mesh (its GPU copy is freed once the GPU is done with it); the next GetMesh loads it again. For
+    /// memory meshes that were replaced (generated terrain).
+    void ReloadMesh(AssetId id);
     /// Index into the material table; 0 (default material) until the asset is loaded.
     u32 GetMaterialIndex(AssetId id);
     const MaterialInfo& GetMaterialInfo(u32 index) const { return m_materialInfos[index]; }

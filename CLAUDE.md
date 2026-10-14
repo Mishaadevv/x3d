@@ -90,6 +90,11 @@ Convex hulls: Physics/Private/ConvexHull.h (quickhull, <= 32 vertices, GJK), Sha
 CreateConvexHull); Collide.cpp Poly = box / hull / triangle (SAT + clipping), PolyRounded for spheres/capsules.
 MeshCollider::convex -> PhysicsSystem::HullOf (cached per mesh + scale); bodies whose convex mesh is loading wait in
 m_pendingBodies. Tests ZXTests Hull.*; -physicstest drops a convex cylinder.
+Height fields: Collide.h HeightField (Query by cells, Raycast = 2D DDA, SolidBelow -> BelowSurface pushes sunk
+shapes up), PhysicsWorld::CreateHeightField/UpdateHeightField; tests HeightField.*. Terrain: Engine/Terrain.h (component,
+GenerateTerrainHeights, TerrainSystem ticked by the editor: CookTerrainMesh -> AddMemoryMesh(TerrainMeshId(guid)) +
+RenderAssets::ReloadMesh, keeps the entity's MeshRenderer in sync); PhysicsSystem adds a HeightField; tests Terrain.*.
+M_Terrain in StarterContent.cpp (MakeTerrainMaterial). Console: create terrain.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

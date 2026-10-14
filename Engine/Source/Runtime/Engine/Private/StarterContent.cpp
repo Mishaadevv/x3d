@@ -162,6 +162,75 @@ render::MaterialGraph MakeLeavesMaterial()
     return g;
 }
 
+/// Terrain: grass on flat ground, rock on slopes, snow above a height - all from the world normal and position (no
+/// textures, no painting needed).
+render::MaterialGraph MakeTerrainMaterial()
+{
+    render::MaterialGraph g;
+    g.guid = Guid::FromName(Guid(), "M_Terrain");
+    const u32 output = g.AddNode("Output", Vec2(1300, 0))->id;
+    auto value = [&](StringView type, StringView name, Vec4 v, Vec2 pos) {
+        render::MaterialGraphNode* n = g.AddNode(type, pos);
+        n->name = String(name);
+        n->value = v;
+        return n->id;
+    };
+    auto node = [&](StringView type, Vec2 pos) { return g.AddNode(type, pos)->id; };
+    auto lerp = [&](u32 a, u32 b, u32 alpha, Vec2 pos) {
+        const u32 l = node("Lerp", pos);
+        g.Connect(a, 0, l, 0);
+        g.Connect(b, 0, l, 1);
+        g.Connect(alpha, 0, l, 2);
+        return l;
+    };
+    auto math = [&](StringView type, u32 a, u32 b, Vec2 pos) {
+        const u32 m = node(type, pos);
+        g.Connect(a, 0, m, 0);
+        g.Connect(b, 0, m, 1);
+        return m;
+    };
+    // Noise layers: large patches and fine detail.
+    const u32 patches = node("Noise", Vec2(0, -400));
+    g.Connect(value("Scalar", "Patch Scale", Vec4(0.06f, 0, 0, 0), Vec2(-200, -400)), 0, patches, 1);
+    const u32 detail = node("Noise", Vec2(0, -300));
+    g.Connect(value("Scalar", "Detail Scale", Vec4(1.2f, 0, 0, 0), Vec2(-200, -300)), 0, detail, 1);
+    // Grass and rock colors.
+    const u32 grass = lerp(value("Color", "Grass Dark", Vec4(0.08f, 0.17f, 0.03f, 1), Vec2(200, -500)),
+                           value("Color", "Grass Light", Vec4(0.24f, 0.33f, 0.08f, 1), Vec2(200, -420)), patches, Vec2(420, -460));
+    const u32 rock = lerp(value("Color", "Rock Dark", Vec4(0.17f, 0.16f, 0.15f, 1), Vec2(200, -320)),
+                          value("Color", "Rock Light", Vec4(0.42f, 0.4f, 0.37f, 1), Vec2(200, -240)), detail, Vec2(420, -280));
+    // Flatness: (normal.y - Slope Start) * Sharpness, broken up a little by the detail noise.
+    render::MaterialGraphNode* mask = g.AddNode("ComponentMask", Vec2(200, 0));
+    mask->value = Vec4(0, 1, 0, 0);
+    const u32 normalY = mask->id;
+    g.Connect(node("VertexNormal", Vec2(0, 0)), 0, normalY, 0);
+    const u32 jitter = math("Multiply", detail, value("Scalar", "", Vec4(0.08f, 0, 0, 0), Vec2(200, 100)), Vec2(400, 100));
+    const u32 shifted = math("Subtract", math("Add", normalY, jitter, Vec2(560, 0)), value("Scalar", "Slope Start", Vec4(0.78f, 0, 0, 0), Vec2(400, 180)),
+                             Vec2(720, 0));
+    const u32 flat = node("Saturate", Vec2(1040, 0));
+    g.Connect(math("Multiply", shifted, value("Scalar", "Slope Sharpness", Vec4(9.0f, 0, 0, 0), Vec2(720, 120)), Vec2(880, 0)), 0, flat, 0);
+    const u32 ground = lerp(rock, grass, flat, Vec2(1040, -300));
+    // Snow above Snow Height (on the flatter parts), fading in over 6 m.
+    render::MaterialGraphNode* ymask = g.AddNode("ComponentMask", Vec2(200, 300));
+    ymask->value = Vec4(0, 1, 0, 0);
+    const u32 worldY = ymask->id;
+    g.Connect(node("WorldPosition", Vec2(0, 300)), 0, worldY, 0);
+    const u32 above = math("Subtract", worldY, value("Scalar", "Snow Height", Vec4(22.0f, 0, 0, 0), Vec2(200, 400)), Vec2(400, 300));
+    const u32 snowRamp = node("Saturate", Vec2(720, 300));
+    g.Connect(math("Multiply", above, value("Scalar", "", Vec4(1.0f / 6.0f, 0, 0, 0), Vec2(400, 400)), Vec2(560, 300)), 0, snowRamp, 0);
+    const u32 snowAmount = math("Multiply", snowRamp, math("Add", flat, value("Scalar", "", Vec4(0.35f, 0, 0, 0), Vec2(720, 460)), Vec2(880, 400)),
+                                Vec2(1040, 300));
+    const u32 snowClamped = node("Saturate", Vec2(1160, 300));
+    g.Connect(snowAmount, 0, snowClamped, 0);
+    const u32 color = lerp(ground, value("Color", "Snow", Vec4(0.86f, 0.88f, 0.92f, 1), Vec2(1040, -160)), snowClamped, Vec2(1160, -200));
+    g.Connect(color, 0, output, 0);
+    // Rough everywhere, snow a bit smoother.
+    g.Connect(lerp(value("Scalar", "Roughness", Vec4(0.92f, 0, 0, 0), Vec2(1040, 500)), value("Scalar", "Snow Roughness", Vec4(0.6f, 0, 0, 0), Vec2(1040, 580)),
+                   snowClamped, Vec2(1160, 520)),
+              0, output, 2);
+    return g;
+}
+
 render::MaterialGraph MakePatternMaterial(const PatternMaterial& m)
 {
     render::MaterialGraph g;
@@ -896,9 +965,9 @@ u32 WriteStarterContent(StringView contentDir)
     written += CopyLibrary("Flipbooks", root + "/Flipbooks");
     const render::MaterialGraph textured[] = {MakeReliefMaterial("M_Bricks", "T_Bricks", 2.0f, 0.04f, 0.85f),
                                               MakeReliefMaterial("M_Cobblestone", "T_Cobble", 1.0f, 0.05f, 0.75f),
-                                              MakeLeavesMaterial()};
-    const char* texturedNames[] = {"M_Bricks", "M_Cobblestone", "M_Leaves"};
-    for (u32 i = 0; i < 3; ++i)
+                                              MakeLeavesMaterial(), MakeTerrainMaterial()};
+    const char* texturedNames[] = {"M_Bricks", "M_Cobblestone", "M_Leaves", "M_Terrain"};
+    for (u32 i = 0; i < ZX_ARRAY_COUNT(texturedNames); ++i)
         written += fs::WriteTextFile(String::Format("{}/Materials/{}.zmat", root, texturedNames[i]), ToJsonString(textured[i].ToJson())) ? 1u : 0u;
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(Scripts, ZX_ARRAY_COUNT(Scripts)));
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(GameplayScripts, ZX_ARRAY_COUNT(GameplayScripts)));

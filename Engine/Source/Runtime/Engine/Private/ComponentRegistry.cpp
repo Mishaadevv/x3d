@@ -10,6 +10,7 @@
 #include "Engine/Prefab.h"
 #include "Engine/SceneRendering.h"
 #include "Engine/Scripting.h"
+#include "Engine/Terrain.h"
 
 namespace zx {
 
@@ -59,6 +60,7 @@ void RegisterEngineComponents()
     RegisterComponent<VolumetricClouds>("Volumetric Clouds", "\xEE\x88\x97");       // cloudy
     RegisterComponent<FluidVolume>("Fluid Volume", "\xEE\x83\x92");                  // flame
     RegisterComponent<Water>("Water", "\xEE\x82\xB5");                                // droplets
+    RegisterComponent<Terrain>("Terrain", "\xEE\x88\xB1");                            // mountain
     RegisterComponent<ParticleEmitter>("Particle Emitter", "\xEE\x90\x92");        // sparkles
     RegisterComponent<Flammable>("Flammable", "\xEE\x83\x92");                     // flame
     RegisterComponent<Decal>("Decal", "\xEE\x8E\xBB");                                 // stamp

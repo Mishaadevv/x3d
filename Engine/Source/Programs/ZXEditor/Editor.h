@@ -13,6 +13,7 @@
 #include "Engine/GameModule.h"
 #include "Engine/InputActions.h"
 #include "Engine/Fire.h"
+#include "Engine/Terrain.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/PostProcessVolume.h"
@@ -243,6 +244,7 @@ public:
     PhysicsSystem physics;                // rigid bodies and colliders while playing
     ParticleSystem particles;             // Particle Emitters (live in the editor too)
     FireSystem fire;                      // Flammable objects (Play only)
+    TerrainSystem terrains;               // builds Terrain meshes (edit and Play)
     UniquePtr<GameModuleSystem> game;     // C++ game module of the open project (Source/<Name>), hot-reloaded
     i64 gameDllTime = 0;                  // modification time of the loaded Binaries/<Name>.dll
     GameBuildState gameBuildState = GameBuildState::Idle;
@@ -358,6 +360,7 @@ public:
     void CreatePostProcessVolume(Vec3 position, ecs::Entity parent = {});
     void CreateReflectionProbe(Vec3 position, ecs::Entity parent = {});
     void CreateDecal(Vec3 position, ecs::Entity parent = {}); // on the surface under / in front of the point
+    void CreateTerrain();                                      // 200 m procedural terrain under the scene
     void CreateHeightFog(f32 density = 0.0f);                  // replaces the scene's one; density 0 = default
     void CreateFogVolume(Vec3 position, ecs::Entity parent = {});
     void CreateClouds(); // the scene's Volumetric Clouds (selects the existing one)

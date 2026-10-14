@@ -291,6 +291,22 @@ const GpuMesh* RenderAssets::GetMesh(AssetId id)
     return e->resident ? &e->mesh : nullptr;
 }
 
+void RenderAssets::ReloadMesh(AssetId id)
+{
+    MeshEntry* e = m_meshes.Find(id);
+    if (!e)
+        return;
+    m_device.Destroy(e->mesh.vertexBuffer);
+    m_device.Destroy(e->mesh.indexBuffer);
+    m_meshes.Remove(id);
+    for (usize i = 0; i < m_pendingMeshes.Size(); ++i)
+        if (m_pendingMeshes[i] == id) {
+            m_pendingMeshes.RemoveAtSwap(i);
+            break;
+        }
+    ++m_contentVersion;
+}
+
 bool RenderAssets::TryUploadMesh(AssetId id, MeshEntry& e, u64& budget)
 {
     const AssetState state = m_assets.GetState(id);
