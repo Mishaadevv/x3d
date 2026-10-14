@@ -1,4 +1,5 @@
 #include "Engine/SceneRendering.h"
+#include "Engine/Fire.h"
 
 #include "Core/Reflection/Reflection.h"
 
@@ -102,13 +103,20 @@ Entity InstantiatePrefab(World& world, const asset::PrefabAsset& prefab, const T
 
 void GatherRenderInstances(World& world, Array<render::RenderInstance>& out)
 {
-    world.Query<const WorldTransform, const MeshRenderer>().Each([&](const WorldTransform& wt, const MeshRenderer& mr) {
+    world.Query<const WorldTransform, const MeshRenderer>().Each([&](Entity e, const WorldTransform& wt, const MeshRenderer& mr) {
         if (!mr.visible || !mr.mesh.IsValid())
             return;
         render::RenderInstance& inst = out.AddDefaulted();
         inst.world = wt.matrix;
         inst.mesh = mr.mesh;
         inst.materials = mr.materials.View();
+        if (const Flammable* f = world.Get<const Flammable>(e); f && f->charRadius > 0.0f) {
+            inst.burnOrigin = wt.matrix.TransformPointAffine(f->burnOrigin);
+            inst.burnRadius = f->charRadius;
+            inst.charring = f->charring;
+            inst.burnGlow = f->glow;
+            inst.embers = f->embers;
+        }
     });
 }
 

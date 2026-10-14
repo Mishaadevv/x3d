@@ -4,6 +4,7 @@
 #include "Core/HAL/PlatformFile.h"
 #include "Core/Log/Log.h"
 #include "Engine/AudioSystem.h"
+#include "Engine/Fire.h"
 #include "Engine/Gameplay.h"
 #include "Engine/InputActions.h"
 #include "Engine/Particles.h"
@@ -264,6 +265,21 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             out = Value(pe && pe->playing);
             return true;
         }
+        if (m == "burning" || m == "burnt" || m == "fire" || m == "temperature") {
+            // Flammable: on fire / burnt out / how much of it is in flames (0..1) / its temperature (degrees C).
+            ecs::World* w = SystemOf(o).context.world;
+            e = ecs::Entity::Unpack(o.id);
+            const Flammable* f = w && w->IsAlive(e) ? w->Get<const Flammable>(e) : nullptr;
+            if (m == "burning")
+                out = Value(f && f->state == FireState::Burning);
+            else if (m == "burnt")
+                out = Value(f && f->state == FireState::Burnt);
+            else if (m == "fire")
+                out = Value(f64(f && f->state == FireState::Burning ? f->intensity : 0.0f));
+            else
+                out = Value(f64(f ? f->temperature : 20.0f));
+            return true;
+        }
         if (m == "jointValue") {
             // Hinge angle (radians) / slider offset / distance of the entity's joint (0 without one).
             ScriptSystem& sys = SystemOf(o);
@@ -427,6 +443,30 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             const u32 count = a.Size() == 1 ? u32(Clamp(a[0].AsNumber(), 0.0, 100000.0)) : u32(pe->burst > 0 ? pe->burst : 10);
             if (sys.particles)
                 sys.particles->Emit(e, count);
+            return true;
+        }
+        if (m == "ignite" || m == "extinguish") {
+            // ignite([point]): sets a Flammable entity on fire (at the point closest to `point`, default its bottom);
+            // returns false if it isn't Flammable or has burnt out. extinguish(): puts it out.
+            if (a.Size() > 1 || (a.Size() == 1 && a[0].Type() != ValueType::Vec3) || (m == "extinguish" && !a.Empty()))
+                return v.Fail(m == "ignite" ? "entity.ignite([point: vec3])" : "entity.extinguish()");
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = sys.context.world;
+            if (!w || !w->IsAlive(e))
+                return v.Fail("The entity was destroyed");
+            if (!w->Has<Flammable>(e))
+                return v.Fail("This entity is not Flammable (Add Component > Flammable)");
+            if (!sys.fire) {
+                out = Value(false);
+                return true;
+            }
+            if (m == "extinguish") {
+                sys.fire->Extinguish(*w, e);
+                return true;
+            }
+            const Vec3 point = a.Empty() ? Vec3() : a[0].AsVec3();
+            out = Value(sys.fire->Ignite(*w, e, a.Empty() ? nullptr : &point));
             return true;
         }
         if (m == "setMotor") {
@@ -672,6 +712,29 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
         return false;
     };
     vm.SetGlobal("audio", script::MakeNative(audioType, this));
+
+    // fire: ignite(point[, radius]) / extinguish(point[, radius]) -> how many Flammable objects caught fire / went out;
+    // burning -> how many are on fire.
+    script::NativeType& fireType = vm.AddType("Fire");
+    fireType.get = [this](script::VM&, script::NativeObject&, StringView m, Value& out) {
+        if (m != "burning")
+            return false;
+        out = Value(f64(fire ? fire->BurningCount() : 0u));
+        return true;
+    };
+    fireType.call = [this](script::VM& v, script::NativeObject&, StringView m, Span<const Value> a, Value& out) {
+        if (m != "ignite" && m != "extinguish")
+            return false;
+        if (a.Empty() || a.Size() > 2 || a[0].Type() != ValueType::Vec3 || (a.Size() == 2 && !a[1].IsNumber()))
+            return v.Fail(String::Format("fire.{}(point: vec3[, radius])", m));
+        const f32 radius = a.Size() == 2 ? Max(a[1].AsFloat(), 0.0f) : 0.5f;
+        u32 count = 0;
+        if (fire && context.world)
+            count = m == "ignite" ? fire->IgniteAt(*context.world, a[0].AsVec3(), radius) : fire->ExtinguishAt(*context.world, a[0].AsVec3(), radius);
+        out = Value(f64(count));
+        return true;
+    };
+    vm.SetGlobal("fire", script::MakeNative(fireType, this));
 
     // physics: raycast(origin, direction[, maxDistance[, layers]]) / sphereCast(origin, radius, direction[, maxDistance[,
     // layers]]) -> hit (entity, point, normal, distance) or nil; overlapSphere(center, radius[, layers]) -> [entities];

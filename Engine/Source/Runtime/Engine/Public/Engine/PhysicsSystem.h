@@ -279,6 +279,8 @@ public:
     /// Motor of the entity's hinge / slider joint (speed in rad/s or m/s; force <= 0 keeps the current one).
     void SetJointMotor(ecs::Entity e, bool enabled, f32 speed, f32 force = 0.0f);
     u32 JointCount() const { return m_world ? m_world->JointCount() : 0u; }
+    /// Destroys every joint attached to the entity's body (burnt through, cut loose).
+    void BreakJoints(ecs::Entity e);
 
 private:
     struct Tracked

@@ -1,5 +1,6 @@
 // Particles: camera-facing quads pulled from an upload buffer (64-byte GpuParticle, see Render/Particles.h),
-// procedural shapes, premultiplied output (additive particles write alpha 0), soft depth fade against the scene.
+// procedural shapes, premultiplied output (additive particles write alpha 0, flames partly cover the background), soft
+// depth fade against the scene.
 
 #include "Common/Bindless.hlsli"
 
@@ -62,6 +63,16 @@ VSOut ParticleVS(uint vertexId : SV_VertexID)
             right = normalize(cross(up, toCam));
             extent.y *= 1.0 + speed * 0.08;
         }
+    } else if (shape == 1) {
+        // Flames: upright tongues (cylindrical billboards), leaning a little with their sideways motion and swaying.
+        const float3 toCam = normalize(g_P.cameraPosition - center);
+        const float3 worldUp = normalize(float3(0, 1, 0) + float3(velocity.x, 0, velocity.z) * 0.15 + float3(sin(rotation), 0, cos(rotation)) * 0.12);
+        float3 u = worldUp - toCam * dot(worldUp, toCam);
+        if (dot(u, u) < 1e-4)
+            u = g_P.cameraUp; // looking straight down at it
+        up = normalize(u);
+        right = normalize(cross(up, toCam));
+        extent.y *= 1.6;
     } else {
         float s, c;
         sincos(rotation, s, c);
@@ -97,14 +108,22 @@ float4 ParticlePS(VSOut i) : SV_Target0
     const float seed = i.info.w;
     float2 uv = i.uv;
     float mask;
+    float3 tint = i.color.rgb;
     if (shape == 1) {
-        // Flame: a teardrop (wide at the bottom, pointed at the top), edges eaten by rising noise.
-        const float t = g_P.time * 2.3 + seed * 37.0;
-        const float n = Noise2(float2(uv.x * 2.2 + seed * 11.0, uv.y * 1.6 - t)) * 0.6 + Noise2(float2(uv.x * 5.0, uv.y * 4.0 - t * 1.7)) * 0.4;
-        const float width = lerp(1.0, 0.25, saturate(uv.y * 0.5 + 0.5));
-        const float r = length(float2(uv.x / max(width, 0.05), uv.y * 0.85 + 0.15));
-        mask = saturate((1.0 - r) * 2.2 - (n - 0.45) * 1.3);
-        mask *= mask;
+        // Flame: a tongue (round at the bottom, licking up to a point), torn by noise rising through it. Hot core
+        // (yellow-white) to cooler edges and tip (deep orange-red), like a real flame.
+        const float t = g_P.time * 2.6 + seed * 37.0;
+        const float n = Noise2(float2(uv.x * 2.0 + seed * 11.0, uv.y * 1.4 - t)) * 0.6 + Noise2(float2(uv.x * 4.5 - seed * 5.0, uv.y * 3.6 - t * 1.8)) * 0.4;
+        const float h = saturate(uv.y * 0.5 + 0.5); // 0 bottom .. 1 top
+        const float width = lerp(0.95, 0.22, pow(h, 0.8)) * (0.85 + 0.3 * n);
+        const float r = length(float2(uv.x / max(width, 0.05), (uv.y + 0.35) * 0.75));
+        mask = saturate((1.0 - r) * 2.0 - (n - 0.5) * 1.2);
+        const float core = saturate((mask - 0.35) * 1.8) * (1.0 - h * 0.6);
+        mask = mask * mask * (3.0 - 2.0 * mask) * (1.0 - h * h * 0.6);
+        const float peak = max(i.color.r, max(i.color.g, i.color.b));
+        const float3 edge = i.color.rgb * float3(1.0, 0.5, 0.25);
+        const float3 hot = float3(1.0, 0.75, 0.38) * peak * 1.15;
+        tint = lerp(edge, hot, core * core);
     } else if (shape == 2) {
         const float r2 = dot(uv, uv);
         mask = exp(-r2 * 6.0) * saturate(1.0 - r2);
@@ -130,8 +149,11 @@ float4 ParticlePS(VSOut i) : SV_Target0
     // Lit (smoke): sky light plus the sun, brighter on the side facing it; emissive (fire, sparks): glows.
     const float3 n = normalize(float3(i.uv.x * g_P.cameraRight + i.uv.y * g_P.cameraUp) * 0.6 - g_P.cameraForward);
     const float sunWrap = saturate(dot(n, g_P.dirToSun) * 0.5 + 0.5);
-    const float3 lit = i.color.rgb * (g_P.ambient + g_P.sunLight * (0.35 + 0.65 * sunWrap));
-    const float3 glow = i.color.rgb * g_P.emissiveScale;
+    const float3 lit = tint * (g_P.ambient + g_P.sunLight * (0.35 + 0.65 * sunWrap));
+    const float3 glow = tint * g_P.emissiveScale;
     const float3 rgb = lerp(lit, glow, i.info.x);
-    return float4(min(rgb * alpha, 60000.0), alpha * (1.0 - i.info.y));
+    // Additive particles don't cover what is behind them, except flames: dense enough to partly hide it (otherwise a
+    // bright sky washes them out to beige).
+    const float cover = shape == 1 ? max(1.0 - i.info.y, 0.6) : 1.0 - i.info.y;
+    return float4(min(rgb * alpha, 60000.0), alpha * cover);
 }

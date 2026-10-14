@@ -12,6 +12,7 @@
 #include "Engine/FlyCamera.h"
 #include "Engine/GameModule.h"
 #include "Engine/InputActions.h"
+#include "Engine/Fire.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/PostProcessVolume.h"
@@ -241,6 +242,7 @@ public:
     UniquePtr<AudioSystem> audio;         // Audio Sources of the scene while playing, previews
     PhysicsSystem physics;                // rigid bodies and colliders while playing
     ParticleSystem particles;             // Particle Emitters (live in the editor too)
+    FireSystem fire;                      // Flammable objects (Play only)
     UniquePtr<GameModuleSystem> game;     // C++ game module of the open project (Source/<Name>), hot-reloaded
     i64 gameDllTime = 0;                  // modification time of the loaded Binaries/<Name>.dll
     GameBuildState gameBuildState = GameBuildState::Idle;

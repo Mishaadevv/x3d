@@ -7,6 +7,7 @@
 #include "Core/Log/Log.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/BuiltinAssets.h"
+#include "Engine/Fire.h"
 #include "Engine/Gameplay.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
@@ -82,7 +83,7 @@ ParticleEmitter Flames()
     p.fadeIn = 0.15f;
     p.look = ParticleLook::Flame;
     p.blend = ParticleBlend::Additive;
-    p.intensity = 2.5f;
+    p.intensity = 4.0f;
     p.lightFlicker = 0.35f;
     return p;
 }
@@ -177,6 +178,32 @@ ParticleEmitter Steam()
     return p;
 }
 
+// --- Fire presets ----------------------------------------------------------------------------------------------------
+
+Flammable Wood(f32 spreadSpeed = 0.12f, f32 burnTime = 20.0f)
+{
+    Flammable f;
+    f.spreadSpeed = spreadSpeed;
+    f.burnTime = burnTime;
+    f.sound = "StarterContent/Sounds/Fire_Loop.wav";
+    return f;
+}
+
+Flammable Hay()
+{
+    Flammable f = Wood(0.45f, 7.0f);
+    f.ignitionTemperature = 200.0f;
+    f.resistance = 0.6f;
+    f.heat = 1.5f;
+    f.heatRange = 1.0f;
+    f.flameHeight = 1.0f;
+    f.flameDensity = 1.3f;
+    f.smoke = 1.6f;
+    f.smokeColor = Vec3(0.16f, 0.15f, 0.13f);
+    f.whenBurnt = BurntResult::Crumble;
+    return f;
+}
+
 } // namespace
 
 u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
@@ -211,14 +238,14 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
         {
             PrefabBuilder b;
             const ecs::Entity root = b.Node("Campfire");
-            const ecs::Entity fire = b.Node("Flames", Vec3(0, 0.15f, 0), root);
-            b.world.Add(fire, Flames());
+            const ecs::Entity flames = b.Node("Flames", Vec3(0, 0.15f, 0), root);
+            b.world.Add(flames, Flames());
             PointLight light;
             light.color = Vec3(1.0f, 0.6f, 0.28f);
             light.lumens = 2400.0f;
             light.range = 11.0f;
             light.castShadows = true;
-            b.world.Add(fire, light);
+            b.world.Add(flames, light);
             b.world.Add(b.Node("Smoke", Vec3(0, 1.0f, 0), root), Smoke());
             b.world.Add(b.Node("Embers", Vec3(0, 0.3f, 0), root), Embers());
             for (u32 i = 0; i < 4; ++i) {
@@ -469,6 +496,7 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             const ecs::Entity cam = b.Node("Camera", Vec3(0, 3, -6), root);
             b.world.Add(cam, Camera{});
             b.Script(cam, "ThirdPersonCamera.zs");
+            b.Script(b.Node("Fire Starter", Vec3(), cam), "FireStarter.zs"); // F lights what you look at, G puts it out
             save(b, root, "Characters/P_ThirdPersonCharacter");
         }
         {
@@ -476,7 +504,9 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             const ecs::Entity player = b.Node("Player");
             b.world.Add(player, CharacterController{});
             b.Script(player, "FirstPersonController.zs");
-            b.world.Add(b.Node("Camera", Vec3(0, 1.65f, 0), player), Camera{});
+            const ecs::Entity cam = b.Node("Camera", Vec3(0, 1.65f, 0), player);
+            b.world.Add(cam, Camera{});
+            b.Script(b.Node("Fire Starter", Vec3(), cam), "FireStarter.zs");
             save(b, player, "Characters/P_FirstPersonCharacter");
         }
         {
@@ -557,6 +587,7 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             b.Mesh("Lintel", BuiltinShape::Cube, Vec3(0, 2.5f, 0), Vec3(1.7f, 0.2f, 0.3f), "M_Proto_Light", root);
             const ecs::Entity panel = b.Mesh("Door Panel", BuiltinShape::Cube, Vec3(0, 1.12f, 0), Vec3(1.24f, 2.2f, 0.08f), "M_Wood", root);
             b.Body(panel, 40.0f);
+            b.world.Add(panel, Wood());
             HingeJoint hinge;
             hinge.anchor = Vec3(-0.5f, 0, 0); // the left edge (local, scaled)
             hinge.axis = Vec3(0, 1, 0);
@@ -653,6 +684,7 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
                     const ecs::Entity crate = b.Mesh(String::Format("Crate {}", ++n), BuiltinShape::Cube,
                                                      Vec3(-1.05f + f32(i) * 1.05f + f32(row) * 0.525f, 0.5f + f32(row) * 1.0f, 0), Vec3(1.0f), "M_Wood", root);
                     b.Body(crate, 25.0f);
+                    b.world.Add(crate, Wood(0.15f, 25.0f));
                 }
             save(b, root, "Props/P_CrateStack");
         }
@@ -685,13 +717,16 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             const f32 pitch = 0.6f, length = f32(planks) * pitch;
             for (i32 end = 0; end < 2; ++end)
                 for (i32 x = -1; x <= 1; x += 2)
-                    b.Mesh("Post", BuiltinShape::Cylinder, Vec3(f32(x) * 1.0f, 0.4f, end == 0 ? -0.15f : length + 0.15f), Vec3(0.18f, 2.0f, 0.18f), "M_Wood", root);
+                    b.world.Add(b.Mesh("Post", BuiltinShape::Cylinder, Vec3(f32(x) * 1.0f, 0.4f, end == 0 ? -0.15f : length + 0.15f),
+                                       Vec3(0.18f, 2.0f, 0.18f), "M_Wood", root),
+                                Wood(0.1f, 40.0f));
             b.Mesh("Deck Start", BuiltinShape::Cube, Vec3(0, -0.35f, -1.15f), Vec3(2.2f, 0.5f, 2.0f), "M_Proto_Light", root);
             b.Mesh("Deck End", BuiltinShape::Cube, Vec3(0, -0.35f, length + 1.15f), Vec3(2.2f, 0.5f, 2.0f), "M_Proto_Light", root);
             for (u32 i = 0; i < planks; ++i) {
                 const ecs::Entity plank = b.Mesh(String::Format("Plank {}", i + 1), BuiltinShape::Cube, Vec3(0, -0.15f, pitch * (f32(i) + 0.5f)),
                                                  Vec3(1.8f, 0.08f, pitch - 0.04f), "M_Wood", root);
                 b.Body(plank, 8.0f);
+                b.world.Add(plank, Wood(0.25f, 10.0f)); // burns through and drops off its hinges
                 // Hinged (around X) at its near edge to the previous plank - the first one to the world.
                 HingeJoint h;
                 h.anchor = Vec3(0, 0, -0.5f);
@@ -706,6 +741,42 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
                 }
             }
             save(b, root, "Props/P_RopeBridge");
+        }
+        {
+            PrefabBuilder b;
+            const ecs::Entity root = b.Node("Wooden Fence");
+            const u32 sections = 5;
+            const f32 span = 1.2f;
+            for (u32 i = 0; i <= sections; ++i)
+                b.world.Add(b.Mesh(String::Format("Post {}", i + 1), BuiltinShape::Cube, Vec3(f32(i) * span, 0.6f, 0), Vec3(0.14f, 1.2f, 0.14f), "M_Wood", root),
+                            Wood(0.12f, 25.0f));
+            for (u32 i = 0; i < sections; ++i)
+                for (u32 r = 0; r < 2; ++r)
+                    b.world.Add(b.Mesh(String::Format("Rail {}{}", i + 1, r == 0 ? "a" : "b"), BuiltinShape::Cube,
+                                       Vec3((f32(i) + 0.5f) * span, r == 0 ? 0.4f : 0.95f, 0.09f), Vec3(span + 0.1f, 0.1f, 0.04f), "M_Wood", root),
+                                Wood(0.18f, 14.0f));
+            save(b, root, "Props/P_WoodenFence");
+        }
+        {
+            PrefabBuilder b;
+            const ecs::Entity root = b.Mesh("Hay Bale", BuiltinShape::Cube, Vec3(0, 0.35f, 0), Vec3(1.2f, 0.7f, 0.7f), "M_Hay");
+            b.Body(root, 25.0f);
+            b.world.Add(root, Hay());
+            save(b, root, "Props/P_HayBale");
+        }
+        {
+            PrefabBuilder b;
+            const ecs::Entity root = b.Node("Wood Pile");
+            u32 n = 0;
+            for (u32 row = 0; row < 3; ++row)
+                for (u32 i = 0; i < 3 - row; ++i) {
+                    const ecs::Entity logEntity = b.Mesh(String::Format("Log {}", ++n), BuiltinShape::Cylinder,
+                                                   Vec3(-0.3f + f32(i) * 0.3f + f32(row) * 0.15f, 0.15f + f32(row) * 0.27f, 0), Vec3(0.3f, 1.6f, 0.3f),
+                                                   "M_Wood", root, Quat::FromAxisAngle(Vec3(1, 0, 0), DegToRad(90.0f)));
+                    b.Body(logEntity, 12.0f);
+                    b.world.Add(logEntity, Wood(0.1f, 35.0f));
+                }
+            save(b, root, "Props/P_WoodPile");
         }
     }
     ZX_LOG_INFO(LogStarter, "Starter Content: {} prefabs", written);

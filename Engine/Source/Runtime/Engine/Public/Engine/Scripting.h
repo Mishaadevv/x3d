@@ -27,6 +27,7 @@ class InputState;
 class InputActionState;
 class AudioSystem;
 class PhysicsSystem;
+class FireSystem;
 class ParticleSystem;
 struct PhysicsEvent;
 
@@ -81,6 +82,8 @@ public:
     PhysicsSystem* physics = nullptr;
     /// Particle Emitters for entity.emit(n) (null = no bursts).
     ParticleSystem* particles = nullptr;
+    /// Fire for entity.ignite / extinguish / burning and the fire global (null = nothing burns).
+    FireSystem* fire = nullptr;
     /// Calls collisionEnter / collisionExit / triggerEnter / triggerExit on the scripts of both entities of each event.
     void DispatchPhysicsEvents(ecs::World& world, Span<const PhysicsEvent> events);
 

@@ -93,6 +93,17 @@ public:
     void ModulateLights(Span<render::LightDesc> lights) const;
     /// Emits `count` particles from the entity's emitter right away (scripts: entity.emit(n)).
     void Emit(ecs::Entity e, u32 count);
+    /// Particles not owned by a Particle Emitter component (burning objects, impacts): `key` names a free emitter that
+    /// `desc` describes (motion and look, refreshed by each call); the particle starts at `position` with `velocity`
+    /// (world space) and lives desc.lifetime (+ variation). Free emitters disappear with their last particle.
+    void SpawnFree(u64 key, const ParticleEmitter& desc, Vec3 position, Vec3 velocity);
+    /// Lights other systems (fire) add for this frame; AppendLights adds them to the scene's lights.
+    void SetExtraLights(Span<const render::LightDesc> lights)
+    {
+        m_extraLights.Clear();
+        m_extraLights.Append(lights);
+    }
+    void AppendLights(Array<render::LightDesc>& lights) const;
     /// Drops every particle (Play start / stop, scene change).
     void Clear();
     u32 ParticleCount() const;
@@ -122,8 +133,11 @@ private:
         f32 time = 0.0f;
     };
     void Spawn(Emitter& em, u32 count);
+    static void Advance(Emitter& em, f32 dt);
 
     HashMap<u64, Emitter> m_emitters; // entity -> state
+    HashMap<u64, Emitter> m_free;     // SpawnFree key -> state
+    Array<render::LightDesc> m_extraLights;
     Array<ecs::Entity> m_pendingEmits;
     Array<u32> m_pendingCounts;
     bool m_wasPlaying = false;

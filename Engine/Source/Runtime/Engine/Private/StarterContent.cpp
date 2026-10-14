@@ -96,6 +96,7 @@ const PatternMaterial Patterns[] = {
     {"M_Wood", Pattern::Noise, Vec4(0.42f, 0.25f, 0.12f, 1), Vec4(0.25f, 0.14f, 0.06f, 1), 1.6f, 0.5f, 0.55f, 0.75f},
     {"M_Sand", Pattern::Noise, Vec4(0.78f, 0.67f, 0.48f, 1), Vec4(0.62f, 0.52f, 0.36f, 1), 0.6f, 0.6f, 0.85f, 0.95f},
     {"M_Rock", Pattern::Noise, Vec4(0.36f, 0.35f, 0.33f, 1), Vec4(0.16f, 0.16f, 0.15f, 1), 0.9f, 0.55f, 0.65f, 0.9f},
+    {"M_Hay", Pattern::Noise, Vec4(0.74f, 0.6f, 0.27f, 1), Vec4(0.5f, 0.38f, 0.14f, 1), 3.0f, 0.7f, 0.9f, 0.95f},
     {"M_Dirt", Pattern::Noise, Vec4(0.3f, 0.21f, 0.13f, 1), Vec4(0.18f, 0.12f, 0.07f, 1), 0.5f, 0.5f, 0.9f, 1.0f},
 };
 
@@ -394,7 +395,8 @@ script ThirdPersonCamera {
 const StarterScript PropScripts[] = {
     {"TankController.zs", R"zs(// Tank: W/S drive, A/D turn the hull, the mouse aims the turret and the barrel, left click fires.
 // Needs a Character Controller on this entity and descendants named "Turret", "Barrel", "Muzzle" (with a Particle
-// Emitter for the muzzle flash) and "Impact" (a Particle Emitter moved to where the shell hits).
+// Emitter for the muzzle flash) and "Impact" (a Particle Emitter moved to where the shell hits). Shells set Flammable
+// objects on fire.
 script TankController {
     @tooltip("Reads the keyboard and mouse (off: the tank stands still, e.g. while another player is driven)")
     prop controlled = true
@@ -411,6 +413,8 @@ script TankController {
     @range(0, 100000) @tooltip("Impulse given to what the shell hits (N*s)")
     prop impactImpulse = 6000.0
     @range(10, 2000) prop range = 300.0
+    @tooltip("Shells set Flammable objects on fire")
+    prop incendiary = true
 
     var yaw = 0.0
     var turretYaw = 0.0
@@ -449,11 +453,11 @@ script TankController {
         cooldown -= dt
         if input.mousePressed("left") and cooldown <= 0 {
             cooldown = reload
-            fire()
+            shoot()
         }
     }
 
-    fn fire() {
+    fn shoot() {
         if muzzle == nil { return }
         let origin = muzzle.worldPosition
         let dir = muzzle.worldForward
@@ -465,6 +469,7 @@ script TankController {
             impact.emit()
         }
         hit.entity.addImpulse(dir * impactImpulse, hit.point)
+        if incendiary { fire.ignite(hit.point, 0.4) }
     }
 }
 )zs"},
@@ -581,6 +586,31 @@ script Coin {
         entity.emit(40)
         entity.scale = vec3(0.001) // hidden; the sparkles finish before it is removed
         log("Coin collected")
+    }
+}
+)zs"},
+    {"FireStarter.zs", R"zs(// Lighter and water: F sets what you look at on fire (Flammable objects), G pours water on it.
+// Put it on a camera (it aims along the entity's forward axis).
+script FireStarter {
+    prop igniteKey = "F"
+    prop extinguishKey = "G"
+    @range(1, 100) @tooltip("How far you can reach (m)")
+    prop reach = 12.0
+    @range(0.1, 10) @tooltip("Radius the water puts out (m)")
+    prop splash = 1.5
+
+    fn update(dt) {
+        let ignite = input.pressed(igniteKey)
+        let douse = input.pressed(extinguishKey)
+        if not ignite and not douse { return }
+        let dir = entity.worldForward
+        let hit = physics.raycast(entity.worldPosition + dir * 0.5, dir, reach)
+        if hit == nil { return }
+        if ignite {
+            if fire.ignite(hit.point, 0.3) == 0 { log("Nothing flammable there") }
+        } else {
+            fire.extinguish(hit.point, splash)
+        }
     }
 }
 )zs"},

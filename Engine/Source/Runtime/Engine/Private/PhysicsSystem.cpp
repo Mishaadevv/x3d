@@ -863,6 +863,20 @@ physics::JointId PhysicsSystem::JointOf(Entity e) const
 
 f32 PhysicsSystem::GetJointValue(Entity e) const { return m_world ? m_world->GetJointCoordinate(JointOf(e)) : 0.0f; }
 
+void PhysicsSystem::BreakJoints(Entity e)
+{
+    const BodyId body = BodyOf(e);
+    if (!m_world || !body.IsValid())
+        return;
+    Array<JointId> joints;
+    m_world->GetJoints(joints);
+    for (JointId id : joints) {
+        const JointDesc& d = m_world->GetJointDesc(id);
+        if (d.a == body || d.b == body)
+            m_world->DestroyJoint(id);
+    }
+}
+
 void PhysicsSystem::SetJointMotor(Entity e, bool enabled, f32 speed, f32 force)
 {
     const JointId id = JointOf(e);

@@ -148,26 +148,9 @@ void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
                 em.lastWorld = em.world;
                 em.pendingBurst += u32(Max(desc.burst, 0));
             }
-            em.time += dt;
             // Flicker: two slow noises (the light breathes rather than strobes).
             em.flicker = 1.0f - desc.lightFlicker * (0.5f + 0.3f * Sin(em.time * 9.1f + f32(e.index)) + 0.2f * Sin(em.time * 23.7f));
-            // Age and move.
-            const f32 dragFactor = 1.0f / (1.0f + desc.drag * dt);
-            usize w = 0;
-            for (usize i = 0; i < em.particles.Size(); ++i) {
-                Particle p = em.particles[i];
-                p.age += dt;
-                if (p.age >= p.life)
-                    continue;
-                Vec3 accel = desc.acceleration;
-                if (desc.turbulence > 0.0f)
-                    accel += Swirl(p.position * 1.3f + Vec3(p.seed * 10.0f), em.time) * desc.turbulence;
-                p.velocity = (p.velocity + accel * dt) * dragFactor;
-                p.position += p.velocity * dt;
-                p.rotation += p.spin * dt;
-                em.particles[w++] = p;
-            }
-            em.particles.Resize(w);
+            Advance(em, dt);
             // Emit.
             u32 count = em.pendingBurst;
             em.pendingBurst = 0;
@@ -187,12 +170,68 @@ void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
     m_pendingEmits.Clear();
     m_pendingCounts.Clear();
     m_emitters.RemoveIf([](u64, const Emitter& em) { return !em.alive; });
+    for (auto& [key, em] : m_free)
+        Advance(em, dt);
+    m_free.RemoveIf([](u64, const Emitter& em) { return em.particles.Empty(); });
+}
+
+void ParticleSystem::Advance(Emitter& em, f32 dt)
+{
+    const ParticleEmitter& desc = em.desc;
+    em.time += dt;
+    const f32 dragFactor = 1.0f / (1.0f + desc.drag * dt);
+    usize w = 0;
+    for (usize i = 0; i < em.particles.Size(); ++i) {
+        Particle p = em.particles[i];
+        p.age += dt;
+        if (p.age >= p.life)
+            continue;
+        Vec3 accel = desc.acceleration;
+        if (desc.turbulence > 0.0f)
+            accel += Swirl(p.position * 1.3f + Vec3(p.seed * 10.0f), em.time) * desc.turbulence;
+        p.velocity = (p.velocity + accel * dt) * dragFactor;
+        p.position += p.velocity * dt;
+        p.rotation += p.spin * dt;
+        em.particles[w++] = p;
+    }
+    em.particles.Resize(w);
+}
+
+void ParticleSystem::SpawnFree(u64 key, const ParticleEmitter& desc, Vec3 position, Vec3 velocity)
+{
+    Emitter* em = m_free.Find(key);
+    if (!em) {
+        Emitter fresh;
+        fresh.rng.Seed(key * 0x9E3779B97F4A7C15ull + 1);
+        fresh.started = true;
+        m_free.InsertOrAssign(key, move(fresh));
+        em = m_free.Find(key);
+    }
+    em->desc = desc;
+    em->desc.worldSpace = true;
+    if (em->particles.Size() >= usize(Max(desc.maxParticles, 1)))
+        return;
+    Particle p;
+    p.position = position;
+    p.velocity = velocity * (1.0f + desc.speedVariation * em->rng.Range(-1.0f, 1.0f));
+    p.life = Max(desc.lifetime * (1.0f + desc.lifetimeVariation * em->rng.Range(-1.0f, 1.0f)), 0.02f);
+    p.sizeScale = 1.0f + desc.sizeVariation * em->rng.Range(-1.0f, 1.0f);
+    p.rotation = em->rng.NextFloat() * TwoPi;
+    p.spin = desc.spin * em->rng.Range(-1.0f, 1.0f);
+    p.seed = em->rng.NextFloat();
+    em->particles.PushBack(p);
+}
+
+void ParticleSystem::AppendLights(Array<render::LightDesc>& lights) const
+{
+    for (const render::LightDesc& l : m_extraLights)
+        lights.PushBack(l);
 }
 
 void ParticleSystem::Gather(Vec3 cameraPosition, Array<render::GpuParticle>& out) const
 {
     const usize first = out.Size();
-    for (const auto& [key, em] : m_emitters) {
+    auto gather = [&](const Emitter& em) {
         const ParticleEmitter& d = em.desc;
         const bool additive = d.blend == ParticleBlend::Additive;
         const render::ParticleShape shape = d.look == ParticleLook::Flame   ? render::ParticleShape::Flame
@@ -215,7 +254,11 @@ void ParticleSystem::Gather(Vec3 cameraPosition, Array<render::GpuParticle>& out
             if (g.size > 0.0f && g.color.w > 0.001f)
                 out.PushBack(g);
         }
-    }
+    };
+    for (const auto& [key, em] : m_emitters)
+        gather(em);
+    for (const auto& [key, em] : m_free)
+        gather(em);
     // Back to front (alpha particles need it; additive ones don't mind).
     std::sort(out.Data() + first, out.Data() + out.Size(), [&](const render::GpuParticle& a, const render::GpuParticle& b) {
         return DistanceSq(a.position, cameraPosition) > DistanceSq(b.position, cameraPosition);
@@ -242,6 +285,8 @@ void ParticleSystem::Emit(ecs::Entity e, u32 count)
 void ParticleSystem::Clear()
 {
     m_emitters.Clear();
+    m_free.Clear();
+    m_extraLights.Clear();
     m_pendingEmits.Clear();
     m_pendingCounts.Clear();
 }
@@ -250,6 +295,8 @@ u32 ParticleSystem::ParticleCount() const
 {
     u32 n = 0;
     for (const auto& [key, em] : m_emitters)
+        n += u32(em.particles.Size());
+    for (const auto& [key, em] : m_free)
         n += u32(em.particles.Size());
     return n;
 }

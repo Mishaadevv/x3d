@@ -15,7 +15,7 @@ using namespace rhi;
 
 namespace {
 
-constexpr u32 InstanceStride = 112; // keep in sync with ForwardPBR.hlsl
+constexpr u32 InstanceStride = 128; // keep in sync with ForwardPBR.hlsl
 constexpr u32 MaxLights = 1024;
 constexpr u32 MaxDecals = 256;
 
@@ -674,11 +674,15 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
         const Mat4 inverse = Inverse(inst.world);
         u8* dst = instanceData + usize(index) * InstanceStride;
         MemCopy(dst, &rows, 64);
+        // w of those rows: burn charring, glow, embers; then the burn sphere (world origin, radius).
+        const f32 burnParams[3] = {inst.charring, inst.burnGlow, inst.embers};
         for (u32 r = 0; r < 3; ++r) {
             // Row r of the inverse-transpose = column r of the inverse.
-            const Vec4 col(inverse.columns[r].XYZ(), 0.0f);
+            const Vec4 col(inverse.columns[r].XYZ(), burnParams[r]);
             MemCopy(dst + 64 + r * 16, &col, 16);
         }
+        const Vec4 burn(inst.burnOrigin, inst.burnRadius);
+        MemCopy(dst + 112, &burn, 16);
         if (inst.castShadows)
             m_casters.PushBack(InstanceRef{index, mesh, inst.world, scale, inst.materials});
 

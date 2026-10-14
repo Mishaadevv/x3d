@@ -28,6 +28,7 @@ const FeatureInfo Features[] = {
     {"scripts", "ZeqouScript", "Gameplay", "Run Script components while playing"},
     {"characters", "Character Physics", "Gameplay", "Move Character Controllers while playing"},
     {"physics", "Physics", "Gameplay", "Rigid bodies and colliders while playing (ZPhys)"},
+    {"fire", "Fire", "Gameplay", "Flammable objects catch fire, spread it and burn out while playing"},
     {"brush", "Brush Tool", "Editor Tools", "Paint models onto surfaces (B)"},
     {"measure", "Measure Tool", "Editor Tools", "Measure distances in the viewport (M)"},
 };

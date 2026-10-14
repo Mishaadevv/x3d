@@ -160,8 +160,10 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     ApplyEnvironment(env);
     m_lights.Clear();
     GatherLights(world, m_lights);
-    if (m_particleSource)
+    if (m_particleSource) {
         m_particleSource->ModulateLights(m_lights.View());
+        m_particleSource->AppendLights(m_lights); // fire on burning objects
+    }
     m_lighting.lights = m_lights.View();
 
     const f32 scale = Clamp(m_settings.renderScale, 0.25f, 2.0f);

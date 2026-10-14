@@ -1,6 +1,7 @@
 #include "Engine/ComponentRegistry.h"
 #include "Core/Memory/Memory.h"
 #include "Engine/AudioSystem.h"
+#include "Engine/Fire.h"
 #include "Engine/GameModule.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
@@ -52,6 +53,7 @@ void RegisterEngineComponents()
     RegisterComponent<ReverbZone>("Reverb Zone", "\xEE\x95\x9A");                    // audio-lines
     RegisterComponent<Water>("Water", "\xEE\x82\xB5");                                // droplets
     RegisterComponent<ParticleEmitter>("Particle Emitter", "\xEE\x90\x92");        // sparkles
+    RegisterComponent<Flammable>("Flammable", "\xEE\x83\x92");                     // flame
     RegisterComponent<Decal>("Decal", "\xEE\x8E\xBB");                                 // stamp
     RegisterComponent<ReflectionProbe>("Reflection Probe", "\xEE\x8D\x85");           // circle-dot
     RegisterComponent<HdriSky>("HDRI Sky", "\xEE\x88\x96");                          // cloud-sun

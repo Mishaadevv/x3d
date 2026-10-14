@@ -63,6 +63,9 @@ soft depth fade). Starter Content: StarterContent.cpp (materials incl. WorldGrid
 ZXEditor/StarterAssets.cpp (prefabs built in a scratch world: Effects / Characters / Props), showcase level in
 BuildStarterShowcase. Template thumbnails: Engine/Content/Templates/*.png from `python Tools/make_template_thumbs.py`
 (captures with -screenshotviewport = viewport only, no grid/gizmos/toolbar; loaded with srgb=false).
+Fire: Engine/Fire.h (Flammable component with runtime state fields; FireSystem ticked by the editor in Play before the
+particles: heat flux between surface samples, burn band between inner/outer radii, emits through ParticleSystem::SpawnFree
+and SetExtraLights). Char is drawn by ForwardPBR ApplyBurn from instance row 7 (burn sphere) + normal rows' w.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

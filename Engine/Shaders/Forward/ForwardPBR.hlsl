@@ -91,7 +91,7 @@ ZX_PUSH_CONSTANTS(DrawData, g_Draw);
 #define MATERIAL_ALPHA_TEST 2u
 #define MATERIAL_DOUBLE_SIDED 4u
 #define MATERIAL_GRAPH 8u
-#define INSTANCE_STRIDE 112
+#define INSTANCE_STRIDE 128
 
 struct Material
 {
@@ -429,6 +429,50 @@ float3 SpecularEnvironment(float3 worldPos, float3 R, float roughness)
     return acc;
 }
 
+float BurnHash(float3 p)
+{
+    p = frac(p * 0.3183099 + 0.1) * 17.0;
+    return frac(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float BurnNoise(float3 p)
+{
+    const float3 i = floor(p), f = frac(p), u = f * f * (3.0 - 2.0 * f);
+    return lerp(lerp(lerp(BurnHash(i), BurnHash(i + float3(1, 0, 0)), u.x), lerp(BurnHash(i + float3(0, 1, 0)), BurnHash(i + float3(1, 1, 0)), u.x), u.y),
+                lerp(lerp(BurnHash(i + float3(0, 0, 1)), BurnHash(i + float3(1, 0, 1)), u.x), lerp(BurnHash(i + float3(0, 1, 1)), BurnHash(i + float3(1, 1, 1)), u.x), u.y),
+                u.z);
+}
+
+/// Fire (Flammable objects): charred inside the burn sphere with a ragged edge and soot ahead of it, the edge glowing
+/// where the flames are, embers glowing through cracks in the char. Instance row 7 = burn sphere, normal rows' w =
+/// charring, glow, embers.
+void ApplyBurn(inout SurfaceData s, float3 worldPos)
+{
+    ByteAddressBuffer b = GetBuffer(g_View.instanceBuffer);
+    const uint o = g_Draw.instanceIndex * INSTANCE_STRIDE;
+    const float4 burn = asfloat(b.Load4(o + 112));
+    if (burn.w <= 0.0)
+        return;
+    const float charring = asfloat(b.Load(o + 76));
+    const float glow = asfloat(b.Load(o + 92));
+    const float embers = asfloat(b.Load(o + 108));
+    const float n = BurnNoise(worldPos * 3.1) * 0.65 + BurnNoise(worldPos * 9.7) * 0.35;
+    const float d = distance(worldPos, burn.xyz) + (n - 0.5) * min(0.35, burn.w * 0.6);
+    const float edge = 0.05 + min(burn.w, 2.0) * 0.03;
+    const float charred = saturate((burn.w - d) / edge);
+    const float soot = saturate((burn.w + edge * 3.0 - d) / (edge * 3.0)) * 0.45;
+    const float dark = max(charred, soot) * charring;
+    s.baseColor = lerp(s.baseColor, s.baseColor * 0.04 + 0.012, dark);
+    s.roughness = lerp(s.roughness, 0.92, dark);
+    s.metallic *= 1.0 - dark;
+    const float flicker = 0.7 + 0.3 * BurnNoise(worldPos * 2.3 + g_View.time * float3(0.0, 1.9, 0.7));
+    const float x = (d - burn.w) / edge;
+    const float rim = exp(-x * x) * glow;
+    const float crack = saturate(1.0 - abs(BurnNoise(worldPos * 6.1) * 0.7 + BurnNoise(worldPos * 17.3) * 0.3 - 0.5) * 14.0);
+    const float cracks = crack * crack * charred * embers;
+    s.emissive += float3(1.0, 0.3, 0.05) * ((rim * 1.2 + cracks * 0.7) * flicker * 3000.0 * g_View.exposure);
+}
+
 // Decal (144 bytes, SceneRenderer GpuDecal): projected along its local -Y through a -1..1 box.
 #define DECAL_STRIDE 144
 
@@ -580,6 +624,7 @@ float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
         N = normalize(tn.x * T + tn.y * B + tn.z * N);
     }
 #endif
+    ApplyBurn(s, i.worldPos);
     ApplyDecals(s, N, i.worldPos, geometricNormal);
     s.normal = N;
     normalRoughness = float4(EncodeOct(N), s.roughness, 1.0);

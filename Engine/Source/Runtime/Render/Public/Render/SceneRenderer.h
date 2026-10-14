@@ -22,6 +22,12 @@ struct RenderInstance
     /// Material per mesh slot (missing/invalid -> default material). Must stay valid until AddPasses executes.
     Span<const AssetId> materials;
     bool castShadows = true;
+    // Fire (Flammable objects): charred within burnRadius of burnOrigin (world), glowing edge and embers.
+    Vec3 burnOrigin;
+    f32 burnRadius = 0.0f; // 0 = not burnt
+    f32 charring = 0.0f;   // 0..1 how black
+    f32 burnGlow = 0.0f;   // 0..1 glowing edge of the flames
+    f32 embers = 0.0f;     // 0..1 embers in the charred part
 };
 
 struct RenderView

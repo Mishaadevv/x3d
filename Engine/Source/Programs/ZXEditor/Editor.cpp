@@ -834,13 +834,22 @@ void Editor::BuildStarterShowcase(bool withPrefabs)
             {"Props/P_Coin", Vec3(-1, 1, 1), 0},                {"Props/P_Coin", Vec3(1, 1, 1), 0},
             {"Props/P_Coin", Vec3(3, 1, 1), 0},                 {"Characters/P_Tank", Vec3(-16, 0, 2), 90},
             {"Characters/P_ThirdPersonCharacter", Vec3(0, 0, -2), 0},
+            // Fire spreading: a burning hay bale lights the fence, which carries the fire to the wood pile and the hay.
+            {"Props/P_HayBale", Vec3(-1.9f, 0, 16), 90},       {"Props/P_WoodenFence", Vec3(-1.1f, 0, 16), 0},
+            {"Props/P_WoodPile", Vec3(6.0f, 0, 16.2f), 90},    {"Props/P_HayBale", Vec3(7.4f, 0, 17.3f), 0},
         };
+        bool firstHay = true;
         for (const Placement& p : placements) {
             const String rel = String::Format("StarterContent/Prefabs/{}.zprefab", p.prefab);
             if (!platform::FileExists(Path::Join(contentRoot, rel)))
                 continue;
             const ecs::Entity root =
                 InstantiatePrefabFile(world, *prefabs, rel, Transform(p.position, Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(p.yaw))));
+            if (root && StringView(p.prefab) == "Props/P_HayBale" && firstHay) {
+                firstHay = false;
+                if (Flammable* f = world.Get<Flammable>(root))
+                    f->startBurning = true;
+            }
             if (root && StringView(p.prefab) == "Characters/P_Tank") {
                 // The character is the player here: the tank waits (Controlled off, its camera inactive).
                 if (Script* sc = world.Get<Script>(root))
@@ -1466,6 +1475,14 @@ void Editor::BeginPlay()
         scene::UpdateWorldTransforms(world);
         physics.Begin(world, renderAssets.Get());
     }
+    fire.Clear();
+    fire.meshBounds = [this](asset::AssetId id, AABB& out) {
+        const render::GpuMesh* mesh = renderAssets->GetMesh(id);
+        if (!mesh)
+            return false;
+        out = mesh->bounds;
+        return true;
+    };
     gameCameraEjected = false;
     SetGameInputCaptured(FindGameCamera(world) != ecs::NullEntity && m_autotestFrames == 0); // tests keep the cursor free
     ZX_LOG_INFO(LogEditor, "Play-in-Editor started ({} entities)", m_pieSnapshot.Get("entities").Size());
@@ -1486,6 +1503,7 @@ void Editor::EndPlay()
     if (audio)
         audio->End();
     physics.End();
+    fire.Clear();
     if (audioEngine)
         audioEngine->SetBusMuted(audio::Bus::Master, false);
     SetGameInputCaptured(false);
@@ -2557,6 +2575,7 @@ bool Editor::Frame()
             scripts->actions = &inputActionState;
             scripts->physics = physics.IsRunning() ? &physics : nullptr;
             scripts->particles = &particles;
+            scripts->fire = FeatureEnabled("fire") ? &fire : nullptr;
             scripts->Tick(world, gameDt, gameInput);
         }
         if (game) {
@@ -2591,6 +2610,11 @@ bool Editor::Frame()
                 scripts->DispatchPhysicsEvents(world, physics.Events());
             if (game)
                 game->DispatchPhysicsEvents(physics.Events());
+        }
+        // Fire spreads and burns (before the particles tick: it emits flames and smoke into them).
+        if (FeatureEnabled("fire")) {
+            fire.physics = physics.IsRunning() ? &physics : nullptr;
+            fire.Tick(world, gameDt, particles);
         }
         if (audio && !m_pieStep)
             audio->Tick(world, gameDt, CurrentListener());
