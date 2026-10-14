@@ -236,7 +236,7 @@ vec3/quat are values (copied); lists and strings are references.
 | `input` | `key("W")`, `pressed("Space")`, `released(...)`, `mouse("left")`, `mousePressed(...)`, `move` (WASD/stick vec3), `look`, `mouseDelta`, `mousePosition`, `wheel`; Input Actions: `action("Jump")`, `actionPressed(...)`, `actionReleased(...)`, `axis("MoveForward")` |
 | `time` | `dt elapsed frame` |
 | `audio` | `play(file[, volume])`, `playAt(file, position[, volume])`, `stop(id)`, `setVolume(bus, volume)`; `entity.playSound()` / `stopSound()` with an Audio Source |
-| Rigid Body | `entity.velocity`, `entity.angularVelocity` (read / write), `entity.addForce(v)`, `entity.addImpulse(v[, point])`, `entity.addTorque(v)` |
+| Rigid Body | `entity.velocity`, `entity.angularVelocity` (read / write), `entity.addForce(v)`, `entity.addImpulse(v[, point])`, `entity.addTorque(v)`; joints: `entity.jointValue` (hinge angle in radians / slider offset / distance), `entity.setMotor(speed[, force])`, `entity.setMotor(nil)` |
 | `physics` | `raycast(origin, direction[, maxDistance[, layers]])` / `sphereCast(origin, radius, direction[, maxDistance[, layers]])` -> hit (`entity point normal distance`) or `nil`; `overlapSphere(center, radius[, layers])` -> list of entities; `gravity`. `layers`: a layer number or a list (`[0, 2]`); triggers are not hit |
 
 Positions are local to the parent; Y is up, +Z forward, meters, rotations in degrees in the API.
@@ -260,7 +260,8 @@ This is a game project for the **ZeqouX3D** engine ({version}). Read this before
 - `Content/Scenes/*.zscene` - scenes as JSON: `entities[]` with a `guid`, optional `parent`, and one object per
   component (`Transform`, `MeshRenderer`, `PointLight`, `SpotLight`, `Camera`, `CharacterController`, `Water`, `Script`,
   `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`, `PostProcessVolume`, `ReflectionProbe`, `Decal`, `HdriSky`,
-  `RigidBody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `MeshCollider`,
+  `RigidBody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `MeshCollider`, `HingeJoint`, `FixedJoint`,
+  `SliderJoint`, `BallJoint`, `DistanceJoint`, `ConfigurableJoint` (`connectedBody` = entity name, empty = world),
   `Rotator`, `Oscillator`, ...). Prefer editing scenes in the editor; when editing JSON keep guids unique and stable.
 - `Content/Scripts/*.zs` - gameplay code in **ZeqouScript** (see `Docs/ZeqouScript.md`). This is where most work happens.
 - `Content/**/*.zmat` / `.zmati` - material graphs / instances (JSON node graphs). `.zprefab` - prefabs.

@@ -18,7 +18,8 @@
 // local pose). Broadphase: two dynamic AABB trees (static / moving). Narrowphase: SAT with face clipping for boxes and
 // triangles (up to 4 contact points), exact closest points for spheres and capsules, speculative contacts. Solver:
 // soft-step sequential impulses (4 substeps with warm starting, soft spring-damper overlap correction and a relax
-// pass, as in Box2D v3), friction, restitution. Islands sleep when they come to rest. Deterministic for the same
+// pass, as in Box2D v3), friction, restitution, joints (fixed, hinge, slider, ball, distance/spring, configurable)
+// with limits and motors. Islands sleep when they come to rest. Deterministic for the same
 // inputs and build.
 
 #include "Core/Containers/Array.h"
@@ -94,6 +95,62 @@ struct BodyId
     friend bool operator==(BodyId, BodyId) = default;
 };
 
+enum class JointType : u8
+{
+    Fixed,        // glues two bodies together
+    Hinge,        // rotation around one axis (doors, wheels); limits + motor
+    Slider,       // translation along one axis (pistons, drawers); limits + motor
+    Ball,         // rotation around a point (ragdolls, chains); swing cone + twist limits
+    Distance,     // keeps two anchors at a distance: rigid rod, rope (max), strut (min) or spring
+    Configurable, // each linear / angular axis of the joint frame locked, limited or free
+};
+
+enum class AxisMotion : u8
+{
+    Locked,
+    Limited,
+    Free,
+};
+
+/// A constraint between two bodies (or a body and the world). Anchor and axes are given in world space for the
+/// poses at creation; the joint keeps that relative arrangement.
+struct JointDesc
+{
+    JointType type = JointType::Fixed;
+    BodyId a;              // must be valid
+    BodyId b;              // invalid = attached to the world
+    Vec3 anchor;           // world point (on A; for Distance joints the anchor on A)
+    Vec3 anchorB;          // Distance joints: the anchor on B (world point)
+    Vec3 axis = Vec3(0.0f, 1.0f, 0.0f); // hinge / slider axis, cone / twist axis, X axis of the configurable frame
+    bool useLimits = false;
+    f32 lower = 0.0f, upper = 0.0f; // radians (Hinge) or meters (Slider) relative to the creation pose
+    bool useMotor = false;
+    f32 motorSpeed = 0.0f;      // rad/s or m/s
+    f32 maxMotorForce = 1000.0f; // N*m or N
+    f32 swingLimit = 0.0f;      // Ball: cone half angle (radians, 0 = free)
+    f32 twistLimit = 0.0f;      // Ball: +-twist around the axis (radians, 0 = free)
+    f32 minDistance = 0.0f;     // Distance: 0 = none; with neither min, max nor spring the joint is a rigid rod
+    f32 maxDistance = 0.0f;
+    f32 springHertz = 0.0f;     // Distance: > 0 = spring towards the rest length
+    f32 springDamping = 0.2f;   // damping ratio (1 = critical)
+    f32 restLength = 0.0f;      // Distance: <= 0 = the distance between the anchors at creation
+    AxisMotion linear[3] = {AxisMotion::Locked, AxisMotion::Locked, AxisMotion::Locked};
+    AxisMotion angular[3] = {AxisMotion::Locked, AxisMotion::Locked, AxisMotion::Locked};
+    f32 linearLimit = 0.0f;  // Configurable: +-meters on Limited linear axes
+    f32 angularLimit = 0.0f; // Configurable: +-radians on Limited angular axes
+    bool collideConnected = false; // contacts between the two bodies
+    f32 breakForce = 0.0f;  // N: the joint breaks (is destroyed) above this force; 0 = unbreakable
+    f32 breakTorque = 0.0f; // N*m, the same for torque
+};
+
+struct JointId
+{
+    u32 index = ~0u;
+    u32 generation = 0;
+    bool IsValid() const { return index != ~0u; }
+    friend bool operator==(JointId, JointId) = default;
+};
+
 struct PhysicsSettings
 {
     Vec3 gravity = Vec3(0.0f, -9.81f, 0.0f);
@@ -101,6 +158,8 @@ struct PhysicsSettings
     u32 relaxIterations = 2;         // per substep, without position bias
     f32 contactHertz = 60.0f;        // stiffness of the overlap correction (capped at a quarter of the substep rate)
     f32 contactDampingRatio = 10.0f;
+    f32 jointHertz = 60.0f;          // stiffness of the joint error correction
+    f32 jointDampingRatio = 2.0f;
     f32 maxPushVelocity = 3.0f;      // m/s: how fast overlaps are pushed apart
     f32 speculativeDistance = 0.02f; // contacts are created this far before touching (meters)
     f32 restitutionThreshold = 1.0f; // m/s: slower impacts don't bounce
@@ -202,6 +261,24 @@ public:
     void AddTorque(BodyId id, Vec3 torque);
     void Wake(BodyId id);
 
+    // --- Joints ---
+    /// Creates a joint (destroyed with either body). Returns an invalid id when body A is invalid.
+    JointId CreateJoint(const JointDesc& desc);
+    void DestroyJoint(JointId id);
+    bool IsValid(JointId id) const;
+    u32 JointCount() const { return m_jointCount; }
+    const JointDesc& GetJointDesc(JointId id) const;
+    /// Hinge: angle (radians), Slider: offset along the axis, Distance: current length; 0 for others.
+    f32 GetJointCoordinate(JointId id) const;
+    /// World anchors on A and B (they coincide while the joint holds).
+    void GetJointAnchors(JointId id, Vec3& onA, Vec3& onB) const;
+    void SetJointMotor(JointId id, bool enabled, f32 speed, f32 maxForce);
+    void SetJointLimits(JointId id, bool enabled, f32 lower, f32 upper);
+    /// Every joint id (in index order).
+    void GetJoints(Array<JointId>& out) const;
+    /// Joints broken (breakForce / breakTorque exceeded) in the Steps since the last call; they are already destroyed.
+    void TakeBrokenJoints(Array<JointId>& out);
+
     /// Whether bodies on layers a and b collide (default: all pairs).
     void SetLayersCollide(u32 a, u32 b, bool collide);
     bool LayersCollide(u32 a, u32 b) const { return (m_layerMask[a & 31] >> (b & 31)) & 1u; }
@@ -236,6 +313,7 @@ private:
     UniquePtr<Impl> m_impl;
     u32 m_layerMask[32];
     u32 m_bodyCount = 0;
+    u32 m_jointCount = 0;
     PhysicsStats m_stats;
 };
 

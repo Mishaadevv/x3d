@@ -240,6 +240,13 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             out = Value(sys.physics ? (m == "velocity" ? sys.physics->GetVelocity(e) : sys.physics->GetAngularVelocity(e)) : Vec3());
             return true;
         }
+        if (m == "jointValue") {
+            // Hinge angle (radians) / slider offset / distance of the entity's joint (0 without one).
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            out = Value(f64(sys.physics ? sys.physics->GetJointValue(e) : 0.0f));
+            return true;
+        }
         const bool known = m == "position" || m == "rotation" || m == "scale" || m == "forward" || m == "right" || m == "up" ||
                            m == "transform";
         if (!known)
@@ -343,6 +350,16 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
                 sys.physics->AddImpulseAtPoint(e, a[0].AsVec3(), a[1].AsVec3());
             else
                 sys.physics->AddImpulse(e, a[0].AsVec3());
+            return true;
+        }
+        if (m == "setMotor") {
+            // setMotor(speed[, force]): drives the entity's hinge (rad/s) or slider (m/s) joint; setMotor(nil) turns it off.
+            if (a.Empty() || (!a[0].IsNumber() && a[0].Type() != ValueType::Nil) || (a.Size() > 1 && !a[1].IsNumber()))
+                return v.Fail("entity.setMotor(speed[, force]) or entity.setMotor(nil)");
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            if (sys.physics)
+                sys.physics->SetJointMotor(e, a[0].IsNumber(), a[0].IsNumber() ? f32(a[0].AsNumber()) : 0.0f, a.Size() > 1 ? f32(a[1].AsNumber()) : 0.0f);
             return true;
         }
         if (m == "child") {

@@ -58,6 +58,12 @@ void RegisterEngineComponents()
     RegisterComponent<SphereCollider>("Sphere Collider", "\xEE\x92\xB0");           // circle-dashed
     RegisterComponent<CapsuleCollider>("Capsule Collider", "\xEE\x8E\xBD");         // pill
     RegisterComponent<MeshCollider>("Mesh Collider", "\xEE\x86\x92");               // triangle
+    RegisterComponent<HingeJoint>("Hinge Joint", "\xEE\x8F\x96");                   // door-open
+    RegisterComponent<FixedJoint>("Fixed Joint", "\xEE\x84\x82");                   // link
+    RegisterComponent<SliderJoint>("Slider Joint", "\xEE\x87\x86");                 // move-horizontal
+    RegisterComponent<BallJoint>("Ball Joint", "\xEE\x8F\xA7");                     // orbit
+    RegisterComponent<DistanceJoint>("Distance Joint", "\xEE\x8E\x8B");             // spline
+    RegisterComponent<ConfigurableJoint>("Configurable Joint", "\xEE\x8A\x9A");     // sliders-horizontal
     RegisterComponent<PostProcessVolume>("Post Process Volume", "\xEE\x81\x80");      // aperture
     RegisterComponent<Camera>("Camera", "\xEE\x86\xA5");                              // video
     RegisterComponent<CharacterController>("Character Controller", "\xEE\x88\x9E");  // person-standing

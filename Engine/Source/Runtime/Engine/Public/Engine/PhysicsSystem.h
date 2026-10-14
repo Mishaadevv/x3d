@@ -68,7 +68,116 @@ struct MeshCollider
     i32 layer = 0;
 };
 
+// Joints (on an entity with a Rigid Body): connect it to the body of `connectedBody` (the name of another entity
+// with a Rigid Body or a collider; empty = the world). Anchors and axes are in the entity's local space; angles in
+// radians (shown in degrees). breakForce / breakTorque > 0: the joint breaks when pulled harder (newtons / N*m).
+
+/// Rotation around one axis: doors, wheels, levers. Limits relative to the pose at Play; optional motor.
+struct HingeJoint
+{
+    String connectedBody;
+    Vec3 anchor;
+    Vec3 axis = Vec3(0.0f, 1.0f, 0.0f);
+    bool useLimits = false;
+    f32 lowerLimit = -0.7853982f;
+    f32 upperLimit = 0.7853982f;
+    bool useMotor = false;
+    f32 motorSpeed = 1.5707964f; // rad/s
+    f32 motorTorque = 1000.0f;   // N*m
+    f32 breakForce = 0.0f;
+    f32 breakTorque = 0.0f;
+    bool collideConnected = false;
+};
+
+/// Glues the entity to the connected body (or pins it in place).
+struct FixedJoint
+{
+    String connectedBody;
+    f32 breakForce = 0.0f;
+    f32 breakTorque = 0.0f;
+    bool collideConnected = false;
+};
+
+/// Translation along one axis: pistons, drawers, elevators. Limits in meters from the pose at Play.
+struct SliderJoint
+{
+    String connectedBody;
+    Vec3 axis = Vec3(1.0f, 0.0f, 0.0f);
+    bool useLimits = false;
+    f32 lowerLimit = -1.0f;
+    f32 upperLimit = 1.0f;
+    bool useMotor = false;
+    f32 motorSpeed = 1.0f;     // m/s
+    f32 motorForce = 1000.0f;  // N
+    f32 breakForce = 0.0f;
+    f32 breakTorque = 0.0f;
+    bool collideConnected = false;
+};
+
+/// Rotation around a point: chains, ragdoll shoulders and hips. Swing cone around `axis` and twist limits.
+struct BallJoint
+{
+    String connectedBody;
+    Vec3 anchor;
+    Vec3 axis = Vec3(0.0f, -1.0f, 0.0f);
+    f32 swingLimit = 0.0f; // cone half angle, 0 = free
+    f32 twistLimit = 0.0f; // +- around the axis, 0 = free
+    f32 breakForce = 0.0f;
+    f32 breakTorque = 0.0f;
+    bool collideConnected = false;
+};
+
+/// Keeps two anchors apart: a rigid rod by default, a rope with Max Distance, a spring with Spring Frequency.
+struct DistanceJoint
+{
+    String connectedBody;
+    Vec3 anchor;
+    Vec3 connectedAnchor;       // in the connected entity's space (world space without one)
+    bool autoConnectedAnchor = true; // the connected entity's origin (without one: the anchor's position at Play)
+    f32 restLength = 0.0f;      // 0 = the distance at Play
+    f32 minDistance = 0.0f;
+    f32 maxDistance = 0.0f;     // rope length
+    f32 springFrequency = 0.0f; // Hz, 0 = no spring
+    f32 springDamping = 0.2f;
+    f32 breakForce = 0.0f;
+    f32 breakTorque = 0.0f;
+    bool collideConnected = false;
+};
+
+enum class JointMotion : u8
+{
+    Locked,
+    Limited,
+    Free,
+};
+
+/// Each axis of the joint frame (X = axis, Y/Z perpendicular) locked, limited or free, linear and angular.
+struct ConfigurableJoint
+{
+    String connectedBody;
+    Vec3 anchor;
+    Vec3 axis = Vec3(1.0f, 0.0f, 0.0f);
+    JointMotion xMotion = JointMotion::Locked;
+    JointMotion yMotion = JointMotion::Locked;
+    JointMotion zMotion = JointMotion::Locked;
+    JointMotion angularXMotion = JointMotion::Locked;
+    JointMotion angularYMotion = JointMotion::Locked;
+    JointMotion angularZMotion = JointMotion::Locked;
+    f32 linearLimit = 0.5f;        // +- meters on Limited axes
+    f32 angularLimit = 0.7853982f; // +- radians on Limited axes
+    f32 breakForce = 0.0f;
+    f32 breakTorque = 0.0f;
+    bool collideConnected = false;
+};
+
 ZX_DECLARE_ENUM(RigidBodyType);
+ZX_DECLARE_ENUM(JointMotion);
+ZX_DECLARE_TYPE(HingeJoint);
+ZX_DECLARE_TYPE(FixedJoint);
+ZX_DECLARE_TYPE(SliderJoint);
+ZX_DECLARE_TYPE(BallJoint);
+ZX_DECLARE_TYPE(DistanceJoint);
+ZX_DECLARE_TYPE(ConfigurableJoint);
 ZX_DECLARE_TYPE(RigidBody);
 ZX_DECLARE_TYPE(BoxCollider);
 ZX_DECLARE_TYPE(SphereCollider);
@@ -88,6 +197,20 @@ struct ColliderOutline
     f32 halfHeight = 0.0f;
 };
 void GatherColliderOutlines(ecs::World& world, ecs::Entity e, Array<ColliderOutline>& out);
+
+/// True if the entity has any joint component.
+bool HasJoint(const ecs::World& world, ecs::Entity e);
+
+/// The joints of an entity in world space (for drawing): anchor, axis and the connected entity's position.
+struct JointGizmo
+{
+    Vec3 anchor;
+    Vec3 axis;               // zero for joints without one (fixed, distance)
+    Vec3 connected;          // the connected entity's position (or the connected anchor)
+    bool hasConnected = false;
+    bool linear = false;     // slider: the axis is a direction of travel
+};
+void GatherJointGizmos(ecs::World& world, ecs::Entity e, Array<JointGizmo>& out);
 
 /// A contact event between two entities (per frame, see PhysicsSystem::Events).
 struct PhysicsEvent
@@ -149,6 +272,13 @@ public:
     void SetVelocity(ecs::Entity e, Vec3 v);
     Vec3 GetAngularVelocity(ecs::Entity e) const;
     void SetAngularVelocity(ecs::Entity e, Vec3 w);
+    /// The joint of an entity (the first joint component; invalid when it has none or it broke).
+    physics::JointId JointOf(ecs::Entity e) const;
+    /// Hinge angle (radians), slider offset (m), distance (m) of the entity's joint.
+    f32 GetJointValue(ecs::Entity e) const;
+    /// Motor of the entity's hinge / slider joint (speed in rad/s or m/s; force <= 0 keeps the current one).
+    void SetJointMotor(ecs::Entity e, bool enabled, f32 speed, f32 force = 0.0f);
+    u32 JointCount() const { return m_world ? m_world->JointCount() : 0u; }
 
 private:
     struct Tracked
@@ -164,6 +294,7 @@ private:
     };
 
     void CreateBodies(ecs::World& world);
+    void CreateJoints(ecs::World& world);
     bool CreateBody(ecs::World& world, ecs::Entity e, bool dynamic);
 
     UniquePtr<physics::PhysicsWorld> m_world;
@@ -173,6 +304,7 @@ private:
     Array<ecs::Entity> m_pendingMeshes; // static mesh colliders whose mesh is not loaded yet
     Array<PhysicsEvent> m_events;
     Array<physics::ContactEvent> m_rawEvents;
+    HashMap<u64, physics::JointId> m_joints; // entity -> its joint
     ecs::Entity EntityOf(physics::BodyId id) const;
     f32 m_accumulator = 0.0f;
 };

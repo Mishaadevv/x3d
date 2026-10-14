@@ -1,6 +1,7 @@
 #include "Physics/PhysicsWorld.h"
 #include "AabbTree.h"
 #include "Collide.h"
+#include "Joints.h"
 #include "Core/Jobs/JobSystem.h"
 #include "Core/Time/Time.h"
 
@@ -154,21 +155,14 @@ struct BodyPair
     u32 a, b;
 };
 
-/// Compact body state the solver iterates on.
-struct SolverBody
+struct SolverJoint
 {
-    Vec3 x, v, w;
-    Quat q;
-    f32 invMass = 0.0f;
-    Mat3 invI;
-    Mat3 invILocal;
-    Vec3 gravity;      // linear acceleration (gravity + forces)
-    Vec3 angularAccel; // from torques
-    f32 linearDamping = 0.0f, angularDamping = 0.0f;
-    u32 body = 0;
-    bool active = false; // dynamic and awake
-    bool moves = false;  // integrates its pose (active or kinematic)
+    u32 joint = 0;
+    u32 ia = 0, ib = 0; // solver bodies (ib may be the world body)
+    u32 firstRow = 0, rowCount = 0;
 };
+
+u64 PairKey(u32 a, u32 b) { return (u64(Min(a, b)) << 32) | Max(a, b); }
 
 Quat IntegrateRotation(const Quat& q, Vec3 angle)
 {
@@ -223,6 +217,48 @@ struct PhysicsWorld::Impl
     Array<ContactEvent> events;
     Array<PairOut> pairOuts;           // per pair, this step
     Array<u32> toSolver;
+    Array<JointData> joints;
+    Array<u32> freeJoints;
+    HashMap<u64, u32> noCollidePairs; // body pairs joined without collideConnected -> joint count
+    Array<SolverJoint> solverJoints;
+    Array<JointRow> jointRows;
+    Array<JointId> brokenJoints;
+
+    /// Solver view of a body (or of the world for ~0u) for joint frames outside the step.
+    SolverBody Snapshot(u32 index) const
+    {
+        SolverBody s;
+        if (index == ~0u || index >= bodies.Size())
+            return s;
+        const Body& b = bodies[index];
+        s.x = b.x;
+        s.q = b.q;
+        s.v = b.v;
+        s.w = b.w;
+        s.invMass = b.invMass;
+        s.invI = b.invInertiaWorld;
+        s.body = index;
+        return s;
+    }
+
+    void DestroyJoint(u32 index)
+    {
+        JointData& j = joints[index];
+        if (!j.alive)
+            return;
+        if (!j.desc.collideConnected && j.b != ~0u) {
+            const u64 key = PairKey(j.a, j.b);
+            if (u32* n = noCollidePairs.Find(key); n && --*n == 0)
+                noCollidePairs.Remove(key);
+        }
+        if (j.a < bodies.Size() && bodies[j.a].alive)
+            WakeBody(bodies[j.a]);
+        if (j.b < bodies.Size() && bodies[j.b].alive)
+            WakeBody(bodies[j.b]);
+        j.alive = false;
+        ++j.generation;
+        freeJoints.PushBack(index);
+    }
 
     PosedShape Pose(const Body& b, u32 s) const
     {
@@ -377,6 +413,11 @@ void PhysicsWorld::DestroyBody(BodyId id)
         if (c.a == id.index || c.b == id.index) {
             I.WakeBody(I.bodies[c.a]);
             I.WakeBody(I.bodies[c.b]);
+        }
+    for (u32 ji = 0; ji < I.joints.Size(); ++ji)
+        if (I.joints[ji].alive && (I.joints[ji].a == id.index || I.joints[ji].b == id.index)) {
+            I.DestroyJoint(ji);
+            --m_jointCount;
         }
     (b.motion == MotionType::Static ? I.staticTree : I.movingTree).Remove(b.proxy);
     b.alive = false;
@@ -569,6 +610,142 @@ void PhysicsWorld::Wake(BodyId id)
         m_impl->WakeBody(m_impl->bodies[id.index]);
 }
 
+// --- Joints ------------------------------------------------------------------------------------------------------------
+
+JointId PhysicsWorld::CreateJoint(const JointDesc& desc)
+{
+    if (!IsValid(desc.a) || (desc.b.IsValid() && (!IsValid(desc.b) || desc.b.index == desc.a.index)))
+        return {};
+    Impl& I = *m_impl;
+    u32 index;
+    if (!I.freeJoints.Empty()) {
+        index = I.freeJoints.PopBackValue();
+    } else {
+        index = u32(I.joints.Size());
+        I.joints.AddDefaulted();
+    }
+    JointData& j = I.joints[index];
+    const u32 generation = j.generation;
+    j = JointData();
+    j.generation = generation;
+    j.alive = true;
+    j.desc = desc;
+    j.a = desc.a.index;
+    j.b = desc.b.IsValid() ? desc.b.index : ~0u;
+    const SolverBody A = I.Snapshot(j.a), B = I.Snapshot(j.b);
+    const Vec3 axis = LengthSq(desc.axis) > 1e-12f ? Normalize(desc.axis) : Vec3(0.0f, 1.0f, 0.0f);
+    const Vec3 ref = Abs(axis.x) > 0.57f ? Normalize(Vec3(axis.y, -axis.x, 0.0f)) : Normalize(Vec3(0.0f, axis.z, -axis.y));
+    const Vec3 anchorB = desc.type == JointType::Distance ? desc.anchorB : desc.anchor;
+    j.localAnchorA = Conjugate(A.q) * (desc.anchor - A.x);
+    j.localAnchorB = Conjugate(B.q) * (anchorB - B.x);
+    j.localAxisA = Conjugate(A.q) * axis;
+    j.localAxisB = Conjugate(B.q) * axis;
+    j.localRefA = Conjugate(A.q) * ref;
+    j.localRefB = Conjugate(B.q) * ref;
+    j.relRotation = Normalize(Conjugate(A.q) * B.q);
+    j.restLength = desc.restLength > 0.0f ? desc.restLength : Length(anchorB - desc.anchor);
+    if (!desc.collideConnected && j.b != ~0u) {
+        const u64 key = PairKey(j.a, j.b);
+        if (u32* n = I.noCollidePairs.Find(key))
+            ++*n;
+        else
+            I.noCollidePairs.InsertOrAssign(key, 1u);
+        // Drop the contacts they already have.
+        usize w = 0;
+        for (usize i = 0; i < I.contacts.Size(); ++i)
+            if (PairKey(I.contacts[i].a, I.contacts[i].b) != key)
+                I.contacts[w++] = I.contacts[i];
+        if (w != I.contacts.Size()) {
+            I.contacts.Resize(w);
+            I.contactIndex.Clear();
+            for (usize i = 0; i < I.contacts.Size(); ++i)
+                I.contactIndex.InsertOrAssign(I.contacts[i].key, u32(i));
+        }
+    }
+    I.WakeBody(I.bodies[j.a]);
+    if (j.b != ~0u)
+        I.WakeBody(I.bodies[j.b]);
+    ++m_jointCount;
+    return JointId{index, j.generation};
+}
+
+void PhysicsWorld::DestroyJoint(JointId id)
+{
+    if (!IsValid(id))
+        return;
+    m_impl->DestroyJoint(id.index);
+    --m_jointCount;
+}
+
+bool PhysicsWorld::IsValid(JointId id) const
+{
+    return id.index < m_impl->joints.Size() && m_impl->joints[id.index].alive && m_impl->joints[id.index].generation == id.generation;
+}
+
+const JointDesc& PhysicsWorld::GetJointDesc(JointId id) const
+{
+    static const JointDesc none;
+    return IsValid(id) ? m_impl->joints[id.index].desc : none;
+}
+
+f32 PhysicsWorld::GetJointCoordinate(JointId id) const
+{
+    if (!IsValid(id))
+        return 0.0f;
+    const JointData& j = m_impl->joints[id.index];
+    return JointCoordinate(j, m_impl->Snapshot(j.a), m_impl->Snapshot(j.b));
+}
+
+void PhysicsWorld::GetJointAnchors(JointId id, Vec3& onA, Vec3& onB) const
+{
+    onA = onB = Vec3();
+    if (!IsValid(id))
+        return;
+    const JointData& j = m_impl->joints[id.index];
+    const SolverBody A = m_impl->Snapshot(j.a), B = m_impl->Snapshot(j.b);
+    onA = A.x + A.q * j.localAnchorA;
+    onB = B.x + B.q * j.localAnchorB;
+}
+
+void PhysicsWorld::SetJointMotor(JointId id, bool enabled, f32 speed, f32 maxForce)
+{
+    if (!IsValid(id))
+        return;
+    JointData& j = m_impl->joints[id.index];
+    j.desc.useMotor = enabled;
+    j.desc.motorSpeed = speed;
+    j.desc.maxMotorForce = maxForce;
+    m_impl->WakeBody(m_impl->bodies[j.a]);
+    if (j.b != ~0u)
+        m_impl->WakeBody(m_impl->bodies[j.b]);
+}
+
+void PhysicsWorld::SetJointLimits(JointId id, bool enabled, f32 lower, f32 upper)
+{
+    if (!IsValid(id))
+        return;
+    JointData& j = m_impl->joints[id.index];
+    j.desc.useLimits = enabled;
+    j.desc.lower = Min(lower, upper);
+    j.desc.upper = Max(lower, upper);
+    m_impl->WakeBody(m_impl->bodies[j.a]);
+    if (j.b != ~0u)
+        m_impl->WakeBody(m_impl->bodies[j.b]);
+}
+
+void PhysicsWorld::GetJoints(Array<JointId>& out) const
+{
+    for (u32 i = 0; i < m_impl->joints.Size(); ++i)
+        if (m_impl->joints[i].alive)
+            out.PushBack(JointId{i, m_impl->joints[i].generation});
+}
+
+void PhysicsWorld::TakeBrokenJoints(Array<JointId>& out)
+{
+    out.Append(m_impl->brokenJoints.View());
+    m_impl->brokenJoints.Clear();
+}
+
 void PhysicsWorld::SetLayersCollide(u32 a, u32 b, bool collide)
 {
     a &= 31;
@@ -592,6 +769,25 @@ void PhysicsWorld::Step(f32 dt)
     Impl& I = *m_impl;
     const PhysicsSettings& S = m_settings;
     Array<Body>& bodies = I.bodies;
+
+    // 0. Joints keep islands together: an awake body (or a moving kinematic one) wakes what it is jointed to.
+    for (bool changed = !I.joints.Empty(); changed;) {
+        changed = false;
+        for (const JointData& j : I.joints) {
+            if (!j.alive || j.b == ~0u)
+                continue;
+            Body& a = bodies[j.a];
+            Body& b = bodies[j.b];
+            if (a.sleeping && b.IsAwakeMover()) {
+                I.WakeBody(a);
+                changed = true;
+            }
+            if (b.sleeping && a.IsAwakeMover()) {
+                I.WakeBody(b);
+                changed = true;
+            }
+        }
+    }
 
     // 1. Broadphase: refresh the moving proxies, then pairs of awake movers with everything near them. Bounds and
     //    tree queries run in parallel (per body); tree updates and the merge stay serial and in body order.
@@ -637,6 +833,8 @@ void PhysicsWorld::Step(f32 dt)
                 return true;
             const Body& bj = bodies[j];
             if (!LayersCollide(bi.layer, bj.layer) || !bj.bounds.Intersects(query))
+                return true;
+            if (!I.noCollidePairs.Empty() && I.noCollidePairs.Contains(PairKey(i, j)))
                 return true;
             const bool iDyn = bi.IsDynamic();
             switch (bj.motion) {
@@ -827,6 +1025,14 @@ void PhysicsWorld::Step(f32 dt)
         if (a.IsDynamic() && b.IsDynamic() && !a.sleeping && !b.sleeping && !c.sensor)
             parent[find(c.a)] = find(c.b);
     }
+    for (const JointData& j : I.joints) {
+        if (!j.alive || j.b == ~0u)
+            continue;
+        const Body& a = bodies[j.a];
+        const Body& b = bodies[j.b];
+        if (a.IsDynamic() && b.IsDynamic() && !a.sleeping && !b.sleeping)
+            parent[find(j.a)] = find(j.b);
+    }
 
     // 4. Solver bodies: a compact copy of every awake dynamic body (all integrate) and of every other body a contact
     //    touches (static / kinematic / sleeping: infinite mass). Written back after the substeps.
@@ -907,6 +1113,36 @@ void PhysicsWorld::Step(f32 dt)
         }
         I.solver.PushBack(sc);
     }
+    // Joints with at least one awake dynamic body (the world is a static solver body at the origin).
+    I.solverJoints.Clear();
+    u32 worldBody = ~0u;
+    for (u32 ji = 0; ji < I.joints.Size(); ++ji) {
+        const JointData& j = I.joints[ji];
+        if (!j.alive)
+            continue;
+        const Body& A = bodies[j.a];
+        const bool aActive = A.IsDynamic() && !A.sleeping;
+        const bool bActive = j.b != ~0u && bodies[j.b].IsDynamic() && !bodies[j.b].sleeping;
+        if (!aActive && !bActive)
+            continue;
+        SolverJoint sj;
+        sj.joint = ji;
+        sj.ia = solverBody(j.a);
+        if (j.b != ~0u) {
+            sj.ib = solverBody(j.b);
+        } else {
+            if (worldBody == ~0u) {
+                worldBody = u32(sbodies.Size());
+                SolverBody world;
+                world.invI = Mat3::Scale(Vec3(0.0f));
+                world.invILocal = world.invI;
+                world.body = ~0u;
+                sbodies.PushBack(world);
+            }
+            sj.ib = worldBody;
+        }
+        I.solverJoints.PushBack(sj);
+    }
 
     // 5. Soft-step solver (as in Box2D v3): substeps of integrate velocities, warm start, solve with a soft
     //    (spring-damper) bias that pushes overlaps apart, integrate positions, relax without bias.
@@ -916,6 +1152,96 @@ void PhysicsWorld::Step(f32 dt)
     const f32 omega = 2.0f * Pi * hertz;
     const f32 a1 = 2.0f * zeta + h * omega, a2 = h * omega * a1, a3 = 1.0f / (1.0f + a2);
     const f32 biasRate = omega / a1, massScale = a2 * a3, impulseScale = a3;
+    struct Softness
+    {
+        f32 biasRate, massScale, impulseScale;
+    };
+    auto soft = [&](f32 hz, f32 ratio) {
+        const f32 w = 2.0f * Pi * hz, b1 = 2.0f * ratio + h * w, b2 = h * w * b1, b3 = 1.0f / (1.0f + b2);
+        return Softness{w / b1, b2 * b3, b3};
+    };
+    const Softness jointSoft = soft(Min(S.jointHertz, 0.25f * invH), S.jointDampingRatio);
+    auto rowVelocity = [](const JointRow& r, const SolverBody& A, const SolverBody& B) {
+        return Dot(r.linA, A.v) + Dot(r.angA, A.w) + Dot(r.linB, B.v) + Dot(r.angB, B.w);
+    };
+    auto applyRow = [](const JointRow& r, SolverBody& A, SolverBody& B, f32 impulse) {
+        A.v += r.linA * (A.invMass * impulse);
+        A.w += A.invI * (r.angA * impulse);
+        B.v += r.linB * (B.invMass * impulse);
+        B.w += B.invI * (r.angB * impulse);
+    };
+    // Rows of every joint for the current poses; unused slots forget their impulse; warm start applies the
+    // accumulated impulses with the new Jacobians.
+    auto buildJointRows = [&](bool warmStart) {
+        I.jointRows.Clear();
+        for (SolverJoint& sj : I.solverJoints) {
+            JointData& j = I.joints[sj.joint];
+            SolverBody& A = sbodies[sj.ia];
+            SolverBody& B = sbodies[sj.ib];
+            sj.firstRow = u32(I.jointRows.Size());
+            BuildJointRows(j, A, B, I.jointRows);
+            sj.rowCount = u32(I.jointRows.Size()) - sj.firstRow;
+            u32 used = 0;
+            for (u32 r = sj.firstRow; r < sj.firstRow + sj.rowCount; ++r)
+                used |= 1u << I.jointRows[r].slot;
+            for (u32 s = 0; s < JointData::MaxRows; ++s)
+                if (!((used >> s) & 1u))
+                    j.impulses[s] = 0.0f;
+            if (warmStart)
+                for (u32 r = sj.firstRow; r < sj.firstRow + sj.rowCount; ++r)
+                    applyRow(I.jointRows[r], A, B, j.impulses[I.jointRows[r].slot]);
+        }
+    };
+    auto solveJoints = [&](bool useBias) {
+        for (const SolverJoint& sj : I.solverJoints) {
+            JointData& j = I.joints[sj.joint];
+            SolverBody& A = sbodies[sj.ia];
+            SolverBody& B = sbodies[sj.ib];
+            for (u32 r = sj.firstRow; r < sj.firstRow + sj.rowCount; ++r) {
+                const JointRow& row = I.jointRows[r];
+                if (row.block == 3) {
+                    // Three coupled equality rows at once: lambda = -K^-1 (Jv + bias) (soft while correcting).
+                    const JointRow* br = &I.jointRows[r];
+                    Vec3 rhs, acc;
+                    for (u32 k = 0; k < 3; ++k) {
+                        const f32 bias = useBias ? Clamp(jointSoft.biasRate * br[k].C, -10.0f, 10.0f) : 0.0f;
+                        rhs[k] = rowVelocity(br[k], A, B) + bias;
+                        acc[k] = j.impulses[br[k].slot];
+                    }
+                    const f32 mScale = useBias ? jointSoft.massScale : 1.0f, iScale = useBias ? jointSoft.impulseScale : 0.0f;
+                    const Vec3 lambda = (row.blockMass * rhs) * -mScale - acc * iScale;
+                    for (u32 k = 0; k < 3; ++k) {
+                        j.impulses[br[k].slot] += lambda[k];
+                        applyRow(br[k], A, B, lambda[k]);
+                    }
+                    r += 2;
+                    continue;
+                }
+                f32& accumulated = j.impulses[row.slot];
+                f32 bias = 0.0f, mScale = 1.0f, iScale = 0.0f, lo = row.lo, hi = row.hi;
+                if (row.motor) {
+                    bias = -row.targetVelocity;
+                    lo *= h;
+                    hi *= h;
+                } else if (row.springHertz > 0.0f) {
+                    const Softness s = soft(Min(row.springHertz, 0.25f * invH), row.springDamping);
+                    bias = s.biasRate * row.C;
+                    mScale = s.massScale;
+                    iScale = s.impulseScale;
+                } else if (row.limit && row.C > 0.0f) {
+                    bias = row.C * invH; // speculative: may close the gap this substep
+                } else if (useBias) {
+                    bias = Clamp(jointSoft.biasRate * row.C, -10.0f, 10.0f);
+                    mScale = jointSoft.massScale;
+                    iScale = jointSoft.impulseScale;
+                }
+                const f32 lambda = -row.effMass * mScale * (rowVelocity(row, A, B) + bias) - iScale * accumulated;
+                const f32 old = accumulated;
+                accumulated = Clamp(old + lambda, lo, hi);
+                applyRow(row, A, B, accumulated - old);
+            }
+        }
+    };
     auto applyImpulse = [](SolverBody& a, SolverBody& b, const SolverPoint& sp, Vec3 P) {
         a.v -= P * a.invMass;
         a.w -= a.invI * Cross(sp.rA, P);
@@ -976,6 +1302,7 @@ void PhysicsWorld::Step(f32 dt)
             b.v = b.v * (1.0f / (1.0f + h * b.linearDamping));
             b.w = b.w * (1.0f / (1.0f + h * b.angularDamping));
         }
+        buildJointRows(true);
         for (SolverContact& sc : I.solver) {
             SolverBody& A = sbodies[sc.ia];
             SolverBody& B = sbodies[sc.ib];
@@ -984,6 +1311,7 @@ void PhysicsWorld::Step(f32 dt)
                 applyImpulse(A, B, sp, sc.normal * sp.normalImpulse + sc.t1 * sp.tangentImpulse[0] + sc.t2 * sp.tangentImpulse[1]);
             }
         }
+        solveJoints(true);
         solve(true);
         for (SolverBody& b : sbodies) {
             if (!b.moves)
@@ -996,8 +1324,12 @@ void PhysicsWorld::Step(f32 dt)
             }
         }
         updateSeparations();
-        for (u32 it = 0; it < Max(S.relaxIterations, 1u); ++it)
+        if (!I.solverJoints.Empty())
+            buildJointRows(false);
+        for (u32 it = 0; it < Max(S.relaxIterations, 1u); ++it) {
+            solveJoints(false);
             solve(false);
+        }
     }
 
     // 6. Restitution: points that approached fast and pushed get the bounce velocity.
@@ -1024,6 +1356,26 @@ void PhysicsWorld::Step(f32 dt)
             c.normalImpulse[k] = sc.pts[k].normalImpulse;
             c.tangentImpulse[k][0] = sc.pts[k].tangentImpulse[0];
             c.tangentImpulse[k][1] = sc.pts[k].tangentImpulse[1];
+        }
+    }
+    // Breakable joints: force / torque of the last substep (the rows are from its relax pass).
+    for (const SolverJoint& sj : I.solverJoints) {
+        JointData& j = I.joints[sj.joint];
+        if (j.desc.breakForce <= 0.0f && j.desc.breakTorque <= 0.0f)
+            continue;
+        Vec3 force, torque;
+        for (u32 r = sj.firstRow; r < sj.firstRow + sj.rowCount; ++r) {
+            const JointRow& row = I.jointRows[r];
+            const f32 impulse = j.impulses[row.slot] * invH;
+            if (LengthSq(row.linB) > 0.0f || LengthSq(row.linA) > 0.0f)
+                force += (LengthSq(row.linB) > 0.0f ? row.linB : -row.linA) * impulse;
+            else
+                torque += (LengthSq(row.angB) > 0.0f ? row.angB : -row.angA) * impulse;
+        }
+        if ((j.desc.breakForce > 0.0f && Length(force) > j.desc.breakForce) || (j.desc.breakTorque > 0.0f && Length(torque) > j.desc.breakTorque)) {
+            I.brokenJoints.PushBack(JointId{sj.joint, j.generation});
+            I.DestroyJoint(sj.joint);
+            --m_jointCount;
         }
     }
     for (const SolverBody& s : sbodies) {
@@ -1058,7 +1410,19 @@ void PhysicsWorld::Step(f32 dt)
         else
             *rest = Min(*rest, t);
     }
-    // Islands touching a moving kinematic body stay awake.
+    // Islands touching (or jointed to) a moving kinematic body stay awake.
+    for (const JointData& j : I.joints) {
+        if (!j.alive || j.b == ~0u)
+            continue;
+        const Body& a = bodies[j.a];
+        const Body& b = bodies[j.b];
+        if (a.motion == MotionType::Kinematic && a.IsAwakeMover() && b.IsDynamic())
+            if (f32* r = islandRest.Find(find(j.b)))
+                *r = -1.0f;
+        if (b.motion == MotionType::Kinematic && b.IsAwakeMover() && a.IsDynamic())
+            if (f32* r = islandRest.Find(find(j.a)))
+                *r = -1.0f;
+    }
     for (const Contact& c : I.contacts) {
         const Body& a = bodies[c.a];
         const Body& b = bodies[c.b];

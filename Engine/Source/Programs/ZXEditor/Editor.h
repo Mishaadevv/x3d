@@ -216,6 +216,7 @@ public:
     ui::SvgImage logo; // Engine/Content/Icons/ZeqouLogo.svg (fallback when the brand images are missing)
     rhi::Texture* appIcon = nullptr; // Engine/Content/Branding/ZeqouX3D_Icon.png (title bar, Project Browser)
     rhi::Texture* appLogo = nullptr; // Engine/Content/Branding/ZeqouX3D_Logo.png (About)
+    bool CleanViewportShot() const { return m_screenshotViewport; } // no overlays over the scene
     u32 AppIconSrv() const { return appIcon ? appIcon->GetSrvIndex() : rhi::InvalidDescriptor; }
     UniquePtr<ui::Context> ui;
     UniquePtr<ui::UIRenderer> uiRenderer;
@@ -473,6 +474,8 @@ private:
     String m_layoutPath;
     String m_screenshotPath;
     bool m_screenshotEarly = false; // -screenshotnow: capture at the autotest frame even while loading
+    bool m_screenshotViewport = false; // -screenshotviewport: only the viewport, no grid / selection (template thumbnails)
+    Rect m_screenshotCrop;
     String m_saveScenePath; // -savescene=<path>: save the scene when an autotest run ends
     f64 m_timeUi = 0.0, m_timeRender = 0.0, m_timePresent = 0.0;
     u64 m_timedFrames = 0;

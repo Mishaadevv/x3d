@@ -488,11 +488,12 @@ void DrawViewportPanel(Editor& ed)
         dl.AddRect(br, WithAlpha(Color(0x14, 0x14, 0x14), 0.85f), ui::CornerRadii(12.0f * s), 1.0f, tint);
         dl.AddTextInRect(font, 12.0f * s, br, tint, badge, ui::TextAlign::Center, false);
     }
-    DrawLightIcons(ed, vp, dl, s);
+    if (!ed.CleanViewportShot())
+        DrawLightIcons(ed, vp, dl, s);
     // Brush / Measure take the left mouse button while active; otherwise the gizmo and click-to-select work.
     const bool toolBusy = UpdateViewportTool(ed, vp.MouseRay(ui::GetMousePos()), surfaceHovered && !ed.flying,
                                              [&vp](Vec3 p, Vec2& out) { return vp.Project(p, out); }, dl, s);
-    const bool gizmoBusy = toolBusy || Gizmo(ed, vp, dl, surfaceHovered && !ed.flying, s);
+    const bool gizmoBusy = toolBusy || (!ed.CleanViewportShot() && Gizmo(ed, vp, dl, surfaceHovered && !ed.flying, s));
     dl.PopClipRect();
 
     // Camera: RMB fly (WASD/QE), wheel dolly while hovered. While the game camera is shown a click gives the game the input.

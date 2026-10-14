@@ -199,3 +199,72 @@ ZX_TEST(PhysicsSystem, ScriptsGetCollisionsAndQueries)
         !log.View().Contains("hit Wall") || !log.View().Contains("enter Zone") || !log.View().Contains("exit Zone"))
         test::ReportFailure(__FILE__, __LINE__, String::Format("script log:\n{}", log));
 }
+
+ZX_TEST(PhysicsSystem, JointComponents)
+{
+    RegisterEngineComponents();
+    Scene s;
+    s.Floor();
+    // A door on a motorized hinge (to the world), a lamp hanging from a "Ceiling" entity by a rope, and two crates
+    // welded together by name.
+    const ecs::Entity door = scene::CreateNode(s.world, "Door", Transform(Vec3(0.5f, 1.5f, 5)));
+    s.world.Add(door, RigidBody{});
+    s.world.Add(door, BoxCollider{Vec3(), Vec3(1.0f, 2.0f, 0.1f)});
+    HingeJoint hinge;
+    hinge.anchor = Vec3(-0.5f, 0, 0);
+    hinge.useMotor = true;
+    hinge.motorSpeed = 1.0f;
+    s.world.Add(door, hinge);
+
+    const ecs::Entity ceiling = scene::CreateNode(s.world, "Ceiling", Transform(Vec3(5, 6, 0)));
+    s.world.Add(ceiling, BoxCollider{Vec3(), Vec3(1, 0.2f, 1)});
+    const ecs::Entity lamp = scene::CreateNode(s.world, "Lamp", Transform(Vec3(5, 5, 0)));
+    s.world.Add(lamp, RigidBody{});
+    s.world.Add(lamp, SphereCollider{Vec3(), 0.2f});
+    DistanceJoint rope;
+    rope.connectedBody = "Ceiling";
+    rope.maxDistance = 2.0f;
+    s.world.Add(lamp, rope);
+
+    const ecs::Entity a = scene::CreateNode(s.world, "CrateA", Transform(Vec3(-5, 3, 0)));
+    s.world.Add(a, RigidBody{});
+    s.world.Add(a, BoxCollider{});
+    const ecs::Entity b = scene::CreateNode(s.world, "CrateB", Transform(Vec3(-4, 3, 0)));
+    s.world.Add(b, RigidBody{});
+    s.world.Add(b, BoxCollider{});
+    FixedJoint weld;
+    weld.connectedBody = "CrateA";
+    s.world.Add(b, weld);
+
+    // Saved and loaded with the scene.
+    const JsonValue json = SaveScene(s.world, SceneIOOptions{});
+    Scene loaded;
+    ZX_REQUIRE(LoadScene(json, loaded.world, SceneIOOptions{}));
+    u32 found = 0;
+    loaded.world.Query<const DistanceJoint>().Each([&](const DistanceJoint& d) { found += d.connectedBody == "Ceiling" && d.maxDistance == 2.0f; });
+    loaded.world.Query<const HingeJoint>().Each([&](const HingeJoint& h) { found += h.useMotor && h.anchor == Vec3(-0.5f, 0, 0); });
+    ZX_EXPECT_EQ(found, 2u);
+
+    scene::UpdateWorldTransforms(s.world);
+    PhysicsSystem p;
+    p.Begin(s.world, nullptr);
+    ZX_EXPECT_EQ(p.JointCount(), 3u);
+    s.Run(p, 2.0f);
+    // The door turned ~1.9 rad around its hinge (left edge stays at x = 0, z = 5).
+    ZX_EXPECT_NEAR(p.GetJointValue(door), 1.9f, 0.15f); // spin-up of a 200 kg door
+    ZX_EXPECT_NEAR(p.GetAngularVelocity(door).y, 1.0f, 0.03f);
+    const Transform& dt = *s.world.Get<Transform>(door);
+    const Vec3 edge = dt.position + dt.rotation * Vec3(-0.5f, 0, 0);
+    ZX_EXPECT(Distance(edge, Vec3(0, 1.5f, 5)) < 0.02f);
+    // The lamp hangs 2 m below the ceiling.
+    ZX_EXPECT_NEAR(s.world.Get<Transform>(lamp)->position.y, 4.0f, 0.03f);
+    // The crates landed together, still 1 m apart.
+    const Vec3 pa = s.world.Get<Transform>(a)->position, pb = s.world.Get<Transform>(b)->position;
+    ZX_EXPECT_NEAR(Distance(pa, pb), 1.0f, 0.01f);
+    ZX_EXPECT(pa.y < 0.6f);
+    // Stopping the motor from game code.
+    p.SetJointMotor(door, true, 0.0f);
+    s.Run(p, 0.5f);
+    ZX_EXPECT(Abs(p.GetVelocity(door).x) < 0.01f && Abs(p.GetAngularVelocity(door).y) < 0.01f);
+    p.End();
+}

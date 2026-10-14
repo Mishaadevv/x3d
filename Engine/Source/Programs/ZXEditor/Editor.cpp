@@ -247,6 +247,7 @@ bool Editor::Initialize()
     if (CommandLine::GetValue("screenshot", screenshot))
         m_screenshotPath = screenshot;
     m_screenshotEarly = CommandLine::HasFlag("screenshotnow");
+    m_screenshotViewport = CommandLine::HasFlag("screenshotviewport");
     m_undoTest = CommandLine::HasFlag("undotest");
     m_pieTest = CommandLine::HasFlag("pietest");
     m_materialTest = CommandLine::HasFlag("materialtest");
@@ -2484,18 +2485,19 @@ void Editor::RenderFrame()
         cam.cut = UsingGameCamera() != lastViewWasGame;
         lastViewWasGame = UsingGameCamera();
         Array<ecs::Entity> outlined;
-        CollectHierarchy(world, selected, outlined);
+        if (!m_screenshotViewport)
+            CollectHierarchy(world, selected, outlined);
         viewport->SetOutlinedEntities(outlined.View());
         viewport->Outline().thickness = 2.0f * window->GetDpiScale();
         viewport->AddPasses(graph, world, cam, environment, vp, viewportSize, dt,
                             [this](CommandList& c, const RenderView& view, f32) {
-                                if (showGrid) {
+                                if (showGrid && !m_screenshotViewport) {
                                     debugDraw->Grid(Vec3::Zero(), 40.0f, 40, Color(58, 58, 58));
                                     debugDraw->Line(Vec3(-20, 0.002f, 0), Vec3(20, 0.002f, 0), Color(150, 50, 50));
                                     debugDraw->Line(Vec3(0, 0.002f, -20), Vec3(0, 0.002f, 20), Color(50, 80, 160));
                                 }
                                 DrawToolOverlay(*this, *debugDraw);
-                                if (world.IsAlive(selected)) {
+                                if (world.IsAlive(selected) && !m_screenshotViewport) {
                                     const Mat4 m = scene::ComputeWorldMatrix(world, selected);
                                     // Colliders of the selection (and its children): green wireframes.
                                     Array<ecs::Entity> colliderOwners;
@@ -2519,6 +2521,21 @@ void Editor::RenderFrame()
                                             for (Vec3 d : {side, -side, fwd, -fwd})
                                                 debugDraw->Line(top + d * o.radius, bottom + d * o.radius, green);
                                         }
+                                    }
+                                    // Joints: anchor, axis and a line to what they connect to (orange).
+                                    Array<JointGizmo> joints;
+                                    GatherJointGizmos(world, selected, joints);
+                                    const Color orange(255, 160, 60);
+                                    for (const JointGizmo& g : joints) {
+                                        debugDraw->Sphere(g.anchor, 0.06f, orange, 12);
+                                        if (LengthSq(g.axis) > 0.0f) {
+                                            if (g.linear)
+                                                debugDraw->Arrow(g.anchor - g.axis * 0.5f, g.anchor + g.axis * 0.5f, orange);
+                                            else
+                                                debugDraw->Arrow(g.anchor, g.anchor + g.axis * 0.5f, orange);
+                                        }
+                                        if (g.hasConnected)
+                                            debugDraw->Line(g.anchor, g.connected, Color(200, 120, 50));
                                     }
                                     if (const PointLight* pl = world.Get<PointLight>(selected))
                                         debugDraw->Sphere(m.GetTranslation(), pl->range, Color(255, 200, 80), 32);
@@ -2578,6 +2595,7 @@ void Editor::RenderFrame()
     graph.Execute(*cmd);
     if (capture) {
         m_screenshotSize = size;
+        m_screenshotCrop = viewportRect;
         m_screenshotBuffer = device->CreateBuffer(BufferDesc{AlignUp(u64(size.x) * 4, u64(256)) * size.y, BufferUsage::CopyDest,
                                                              MemoryType::Readback, 0, "Screenshot"});
         m_screenshotPitch = cmd->CopyTextureToBuffer(m_screenshotBuffer, 0, swapChain->GetCurrentBackBuffer());
@@ -2602,8 +2620,15 @@ void Editor::Shutdown()
         return;
     device->WaitIdle();
     if (m_screenshotBuffer) {
-        const bool ok = png::WriteFile(m_screenshotPath, static_cast<const u8*>(m_screenshotBuffer->GetMappedData()), m_screenshotSize.x,
-                                       m_screenshotSize.y, 4, usize(m_screenshotPitch));
+        const u8* pixels = static_cast<const u8*>(m_screenshotBuffer->GetMappedData());
+        u32 x0 = 0, y0 = 0, w = m_screenshotSize.x, h = m_screenshotSize.y;
+        if (m_screenshotViewport && m_screenshotCrop.Width() > 8.0f && m_screenshotCrop.Height() > 8.0f) {
+            x0 = Min(u32(Max(m_screenshotCrop.min.x, 0.0f)), w - 1);
+            y0 = Min(u32(Max(m_screenshotCrop.min.y, 0.0f)), h - 1);
+            w = Min(u32(m_screenshotCrop.Width()), w - x0);
+            h = Min(u32(m_screenshotCrop.Height()), h - y0);
+        }
+        const bool ok = png::WriteFile(m_screenshotPath, pixels + usize(y0) * m_screenshotPitch + usize(x0) * 4, w, h, 4, usize(m_screenshotPitch));
         ZX_LOG_INFO(LogEditor, "Screenshot {} -> {}", ok ? "saved" : "FAILED", m_screenshotPath);
         device->Destroy(m_screenshotBuffer);
         m_screenshotBuffer = nullptr;
