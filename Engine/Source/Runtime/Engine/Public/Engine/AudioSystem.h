@@ -13,6 +13,7 @@
 #include "Core/Containers/Function.h"
 #include "Core/Containers/HashMap.h"
 #include "Core/Math/Math.h"
+#include "Core/Math/Random.h"
 #include "Core/Reflection/Reflection.h"
 #include "Scene/ECS/World.h"
 
@@ -62,7 +63,22 @@ struct ReverbZone
     f32 damping = 0.5f;
 };
 
+/// The sound of a Rigid Body hitting things, louder the harder the hit. `sound` is a file or a set of variants picked
+/// at random: "Impacts/Impact_Wood" plays Impact_Wood_0 .. Impact_Wood_9 (.ogg / .wav).
+struct ImpactSound
+{
+    String sound;
+    f32 volume = 1.0f;
+    f32 minSpeed = 0.8f;        // m/s: softer hits are silent
+    f32 maxSpeed = 8.0f;        // m/s: full volume
+    f32 pitchVariation = 0.08f; // random pitch change, fraction
+    f32 maxDistance = 30.0f;    // meters
+};
+
+struct PhysicsEvent;
+
 ZX_DECLARE_TYPE(AudioSource);
+ZX_DECLARE_TYPE(ImpactSound);
 ZX_DECLARE_TYPE(AudioListener);
 ZX_DECLARE_TYPE(ReverbZone);
 
@@ -92,9 +108,15 @@ public:
     /// Outside of Play (editor previews): just advances the engine.
     void TickIdle(f32 dt) { m_engine.Update(dt); }
 
-    /// One-shot sounds (scripts, UI). 2D when `spatial` is false.
+    /// One-shot sounds (scripts, UI). 2D when `spatial` is false. A path without an extension is a set of variants
+    /// (path_0 .. path_9): one is picked at random.
     audio::VoiceId PlayOneShot(StringView file, f32 volume = 1.0f, bool spatial = false, Vec3 position = Vec3(0.0f),
                                audio::Bus bus = audio::Bus::SFX);
+    /// A random existing variant of a sound set: `base` itself if it names a file, else base_0 .. base_9 with .ogg /
+    /// .wav (cached). Empty when there is none.
+    String PickVariant(StringView base);
+    /// Impact Sounds of the bodies in this frame's collisions (begin events), louder the faster they hit.
+    void PlayImpacts(ecs::World& world, Span<const PhysicsEvent> events);
     /// Starts / stops the AudioSource of an entity while playing.
     bool PlayEntity(ecs::World& world, ecs::Entity e);
     void StopEntity(ecs::Entity e);
@@ -128,6 +150,10 @@ private:
     audio::VoiceParams ParamsFor(const AudioSource& s, const Mat4& world) const;
 
     audio::AudioEngine& m_engine;
+    HashMap<String, Array<String>> m_variants;  // sound set -> existing files
+    HashMap<u64, f64> m_lastImpact;             // entity -> time of its last impact sound
+    f64 m_time = 0.0;
+    Random m_rng;
     String m_contentRoot;
     HashMap<String, CachedClip> m_clips;
     Array<Running> m_sources;

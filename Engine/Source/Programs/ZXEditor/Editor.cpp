@@ -500,12 +500,18 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
     auto block = [&](StringView label, Vec3 min, Vec3 max, StringView mat) {
         return shape(label, BuiltinShape::Cube, (min + max) * 0.5f, max - min, mat);
     };
-    auto physicsBox = [&](StringView label, Vec3 center, Vec3 size, StringView mat, f32 mass) {
+    auto impact = [&](ecs::Entity e, StringView sound) {
+        ImpactSound s;
+        s.sound = String::Format("StarterContent/Sounds/Impacts/{}", sound);
+        world.Add(e, s);
+    };
+    auto physicsBox = [&](StringView label, Vec3 center, Vec3 size, StringView mat, f32 mass, StringView sound) {
         const ecs::Entity e = shape(label, BuiltinShape::Cube, center, size, mat);
         RigidBody rb;
         rb.mass = mass;
         world.Add(e, rb);
         world.Add(e, BoxCollider{});
+        impact(e, sound);
         return e;
     };
     // Reflections of the arena.
@@ -550,14 +556,14 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
 
     // Physics props: a stack of crates, a pyramid of blue cubes and two balls.
     for (u32 i = 0; i < 3; ++i)
-        physicsBox(String::Format("Crate {}", i + 1), Vec3(-3.0f + f32(i) * 1.05f, 0.5f, 10.0f), Vec3(1.0f), "M_Wood", 30.0f);
-    physicsBox("Crate 4", Vec3(-2.47f, 1.5f, 10.0f), Vec3(1.0f), "M_Wood", 30.0f);
-    physicsBox("Crate 5", Vec3(-1.42f, 1.5f, 10.0f), Vec3(1.0f), "M_Wood", 30.0f);
-    physicsBox("Crate 6", Vec3(-1.95f, 2.5f, 10.0f), Vec3(1.0f), "M_Wood", 30.0f);
+        physicsBox(String::Format("Crate {}", i + 1), Vec3(-3.0f + f32(i) * 1.05f, 0.5f, 10.0f), Vec3(1.0f), "M_Wood", 30.0f, "Impact_Wood_Medium");
+    physicsBox("Crate 4", Vec3(-2.47f, 1.5f, 10.0f), Vec3(1.0f), "M_Wood", 30.0f, "Impact_Wood_Medium");
+    physicsBox("Crate 5", Vec3(-1.42f, 1.5f, 10.0f), Vec3(1.0f), "M_Wood", 30.0f, "Impact_Wood_Medium");
+    physicsBox("Crate 6", Vec3(-1.95f, 2.5f, 10.0f), Vec3(1.0f), "M_Wood", 30.0f, "Impact_Wood_Medium");
     for (u32 row = 0; row < 3; ++row)
         for (u32 i = 0; i < 3 - row; ++i)
             physicsBox(String::Format("Cube {}-{}", row + 1, i + 1), Vec3(-12.0f + f32(i) * 0.62f + f32(row) * 0.31f, 0.3f + f32(row) * 0.6f, 12.0f),
-                       Vec3(0.6f), "M_Proto_Blue", 8.0f);
+                       Vec3(0.6f), "M_Proto_Blue", 8.0f, "Impact_Plank");
     for (u32 i = 0; i < 2; ++i) {
         const ecs::Entity ball = shape(String::Format("Ball {}", i + 1), BuiltinShape::Sphere, Vec3(3.0f + f32(i) * 2.0f, 0.5f, 4.0f), Vec3(1.0f),
                                        i == 0 ? "M_Metal_Gold" : "M_Plastic_Red");
@@ -566,6 +572,7 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
         rb.bounciness = 0.3f;
         world.Add(ball, rb);
         world.Add(ball, SphereCollider{});
+        impact(ball, i == 0 ? "Impact_Metal_Heavy" : "Impact_Soft");
     }
 
     // Player: feet at the entity, a Character Controller and the template's controller script.
@@ -747,14 +754,14 @@ void Editor::BuildWaterLevel()
     w.deepColor = Vec3(0.01f, 0.09f, 0.16f);
     world.Add(sea, w);
     AudioSource surf;
-    surf.clip = "StarterContent/Sounds/Ocean_Loop.wav";
+    surf.clip = "StarterContent/Sounds/Waves_Loop.ogg";
     surf.volume = 0.6f;
     surf.spatial = false;
     surf.bus = audio::Bus::Music;
     world.Add(sea, surf);
     {
         AudioSource wind;
-        wind.clip = "StarterContent/Sounds/Wind_Loop.wav";
+        wind.clip = "StarterContent/Sounds/Wind_Loop.ogg";
         wind.volume = 0.25f;
         wind.spatial = false;
         const ecs::Entity windEntity = CreateEntity("Wind", Transform(Vec3(0, 5, 0)));
@@ -2610,6 +2617,8 @@ bool Editor::Frame()
                 scripts->DispatchPhysicsEvents(world, physics.Events());
             if (game)
                 game->DispatchPhysicsEvents(physics.Events());
+            if (audio)
+                audio->PlayImpacts(world, physics.Events()); // Impact Sound components
         }
         // Fire spreads and burns (before the particles tick: it emits flames and smoke into them).
         if (FeatureEnabled("fire")) {

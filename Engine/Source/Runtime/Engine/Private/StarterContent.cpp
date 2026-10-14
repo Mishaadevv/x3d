@@ -1,5 +1,6 @@
 // Starter Content: example materials and scripts copied into new projects (all plain files the user can edit).
 
+#include "Core/CoreInit.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
 #include "Core/String/Path.h"
@@ -277,8 +278,14 @@ script FirstPersonController {
     prop invertY = false
     @range(0, 3) @tooltip("Height of the eyes above the feet")
     prop eyeHeight = 1.65
+    @tooltip("Footstep sound set: variants _0 .. _9 played at random (empty: silent)")
+    prop footsteps = "StarterContent/Sounds/Footsteps/Footstep_Concrete"
+    @range(0.3, 4) @tooltip("Meters walked between footsteps")
+    prop stride = 1.7
 
     var yaw = 0.0
+    var stepDistance = 0.0
+    var wasGrounded = true
     var pitch = 0.0
     var camera = nil
 
@@ -311,6 +318,17 @@ script FirstPersonController {
         if input.pressed("Space") and character.grounded {
             character.jump(jumpSpeed)
         }
+        // Footsteps: one every stride walked on the ground, and one on landing.
+        if footsteps != "" {
+            if character.grounded {
+                stepDistance += min(dir.length(), 1) * speed * dt
+                if stepDistance > stride or not wasGrounded {
+                    stepDistance = 0
+                    audio.playAt(footsteps, entity.worldPosition, 0.45)
+                }
+            }
+            wasGrounded = character.grounded
+        }
     }
 }
 )zs"},
@@ -324,6 +342,13 @@ script ThirdPersonController {
     @range(0, 20) prop jumpSpeed = 6.5
     @range(1, 30) @tooltip("How fast the body turns to the move direction")
     prop turnRate = 12.0
+    @tooltip("Footstep sound set: variants _0 .. _9 played at random (empty: silent)")
+    prop footsteps = "StarterContent/Sounds/Footsteps/Footstep_Concrete"
+    @range(0.3, 4) @tooltip("Meters walked between footsteps")
+    prop stride = 1.7
+
+    var stepDistance = 0.0
+    var wasGrounded = true
 
     fn update(dt) {
         let move = input.move
@@ -347,6 +372,17 @@ script ThirdPersonController {
         }
         if input.pressed("Space") and character.grounded {
             character.jump(jumpSpeed)
+        }
+        // Footsteps: one every stride walked on the ground, and one on landing.
+        if footsteps != "" {
+            if character.grounded {
+                stepDistance += min(dir.length(), 1) * speed * dt
+                if stepDistance > stride or not wasGrounded {
+                    stepDistance = 0
+                    audio.playAt(footsteps, entity.worldPosition, 0.45)
+                }
+            }
+            wasGrounded = character.grounded
         }
     }
 }
@@ -462,11 +498,13 @@ script TankController {
         let origin = muzzle.worldPosition
         let dir = muzzle.worldForward
         muzzle.emit()
+        audio.playAt("StarterContent/Sounds/Props/Explosion_Low", origin, 1.0)
         let hit = physics.raycast(origin, dir, range)
         if hit == nil { return }
         if impact != nil {
             impact.worldPosition = hit.point
             impact.emit()
+            audio.playAt("StarterContent/Sounds/Props/Explosion", hit.point, 0.9)
         }
         hit.entity.addImpulse(dir * impactImpulse, hit.point)
         if incendiary { fire.ignite(hit.point, 0.4) }
@@ -483,6 +521,8 @@ script Door {
     prop speed = 1.8
     @range(1, 100000) prop torque = 600.0
     prop key = "E"
+    prop openSound = "StarterContent/Sounds/Props/Door_Open"
+    prop closeSound = "StarterContent/Sounds/Props/Door_Close"
 
     var open = false
 
@@ -495,7 +535,13 @@ script Door {
         if p == nil { return }
         if input.pressed(key) and p.worldPosition.distance(entity.worldPosition) < reach {
             open = not open
-            if open { entity.setMotor(speed, torque) } else { entity.setMotor(-speed, torque) }
+            if open {
+                entity.setMotor(speed, torque)
+                audio.playAt(openSound, entity.worldPosition)
+            } else {
+                entity.setMotor(-speed, torque)
+                audio.playAt(closeSound, entity.worldPosition)
+            }
         }
     }
 }
@@ -551,6 +597,7 @@ script JumpPad {
     fn triggerEnter(other) {
         other.launch(vec3(0, strength, 0))
         entity.emit(30)
+        audio.playAt("StarterContent/Sounds/Props/Force_Field", entity.worldPosition, 0.8)
     }
 }
 )zs"},
@@ -584,6 +631,7 @@ script Coin {
         collected = true
         timer = 1.5
         entity.emit(40)
+        audio.playAt("StarterContent/Sounds/Props/Coins", entity.worldPosition, 0.8)
         entity.scale = vec3(0.001) // hidden; the sparkles finish before it is removed
         log("Coin collected")
     }
@@ -689,6 +737,27 @@ u32 WriteSounds(const String& dir)
         const f32 wobble = 0.85f + 0.15f * std::sin(TwoPi * 2.0f * t);
         return wobble * (0.35f * std::sin(TwoPi * 110.0f * t) + 0.15f * std::sin(TwoPi * 220.0f * t) + 0.08f * std::sin(TwoPi * 330.0f * t));
     }));
+    // Recorded sounds (CC0, Engine/Content/StarterContent/Sounds: ambiences, footsteps, impacts, props).
+    {
+        const String library = FindEngineRootDirectory() + "/Engine/Content/StarterContent/Sounds";
+        Array<String> dirs;
+        dirs.PushBack(String());
+        for (usize d = 0; d < dirs.Size(); ++d) {
+            Array<platform::DirectoryEntry> entries;
+            platform::ListDirectory(library + dirs[d], entries);
+            for (const platform::DirectoryEntry& e : entries) {
+                const String rel = dirs[d] + "/" + e.name;
+                if (e.isDirectory) {
+                    platform::CreateDirectoryTree(dir + rel);
+                    dirs.PushBack(rel);
+                } else if (platform::CopyFileAt(library + rel, dir + rel)) {
+                    ++written;
+                }
+            }
+        }
+        if (written > 3)
+            return written; // the synthesized ambiences below are only a fallback
+    }
     // Wind: low-passed noise with a slowly moving cutoff and level.
     {
         f32 lp = 0.0f, lp2 = 0.0f;
@@ -713,7 +782,7 @@ u32 WriteSounds(const String& dir)
             return low * 2.2f + mid * 0.35f * (0.25f + swell);
         });
         MakeLoop(ocean, 22050 / 2);
-        save("Ocean_Loop.wav", ocean);
+        save("Waves_Loop.wav", ocean);
     }
     // Fire: a soft roar (low-passed noise) with random crackles (short decaying clicks).
     {

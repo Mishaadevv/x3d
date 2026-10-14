@@ -235,7 +235,7 @@ vec3/quat are values (copied); lists and strings are references.
 | `character` | the Character Controller: `move(velocity)`, `jump(speed)`, `grounded`, `velocity` |
 | `input` | `key("W")`, `pressed("Space")`, `released(...)`, `mouse("left")`, `mousePressed(...)`, `move` (WASD/stick vec3), `look`, `mouseDelta`, `mousePosition`, `wheel`; Input Actions: `action("Jump")`, `actionPressed(...)`, `actionReleased(...)`, `axis("MoveForward")` |
 | `time` | `dt elapsed frame` |
-| `audio` | `play(file[, volume])`, `playAt(file, position[, volume])`, `stop(id)`, `setVolume(bus, volume)`; `entity.playSound()` / `stopSound()` with an Audio Source |
+| `audio` | `play(file[, volume])` (a path without an extension plays a random variant `_0 .. _9`), `playAt(file, position[, volume])`, `stop(id)`, `setVolume(bus, volume)`; `entity.playSound()` / `stopSound()` with an Audio Source |
 | Rigid Body | `entity.velocity`, `entity.angularVelocity` (read / write), `entity.addForce(v)`, `entity.addImpulse(v[, point])`, `entity.addTorque(v)`; joints: `entity.jointValue` (hinge angle in radians / slider offset / distance), `entity.setMotor(speed[, force])`, `entity.setMotor(nil)`; `entity.launch(velocity)` (throws a character / sets a body's velocity) |
 | Particle Emitter | `entity.emit([count])` (burst), `entity.emitting` (read / write) |
 | Flammable | `entity.ignite([point])` (false if burnt out), `entity.extinguish()`, `entity.burning`, `entity.burnt`, `entity.fire` (0..1 in flames), `entity.temperature` (C) |
@@ -264,7 +264,7 @@ This is a game project for the **ZeqouX3D** engine ({version}). Read this before
   component (`Transform`, `MeshRenderer`, `PointLight`, `SpotLight`, `Camera`, `CharacterController`, `Water`, `Script`,
   `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`, `PostProcessVolume`, `ReflectionProbe`, `Decal`, `HdriSky`,
   `RigidBody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `MeshCollider`, `HingeJoint`, `FixedJoint`,
-  `SliderJoint`, `BallJoint`, `DistanceJoint`, `ConfigurableJoint` (`connectedBody` = entity name, empty = world), `ParticleEmitter`, `Flammable`,
+  `SliderJoint`, `BallJoint`, `DistanceJoint`, `ConfigurableJoint` (`connectedBody` = entity name, empty = world), `ParticleEmitter`, `Flammable`, `ImpactSound`,
   `Rotator`, `Oscillator`, ...). Prefer editing scenes in the editor; when editing JSON keep guids unique and stable.
 - `Content/Scripts/*.zs` - gameplay code in **ZeqouScript** (see `Docs/ZeqouScript.md`). This is where most work happens.
 - `Content/**/*.zmat` / `.zmati` - material graphs / instances (JSON node graphs). `.zprefab` - prefabs.

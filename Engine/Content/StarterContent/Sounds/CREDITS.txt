@@ -1,0 +1,10 @@
+Starter Content sounds - all CC0 (public domain), free for any use; credit is appreciated, not required.
+
+Footsteps/, Impacts/, Props/  Kenney (www.kenney.nl): Impact Sounds, RPG Audio, Sci-Fi Sounds
+Fire_Loop.ogg                 "fireplace sound loop" by PagDev (opengameart.org/content/fireplace-sound-loop)
+Fire_Crackle.ogg              "Fire Crackling" by AntumDeluge (opengameart.org/content/fire-crackling)
+Rain_Loop.ogg                 "Rain (loopable)" by Ylmir (opengameart.org/content/rain-loopable)
+Wind_Loop.ogg                 "wind whoosh loop" by SketchMan3 (opengameart.org/content/wind-whoosh-loop)
+Waves_Loop.ogg                "Sea and river wave sounds" by RandomMind (opengameart.org/content/sea-and-river-wave-sounds)
+
+Loops were cut and crossfaded by Tools/import_starter_sounds.py.

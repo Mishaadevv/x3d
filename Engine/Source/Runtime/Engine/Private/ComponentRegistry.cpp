@@ -50,6 +50,7 @@ void RegisterEngineComponents()
     RegisterComponent<Oscillator>("Oscillator", "\xEE\x8A\x83");                      // waves
     RegisterComponent<AudioSource>("Audio Source", "\xEE\x86\xAB");                  // volume-2
     RegisterComponent<AudioListener>("Audio Listener", "\xEE\x8E\x82");              // ear
+    RegisterComponent<ImpactSound>("Impact Sound", "\xEE\x86\xAB");                  // volume-2
     RegisterComponent<ReverbZone>("Reverb Zone", "\xEE\x95\x9A");                    // audio-lines
     RegisterComponent<Water>("Water", "\xEE\x82\xB5");                                // droplets
     RegisterComponent<ParticleEmitter>("Particle Emitter", "\xEE\x90\x92");        // sparkles

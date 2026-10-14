@@ -1,5 +1,6 @@
 #include "Audio/AudioEngine.h"
 #include "Core/FileSystem/FileSystem.h"
+#include "Core/HAL/PlatformFile.h"
 #include "Core/CoreInit.h"
 #include "Core/Math/Math.h"
 #include "Core/Testing/Test.h"
@@ -498,4 +499,40 @@ ZX_TEST(ManualAudio, DumpVorbis)
         if (ours)
             fs::WriteFile(String::Format("{}/Saved/AudioDump/{}.wav", FindEngineRootDirectory(), name), EncodeWav(*ours, true).View());
     }
+}
+
+ZX_TEST(Audio, StarterSoundsDecode)
+{
+    // Every Starter Content recording (CC0 files encoded by libsndfile) decodes with the engine's Vorbis decoder.
+    const String root = FindEngineRootDirectory() + "/Engine/Content/StarterContent/Sounds";
+    Array<String> dirs;
+    dirs.PushBack(root);
+    u32 decoded = 0;
+    for (usize d = 0; d < dirs.Size(); ++d) {
+        Array<platform::DirectoryEntry> entries;
+        ZX_REQUIRE(platform::ListDirectory(dirs[d], entries));
+        for (const platform::DirectoryEntry& e : entries) {
+            const String path = dirs[d] + "/" + e.name;
+            if (e.isDirectory) {
+                dirs.PushBack(path);
+                continue;
+            }
+            if (!e.name.EndsWith(".ogg"))
+                continue;
+            Array<u8> bytes;
+            ZX_REQUIRE(fs::ReadFile(path, bytes));
+            const Result<PcmData> pcm = DecodeVorbis(bytes.View());
+            if (!pcm || pcm.Value().samples.Empty()) {
+                test::ReportFailure(__FILE__, __LINE__, String::Format("{} does not decode", e.name).View());
+                continue;
+            }
+            f32 peak = 0.0f;
+            for (f32 s : pcm.Value().samples)
+                peak = Max(peak, Abs(s));
+            if (!(peak > 0.01f && peak <= 1.5f))
+                test::ReportFailure(__FILE__, __LINE__, String::Format("{}: peak {}", e.name, peak).View());
+            ++decoded;
+        }
+    }
+    ZX_EXPECT(decoded >= 100u);
 }

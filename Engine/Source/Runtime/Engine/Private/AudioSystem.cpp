@@ -2,6 +2,7 @@
 #include "Core/HAL/PlatformFile.h"
 #include "Core/Log/Log.h"
 #include "Core/String/Path.h"
+#include "Engine/PhysicsSystem.h"
 #include "Scene/Hierarchy.h"
 
 namespace zx {
@@ -57,7 +58,73 @@ ZX_REFLECT_STRUCT_BEGIN(ReverbZone)
     ZX_FIELD(damping, Meta::Range(0, 1))
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_STRUCT_BEGIN(ImpactSound)
+    ZX_FIELD(sound, Meta::Tooltip("A file, or a set of variants: Impacts/Impact_Wood plays Impact_Wood_0 .. _9 at random"))
+    ZX_FIELD(volume, Meta::Range(0, 4))
+    ZX_FIELD(minSpeed, Meta::Range(0, 50), Meta::Units("m/s"), Meta::Tooltip("Softer hits are silent"))
+    ZX_FIELD(maxSpeed, Meta::Range(0.1, 100), Meta::Units("m/s"), Meta::Tooltip("Hits this fast play at full volume"))
+    ZX_FIELD(pitchVariation, Meta::Range(0, 0.5))
+    ZX_FIELD(maxDistance, Meta::Range(1, 500), Meta::Units("m"))
+ZX_REFLECT_STRUCT_END()
+
 AudioSystem::AudioSystem(audio::AudioEngine& engine) : m_engine(engine) {}
+
+String AudioSystem::PickVariant(StringView base)
+{
+    Array<String>* files = m_variants.Find(String(base));
+    if (!files) {
+        Array<String> found;
+        auto exists = [&](StringView rel) { return platform::FileExists(Path::IsAbsolute(rel) ? String(rel) : Path::Join(m_contentRoot, rel)); };
+        if (!Path::Extension(base).Empty() && exists(base)) {
+            found.PushBack(String(base));
+        } else {
+            for (u32 i = 0; i < 10; ++i)
+                for (StringView ext : {StringView(".ogg"), StringView(".wav")}) {
+                    const String f = String::Format("{}_{}{}", base, i, ext);
+                    if (exists(f)) {
+                        found.PushBack(f);
+                        break;
+                    }
+                }
+            for (StringView ext : {StringView(".ogg"), StringView(".wav")})
+                if (found.Empty() && exists(String::Format("{}{}", base, ext)))
+                    found.PushBack(String::Format("{}{}", base, ext));
+        }
+        m_variants.InsertOrAssign(String(base), move(found));
+        files = m_variants.Find(String(base));
+    }
+    return files->Empty() ? String() : (*files)[m_rng.NextBounded(u32(files->Size()))];
+}
+
+void AudioSystem::PlayImpacts(ecs::World& world, Span<const PhysicsEvent> events)
+{
+    for (const PhysicsEvent& ev : events) {
+        if (ev.type != physics::ContactEventType::TouchBegin)
+            continue;
+        for (ecs::Entity e : {ev.a, ev.b}) {
+            const ImpactSound* s = world.IsAlive(e) ? world.Get<const ImpactSound>(e) : nullptr;
+            if (!s || s->sound.Empty() || ev.speed < s->minSpeed)
+                continue;
+            // One sound per body per 80 ms (a box landing touches with several corners at once).
+            f64* last = m_lastImpact.Find(e.Pack());
+            if (last && m_time - *last < 0.08)
+                continue;
+            m_lastImpact.InsertOrAssign(e.Pack(), m_time);
+            const String file = PickVariant(s->sound);
+            RefPtr<audio::AudioClip> clip = file.Empty() ? nullptr : LoadClip(file);
+            if (!clip)
+                continue;
+            const f32 t = Clamp((ev.speed - s->minSpeed) / Max(s->maxSpeed - s->minSpeed, 0.01f), 0.0f, 1.0f);
+            audio::VoiceParams p;
+            p.volume = s->volume * (0.15f + 0.85f * t * t);
+            p.pitch = 1.0f + s->pitchVariation * m_rng.Range(-1.0f, 1.0f);
+            p.spatial = true;
+            p.position = ev.point;
+            p.maxDistance = s->maxDistance;
+            m_engine.Play(clip, p);
+        }
+    }
+}
 
 AudioSystem::~AudioSystem()
 {
@@ -74,7 +141,11 @@ void AudioSystem::SetContentRoot(StringView physicalDir)
     m_clips.Clear();
 }
 
-void AudioSystem::ClearCache() { m_clips.Clear(); }
+void AudioSystem::ClearCache()
+{
+    m_clips.Clear();
+    m_variants.Clear();
+}
 
 RefPtr<audio::AudioClip> AudioSystem::LoadClip(StringView file, String* error)
 {
@@ -161,7 +232,17 @@ void AudioSystem::StopEntity(ecs::Entity e)
 audio::VoiceId AudioSystem::PlayOneShot(StringView file, f32 volume, bool spatial, Vec3 position, audio::Bus bus)
 {
     String error;
-    RefPtr<audio::AudioClip> clip = LoadClip(file, &error);
+    String variant;
+    if (Path::Extension(file).Empty()) {
+        const bool known = m_variants.Contains(String(file));
+        variant = PickVariant(file);
+        if (variant.Empty()) {
+            if (!known) // once per sound set (footsteps would repeat it every step)
+                ZX_LOG_WARN(LogAudioSystem, "No sound '{}' or variants {}_0 .. _9", file, file);
+            return 0;
+        }
+    }
+    RefPtr<audio::AudioClip> clip = LoadClip(variant.Empty() ? file : variant.View(), &error);
     if (!clip) {
         ZX_LOG_WARN(LogAudioSystem, "{}", error);
         return 0;
@@ -218,6 +299,7 @@ void AudioSystem::Tick(ecs::World& world, f32 dt, const ListenerPose& fallback)
     if (!m_running)
         Begin(world);
     ++m_frame;
+    m_time += f64(dt);
     // New sources (scene start, spawned while playing).
     Array<ecs::Entity> fresh;
     world.Query<const AudioSource>().Each([&](ecs::Entity e, const AudioSource& s) {

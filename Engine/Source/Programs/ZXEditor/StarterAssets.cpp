@@ -50,13 +50,22 @@ struct PrefabBuilder
     {
         world.Add(e, zx::Script{String::Format("StarterContent/Scripts/{}", file), String(properties)});
     }
-    void Body(ecs::Entity e, f32 mass, bool box = true)
+    void Body(ecs::Entity e, f32 mass, bool box = true, StringView impactSound = "Impact_Wood_Medium")
     {
         RigidBody rb;
         rb.mass = mass;
         world.Add(e, rb);
         if (box)
             world.Add(e, BoxCollider{});
+        Impact(e, impactSound);
+    }
+    void Impact(ecs::Entity e, StringView sound)
+    {
+        if (sound.Empty())
+            return;
+        ImpactSound s;
+        s.sound = String::Format("StarterContent/Sounds/Impacts/{}", sound);
+        world.Add(e, s);
     }
 };
 
@@ -185,7 +194,7 @@ Flammable Wood(f32 spreadSpeed = 0.12f, f32 burnTime = 20.0f)
     Flammable f;
     f.spreadSpeed = spreadSpeed;
     f.burnTime = burnTime;
-    f.sound = "StarterContent/Sounds/Fire_Loop.wav";
+    f.sound = "StarterContent/Sounds/Fire_Loop.ogg";
     return f;
 }
 
@@ -258,7 +267,7 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
                        Vec3(0.32f, 0.2f, 0.26f), "M_Rock", root, Quat::FromAxisAngle(Vec3(0, 1, 0), a));
             }
             AudioSource crackle;
-            crackle.clip = "StarterContent/Sounds/Fire_Loop.wav";
+            crackle.clip = "StarterContent/Sounds/Fire_Loop.ogg";
             crackle.volume = 0.7f;
             crackle.maxDistance = 18.0f;
             b.world.Add(root, crackle);
@@ -401,6 +410,11 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             r.blend = ParticleBlend::Alpha;
             r.emissive = false;
             b.world.Add(cloud, r);
+            AudioSource rain;
+            rain.clip = "StarterContent/Sounds/Rain_Loop.ogg";
+            rain.spatial = false; // all around the listener
+            rain.volume = 0.6f;
+            b.world.Add(root, rain);
             save(b, root, "Effects/P_Rain");
         }
         {
@@ -444,9 +458,9 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             jet.emissive = false;
             b.world.Add(b.Node("Jet", Vec3(0, 1.1f, 0), root), jet);
             AudioSource splash;
-            splash.clip = "StarterContent/Sounds/Ocean_Loop.wav";
-            splash.volume = 0.35f;
-            splash.pitch = 1.6f;
+            splash.clip = "StarterContent/Sounds/Rain_Loop.ogg"; // falling water
+            splash.volume = 0.45f;
+            splash.pitch = 1.15f;
             splash.maxDistance = 14.0f;
             b.world.Add(root, splash);
             save(b, root, "Effects/P_Fountain");
@@ -569,9 +583,9 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             const ecs::Entity cam = b.Node("Tank Camera", Vec3(0, 3.0f, -8.0f), turret, Quat::FromAxisAngle(Vec3(1, 0, 0), DegToRad(12.0f)));
             b.world.Add(cam, Camera{});
             AudioSource engine;
-            engine.clip = "StarterContent/Sounds/Hum_Loop.wav";
-            engine.volume = 0.5f;
-            engine.pitch = 0.5f;
+            engine.clip = "StarterContent/Sounds/Props/Engine_Loop.ogg";
+            engine.volume = 0.6f;
+            engine.pitch = 0.8f;
             engine.maxDistance = 30.0f;
             b.world.Add(tank, engine);
             save(b, tank, "Characters/P_Tank");
@@ -605,7 +619,7 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
                 for (i32 z = -1; z <= 1; z += 2)
                     b.Mesh("Rail", BuiltinShape::Cube, Vec3(f32(x) * 1.65f, 2.6f, f32(z) * 1.65f), Vec3(0.15f, 5.2f, 0.15f), "M_Metal_Steel", root);
             const ecs::Entity platform = b.Mesh("Platform", BuiltinShape::Cube, Vec3(0, 0.15f, 0), Vec3(3.0f, 0.3f, 3.0f), "M_Proto_Orange", root);
-            b.Body(platform, 2000.0f);
+            b.Body(platform, 2000.0f, true, "Impact_Metal_Heavy");
             RigidBody& rb = *b.world.Get<RigidBody>(platform);
             rb.canSleep = false;
             SliderJoint slider;
@@ -698,6 +712,7 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             rb.canSleep = false;
             b.world.Add(lamp, rb);
             b.world.Add(lamp, SphereCollider{});
+            b.Impact(lamp, "Impact_Metal_Light");
             BallJoint ball;
             ball.anchor = Vec3(0, 2.0f / 0.45f, 0); // the hook, in the lamp's scaled local space
             b.world.Add(lamp, ball);
@@ -725,7 +740,7 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             for (u32 i = 0; i < planks; ++i) {
                 const ecs::Entity plank = b.Mesh(String::Format("Plank {}", i + 1), BuiltinShape::Cube, Vec3(0, -0.15f, pitch * (f32(i) + 0.5f)),
                                                  Vec3(1.8f, 0.08f, pitch - 0.04f), "M_Wood", root);
-                b.Body(plank, 8.0f);
+                b.Body(plank, 8.0f, true, "Impact_Plank");
                 b.world.Add(plank, Wood(0.25f, 10.0f)); // burns through and drops off its hinges
                 // Hinged (around X) at its near edge to the previous plank - the first one to the world.
                 HingeJoint h;
@@ -760,7 +775,7 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
         {
             PrefabBuilder b;
             const ecs::Entity root = b.Mesh("Hay Bale", BuiltinShape::Cube, Vec3(0, 0.35f, 0), Vec3(1.2f, 0.7f, 0.7f), "M_Hay");
-            b.Body(root, 25.0f);
+            b.Body(root, 25.0f, true, "Impact_Soft");
             b.world.Add(root, Hay());
             save(b, root, "Props/P_HayBale");
         }
