@@ -74,6 +74,9 @@ Clouds: Render/Clouds.h + Shaders/Sky/Clouds.hlsl (quarter-res march + temporal,
 volumes built on the CPU in Init). Cloud shadow map: written by AddShadowPass at the very end of the frame, read next
 frame through SceneLighting::cloudShadow (forward + volumetric fog). VolumetricClouds component (Engine/SceneRendering.h).
 GPU faults: DRED ops/allocations are logged on device loss; -gpuvalidation enables GPU-based validation.
+Fluids: Render/Fluid.h + Shaders/Volumetric/Fluid.hlsl (per-volume grids keyed by entity, velocity always in [0],
+scalars ping-pong; ~25 compute passes per step; FluidDraw raymarch after the volumetric fog). FluidVolume component
+(Engine/SceneRendering.h); ViewportEnvironment::playing decides which volumes simulate.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

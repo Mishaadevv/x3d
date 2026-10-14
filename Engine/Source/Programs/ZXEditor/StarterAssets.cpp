@@ -538,6 +538,31 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             b.world.Add(water, w);
             save(b, root, "Effects/P_WaterPool");
         }
+        {
+            // Simulated (GPU fluid) fire and smoke: real buoyant, swirling gas instead of particles.
+            PrefabBuilder b;
+            const ecs::Entity root = b.Node("Fluid Fire");
+            b.world.Add(b.Node("Simulation", Vec3(0, 2.0f, 0), root, {}, Vec3(2.0f, 4.0f, 2.0f)), FluidVolume{});
+            PointLight light;
+            light.color = Vec3(1.0f, 0.55f, 0.25f);
+            light.lumens = 2500.0f;
+            light.range = 10.0f;
+            b.world.Add(b.Node("Glow", Vec3(0, 0.6f, 0), root), light);
+            save(b, root, "Effects/P_FluidFire");
+        }
+        {
+            PrefabBuilder b;
+            const ecs::Entity root = b.Node("Fluid Smoke");
+            FluidVolume smoke;
+            smoke.heat = 0.15f;
+            smoke.fireIntensity = 0.0f;
+            smoke.smoke = 2.5f;
+            smoke.smokeColor = Vec3(0.35f);
+            smoke.buoyancy = 2.5f;
+            smoke.smokeFade = 0.15f;
+            b.world.Add(b.Node("Simulation", Vec3(0, 3.0f, 0), root, {}, Vec3(3.0f, 6.0f, 3.0f)), smoke);
+            save(b, root, "Effects/P_FluidSmoke");
+        }
     }
 
     if (options.starterCharacters) {

@@ -132,6 +132,8 @@ void DrawMenus(Editor& ed)
         ActionMenuItem(ed, "create.heightfog");
         ActionMenuItem(ed, "create.fogvolume");
         ActionMenuItem(ed, "create.clouds");
+        ActionMenuItem(ed, "create.fluidfire");
+        ActionMenuItem(ed, "create.fluidsmoke");
         ActionMenuItem(ed, "create.hdriSky");
         ui::Separator();
         ActionMenuItem(ed, "create.material");

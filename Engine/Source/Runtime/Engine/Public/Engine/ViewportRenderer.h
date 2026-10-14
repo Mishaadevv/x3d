@@ -37,6 +37,7 @@ struct ViewportEnvironment
     f32 sunElevation = DegToRad(60.0f); // radians above the horizon
     f32 sunAzimuth = DegToRad(80.0f);   // radians, 0 = +Z, pi/2 = +X
     bool autoExposure = true;
+    bool playing = false; // Play-in-Editor / game: every Fluid Volume simulates
 };
 
 /// Subsystems switched off for the project (Features window); applied on top of ViewportSettings each frame.
@@ -57,6 +58,7 @@ struct ViewportFeatures
     bool particles = true;
     bool volumetricFog = true;
     bool clouds = true;
+    bool fluids = true;
 };
 
 /// Dynamic resolution: the render scale follows the GPU frame time towards a target (5 % steps, 4 times a second).
@@ -145,6 +147,8 @@ private:
     render::ParticleRenderer m_particleRenderer;
     render::VolumetricFogRenderer m_volumetric;
     render::CloudRenderer m_clouds;
+    render::FluidRenderer m_fluids;
+    Array<render::FluidVolumeDesc> m_fluidVolumes;
     Array<render::FogVolumeDesc> m_fogVolumes;
     const class ParticleSystem* m_particleSource = nullptr;
     Array<render::GpuParticle> m_particleList;

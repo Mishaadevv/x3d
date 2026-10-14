@@ -9,7 +9,7 @@ using namespace rhi;
 using namespace render;
 
 ViewportRenderer::ViewportRenderer(Device& device, RenderAssets& assets)
-    : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_particleRenderer(device), m_volumetric(device), m_clouds(device), m_taa(device), m_reflections(device), m_captureScene(device, assets), m_post(device), m_outline(device)
+    : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_particleRenderer(device), m_volumetric(device), m_clouds(device), m_fluids(device), m_taa(device), m_reflections(device), m_captureScene(device, assets), m_post(device), m_outline(device)
 {
 }
 
@@ -50,7 +50,7 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     return m_scene.Init(m_hdrFormat, DepthFormat()) && m_captureScene.Init(m_hdrFormat, DepthFormat()) && m_reflections.Init() && m_sky.Init(m_hdrFormat, DepthFormat()) && m_post.Init(outputFormat) &&
            m_taa.Init() && m_outline.Init(outputFormat) && m_water.Init(m_hdrFormat, DepthFormat(), lite) &&
            m_particleRenderer.Init(m_hdrFormat) && m_volumetric.Init(m_hdrFormat) &&
-           m_clouds.Init(m_hdrFormat);
+           m_clouds.Init(m_hdrFormat) && m_fluids.Init(m_hdrFormat);
 }
 
 void ViewportRenderer::ResolveHdriSky(ecs::World& world)
@@ -311,6 +311,12 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         m_volumetric.AddPasses(graph, sceneColor, sceneDepth, view, m_viewProjNoJitter, m_lighting, m_scene.GetLightingInputs(),
                                m_settings.sky.fog, vs, m_fogVolumes.View(), exposure, f32(std::fmod(m_time, 3600.0)), &m_sky);
     }
+    // Simulated smoke and fire (Fluid Volumes), over the fogged scene.
+    m_fluidVolumes.Clear();
+    if (features.fluids)
+        GatherFluidVolumes(world, m_fluidVolumes, env.playing);
+    m_fluids.AddPasses(graph, sceneColor, sceneDepth, view, m_viewProjNoJitter, m_lighting, m_fluidVolumes.View(), exposure, deltaTime,
+                       f32(std::fmod(m_time, 3600.0)));
     // Particles over the fogged scene (they don't write depth, so the fog couldn't place them).
     m_particleList.Clear();
     if (features.particles && m_particleSource)

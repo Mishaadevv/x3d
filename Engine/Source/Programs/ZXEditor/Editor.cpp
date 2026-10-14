@@ -1083,6 +1083,23 @@ void Editor::CreateHeightFog(f32 density)
     CommitCreated(e, "Create Height Fog");
 }
 
+void Editor::CreateFluid(Vec3 position, bool isFire, ecs::Entity parent)
+{
+    Transform t(position + Vec3(0.0f, 2.0f, 0.0f)); // the box stands on the point
+    t.scale = isFire ? Vec3(2.0f, 4.0f, 2.0f) : Vec3(3.0f, 6.0f, 3.0f);
+    const ecs::Entity e = CreateEntity(isFire ? "Fluid Fire" : "Fluid Smoke", t, parent);
+    FluidVolume f;
+    if (!isFire) {
+        f.heat = 0.15f;
+        f.fireIntensity = 0.0f;
+        f.smoke = 2.0f;
+        f.smokeColor = Vec3(0.35f);
+        f.buoyancy = 2.5f;
+    }
+    world.Add(e, f);
+    CommitCreated(e, isFire ? "Create Fluid Fire" : "Create Fluid Smoke");
+}
+
 void Editor::CreateClouds()
 {
     ecs::Entity existing;
@@ -2825,6 +2842,7 @@ void Editor::RenderFrame()
         vf.particles = FeatureEnabled("particles");
         vf.volumetricFog = FeatureEnabled("volumetricFog");
         vf.clouds = FeatureEnabled("clouds");
+        vf.fluids = FeatureEnabled("fluids");
         ViewportCamera cam{camera.ViewMatrix(), camera.position, camera.fovY, camera.nearPlane};
         if (UsingGameCamera()) {
             // Game view: the Camera entity's world position and orientation (+Z forward), scale ignored.
@@ -2845,6 +2863,7 @@ void Editor::RenderFrame()
             CollectHierarchy(world, selected, outlined);
         viewport->SetOutlinedEntities(outlined.View());
         viewport->Outline().thickness = 2.0f * window->GetDpiScale();
+        environment.playing = IsPlaying() && playState != PlayState::Paused; // every Fluid Volume simulates
         viewport->AddPasses(graph, world, cam, environment, vp, viewportSize, dt,
                             [this](CommandList& c, const RenderView& view, f32) {
                                 if (showGrid && !m_screenshotViewport) {

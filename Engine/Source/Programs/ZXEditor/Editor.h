@@ -361,6 +361,7 @@ public:
     void CreateHeightFog(f32 density = 0.0f);                  // replaces the scene's one; density 0 = default
     void CreateFogVolume(Vec3 position, ecs::Entity parent = {});
     void CreateClouds(); // the scene's Volumetric Clouds (selects the existing one)
+    void CreateFluid(Vec3 position, bool isFire, ecs::Entity parent = {});
     /// Sets the scene's HDRI Sky to the Content-relative panorama (creates the entity when there is none; undoable).
     void UseHdriSky(StringView texture);
     /// The listener while playing: the game camera when it is shown, else the editor camera.

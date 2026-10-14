@@ -36,6 +36,26 @@ ZX_REFLECT_STRUCT_BEGIN(VolumetricClouds)
     ZX_FIELD(shadows, Meta::Range(0, 1), Meta::Tooltip("How dark their shadows are on the ground"))
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_STRUCT_BEGIN(FluidVolume)
+    ZX_FIELD(resolution, Meta::Range(16, 96), Meta::Tooltip("Cells along the longest side (GPU cost grows with the cube)"))
+    ZX_FIELD(simulateInEditor, Meta::Tooltip("Live while editing; off = only in Play"))
+    ZX_FIELD(sourcePosition, Meta::Category("Source"), Meta::Tooltip("In the box: -0.5 .. 0.5 on each axis"))
+    ZX_FIELD(sourceRadius, Meta::Range(0.01, 0.5))
+    ZX_FIELD(sourceVelocity, Meta::Units("m/s"))
+    ZX_FIELD(smoke, Meta::Range(0, 20), Meta::Tooltip("Smoke added per second"))
+    ZX_FIELD(heat, Meta::Range(0, 1), Meta::Tooltip("0 = cold smoke or steam, 1 = flames"))
+    ZX_FIELD(turbulence, Meta::Range(0, 3))
+    ZX_FIELD(buoyancy, Meta::Category("Motion"), Meta::Range(0, 50), Meta::Units("m/s2"), Meta::Tooltip("How fast hot gas rises"))
+    ZX_FIELD(weight, Meta::Range(0, 20), Meta::Tooltip("How much smoke sinks"))
+    ZX_FIELD(swirl, Meta::Range(0, 40), Meta::Tooltip("Vortices: keeps small swirls alive"))
+    ZX_FIELD(smokeFade, Meta::Range(0, 5), Meta::Units("1/s"))
+    ZX_FIELD(cooling, Meta::Range(0, 10), Meta::Units("1/s"))
+    ZX_FIELD(density, Meta::Category("Look"), Meta::Range(0, 50), Meta::Units("1/m"))
+    ZX_FIELD(smokeColor, Meta::Color())
+    ZX_FIELD(fireIntensity, Meta::Range(0, 50))
+    ZX_FIELD(fireThreshold, Meta::Range(0, 0.95), Meta::Tooltip("Temperature above which gas glows"))
+ZX_REFLECT_STRUCT_END()
+
 ZX_REFLECT_ENUM_BEGIN(FogShape)
     ZX_ENUM_VALUE(Box)
     ZX_ENUM_VALUE(Sphere)
@@ -276,6 +296,32 @@ render::CloudSettings FindClouds(World& world)
         s.shadowStrength = c.shadows;
     });
     return s;
+}
+
+void GatherFluidVolumes(World& world, Array<render::FluidVolumeDesc>& out, bool playing)
+{
+    world.Query<const WorldTransform, const FluidVolume>().Each([&](Entity e, const WorldTransform& wt, const FluidVolume& f) {
+        render::FluidVolumeDesc& d = out.AddDefaulted();
+        d.id = e.Pack();
+        d.world = wt.matrix;
+        d.resolution = u32(Max(f.resolution, 16));
+        d.simulate = playing || f.simulateInEditor;
+        d.sourcePosition = f.sourcePosition;
+        d.sourceRadius = f.sourceRadius;
+        d.sourceVelocity = f.sourceVelocity;
+        d.smokeRate = f.smoke;
+        d.heat = f.heat;
+        d.noise = f.turbulence;
+        d.buoyancy = f.buoyancy;
+        d.weight = f.weight;
+        d.vorticity = f.swirl;
+        d.smokeFade = f.smokeFade;
+        d.coolRate = f.cooling;
+        d.density = f.density;
+        d.smokeColor = f.smokeColor;
+        d.fireIntensity = f.fireIntensity;
+        d.fireThreshold = f.fireThreshold;
+    });
 }
 
 void GatherFogVolumes(World& world, Array<render::FogVolumeDesc>& out)

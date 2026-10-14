@@ -10,6 +10,7 @@
 #include "Render/Reflections.h"
 #include "Render/SceneRenderer.h"
 #include "Render/Clouds.h"
+#include "Render/Fluid.h"
 #include "Render/VolumetricFog.h"
 #include "Render/Water.h"
 #include "Scene/Hierarchy.h"
@@ -103,6 +104,31 @@ struct VolumetricClouds
     f32 shadows = 0.75f;        // how dark their shadows are on the ground
 };
 ZX_DECLARE_TYPE(VolumetricClouds);
+
+/// Real-time smoke and fire: a GPU fluid simulation inside the entity's box (its scale is the size in meters). Hot gas
+/// rises and curls into vortices, smoke drifts and thins out, the hottest gas glows like flames. Expensive: keep the
+/// resolution modest and use a few of them.
+struct FluidVolume
+{
+    i32 resolution = 48;          // cells along the longest side (cost grows with the cube)
+    bool simulateInEditor = true; // live while editing (off: only in Play)
+    Vec3 sourcePosition = Vec3(0.0f, -0.4f, 0.0f); // in the box (-0.5 .. 0.5)
+    f32 sourceRadius = 0.16f;     // fraction of the longest side
+    Vec3 sourceVelocity = Vec3(0.0f, 1.0f, 0.0f); // m/s
+    f32 smoke = 1.5f;             // smoke added per second
+    f32 heat = 1.0f;              // temperature at the source: 0 = cold smoke / steam, 1 = flames
+    f32 turbulence = 1.2f;        // how much the source flickers
+    f32 buoyancy = 5.0f;          // how fast hot gas rises (m/s^2)
+    f32 weight = 0.3f;            // how much smoke sinks
+    f32 swirl = 12.0f;            // vortices (vorticity confinement)
+    f32 smokeFade = 0.25f;        // per second
+    f32 cooling = 0.9f;           // per second
+    f32 density = 3.0f;           // smoke opacity (1/m)
+    Vec3 smokeColor = Vec3(0.2f);
+    f32 fireIntensity = 2.0f;     // glow of the hottest gas
+    f32 fireThreshold = 0.15f;    // temperature above which gas glows
+};
+ZX_DECLARE_TYPE(FluidVolume);
 
 enum class FogShape : u8
 {
@@ -200,6 +226,8 @@ const HeightFog* FindHeightFog(ecs::World& world, f32* height = nullptr);
 void GatherFogVolumes(ecs::World& world, Array<render::FogVolumeDesc>& out);
 /// Cloud settings from the scene's Volumetric Clouds (disabled when there is none).
 render::CloudSettings FindClouds(ecs::World& world);
+/// Fluid Volumes to draw; `playing` decides which ones simulate (all in Play, Simulate In Editor ones otherwise).
+void GatherFluidVolumes(ecs::World& world, Array<render::FluidVolumeDesc>& out, bool playing);
 /// Hash of what reflection captures see (mesh instances and lights): a change recaptures the probes.
 u64 SceneContentKey(Span<const render::RenderInstance> instances, Span<const render::LightDesc> lights);
 
