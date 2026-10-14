@@ -45,6 +45,25 @@ struct SpotLight
     bool castShadows = false;
 };
 
+/// The sun (the first one counts): it shines along the entity's forward (+Z) axis - rotate the entity to move the
+/// sun. Without one, the editor's Sun settings place it.
+struct DirectionalLight
+{
+    f32 intensity = 1.0f;          // 1 = the real sun (~110 000 lux at noon before the atmosphere)
+    Vec3 color = Vec3(1.0f, 1.0f, 1.0f);
+    bool castShadows = true;
+};
+
+/// Light from the sky (the first one counts): how bright the ambient light and the sky itself are.
+struct SkyLight
+{
+    f32 intensity = 1.0f;          // ambient light from the sky (multiplier)
+    Vec3 tint = Vec3(1.0f, 1.0f, 1.0f);
+    f32 skyBrightness = 1.0f;      // how bright the visible sky looks (multiplier)
+};
+
+ZX_DECLARE_TYPE(DirectionalLight);
+ZX_DECLARE_TYPE(SkyLight);
 ZX_DECLARE_TYPE(MeshRenderer);
 ZX_DECLARE_TYPE(PointLight);
 ZX_DECLARE_TYPE(SpotLight);
@@ -221,6 +240,9 @@ void GatherReflectionProbes(ecs::World& world, Array<render::ReflectionProbeDesc
 void GatherDecals(ecs::World& world, Array<render::DecalDesc>& out, const Function<u32(StringView path, bool normalMap)>& texture);
 /// The scene's HDRI Sky (first one found); null when there is none.
 const HdriSky* FindHdriSky(ecs::World& world);
+/// The scene's Directional Light and the direction its light travels (null when there is none).
+const DirectionalLight* FindDirectionalLight(ecs::World& world, Vec3* direction = nullptr);
+const SkyLight* FindSkyLight(ecs::World& world);
 /// The scene's Height Fog and the world height of its entity (null when there is none).
 const HeightFog* FindHeightFog(ecs::World& world, f32* height = nullptr);
 void GatherFogVolumes(ecs::World& world, Array<render::FogVolumeDesc>& out);

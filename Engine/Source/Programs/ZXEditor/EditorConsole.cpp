@@ -279,7 +279,7 @@ ConCommand CmdTool("tool", "Activates an editor tool: tool <brush|measure|none>;
         SetActiveTool(*ed, tool);
 });
 
-ConCommand CmdCreate("create", "Creates an object in front of the camera: create <entity|pointlight|spotlight|water|audiosource|reverbzone|decal|heightfog [density]|fogvolume|clouds|fluidfire|fluidsmoke|cube|sphere|cylinder|plane>",
+ConCommand CmdCreate("create", "Creates an object in front of the camera: create <entity|pointlight|spotlight|water|audiosource|reverbzone|decal|heightfog [density]|fogvolume|sun|skylight|clouds|fluidfire|fluidsmoke|cube|sphere|cylinder|plane>",
                      [](Span<const StringView> args) {
     Editor* ed = Ed();
     if (!ed)
@@ -308,6 +308,10 @@ ConCommand CmdCreate("create", "Creates an object in front of the camera: create
         ed->CreateFogVolume(at);
     else if (kind.EqualsIgnoreCase("clouds"))
         ed->CreateClouds();
+    else if (kind.EqualsIgnoreCase("sun") || kind.EqualsIgnoreCase("directionallight"))
+        ed->CreateSun();
+    else if (kind.EqualsIgnoreCase("skylight"))
+        ed->CreateSkyLight();
     else if (kind.EqualsIgnoreCase("fluidfire") || kind.EqualsIgnoreCase("fluidsmoke"))
         ed->CreateFluid(at, kind.EqualsIgnoreCase("fluidfire"));
     else if (kind.EqualsIgnoreCase("hdrisky") || kind.EqualsIgnoreCase("hdri"))

@@ -187,7 +187,21 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     }
     m_settings.sky.fog.startDistance = volumetric ? m_settings.volumetricFog.distance : 0.0f;
     m_settings.reflections.skyResolution = m_settings.sky.hdri.IsActive() ? 128u : 64u;
-    ApplyEnvironment(env);
+    // Directional Light: the sun follows the entity (its forward axis is the direction the light travels).
+    ViewportEnvironment sceneEnv = env;
+    Vec3 sunTravel;
+    if (const DirectionalLight* sun = FindDirectionalLight(world, &sunTravel)) {
+        const Vec3 toSun = -sunTravel;
+        sceneEnv.sunElevation = Asin(Clamp(toSun.y, -1.0f, 1.0f));
+        sceneEnv.sunAzimuth = Atan2(toSun.x, toSun.z);
+        m_settings.sky.sunIlluminanceTop *= Max(sun->intensity, 0.0f);
+        m_settings.sky.sunColor = m_settings.sky.sunColor * sun->color;
+        if (!sun->castShadows)
+            m_settings.scene.shadows.enabled = false;
+    }
+    if (const SkyLight* skyLight = FindSkyLight(world))
+        m_settings.sky.skyBrightness *= Max(skyLight->skyBrightness, 0.0f);
+    ApplyEnvironment(sceneEnv);
     m_lights.Clear();
     GatherLights(world, m_lights);
     if (m_particleSource) {
@@ -232,6 +246,13 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     const f32 exposure = ExposureFromEV100(m_lighting.exposureEV100);
     if (m_settings.useSky)
         m_sky.AddPrePasses(graph, view, m_dirToSun, exposure, m_settings.sky, m_lighting);
+    // Sky Light: scales (and tints) the ambient light from the sky.
+    if (const SkyLight* sky = FindSkyLight(world)) {
+        const Vec3 k = sky->tint * Max(sky->intensity, 0.0f);
+        m_lighting.skyIrradianceScale = m_lighting.skyIrradianceScale * k;
+        m_lighting.skyLuminance *= Max(sky->intensity, 0.0f);
+        m_lighting.skyColor = m_lighting.skyColor * sky->tint;
+    }
     m_time += f64(deltaTime);
     m_scene.SetTime(f32(std::fmod(m_time, 3600.0))); // wraps hourly: keeps float precision for animated materials
     // Reflections: probes are recaptured when the scene content, the sun or the sky changes.

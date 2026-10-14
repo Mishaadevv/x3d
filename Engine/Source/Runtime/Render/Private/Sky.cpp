@@ -191,6 +191,7 @@ void SkyRenderer::AddPrePasses(RenderGraph& graph, const RenderView& view, Vec3 
     p.multiScatterLut = m_multiScatter->GetSrvIndex();
     p.skyViewLut = m_skyView->GetSrvIndex();
     p.cameraAltitude = settings.cameraAltitude + Max(view.position.y, 0.0f) * 1e-3f;
+    p.skyBrightness = Max(settings.skyBrightness, 0.0f);
     // HDRI sky: the panorama scaled by its intensity replaces the atmosphere (sunColor x sunIlluminance = scale).
     m_hdri = settings.hdri;
     const bool hdri = m_hdri.IsActive();

@@ -389,13 +389,31 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
         if (ed.viewport->LastHdri().IsActive())
             ui::TextDisabled(ed.viewport->HdriSunFound() ? "HDRI Sky active: its sun lights the scene\n(turn it with Rotation in Details)"
                                                          : "HDRI Sky active: these apply with Sun = Scene Sun");
+        // With a Directional Light in the scene the sliders turn it (its rotation is the sun); otherwise the editor sun.
+        const ecs::Entity sunEntity = ed.FindSunEntity();
+        Transform* sunTransform = sunEntity ? ed.world.Get<Transform>(sunEntity) : nullptr;
+        if (sunTransform) {
+            const Vec3 toSun = -sunTransform->rotation.GetForward();
+            ed.environment.sunElevation = Asin(Clamp(toSun.y, -1.0f, 1.0f));
+            ed.environment.sunAzimuth = Atan2(toSun.x, toSun.z);
+            ui::TextDisabled("Turns the scene's Directional Light");
+        }
         f32 elevation = RadToDeg(ed.environment.sunElevation), azimuth = RadToDeg(ed.environment.sunAzimuth);
+        if (azimuth < 0.0f)
+            azimuth += 360.0f;
+        bool changed = false;
         ui::SetNextItemWidth(160.0f);
-        if (ui::SliderFloat("Elevation", &elevation, -5.0f, 89.0f, "{:.0f}°"))
+        if (ui::SliderFloat("Elevation", &elevation, -5.0f, 89.0f, "{:.0f}°")) {
             ed.environment.sunElevation = DegToRad(elevation);
+            changed = true;
+        }
         ui::SetNextItemWidth(160.0f);
-        if (ui::SliderFloat("Azimuth", &azimuth, 0.0f, 360.0f, "{:.0f}°"))
+        if (ui::SliderFloat("Azimuth", &azimuth, 0.0f, 360.0f, "{:.0f}°")) {
             ed.environment.sunAzimuth = DegToRad(azimuth);
+            changed = true;
+        }
+        if (changed && sunTransform)
+            sunTransform->rotation = Editor::SunRotation(ed.environment.sunElevation, ed.environment.sunAzimuth);
         ui::EndPopup();
     }
     // Right: camera speed + frame stats.

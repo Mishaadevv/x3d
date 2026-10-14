@@ -18,7 +18,7 @@ enum class Tonemapper : u8
 struct PostSettings
 {
     bool autoExposure = true;
-    f32 exposureCompensation = 1.0f; // EV, + = brighter (auto exposure aims at the bright half of the histogram)
+    f32 exposureCompensation = 1.6f; // EV, + = brighter (auto exposure aims at the bright half of the histogram)
     f32 minEV100 = -2.0f;
     f32 maxEV100 = 16.0f;
     f32 adaptationSpeed = 1.5f; // 1/s

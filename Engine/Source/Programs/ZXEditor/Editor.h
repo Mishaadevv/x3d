@@ -361,6 +361,12 @@ public:
     void CreateHeightFog(f32 density = 0.0f);                  // replaces the scene's one; density 0 = default
     void CreateFogVolume(Vec3 position, ecs::Entity parent = {});
     void CreateClouds(); // the scene's Volumetric Clouds (selects the existing one)
+    void CreateSun();      // the scene's Directional Light, aimed like the editor's Sun settings (selects the existing one)
+    void CreateSkyLight(); // the scene's Sky Light (selects the existing one)
+    /// The Directional Light entity of the scene (null if none).
+    ecs::Entity FindSunEntity();
+    /// Rotation that makes a Directional Light shine from (elevation, azimuth) radians.
+    static Quat SunRotation(f32 elevation, f32 azimuth);
     void CreateFluid(Vec3 position, bool isFire, ecs::Entity parent = {});
     /// Sets the scene's HDRI Sky to the Content-relative panorama (creates the entity when there is none; undoable).
     void UseHdriSky(StringView texture);

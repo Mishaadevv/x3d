@@ -199,6 +199,8 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.heightfog", "Create Height Fog", "Create", ZX_ICON_CLOUD_FOG, "", [](Editor& e) { e.CreateHeightFog(); });
     Add(ed, "create.fluidfire", "Create Fluid Fire", "Create", ZX_ICON_FLAME, "", [spawn](Editor& e) { e.CreateFluid(spawn(e), true); });
     Add(ed, "create.fluidsmoke", "Create Fluid Smoke", "Create", ZX_ICON_CLOUD, "", [spawn](Editor& e) { e.CreateFluid(spawn(e), false); });
+    Add(ed, "create.sun", "Create Directional Light", "Create", ZX_ICON_SUN, "", [](Editor& e) { e.CreateSun(); });
+    Add(ed, "create.skylight", "Create Sky Light", "Create", ZX_ICON_CLOUD_SUN, "", [](Editor& e) { e.CreateSkyLight(); });
     Add(ed, "create.clouds", "Create Volumetric Clouds", "Create", ZX_ICON_CLOUDY, "", [](Editor& e) { e.CreateClouds(); });
     Add(ed, "create.fogvolume", "Create Fog Volume", "Create", ZX_ICON_HAZE, "", [spawn](Editor& e) { e.CreateFogVolume(spawn(e)); });
     Add(ed, "create.reflectionProbe", "Create Reflection Probe", "Create", ZX_ICON_CIRCLE_DOT, "",

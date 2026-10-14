@@ -25,7 +25,8 @@ struct SkyParams
     float hdriClampCos;
     float hdriClampLum;
     float hdriLutLod;       // mip resampled into the sky-view LUT
-    float2 pad;
+    float skyBrightness;    // visible sky (and distant fog colour): artistic multiplier
+    float pad;
 };
 ZX_PASS_CONSTANTS(SkyParams, g_Sky);
 
@@ -207,7 +208,7 @@ float4 SkyPS(VSOutput i) : SV_Target0
         L += T * limb / solidAngle;
     }
     // Pre-exposed; clamp to keep the 11/10-bit float target finite.
-    return float4(min(L * g_Sky.sunColor * (g_Sky.sunIlluminance * g_Sky.exposure), 60000.0), 1.0);
+    return float4(min(L * g_Sky.sunColor * (g_Sky.sunIlluminance * g_Sky.exposure * g_Sky.skyBrightness), 60000.0), 1.0);
 }
 
 // --- Sky irradiance (SH9) ----------------------------------------------------------------------------------------
@@ -333,7 +334,7 @@ float4 FogPS(VSOutput i) : SV_Target0
         float3 horizonDir = dir;
         horizonDir.y = max(horizonDir.y, 0.03);
         const float3 sky = GetTexture2D(g_Sky.skyViewLut).SampleLevel(g_LinearClamp, SkyViewUV(normalize(horizonDir)), 0).rgb *
-                           g_Sky.sunColor * (g_Sky.sunIlluminance * g_Sky.exposure);
+                           g_Sky.sunColor * (g_Sky.sunIlluminance * g_Sky.exposure * g_Sky.skyBrightness);
         inscatter = lerp(inscatter, sky + g_Fog.albedo * g_Fog.sunColor * hg * 0.5, saturate(dist / 1500.0) * 0.8);
     }
     // Premultiplied: result = inscatter * (1 - T) + scene * T (blend: src One, dst SrcAlpha).

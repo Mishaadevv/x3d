@@ -633,6 +633,13 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
 
 void Editor::AddAtmosphere(f32 fogDensity, f32 cloudCoverage)
 {
+    // Like a new UE level: a sun, sky light, height fog and clouds, each an entity to tweak in Details.
+    const ecs::Entity sun = CreateEntity("Sun", Transform(Vec3(0.0f, 10.0f, 0.0f), SunRotation(environment.sunElevation, environment.sunAzimuth)));
+    world.Add(sun, DirectionalLight{});
+    EnsureEntityGuid(world, sun);
+    const ecs::Entity skyLight = CreateEntity("Sky Light", Transform(Vec3(0.0f, 10.0f, 0.0f)));
+    world.Add(skyLight, SkyLight{});
+    EnsureEntityGuid(world, skyLight);
     const ecs::Entity fog = CreateEntity("Height Fog", Transform(Vec3(0.0f)));
     HeightFog f;
     f.density = fogDensity;
@@ -1124,6 +1131,49 @@ void Editor::CreateFluid(Vec3 position, bool isFire, ecs::Entity parent)
     }
     world.Add(e, f);
     CommitCreated(e, isFire ? "Create Fluid Fire" : "Create Fluid Smoke");
+}
+
+Quat Editor::SunRotation(f32 elevation, f32 azimuth)
+{
+    const Vec3 toSun = atmosphere::SunDirection(elevation, azimuth);
+    return Quat::LookRotation(-toSun, Abs(toSun.y) > 0.99f ? Vec3(0, 0, 1) : Vec3(0, 1, 0));
+}
+
+ecs::Entity Editor::FindSunEntity()
+{
+    ecs::Entity found;
+    world.Query<const DirectionalLight>().Each([&](ecs::Entity e, const DirectionalLight&) {
+        if (found.IsNull())
+            found = e;
+    });
+    return found;
+}
+
+void Editor::CreateSun()
+{
+    if (const ecs::Entity existing = FindSunEntity()) {
+        selected = existing;
+        return;
+    }
+    const ecs::Entity e = CreateEntity("Sun", Transform(Vec3(0.0f, 10.0f, 0.0f), SunRotation(environment.sunElevation, environment.sunAzimuth)));
+    world.Add(e, DirectionalLight{});
+    CommitCreated(e, "Create Directional Light");
+}
+
+void Editor::CreateSkyLight()
+{
+    ecs::Entity existing;
+    world.Query<const SkyLight>().Each([&](ecs::Entity e, const SkyLight&) {
+        if (existing.IsNull())
+            existing = e;
+    });
+    if (existing) {
+        selected = existing;
+        return;
+    }
+    const ecs::Entity e = CreateEntity("Sky Light", Transform(Vec3(0.0f, 10.0f, 0.0f)));
+    world.Add(e, SkyLight{});
+    CommitCreated(e, "Create Sky Light");
 }
 
 void Editor::CreateClouds()

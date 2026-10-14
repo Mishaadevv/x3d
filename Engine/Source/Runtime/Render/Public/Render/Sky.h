@@ -54,6 +54,7 @@ struct SkySettings
     Vec3 sunColor = Vec3(1, 1, 1);
     f32 sunAngularRadius = 0.0093f;     // radians (2x the real sun, reads better on screen)
     f32 cameraAltitude = 0.2f;          // km above the ground at world y = 0
+    f32 skyBrightness = 1.6f;           // visible sky (artistic: the physical sky reads dusky next to sunlit ground)
     FogSettings fog;
     HdriSkySettings hdri;
 };
@@ -113,7 +114,8 @@ private:
         f32 hdriClampCos;
         f32 hdriClampLum;
         f32 hdriLutLod;   // sky-view LUT resampling mip
-        f32 pad[2];
+        f32 skyBrightness;
+        f32 pad;
     };
 
     rhi::Device& m_device;

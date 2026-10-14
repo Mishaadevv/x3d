@@ -129,6 +129,8 @@ void DrawMenus(Editor& ed)
         ActionMenuItem(ed, "create.postProcessVolume");
         ActionMenuItem(ed, "create.reflectionProbe");
         ActionMenuItem(ed, "create.decal");
+        ActionMenuItem(ed, "create.sun");
+        ActionMenuItem(ed, "create.skylight");
         ActionMenuItem(ed, "create.heightfog");
         ActionMenuItem(ed, "create.fogvolume");
         ActionMenuItem(ed, "create.clouds");

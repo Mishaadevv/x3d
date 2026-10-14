@@ -12,6 +12,18 @@ ZX_REFLECT_STRUCT_BEGIN(MeshRenderer)
     ZX_FIELD(collision, Meta::Tooltip("Solid: blocks Character Controllers and rigid bodies (as a static triangle mesh unless the entity has colliders)"))
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_STRUCT_BEGIN(DirectionalLight)
+    ZX_FIELD(intensity, Meta::Range(0, 10), Meta::Tooltip("1 = the real sun; rotate the entity to move it (it shines along +Z)"))
+    ZX_FIELD(color, Meta::Color())
+    ZX_FIELD(castShadows)
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(SkyLight)
+    ZX_FIELD(intensity, Meta::Range(0, 10), Meta::Tooltip("Ambient light from the sky (multiplier)"))
+    ZX_FIELD(tint, Meta::Color())
+    ZX_FIELD(skyBrightness, Meta::Range(0, 5), Meta::Tooltip("How bright the visible sky looks (multiplier)"))
+ZX_REFLECT_STRUCT_END()
+
 ZX_REFLECT_STRUCT_BEGIN(HeightFog)
     ZX_FIELD(density, Meta::Range(0, 1), Meta::Units("1/m"), Meta::Tooltip("Fog density at the entity's height"))
     ZX_FIELD(falloff, Meta::Range(0.0001, 2), Meta::Units("1/m"), Meta::Tooltip("How fast it thins out with height"))
@@ -262,6 +274,29 @@ const HdriSky* FindHdriSky(World& world)
     world.Query<const HdriSky>().Each([&](const HdriSky& s) {
         if (!found)
             found = &s;
+    });
+    return found;
+}
+
+const DirectionalLight* FindDirectionalLight(World& world, Vec3* direction)
+{
+    const DirectionalLight* found = nullptr;
+    world.Query<const WorldTransform, const DirectionalLight>().Each([&](const WorldTransform& wt, const DirectionalLight& l) {
+        if (found)
+            return;
+        found = &l;
+        if (direction)
+            *direction = SafeNormalize(wt.matrix.GetForward(), Vec3(0, -1, 0));
+    });
+    return found;
+}
+
+const SkyLight* FindSkyLight(World& world)
+{
+    const SkyLight* found = nullptr;
+    world.Query<const SkyLight>().Each([&](const SkyLight& l) {
+        if (!found)
+            found = &l;
     });
     return found;
 }
