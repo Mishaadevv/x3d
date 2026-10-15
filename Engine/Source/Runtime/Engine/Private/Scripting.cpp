@@ -1,5 +1,6 @@
 #include "Engine/Scripting.h"
 #include "Engine/PhysicsSystem.h"
+#include "Engine/Surfaces.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
 #include "Core/Log/Log.h"
@@ -554,11 +555,22 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
         return true;
     };
     characterType.get = [characterOf](script::VM& v, script::NativeObject& o, StringView m, Value& out) {
-        if (m != "grounded" && m != "velocity")
+        if (m != "grounded" && m != "velocity" && m != "surface")
             return false;
         CharacterState* st = nullptr;
         if (!characterOf(v, o, st))
             return false;
+        if (m == "surface") {
+            // What is under the feet (footsteps): a short ray down through the physics world.
+            ScriptSystem& sys = SystemOf(o);
+            const ecs::Entity e = ecs::Entity::Unpack(o.id);
+            StringView surface = "Concrete";
+            PhysicsHit hit;
+            if (sys.physics && sys.physics->Raycast(scene::ComputeWorldMatrix(*sys.context.world, e).GetTranslation() + Vec3(0.0f, 0.3f, 0.0f), Vec3(0, -1, 0), 1.2f, hit, ~0u, e))
+                surface = SurfaceOf(*sys.context.world, hit.entity, sys.materialName);
+            out = Value(String(surface));
+            return true;
+        }
         out = m == "grounded" ? Value(st->grounded) : Value(st->velocity);
         return true;
     };
@@ -748,6 +760,8 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
         const Context::Hit& h = context.hits[index];
         if (m == "entity")
             out = script::MakeNative(*m_entityType, this, h.entity.Pack());
+        else if (m == "surface")
+            out = Value(String(context.world ? SurfaceOf(*context.world, h.entity, materialName) : StringView("Concrete")));
         else if (m == "point")
             out = Value(h.point);
         else if (m == "normal")

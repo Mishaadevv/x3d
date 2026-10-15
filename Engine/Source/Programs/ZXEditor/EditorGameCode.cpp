@@ -92,8 +92,10 @@ void UpdateGameModule(Editor& ed)
     if (ed.gameBuildState == GameBuildState::Succeeded) {
         ZX_LOG_INFO(LogGameCode, "Game code compiled ({:.1f} s)", ed.game->LastBuildSeconds());
         LoadIfChanged(ed);
+        ed.PlayUISound("Confirm");
     } else {
         ReportBuildErrors(ed.game->BuildLog());
+        ed.PlayUISound("Error");
     }
 }
 

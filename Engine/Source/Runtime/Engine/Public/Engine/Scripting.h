@@ -13,6 +13,7 @@
 // collisionExit(other), triggerEnter(other), triggerExit(other).
 // Language reference: docs/ZeqouScript.md.
 
+#include "Asset/CookedAssets.h"
 #include "Core/Containers/Function.h"
 #include "Core/Containers/HashMap.h"
 #include "Core/Memory/Pointers.h"
@@ -89,6 +90,8 @@ public:
 
     /// log()/print() output and errors (file:line: message).
     Function<void(StringView message, bool isError)> onLog;
+    /// Material id -> name, for surface types (hit.surface, character.surface); set by the host.
+    Function<String(asset::AssetId)> materialName;
 
 private:
     struct CachedProgram;

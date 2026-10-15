@@ -927,12 +927,15 @@ bool PhysicsSystem::Raycast(Vec3 origin, Vec3 direction, f32 maxDistance, Physic
     if (!m_world || LengthSq(direction) < 1e-12f)
         return false;
     // Rays ignore triggers and the given entity: walk the hits front to back.
+    // The ignored entity's body is skipped by the query itself (a ray starting inside it, e.g. a character's own
+    // capsule, would otherwise hit it at distance 0 again and again).
     Vec3 o = origin;
     const Vec3 d = Normalize(direction);
     f32 travelled = 0.0f;
+    const physics::BodyId skip = ignore ? BodyOf(ignore) : physics::BodyId{};
     for (u32 attempt = 0; attempt < 16; ++attempt) {
         physics::RaycastHit h;
-        if (!m_world->Raycast(Ray(o, d), maxDistance - travelled, h, layerMask))
+        if (!m_world->Raycast(Ray(o, d), maxDistance - travelled, h, layerMask, skip))
             return false;
         const Entity e = EntityOf(h.body);
         const bool sensor = h.shape < m_world->GetShapes(h.body).Size() && m_world->GetShapes(h.body)[h.shape].isSensor;

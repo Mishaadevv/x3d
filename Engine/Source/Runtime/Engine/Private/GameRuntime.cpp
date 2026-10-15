@@ -34,8 +34,11 @@ void BeginGame(ecs::World& world, GameSystems& s)
         s.game->Begin(world);
     if (s.inputActionState)
         *s.inputActionState = InputActionState();
-    if (s.audio)
+    if (s.audio) {
         s.audio->Begin(world);
+        PhysicsSystem* physics = s.physics;
+        s.audio->velocityOf = [physics](ecs::Entity e) { return physics && physics->IsRunning() ? physics->GetVelocity(e) : Vec3(); };
+    }
     if (s.physics && s.Enabled("physics")) {
         scene::UpdateWorldTransforms(world);
         s.physics->Begin(world, s.renderAssets);

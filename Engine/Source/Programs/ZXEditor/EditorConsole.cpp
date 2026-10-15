@@ -33,6 +33,7 @@ CVar<i32> CVarViewMode("r.ViewMode", 0, "0 lit, 1 base color, 2 normals, 3 rough
 CVar<i32> CVarForceLod("r.ForceLOD", -1, "Force a mesh LOD (-1 = automatic)");
 CVar<f32> CVarCameraSpeed("editor.CameraSpeed", 4.0f, "Viewport fly speed (m/s)");
 CVar<bool> CVarShowGrid("editor.ShowGrid", true, "Viewport grid");
+CVar<bool> CVarUISounds("editor.UISounds", true, "Editor feedback sounds (Play / Stop, builds, packaging)");
 
 Editor* Ed()
 {
@@ -569,6 +570,7 @@ void RegisterEditorConsole(Editor& ed)
     Bind<i32>(CVarForceLod, s.scene.forcedLod, [](i32 v) { Ed()->viewport->Settings().scene.forcedLod = v; });
     Bind<f32>(CVarCameraSpeed, ed.camera.moveSpeed, [](f32 v) { Ed()->camera.moveSpeed = Clamp(v, 0.1f, 500.0f); });
     Bind<bool>(CVarShowGrid, ed.showGrid, [](bool v) { Ed()->showGrid = v; });
+    Bind<bool>(CVarUISounds, ed.uiSounds, [](bool v) { Ed()->uiSounds = v; });
 }
 
 void UnregisterEditorConsole()

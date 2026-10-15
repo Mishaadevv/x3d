@@ -326,6 +326,9 @@ public:
     bool showMixer = false; // Window > Audio Mixer
     bool showInputActions = false; // Window > Input Actions
     bool showPackageWindow = false; // File > Package Project
+    bool uiSounds = true;           // editor feedback sounds (editor.UISounds)
+    /// A short interface sound from the engine's Starter Content (UI/<name>: Click, Confirm, Error, Toggle, Back, ...).
+    void PlayUISound(StringView name, f32 volume = 0.3f);
     String packageOutput;
     bool packageFullscreen = true;
     bool packageLiteTextures = false;

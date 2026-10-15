@@ -73,6 +73,8 @@ struct ImpactSound
     f32 maxSpeed = 8.0f;        // m/s: full volume
     f32 pitchVariation = 0.08f; // random pitch change, fraction
     f32 maxDistance = 30.0f;    // meters
+    String rollSound;           // a loop while the body rolls / slides on something (louder and higher the faster)
+    f32 rollVolume = 0.5f;
 };
 
 struct PhysicsEvent;
@@ -125,6 +127,8 @@ public:
     bool TogglePreview(StringView file);
     StringView PreviewFile() const { return m_engine.IsPlaying(m_preview) ? m_previewFile.View() : StringView(); }
 
+    /// Velocity of an entity's body (rolling / sliding sounds); set by the host while physics runs.
+    Function<Vec3(ecs::Entity), 32> velocityOf;
     /// Returns 0..1 how blocked the path between two points is (set by the host, e.g. a mesh raycast).
     Function<f32(Vec3 from, Vec3 to), 32> occlusion;
 
@@ -158,6 +162,14 @@ private:
     HashMap<String, CachedClip> m_clips;
     Array<Running> m_sources;
     Array<ecs::Entity> m_started; // entities whose playOnStart already ran
+    struct Rolling
+    {
+        ecs::Entity entity;
+        audio::VoiceId voice = 0;
+        f64 lastTouch = -1.0; // time of the last touch event
+    };
+    HashMap<u64, Rolling> m_rolling; // bodies with a roll sound that touched something
+    void TickRolling(ecs::World& world);
     bool m_running = false;
     u32 m_frame = 0;
     audio::VoiceId m_preview = 0;

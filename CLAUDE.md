@@ -108,6 +108,10 @@ Shaders/ ShaderCache/ Project/Config, copy ZXGame.exe as <Name>.exe + dxcompiler
 Engine/GameRuntime.h (BeginGame/TickGame/EndGame shared by PIE and ZXGame), Programs/ZXGame (runtime; waits for meshes,
 uploads and material shaders before BeginGame; logs in %LOCALAPPDATA%/<Name>/Saved). Editor EditorPackage.cpp (File >
 Package Project, console `package [dir]`). Tests ZXTests Pak.*; scratchpad packagetest.sh packages + runs from %TEMP%.
+Sound pass: Engine/Surfaces.h (SurfaceOf: Terrain -> Grass, Water, else first material name; ScriptSystem::materialName
+hook set by the editor / ZXGame), scripts character.surface / hit.surface; ImpactSound::rollSound loops driven by
+TouchStay events + AudioSystem::velocityOf (set in BeginGame); AddAtmosphere adds the Ambience (Birds_Loop); editor
+PlayUISound (StarterContent/Sounds/UI, cvar editor.UISounds). Sounds come from Tools/import_starter_sounds.py <dl dir>.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

@@ -264,7 +264,7 @@ This is a game project for the **ZeqouX3D** engine ({version}). Read this before
   component (`Transform`, `MeshRenderer`, `PointLight`, `SpotLight`, `Camera`, `CharacterController`, `Water`, `Script`,
   `NativeScript` (C++), `AudioSource`, `AudioListener`, `ReverbZone`, `Terrain` (generated hills: size, height, seed, ...), `PostProcessVolume`, `ReflectionProbe`, `Decal`, `HdriSky`,
   `RigidBody`, `BoxCollider`, `SphereCollider`, `CapsuleCollider`, `CylinderCollider`, `MeshCollider` (`convex: true` = hull, works on a dynamic RigidBody), `HingeJoint`, `FixedJoint`,
-  `SliderJoint`, `BallJoint`, `DistanceJoint`, `ConfigurableJoint` (`connectedBody` = entity name, empty = world), `ParticleEmitter`, `Flammable`, `ImpactSound`, `DirectionalLight` (the sun: its rotation), `SkyLight`, `HeightFog`, `FogVolume`, `VolumetricClouds`, `FluidVolume`,
+  `SliderJoint`, `BallJoint`, `DistanceJoint`, `ConfigurableJoint` (`connectedBody` = entity name, empty = world), `ParticleEmitter`, `Flammable`, `ImpactSound` (`rollSound` = loop while rolling / sliding), `DirectionalLight` (the sun: its rotation), `SkyLight`, `HeightFog`, `FogVolume`, `VolumetricClouds`, `FluidVolume`,
   `Rotator`, `Oscillator`, ...). Prefer editing scenes in the editor; when editing JSON keep guids unique and stable.
 - `Content/Scripts/*.zs` - gameplay code in **ZeqouScript** (see `Docs/ZeqouScript.md`). This is where most work happens.
 - `Content/**/*.zmat` / `.zmati` - material graphs / instances (JSON node graphs). `.zprefab` - prefabs.

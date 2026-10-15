@@ -240,6 +240,10 @@ bool Editor::Initialize()
     scripts.Reset(new ScriptSystem());
     scripts->SetContentRoot(contentRoot);
     scripts->audio = audio.Get();
+    scripts->materialName = [this](asset::AssetId id) {
+        const MaterialLibrary::Material* m = materials ? materials->Find(id) : nullptr;
+        return m ? String(Path::Stem(m->path)) : String();
+    };
     scripts->onLog = [](StringView message, bool isError) {
         if (isError)
             ZX_LOG_ERROR(LogScript, "{}", message);
@@ -604,6 +608,7 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
         world.Add(ball, rb);
         world.Add(ball, SphereCollider{});
         impact(ball, i == 0 ? "Impact_Metal_Heavy" : "Impact_Soft");
+        world.Get<ImpactSound>(ball)->rollSound = "StarterContent/Sounds/Props/Rolling_Loop.ogg";
     }
 
     // Player: feet at the entity, a Character Controller and the template's controller script.
@@ -746,6 +751,7 @@ void Editor::BuildPhysicsLevel()
             world.Add(ball, SphereCollider{});
             body(ball, 6.0f, "Impact_Soft");
             world.Get<RigidBody>(ball)->rollingFriction = 0.04f;
+            world.Get<ImpactSound>(ball)->rollSound = "StarterContent/Sounds/Props/Rolling_Loop.ogg";
             world.Get<RigidBody>(ball)->bounciness = i == 3 ? 0.6f : 0.2f;
         }
         for (u32 i = 0; i < 3; ++i) {
@@ -754,6 +760,8 @@ void Editor::BuildPhysicsLevel()
                                         Vec3(0.9f, 1.6f, 0.9f), "M_Paint_Olive", Quat::FromAxisAngle(Vec3(1, 0, 0), Pi * 0.5f));
             world.Add(c, CylinderCollider{});
             body(c, 20.0f, "Impact_Metal_Light");
+            world.Get<ImpactSound>(c)->rollSound = "StarterContent/Sounds/Props/Rolling_Loop.ogg";
+            world.Get<ImpactSound>(c)->rollVolume = 0.7f;
         }
         for (u32 i = 0; i < 5; ++i) {
             // Rocks: squashed spheres colliding as convex hulls of their mesh, dropped onto a heap.
@@ -807,6 +815,11 @@ void Editor::BuildPhysicsLevel()
     {
         const ecs::Entity scanner = shape("Scanner", BuiltinShape::Cylinder, Vec3(-12.0f, 1.0f, -20.0f), Vec3(0.5f, 2.0f, 0.5f), "M_Proto_Light");
         world.Add(scanner, Script{String("StarterContent/Scripts/Scanner.zs"), String()});
+        AudioSource hum;
+        hum.clip = "StarterContent/Sounds/Props/Machine_Hum_Loop.ogg";
+        hum.volume = 0.35f;
+        hum.maxDistance = 12.0f;
+        world.Add(scanner, hum);
         const ecs::Entity head = CreateEntity("Head", Transform(Vec3(0, 0.6f, 0)), scanner);
         EnsureEntityGuid(world, head);
         auto visual = [&](StringView label, BuiltinShape s, Vec3 size, StringView mat, ecs::Entity parent) {
@@ -862,6 +875,14 @@ void Editor::AddAtmosphere(f32 fogDensity, f32 cloudCoverage)
     c.coverage = cloudCoverage;
     world.Add(clouds, c);
     EnsureEntityGuid(world, clouds);
+    // Outdoor ambience: birds and a light breeze everywhere (2D), like the sky they belong to.
+    const ecs::Entity ambience = CreateEntity("Ambience", Transform(Vec3(0.0f, 2.0f, 0.0f)));
+    AudioSource birds;
+    birds.clip = "StarterContent/Sounds/Birds_Loop.ogg";
+    birds.volume = 0.3f;
+    birds.spatial = false;
+    world.Add(ambience, birds);
+    EnsureEntityGuid(world, ambience);
 }
 
 void Editor::BuildWaterLevel()
@@ -1936,6 +1957,7 @@ void Editor::BeginPlay()
     m_pieStep = false;
     GameSystems systems = GameSystemsForPlay();
     BeginGame(world, systems);
+    PlayUISound("Toggle");
     gameCameraEjected = false;
     SetGameInputCaptured(FindGameCamera(world) != ecs::NullEntity && m_autotestFrames == 0); // tests keep the cursor free
     ZX_LOG_INFO(LogEditor, "Play-in-Editor started ({} entities)", m_pieSnapshot.Get("entities").Size());
@@ -1951,6 +1973,7 @@ void Editor::EndPlay()
     }
     GameSystems systems = GameSystemsForPlay();
     EndGame(systems);
+    PlayUISound("Back");
     if (audioEngine)
         audioEngine->SetBusMuted(audio::Bus::Master, false);
     SetGameInputCaptured(false);
@@ -2006,6 +2029,13 @@ void Editor::TogglePause()
         playState = playState == PlayState::Paused ? PlayState::Playing : PlayState::Paused;
     if (audioEngine) // paused game = silent game
         audioEngine->SetBusMuted(audio::Bus::Master, playState == PlayState::Paused);
+}
+
+void Editor::PlayUISound(StringView name, f32 volume)
+{
+    if (uiSounds && audio)
+        audio->PlayOneShot(String::Format("{}/Engine/Content/StarterContent/Sounds/UI/{}", engineRoot, name), volume, false, Vec3(0.0f),
+                           audio::Bus::UI);
 }
 
 GameSystems Editor::GameSystemsForPlay()

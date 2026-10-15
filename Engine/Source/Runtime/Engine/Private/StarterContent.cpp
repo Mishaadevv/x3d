@@ -408,14 +408,15 @@ script FirstPersonController {
     prop invertY = false
     @range(0, 3) @tooltip("Height of the eyes above the feet")
     prop eyeHeight = 1.65
-    @tooltip("Footstep sound set: variants _0 .. _9 played at random (empty: silent)")
-    prop footsteps = "StarterContent/Sounds/Footsteps/Footstep_Concrete"
+    @tooltip("Footstep sound sets: the surface underfoot is appended (Footstep_Grass, Footstep_Wood, ...); empty = silent")
+    prop footsteps = "StarterContent/Sounds/Footsteps/Footstep_"
     @range(0.3, 4) @tooltip("Meters walked between footsteps")
     prop stride = 1.7
 
     var yaw = 0.0
     var stepDistance = 0.0
     var wasGrounded = true
+    var fallSpeed = 0.0
     var pitch = 0.0
     var camera = nil
 
@@ -447,18 +448,35 @@ script FirstPersonController {
         character.move(dir * speed)
         if input.pressed("Space") and character.grounded {
             character.jump(jumpSpeed)
+            audio.playAt("StarterContent/Sounds/Props/Jump", entity.worldPosition, 0.35)
         }
-        // Footsteps: one every stride walked on the ground, and one on landing.
+        // Footsteps on whatever is underfoot (grass, wood, snow, ...), a thud on hard landings.
         if footsteps != "" {
             if character.grounded {
                 stepDistance += min(dir.length(), 1) * speed * dt
-                if stepDistance > stride or not wasGrounded {
+                if not wasGrounded {
+                    let impact = clamp((fallSpeed - 2) / 8, 0, 1)
+                    audio.playAt(footsteps + surface(), entity.worldPosition, 0.5 + impact * 0.4)
+                    if impact > 0.1 { audio.playAt("StarterContent/Sounds/Impacts/Impact_Soft", entity.worldPosition, impact) }
                     stepDistance = 0
-                    audio.playAt(footsteps, entity.worldPosition, 0.45)
+                } elif stepDistance > stride {
+                    stepDistance = 0
+                    audio.playAt(footsteps + surface(), entity.worldPosition, 0.45)
                 }
+                fallSpeed = 0
+            } else {
+                fallSpeed = max(fallSpeed, -character.velocity.y)
             }
             wasGrounded = character.grounded
         }
+    }
+
+    // The footstep set for the ground: _Grass, _Wood, _Snow, _Carpet or _Concrete.
+    fn surface() {
+        let s = character.surface
+        if s == "Grass" or s == "Wood" or s == "Snow" or s == "Carpet" { return s }
+        if s == "Sand" { return "Snow" }
+        return "Concrete"
     }
 }
 )zs"},
@@ -472,13 +490,14 @@ script ThirdPersonController {
     @range(0, 20) prop jumpSpeed = 6.5
     @range(1, 30) @tooltip("How fast the body turns to the move direction")
     prop turnRate = 12.0
-    @tooltip("Footstep sound set: variants _0 .. _9 played at random (empty: silent)")
-    prop footsteps = "StarterContent/Sounds/Footsteps/Footstep_Concrete"
+    @tooltip("Footstep sound sets: the surface underfoot is appended (Footstep_Grass, Footstep_Wood, ...); empty = silent")
+    prop footsteps = "StarterContent/Sounds/Footsteps/Footstep_"
     @range(0.3, 4) @tooltip("Meters walked between footsteps")
     prop stride = 1.7
 
     var stepDistance = 0.0
     var wasGrounded = true
+    var fallSpeed = 0.0
 
     fn update(dt) {
         let move = input.move
@@ -502,18 +521,35 @@ script ThirdPersonController {
         }
         if input.pressed("Space") and character.grounded {
             character.jump(jumpSpeed)
+            audio.playAt("StarterContent/Sounds/Props/Jump", entity.worldPosition, 0.35)
         }
-        // Footsteps: one every stride walked on the ground, and one on landing.
+        // Footsteps on whatever is underfoot (grass, wood, snow, ...), a thud on hard landings.
         if footsteps != "" {
             if character.grounded {
                 stepDistance += min(dir.length(), 1) * speed * dt
-                if stepDistance > stride or not wasGrounded {
+                if not wasGrounded {
+                    let impact = clamp((fallSpeed - 2) / 8, 0, 1)
+                    audio.playAt(footsteps + surface(), entity.worldPosition, 0.5 + impact * 0.4)
+                    if impact > 0.1 { audio.playAt("StarterContent/Sounds/Impacts/Impact_Soft", entity.worldPosition, impact) }
                     stepDistance = 0
-                    audio.playAt(footsteps, entity.worldPosition, 0.45)
+                } elif stepDistance > stride {
+                    stepDistance = 0
+                    audio.playAt(footsteps + surface(), entity.worldPosition, 0.45)
                 }
+                fallSpeed = 0
+            } else {
+                fallSpeed = max(fallSpeed, -character.velocity.y)
             }
             wasGrounded = character.grounded
         }
+    }
+
+    // The footstep set for the ground: _Grass, _Wood, _Snow, _Carpet or _Concrete.
+    fn surface() {
+        let s = character.surface
+        if s == "Grass" or s == "Wood" or s == "Snow" or s == "Carpet" { return s }
+        if s == "Sand" { return "Snow" }
+        return "Concrete"
     }
 }
 )zs"},
@@ -697,7 +733,10 @@ script Elevator {
     fn update(dt) {
         if timer > 0 {
             timer -= dt
-            if timer <= 0 { entity.setMotor(speed * dir, force) }
+            if timer <= 0 {
+                entity.setMotor(speed * dir, force)
+                entity.playSound() // Audio Source on the platform: the motor loop
+            }
             return
         }
         let at = entity.jointValue
@@ -705,6 +744,8 @@ script Elevator {
             dir = -dir
             timer = wait
             entity.setMotor(0, force)
+            entity.stopSound()
+            audio.playAt("StarterContent/Sounds/Props/Latch", entity.worldPosition, 0.8)
         }
     }
 }
@@ -784,6 +825,7 @@ script PhysicsGun {
         let dir = entity.worldForward
         let eye = entity.worldPosition + dir * 0.4
         if input.mousePressed("left") {
+            audio.play("StarterContent/Sounds/Props/Laser_Small", 0.5)
             let hit = physics.raycast(eye, dir, reach)
             if hit != nil {
                 hit.entity.addImpulse(dir * push, hit.point)
@@ -794,10 +836,12 @@ script PhysicsGun {
             if hit != nil {
                 held = hit.entity
                 holdDistance = max(hit.distance, 2.0)
+                audio.play("StarterContent/Sounds/Props/Pickup", 0.7)
             }
         }
-        if not input.mouse("right") {
+        if not input.mouse("right") and held != nil {
             held = nil
+            audio.play("StarterContent/Sounds/UI/Drop", 0.5)
         }
         if held != nil {
             held.velocity = (eye + dir * holdDistance - held.worldPosition) * grip

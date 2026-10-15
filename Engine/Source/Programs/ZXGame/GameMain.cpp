@@ -235,6 +235,10 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     m_scripts.Reset(new ScriptSystem());
     m_scripts->SetContentRoot("/Game");
     m_scripts->audio = m_audio.Get();
+    m_scripts->materialName = [this](asset::AssetId id) {
+        const MaterialLibrary::Material* m = m_materials ? m_materials->Find(id) : nullptr;
+        return m ? String(Path::Stem(m->path)) : String();
+    };
     m_scripts->onLog = [](StringView message, bool isError) {
         if (isError)
             ZX_LOG_ERROR(LogGame, "{}", message);

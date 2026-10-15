@@ -66,6 +66,8 @@ ZX_REFLECT_STRUCT_BEGIN(ImpactSound)
     ZX_FIELD(maxSpeed, Meta::Range(0.1, 100), Meta::Units("m/s"), Meta::Tooltip("Hits this fast play at full volume"))
     ZX_FIELD(pitchVariation, Meta::Range(0, 0.5))
     ZX_FIELD(maxDistance, Meta::Range(1, 500), Meta::Units("m"))
+    ZX_FIELD(rollSound, Meta::Tooltip("Loop while rolling or sliding on something (balls, barrels, crates pushed along)"))
+    ZX_FIELD(rollVolume, Meta::Range(0, 4))
 ZX_REFLECT_STRUCT_END()
 
 AudioSystem::AudioSystem(audio::AudioEngine& engine) : m_engine(engine) {}
@@ -100,6 +102,15 @@ String AudioSystem::PickVariant(StringView base)
 void AudioSystem::PlayImpacts(ecs::World& world, Span<const PhysicsEvent> events)
 {
     for (const PhysicsEvent& ev : events) {
+        // Touching bodies with a roll sound keep it going (Stay events arrive every physics step).
+        if (ev.type == physics::ContactEventType::TouchBegin || ev.type == physics::ContactEventType::TouchStay)
+            for (ecs::Entity e : {ev.a, ev.b})
+                if (const ImpactSound* s = world.IsAlive(e) ? world.Get<const ImpactSound>(e) : nullptr; s && !s->rollSound.Empty()) {
+                    Rolling* r = m_rolling.Find(e.Pack());
+                    if (!r)
+                        r = &m_rolling.InsertOrAssign(e.Pack(), Rolling{e});
+                    r->lastTouch = m_time;
+                }
         if (ev.type != physics::ContactEventType::TouchBegin)
             continue;
         for (ecs::Entity e : {ev.a, ev.b}) {
@@ -285,8 +296,51 @@ void AudioSystem::Begin(ecs::World& world)
     ZX_UNUSED(world);
 }
 
+void AudioSystem::TickRolling(ecs::World& world)
+{
+    Array<u64> gone;
+    for (auto& [key, r] : m_rolling) {
+        const ImpactSound* s = world.IsAlive(r.entity) ? world.Get<const ImpactSound>(r.entity) : nullptr;
+        if (!s || s->rollSound.Empty()) {
+            m_engine.Stop(r.voice, 0.1f);
+            gone.PushBack(key);
+            continue;
+        }
+        const f32 speed = velocityOf ? Length(velocityOf(r.entity)) : 0.0f;
+        const bool rolling = m_time - r.lastTouch < 0.12 && speed > 0.3f;
+        if (!rolling) {
+            if (r.voice) {
+                m_engine.Stop(r.voice, 0.2f);
+                r.voice = 0;
+            }
+            continue;
+        }
+        const f32 t = Clamp((speed - 0.3f) / 6.0f, 0.0f, 1.0f);
+        audio::VoiceParams p;
+        p.volume = s->rollVolume * (0.2f + 0.8f * t);
+        p.pitch = 0.75f + 0.45f * t;
+        p.loop = true;
+        p.spatial = true;
+        p.position = scene::ComputeWorldMatrix(world, r.entity).GetTranslation();
+        p.maxDistance = s->maxDistance;
+        if (r.voice && m_engine.IsPlaying(r.voice)) {
+            m_engine.SetParams(r.voice, p);
+        } else {
+            const String file = PickVariant(s->rollSound);
+            RefPtr<audio::AudioClip> clip = file.Empty() ? nullptr : LoadClip(file);
+            p.fadeIn = 0.1f;
+            r.voice = clip ? m_engine.Play(clip, p) : 0;
+        }
+    }
+    for (u64 key : gone)
+        m_rolling.Remove(key);
+}
+
 void AudioSystem::End()
 {
+    for (auto& kv : m_rolling)
+        m_engine.Stop(kv.second.voice, 0.05f);
+    m_rolling.Clear();
     for (const Running& r : m_sources)
         m_engine.Stop(r.voice, 0.05f);
     m_sources.Clear();
@@ -301,6 +355,7 @@ void AudioSystem::Tick(ecs::World& world, f32 dt, const ListenerPose& fallback)
         Begin(world);
     ++m_frame;
     m_time += f64(dt);
+    TickRolling(world);
     // New sources (scene start, spawned while playing).
     Array<ecs::Entity> fresh;
     world.Query<const AudioSource>().Each([&](ecs::Entity e, const AudioSource& s) {

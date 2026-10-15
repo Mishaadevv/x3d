@@ -96,8 +96,10 @@ void Editor::UpdatePackage()
     if (!packageJob->error.Empty()) {
         ZX_LOG_ERROR(LogPackage, "{}", packageJob->error);
         selfTestFailed |= m_autotestFrames > 0; // tests that package must not fail silently
+        PlayUISound("Error");
     } else {
         ZX_LOG_INFO(LogPackage, "Package ready: {}", packageJob->report.executable);
+        PlayUISound("Confirm");
     }
 }
 

@@ -183,3 +183,37 @@ ZX_TEST(AudioSystem, VariantsAndImpactSounds)
     ZX_EXPECT(f.system->PlayOneShot("Sounds/Hit") != 0); // variant sets work for one-shots (scripts) too
     f.system->End();
 }
+
+ZX_TEST(AudioSystem, RollingLoopFollowsContactAndSpeed)
+{
+    const String root = SoundRoot("rolling");
+    Fixture f(root);
+    const ecs::Entity ball = f.world.Create(Transform::Identity());
+    ImpactSound s;
+    s.rollSound = "Sounds/Tone.wav";
+    f.world.Add(ball, s);
+    Vec3 velocity(3.0f, 0.0f, 0.0f);
+    f.system->velocityOf = [&](ecs::Entity) { return velocity; };
+    f.system->Begin(f.world);
+    // Touching (Stay events every physics step) and moving: the loop plays.
+    PhysicsEvent touch;
+    touch.type = physics::ContactEventType::TouchStay;
+    touch.a = ball;
+    for (u32 i = 0; i < 5; ++i) {
+        f.system->PlayImpacts(f.world, Span<const PhysicsEvent>(&touch, 1));
+        f.Step();
+    }
+    ZX_EXPECT_EQ(f.engine.GetStats().voices, 1u);
+    // Stopped: it fades out.
+    velocity = Vec3(0.0f);
+    for (u32 i = 0; i < 40; ++i) {
+        f.system->PlayImpacts(f.world, Span<const PhysicsEvent>(&touch, 1));
+        f.Step();
+    }
+    ZX_EXPECT_EQ(f.engine.GetStats().voices, 0u);
+    // Moving but airborne (no contact events for longer than a few steps): silent too.
+    velocity = Vec3(5.0f, 0.0f, 0.0f);
+    f.Step(60);
+    ZX_EXPECT_EQ(f.engine.GetStats().voices, 0u);
+    f.system->End();
+}

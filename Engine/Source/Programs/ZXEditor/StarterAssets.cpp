@@ -356,6 +356,11 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             const ecs::Entity root = b.Node("Steam Vent");
             b.Mesh("Grate", BuiltinShape::Cylinder, Vec3(0, 0.03f, 0), Vec3(0.6f, 0.06f, 0.6f), "M_Metal_Steel", root);
             b.world.Add(b.Node("Steam", Vec3(0, 0.1f, 0), root), Steam());
+            AudioSource hiss;
+            hiss.clip = "StarterContent/Sounds/Steam_Loop.ogg";
+            hiss.volume = 0.35f;
+            hiss.maxDistance = 14.0f;
+            b.world.Add(root, hiss);
             save(b, root, "Effects/P_Steam");
         }
         {
@@ -410,6 +415,12 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             light.range = 6.0f;
             b.world.Add(root, light);
             b.Mesh("Core", BuiltinShape::Sphere, Vec3(), Vec3(0.3f), "M_Emissive_Cyan", root);
+            AudioSource hum;
+            hum.clip = "StarterContent/Sounds/Props/Machine_Hum_Loop.ogg";
+            hum.volume = 0.25f;
+            hum.pitch = 1.4f;
+            hum.maxDistance = 10.0f;
+            b.world.Add(root, hum);
             save(b, root, "Effects/P_Magic");
         }
         {
@@ -514,9 +525,8 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             jet.emissive = false;
             b.world.Add(b.Node("Jet", Vec3(0, 1.1f, 0), root), jet);
             AudioSource splash;
-            splash.clip = "StarterContent/Sounds/Rain_Loop.ogg"; // falling water
-            splash.volume = 0.45f;
-            splash.pitch = 1.15f;
+            splash.clip = "StarterContent/Sounds/Water_Stream_Loop.ogg"; // falling water
+            splash.volume = 0.55f;
             splash.maxDistance = 14.0f;
             b.world.Add(root, splash);
             save(b, root, "Effects/P_Fountain");
@@ -712,6 +722,12 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             slider.motorSpeed = 0.0f;
             slider.motorForce = 200000.0f;
             b.world.Add(platform, slider);
+            AudioSource motor; // started / stopped by Elevator.zs while it moves
+            motor.clip = "StarterContent/Sounds/Props/Motor_Loop.ogg";
+            motor.playOnStart = false;
+            motor.volume = 0.5f;
+            motor.maxDistance = 25.0f;
+            b.world.Add(platform, motor);
             b.Script(platform, "Elevator.zs");
             save(b, root, "Props/P_Elevator");
         }

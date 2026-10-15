@@ -1,6 +1,7 @@
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
 #include "Core/String/Path.h"
+#include "Core/Log/Log.h"
 #include "Core/Testing/Test.h"
 #include "Engine/Scripting.h"
 #include "Engine/ComponentRegistry.h"
@@ -288,4 +289,71 @@ ZX_TEST(PhysicsSystem, CylinderColliderStandsOnItsEnd)
     GatherColliderOutlines(s.world, c, outlines);
     ZX_EXPECT(outlines.Size() == 1u && !outlines[0].lines.Empty());
     p.End();
+}
+
+ZX_TEST(PhysicsSystem, ScriptsSeeSurfacesAndStay)
+{
+    const String root = Path::Join(Path::Normalize(platform::GetTempDirectory()), "zx_script_test/surfaces");
+    platform::DeleteDirectoryTree(root);
+    platform::CreateDirectoryTree(root + "/Scripts");
+    // A character standing on grass asks what is underfoot; a resting ball reports collisionStay every step.
+    ZX_REQUIRE(fs::WriteTextFile(root + "/Scripts/Walker.zs", R"zs(
+        script Walker {
+            var said = false
+            fn update(dt) {
+                if not said {
+                    said = true
+                    log("under " + character.surface)
+                    let hit = physics.raycast(vec3(-3, 5, 0), vec3(0, -1, 0))
+                    log("ray " + hit.surface)
+                }
+            }
+        }
+    )zs"));
+    ZX_REQUIRE(fs::WriteTextFile(root + "/Scripts/Ball.zs", R"zs(
+        script Ball {
+            var stays = 0
+            fn collisionStay(other) { stays += 1 }
+            fn stop() { log("stays " + stays) }
+            fn update(dt) { if stays == 30 { log("stayed") } }
+        }
+    )zs"));
+    Scene s;
+    const ecs::Entity floor = s.Floor();
+    const Guid grass = Guid::New();
+    MeshRenderer mr;
+    mr.materials.PushBack(grass);
+    s.world.Add(floor, mr);
+    const ecs::Entity walker = scene::CreateNode(s.world, "Walker", Transform(Vec3(0, 0, 0)));
+    s.world.Add(walker, CharacterController{});
+    s.world.Add(walker, Script{String("Scripts/Walker.zs"), String()});
+    const ecs::Entity ball = scene::CreateNode(s.world, "Ball", Transform(Vec3(3, 0.3f, 0)));
+    s.world.Add(ball, SphereCollider{Vec3(), 0.3f});
+    s.world.Add(ball, RigidBody{});
+    s.world.Add(ball, Script{String("Scripts/Ball.zs"), String()});
+    scene::UpdateWorldTransforms(s.world);
+    PhysicsSystem p;
+    p.Begin(s.world, nullptr);
+    ScriptSystem scripts;
+    scripts.SetContentRoot(root);
+    scripts.physics = &p;
+    scripts.materialName = [&](asset::AssetId id) { return id == grass ? String("M_Grass") : String(); };
+    String log;
+    scripts.onLog = [&](StringView msg, bool) {
+        log += msg;
+        log += '\n';
+    };
+    for (u32 i = 0; i < 90; ++i) {
+        scene::UpdateWorldTransforms(s.world);
+        scripts.Tick(s.world, 1.0f / 60.0f, nullptr);
+        scene::UpdateWorldTransforms(s.world);
+        p.Tick(s.world, 1.0f / 60.0f);
+        scripts.DispatchPhysicsEvents(s.world, p.Events());
+    }
+    scripts.End();
+    p.End();
+    platform::DeleteDirectoryTree(root);
+    ZX_EXPECT(log.Contains("under Grass"));
+    ZX_EXPECT(log.Contains("ray Grass"));
+    ZX_EXPECT(log.Contains("stayed"));
 }
