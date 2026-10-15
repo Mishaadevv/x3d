@@ -1,4 +1,5 @@
 #include "Engine/AudioSystem.h"
+#include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
 #include "Core/Log/Log.h"
 #include "Core/String/Path.h"
@@ -74,7 +75,7 @@ String AudioSystem::PickVariant(StringView base)
     Array<String>* files = m_variants.Find(String(base));
     if (!files) {
         Array<String> found;
-        auto exists = [&](StringView rel) { return platform::FileExists(Path::IsAbsolute(rel) ? String(rel) : Path::Join(m_contentRoot, rel)); };
+        auto exists = [&](StringView rel) { return fs::Exists(Path::IsAbsolute(rel) ? String(rel) : Path::Join(m_contentRoot, rel)); };
         if (!Path::Extension(base).Empty() && exists(base)) {
             found.PushBack(String(base));
         } else {
@@ -156,7 +157,7 @@ RefPtr<audio::AudioClip> AudioSystem::LoadClip(StringView file, String* error)
     }
     const String path = Path::IsAbsolute(file) ? String(file) : Path::Join(m_contentRoot, file);
     platform::FileInfo info;
-    const i64 mtime = platform::GetFileInfo(path, info) ? info.modifiedTime : 0;
+    const i64 mtime = fs::GetInfo(path, info) ? info.modifiedTime : 0;
     CachedClip* cached = m_clips.Find(file);
     if (!cached || cached->modifiedTime != mtime) {
         CachedClip entry;

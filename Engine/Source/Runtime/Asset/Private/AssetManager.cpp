@@ -105,6 +105,14 @@ void AssetManager::WaitIdle()
         Thread::SleepMs(1);
 }
 
+void AssetManager::GetAssetIds(Array<AssetId>& out) const
+{
+    ScopedLock lock(m_mutex);
+    for (const auto& kv : m_entries)
+        if (kv.second->origin != EntryOrigin::Memory)
+            out.PushBack(kv.first);
+}
+
 String AssetManager::DdcPath(u64 key, StringView suffix) const
 {
     char hex[17];

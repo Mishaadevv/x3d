@@ -83,6 +83,8 @@ public:
 
     /// Loads the newest DLL; running components are recreated on the new code with their props.
     bool Reload(String* error = nullptr);
+    /// Loads a DLL in place, without a hot-reload copy (the packaged game).
+    bool LoadDll(StringView path, String* error = nullptr);
     /// Loads an in-process module description instead of a DLL (tests).
     bool LoadFromDesc(const game::ModuleDesc* desc);
     void Unload();

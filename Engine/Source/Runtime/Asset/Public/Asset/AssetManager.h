@@ -72,6 +72,8 @@ public:
 
     /// Blocks until no load or cook is in flight.
     void WaitIdle();
+    /// Every known asset id (registered sources and the sub-assets their cooks produced; not memory assets).
+    void GetAssetIds(Array<AssetId>& out) const;
     bool IsIdle() const { return m_inFlight.load(std::memory_order_acquire) == 0; }
 
     struct Stats

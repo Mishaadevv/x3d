@@ -213,6 +213,7 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.postProcessVolume", "Create Post Process Volume", "Create", ZX_ICON_APERTURE, "",
         [spawn](Editor& e) { e.CreatePostProcessVolume(spawn(e)); });
     Add(ed, "window.audioMixer", "Audio Mixer", "Window", ZX_ICON_SLIDERS_VERTICAL, "", [](Editor& e) { e.showMixer = !e.showMixer; });
+    Add(ed, "file.package", "Package Project...", "File", ZX_ICON_PACKAGE, "", [](Editor& e) { e.showPackageWindow = true; });
     Add(ed, "window.inputActions", "Input Actions", "Window", ZX_ICON_GAMEPAD_2, "", [](Editor& e) { e.showInputActions = !e.showInputActions; });
     // Game code
     auto hasProject = [](Editor& e) { return !e.project.descriptorPath.Empty(); };

@@ -512,6 +512,28 @@ bool GameModuleSystem::Reload(String* error)
     return SwapModule(desc, module, copy, error);
 }
 
+bool GameModuleSystem::LoadDll(StringView path, String* error)
+{
+    const Array<wchar_t> wide = Utf8ToUtf16(path);
+    HMODULE module = ::LoadLibraryW(wide.Data());
+    if (!module) {
+        if (error)
+            *error = String::Format("LoadLibrary failed for {} (error {})", path, u32(::GetLastError()));
+        return false;
+    }
+    using GetModuleFn = const game::ModuleDesc* (*)();
+    auto get = reinterpret_cast<GetModuleFn>(reinterpret_cast<void*>(::GetProcAddress(module, "ZxGetGameModule")));
+    const game::ModuleDesc* desc = get ? get() : nullptr;
+    if (!desc || desc->apiVersion != game::ApiVersion) {
+        ::FreeLibrary(module);
+        if (error)
+            *error = desc ? String::Format("{} was built with Game SDK version {} (the engine uses {})", path, desc->apiVersion, game::ApiVersion)
+                          : String::Format("{} does not export ZxGetGameModule", path);
+        return false;
+    }
+    return SwapModule(desc, module, {}, error);
+}
+
 bool GameModuleSystem::LoadFromDesc(const game::ModuleDesc* desc)
 {
     if (!desc || desc->apiVersion != game::ApiVersion)

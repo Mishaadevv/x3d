@@ -50,6 +50,11 @@ ecs::Entity FindNamed(StringView name)
     return found;
 }
 
+ConCommand CmdPackage("package", "Packages the project into a standalone game: package [output folder] (default Builds/Windows/<Name>)",
+                      [](Span<const StringView> args) {
+                          if (Ed())
+                              Ed()->StartPackage(args.Empty() ? StringView() : args[0]);
+                      });
 ConCommand CmdClear("clear", "Clears the Output Log", [](Span<const StringView>) {
     if (Ed())
         Ed()->log->Clear();

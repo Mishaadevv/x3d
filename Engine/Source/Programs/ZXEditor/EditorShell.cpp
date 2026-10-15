@@ -77,6 +77,8 @@ void DrawMenus(Editor& ed)
         ui::Separator();
         ActionMenuItem(ed, "file.import");
         ui::Separator();
+        ActionMenuItem(ed, "file.package");
+        ui::Separator();
         ActionMenuItem(ed, "file.exit");
         ui::EndMenu();
     }
@@ -507,6 +509,7 @@ void DrawShell(Editor& ed)
     DrawFeaturesPanel(ed);
     DrawAudioMixerPanel(ed);
     DrawInputActionsPanel(ed);
+    DrawPackagePanel(ed);
     DrawScriptEditorPanel(ed);
     DrawAbout(ed);
     DrawSaveChangesDialog(ed);

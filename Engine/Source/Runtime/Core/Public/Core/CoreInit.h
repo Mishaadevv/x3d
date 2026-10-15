@@ -14,6 +14,8 @@ struct CoreInitParams
     u32 ioThreads = 2;
     bool enableFileLog = true;
     bool enableCrashHandler = true;
+    /// Mount "/Engine" and "/Shaders" from the engine installation (off for packaged games: they mount a package).
+    bool mountEngineDirectories = true;
     /// Report leaked allocations made after initialization at shutdown (non-Shipping).
     bool reportLeaksOnShutdown = true;
 };

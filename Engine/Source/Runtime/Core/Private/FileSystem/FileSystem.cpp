@@ -230,9 +230,10 @@ void MountSourceAt(StringView virtualRoot, UniquePtr<MountSource> source, i32 pr
 {
     IOSystem& io = IO();
     ScopedWriteLock lock(io.mountLock);
+    const String name(source->DebugName());
     io.mounts.PushBack(MountEntry{NormalizeRoot(virtualRoot), move(source), priority});
     StableSort(io.mounts, [](const MountEntry& a, const MountEntry& b) { return a.priority > b.priority; });
-    ZX_LOG_INFO(LogFileSystem, "Mounted {} -> {}", NormalizeRoot(virtualRoot), io.mounts.Back().source->DebugName());
+    ZX_LOG_INFO(LogFileSystem, "Mounted {} -> {}", NormalizeRoot(virtualRoot), name);
 }
 
 bool Mount(StringView virtualRoot, StringView physicalDirectory, i32 priority, bool writable)

@@ -290,6 +290,8 @@ This is a game project for the **ZeqouX3D** engine ({version}). Read this before
   file and line.
 - Automated run: `ZXEditor.exe -project=<zproj> -autotest=300 -exec=play` plays for 300 frames and exits (exit code 0 = no
   errors); the log is in `Saved/Logs/ZXEditor.log`.
+- Standalone build: `ZXEditor.exe -project=<zproj> -autotest=30 -exec="package"` writes the game to `Builds/Windows/<Name>`
+  (`<Name>.exe -autotest=300 -windowed` runs it; its log is in `%LOCALAPPDATA%/<Name>/Saved/Logs/Game.log`).
 
 ## Conventions
 - All user-facing text (names, logs, UI strings in scripts) in English unless the team says otherwise.

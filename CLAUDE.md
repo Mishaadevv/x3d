@@ -102,6 +102,12 @@ sphere), RaycastBatch; PhysicsSettings::stayEvents (PhysicsSystem turns it on). 
 ManualPhysics.ManyIslands. Editor Show -> Physics Debug (DrawPhysicsDebug). CylinderCollider = hull via
 PhysicsSystem::HullOf(nullptr, size). Template physics = BuildPhysicsLevel (Physics Playground; scripts PhysicsGun.zs,
 Scanner.zs). Tools/make_template_thumbs.py accepts template names to capture only those.
+Packaging: Core FileSystem/Pak.h (.zpak = 64 KB ZLZ blocks + TOC; MakePakSource mounts a pak prefix), Engine/
+Packaging.h (PackageProject: cook with Content mounted at /Game into <project>/Intermediate/PackageDDC, pak Game/ DDC/
+Shaders/ ShaderCache/ Project/Config, copy ZXGame.exe as <Name>.exe + dxcompiler/dxil + module DLL, Game.json),
+Engine/GameRuntime.h (BeginGame/TickGame/EndGame shared by PIE and ZXGame), Programs/ZXGame (runtime; waits for meshes,
+uploads and material shaders before BeginGame; logs in %LOCALAPPDATA%/<Name>/Saved). Editor EditorPackage.cpp (File >
+Package Project, console `package [dir]`). Tests ZXTests Pak.*; scratchpad packagetest.sh packages + runs from %TEMP%.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

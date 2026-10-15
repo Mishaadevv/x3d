@@ -1931,30 +1931,11 @@ void Editor::BeginPlay()
     }
     m_pieSnapshot = zx::SaveScene(world, SceneIOOptions{});
     m_pieSelection = GetEntityGuid(world, selected);
-    if (GameplayClock* clock = world.GetSingleton<GameplayClock>())
-        *clock = GameplayClock{};
     undo.SetSuspended(true);
     playState = PlayState::Playing;
     m_pieStep = false;
-    if (scripts)
-        scripts->Begin(world);
-    if (game)
-        game->Begin(world);
-    inputActionState = InputActionState();
-    if (audio)
-        audio->Begin(world);
-    if (FeatureEnabled("physics")) {
-        scene::UpdateWorldTransforms(world);
-        physics.Begin(world, renderAssets.Get());
-    }
-    fire.Clear();
-    fire.meshBounds = [this](asset::AssetId id, AABB& out) {
-        const render::GpuMesh* mesh = renderAssets->GetMesh(id);
-        if (!mesh)
-            return false;
-        out = mesh->bounds;
-        return true;
-    };
+    GameSystems systems = GameSystemsForPlay();
+    BeginGame(world, systems);
     gameCameraEjected = false;
     SetGameInputCaptured(FindGameCamera(world) != ecs::NullEntity && m_autotestFrames == 0); // tests keep the cursor free
     ZX_LOG_INFO(LogEditor, "Play-in-Editor started ({} entities)", m_pieSnapshot.Get("entities").Size());
@@ -1968,14 +1949,8 @@ void Editor::EndPlay()
         undo.End();
         m_continuousEdit = false;
     }
-    if (scripts)
-        scripts->End();
-    if (game)
-        game->End();
-    if (audio)
-        audio->End();
-    physics.End();
-    fire.Clear();
+    GameSystems systems = GameSystemsForPlay();
+    EndGame(systems);
     if (audioEngine)
         audioEngine->SetBusMuted(audio::Bus::Master, false);
     SetGameInputCaptured(false);
@@ -2031,6 +2006,22 @@ void Editor::TogglePause()
         playState = playState == PlayState::Paused ? PlayState::Playing : PlayState::Paused;
     if (audioEngine) // paused game = silent game
         audioEngine->SetBusMuted(audio::Bus::Master, playState == PlayState::Paused);
+}
+
+GameSystems Editor::GameSystemsForPlay()
+{
+    GameSystems s;
+    s.scripts = scripts.Get();
+    s.game = game.Get();
+    s.audio = audio.Get();
+    s.physics = &physics;
+    s.particles = &particles;
+    s.fire = &fire;
+    s.renderAssets = renderAssets.Get();
+    s.inputActions = &inputActions;
+    s.inputActionState = &inputActionState;
+    s.featureEnabled = [this](StringView feature) { return FeatureEnabled(feature); };
+    return s;
 }
 
 ListenerPose Editor::CurrentListener()
@@ -3048,60 +3039,11 @@ bool Editor::Frame()
     // --- Scene ---
     UpdateImports();
     UpdateGameModule(*this);
+    UpdatePackage();
     if (playState == PlayState::Playing || m_pieStep) {
         const f32 gameDt = m_pieStep ? 1.0f / 60.0f : dt;
-        TickGameplay(world, gameDt);
-        const InputState* gameInput = gameInputCaptured ? &input : nullptr;
-        inputActionState.Update(inputActions, gameInput);
-        if (scripts && FeatureEnabled("scripts")) {
-            scripts->actions = &inputActionState;
-            scripts->physics = physics.IsRunning() ? &physics : nullptr;
-            scripts->particles = &particles;
-            scripts->fire = FeatureEnabled("fire") ? &fire : nullptr;
-            scripts->Tick(world, gameDt, gameInput);
-        }
-        if (game) {
-            GameTickContext context;
-            context.input = gameInput;
-            context.actions = &inputActionState;
-            context.audio = audio.Get();
-            context.physics = physics.IsRunning() ? &physics : nullptr;
-            game->Tick(world, gameDt, context);
-        }
-        // Characters move as the scripts asked (character.move / jump), sweeping through the physics world; then the
-        // physics steps (their capsules and kinematic bodies follow, teleports apply).
-        scene::UpdateWorldTransforms(world);
-        if (FeatureEnabled("characters")) {
-            if (physics.IsRunning())
-                TickCharacters(world, gameDt, physics);
-            else
-                TickCharacters(world, gameDt, [this](asset::AssetId id, AABB& out) {
-                    const render::GpuMesh* mesh = renderAssets->GetMesh(id);
-                    if (!mesh)
-                        return false;
-                    out = mesh->bounds;
-                    return true;
-                });
-            scene::UpdateWorldTransforms(world);
-        }
-        if (physics.IsRunning()) {
-            physics.Tick(world, gameDt);
-            scene::UpdateWorldTransforms(world);
-            // Collision / trigger callbacks of this frame's steps.
-            if (scripts && FeatureEnabled("scripts"))
-                scripts->DispatchPhysicsEvents(world, physics.Events());
-            if (game)
-                game->DispatchPhysicsEvents(physics.Events());
-            if (audio)
-                audio->PlayImpacts(world, physics.Events()); // Impact Sound components
-        }
-        // Fire spreads and burns (before the particles tick: it emits flames and smoke into them).
-        if (FeatureEnabled("fire")) {
-            fire.physics = physics.IsRunning() ? &physics : nullptr;
-            fire.Tick(world, gameDt, particles);
-        }
-        if (audio && !m_pieStep)
-            audio->Tick(world, gameDt, CurrentListener());
+        GameSystems systems = GameSystemsForPlay();
+        TickGame(world, systems, gameDt, gameInputCaptured ? &input : nullptr, CurrentListener(), !m_pieStep);
         m_pieStep = false;
     } else if (audio && !IsPlaying()) {
         audio->TickIdle(dt); // previews
@@ -3195,7 +3137,7 @@ bool Editor::Frame()
     ++m_timedFrames;
 
     ++frameIndex;
-    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !m_cppTestStage && !m_postTestStage && !m_reflTestStage && !m_decalTestStage && !m_hdriTestStage && !m_physicsTestStage &&
+    if (m_autotestFrames && frameIndex >= m_autotestFrames && assets->IsIdle() && pendingImports.Empty() && !IsPackaging() && !m_cppTestStage && !m_postTestStage && !m_reflTestStage && !m_decalTestStage && !m_hdriTestStage && !m_physicsTestStage &&
         (m_screenshotPath.Empty() || m_screenshotBuffer)) {
         if (!m_saveScenePath.Empty() && SaveSceneFile(m_saveScenePath, world, SceneIO(), SceneSettings()))
             ZX_LOG_INFO(LogEditor, "Saved scene '{}'", m_saveScenePath);
@@ -3388,6 +3330,8 @@ void Editor::RenderFrame()
 
 void Editor::Shutdown()
 {
+    if (packageJob && packageJob->thread.IsJoinable())
+        packageJob->thread.Join();
     if (!device)
         return;
     device->WaitIdle();

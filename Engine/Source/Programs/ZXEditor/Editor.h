@@ -13,6 +13,9 @@
 #include "Engine/GameModule.h"
 #include "Engine/InputActions.h"
 #include "Engine/Fire.h"
+#include "Engine/GameRuntime.h"
+#include "Engine/Packaging.h"
+#include "Core/Threading/Thread.h"
 #include "Engine/Terrain.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
@@ -246,6 +249,7 @@ public:
     ParticleSystem particles;             // Particle Emitters (live in the editor too)
     FireSystem fire;                      // Flammable objects (Play only)
     TerrainSystem terrains;               // builds Terrain meshes (edit and Play)
+    GameSystems GameSystemsForPlay();     // the systems Play drives (same loop as the packaged game)
     UniquePtr<GameModuleSystem> game;     // C++ game module of the open project (Source/<Name>), hot-reloaded
     i64 gameDllTime = 0;                  // modification time of the loaded Binaries/<Name>.dll
     GameBuildState gameBuildState = GameBuildState::Idle;
@@ -321,6 +325,15 @@ public:
     bool showAbout = false;
     bool showMixer = false; // Window > Audio Mixer
     bool showInputActions = false; // Window > Input Actions
+    bool showPackageWindow = false; // File > Package Project
+    String packageOutput;
+    bool packageFullscreen = true;
+    bool packageLiteTextures = false;
+    UniquePtr<struct PackageJob> packageJob;
+    bool StartPackage(StringView outputDir); // background job; empty = DefaultPackageDirectory()
+    bool IsPackaging() const;
+    void UpdatePackage();                    // per frame: finishes a done job
+    String DefaultPackageDirectory() const;
     bool requestResetLayout = false;
     bool quit = false;
 
@@ -544,6 +557,19 @@ void UpdateGameModule(Editor& ed); // every frame: build results, hot reload
 bool CompileGameCode(Editor& ed);  // F7: background build, hot reload when it succeeds
 bool CreateGameModule(Editor& ed); // writes Source/<Name> (sample components) and builds it
 void DrawInputActionsPanel(Editor& ed);
+void DrawPackagePanel(Editor& ed);
+
+/// A Package Project run (EditorPackage.cpp).
+struct PackageJob
+{
+    Thread thread;
+    std::atomic<bool> done{false};
+    Mutex mutex;
+    Array<String> lines;
+    String error;
+    PackageReport report;
+    String outputDir;
+};
 bool EditAudioSourceClip(Editor& ed, AudioSource& source);
 
 /// Console variables/commands of the editor (EditorConsole.cpp).

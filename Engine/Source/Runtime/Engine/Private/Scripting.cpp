@@ -918,7 +918,7 @@ void ScriptSystem::CheckForChanges()
         CachedProgram& cp = *cpPtr;
         const String path = String::Format("{}/{}", m_contentRoot, cp.file);
         platform::FileInfo info;
-        const i64 mtime = platform::GetFileInfo(path, info) ? info.modifiedTime : 0;
+        const i64 mtime = fs::GetInfo(path, info) ? Max<i64>(info.modifiedTime, 1) : 0; // packaged files may have no time
         if (mtime == cp.modifiedTime)
             continue;
         cp.modifiedTime = mtime;

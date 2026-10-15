@@ -83,8 +83,10 @@ bool CoreInit(const CoreInitParams& params)
     ZX_LOG_INFO(LogCore, "Engine root: {}", c.engineRoot);
 
     fs::Initialize(params.ioThreads);
-    fs::Mount("/Engine", c.engineRoot + "/Engine/Content", 0, true);
-    fs::Mount("/Shaders", c.engineRoot + "/Engine/Shaders", 0, false);
+    if (params.mountEngineDirectories) {
+        fs::Mount("/Engine", c.engineRoot + "/Engine/Content", 0, true);
+        fs::Mount("/Shaders", c.engineRoot + "/Engine/Shaders", 0, false);
+    }
     platform::CreateDirectoryTree(c.savedDir);
     fs::Mount("/Saved", c.savedDir, 0, true);
 

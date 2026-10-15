@@ -15,7 +15,7 @@ namespace {
 void FindFiles(const String& dir, StringView extension, Array<String>& out)
 {
     Array<platform::DirectoryEntry> entries;
-    platform::ListDirectory(dir, entries);
+    fs::List(dir, entries); // virtual (packaged game) or physical
     for (const platform::DirectoryEntry& e : entries) {
         if (e.name.View().StartsWith("."))
             continue;
