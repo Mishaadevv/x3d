@@ -128,6 +128,7 @@ public:
     void DrawIndexed(u32 indexCount, u32 instanceCount, u32 firstIndex, i32 vertexOffset, u32 firstInstance) override;
     void Dispatch(u32 x, u32 y, u32 z) override;
     void DrawIndexedIndirect(Buffer* args, u64 offset, u32 maxCount) override;
+    void DrawIndirect(Buffer* args, u64 offset) override;
     TransientAllocation AllocateTransient(u64 size, u64 alignment) override;
     void CopyBuffer(Buffer* dst, u64 dstOffset, Buffer* src, u64 srcOffset, u64 size) override;
     void UploadBuffer(Buffer* dst, u64 dstOffset, const void* data, u64 size) override;
@@ -217,6 +218,7 @@ public:
     ID3D12CommandQueue* GraphicsQueue() const { return m_graphicsQueue.Get(); }
     ID3D12RootSignature* RootSignature() const { return m_rootSignature.Get(); }
     ID3D12CommandSignature* DrawIndirectSignature() const { return m_drawIndirectSignature.Get(); }
+    ID3D12CommandSignature* DrawPlainIndirectSignature() const { return m_drawPlainSignature.Get(); }
     DescriptorHeap& ResourceHeap() { return m_resourceHeap; }
     DescriptorHeap& SamplerHeap() { return m_samplerHeap; }
     DescriptorHeap& RtvHeap() { return m_rtvHeap; }
@@ -251,6 +253,7 @@ private:
     u64 m_nextFenceValue = 1;
     ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12CommandSignature> m_drawIndirectSignature; // root constant (draw id) + DrawIndexed
+    ComPtr<ID3D12CommandSignature> m_drawPlainSignature;    // Draw
     DescriptorHeap m_resourceHeap;
     DescriptorHeap m_samplerHeap;
     DescriptorHeap m_rtvHeap;

@@ -93,6 +93,10 @@ struct ParticleEmitter
     String onHitEmitter;     // name of an entity whose Particle Emitter bursts where particles hit (splashes)
     i32 onHitCount = 3;      // particles of that burst
     i32 seed = 0;
+    /// Simulated on the GPU: hundreds of thousands of particles, colliding with what the camera sees (depth buffer).
+    /// Not sorted (best for additive sparks, rain, magic), no lights / heat haze / On Hit bursts; Max Particles is
+    /// replaced by the shared GPU pool.
+    bool gpuSimulation = false;
 };
 
 ZX_DECLARE_ENUM(EmitterShape);
@@ -109,6 +113,9 @@ public:
     /// Every live particle for drawing, sorted back to front from `cameraPosition`. `textures` turns flipbook paths into
     /// texture SRVs (none: flipbooks fall back to the procedural shapes).
     void Gather(Vec3 cameraPosition, Array<render::GpuParticle>& out, const Function<u32(StringView path), 32>* textures = nullptr) const;
+    /// GPU-simulated emitters of the last Tick (rows indexed by emitter slot) for render::ParticleRenderer.
+    void GatherGpu(Array<render::GpuEmitter>& out, render::GpuParticleFrame& frame,
+                   const Function<u32(StringView path), 32>* textures = nullptr) const;
     /// Point Lights on entities with a flickering emitter: intensity modulated (render-side only).
     void ModulateLights(Span<render::LightDesc> lights) const;
     /// Emits `count` particles from the entity's emitter right away (scripts: entity.emit(n)), from `position` (world)
@@ -163,7 +170,14 @@ private:
         u32 lightId = 0; // entity index + 1 (LightDesc::id)
         f32 flicker = 1.0f;
         f32 time = 0.0f;
+        // GPU simulation (gpuSlot valid): what the last Tick asks the GPU to do.
+        u32 gpuSlot = 0xFFFFFFFFu;
+        u32 gpuSpawn = 0;
+        f32 gpuDt = 0.0f;
     };
+    bool UsesGpu(const ParticleEmitter& d) const { return d.gpuSimulation && d.look != ParticleLook::Heat; }
+    void AcquireGpuSlot(Emitter& em);
+    void ReleaseGpuSlot(Emitter& em);
     void Spawn(Emitter& em, u32 count, const Vec3* origin = nullptr);
     void Advance(Emitter& em, f32 dt);
     void PredictHit(const ParticleEmitter& d, Particle& p) const;
@@ -185,6 +199,12 @@ private:
     Array<Hit> m_hits; // impacts of this tick that burst an On Hit Emitter
     u32 m_raycastBudget = 0;
     bool m_wasPlaying = false;
+    static constexpr u32 MaxGpuEmitters = render::ParticleRenderer::MaxGpuEmitters;
+    u16 m_gpuGenerations[MaxGpuEmitters] = {};
+    Array<u32> m_freeGpuSlots; // filled lazily (all slots free at first)
+    u32 m_nextGpuSlot = 0;
+    u64 m_tick = 0;
+    u64 m_resetGeneration = 0;
 };
 
 } // namespace zx

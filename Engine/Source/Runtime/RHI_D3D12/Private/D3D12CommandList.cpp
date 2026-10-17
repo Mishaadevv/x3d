@@ -48,8 +48,16 @@ void D3D12CommandList::Close()
 
 void D3D12CommandList::Transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES& current, D3D12_RESOURCE_STATES target)
 {
-    if (current == target)
+    if (current == target) {
+        // UAV -> UAV (consecutive passes writing the same resource): the second must see the first one's writes.
+        if (target == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+            D3D12_RESOURCE_BARRIER b = {};
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            b.UAV.pResource = resource;
+            m_pendingBarriers.PushBack(b);
+        }
         return;
+    }
     // Read-only states can be combined; skip if the target is already included.
     if (target != D3D12_RESOURCE_STATE_COMMON && (current & target) == target &&
         !(target & (D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_RENDER_TARGET |
@@ -219,6 +227,14 @@ void D3D12CommandList::DrawIndexedIndirect(Buffer* args, u64 offset, u32 maxCoun
         return;
     FlushBarriers();
     m_list->ExecuteIndirect(m_device.DrawIndirectSignature(), maxCount, static_cast<D3D12Buffer*>(args)->resource.Get(), offset, nullptr, 0);
+}
+
+void D3D12CommandList::DrawIndirect(Buffer* args, u64 offset)
+{
+    if (!args)
+        return;
+    FlushBarriers();
+    m_list->ExecuteIndirect(m_device.DrawPlainIndirectSignature(), 1, static_cast<D3D12Buffer*>(args)->resource.Get(), offset, nullptr, 0);
 }
 
 void D3D12CommandList::Dispatch(u32 x, u32 y, u32 z)

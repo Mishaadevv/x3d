@@ -73,6 +73,8 @@ ZX_REFLECT_STRUCT_BEGIN(ParticleEmitter)
     ZX_FIELD(onHitEmitter, Meta::Tooltip("Entity whose Particle Emitter bursts where particles hit (rain splashes)"))
     ZX_FIELD(onHitCount, Meta::Range(0, 100))
     ZX_FIELD(seed, Meta::Range(0, 100000))
+    ZX_FIELD(gpuSimulation, Meta::Category("Emission"),
+             Meta::Tooltip("Simulate on the GPU: hundreds of thousands of particles that collide with what the camera sees. Unsorted; no lights, heat haze or On Hit bursts"))
 ZX_REFLECT_STRUCT_END()
 
 namespace {
@@ -147,8 +149,32 @@ void ParticleSystem::Spawn(Emitter& em, u32 count, const Vec3* origin)
     }
 }
 
+void ParticleSystem::AcquireGpuSlot(Emitter& em)
+{
+    if (em.gpuSlot != 0xFFFFFFFFu)
+        return;
+    if (!m_freeGpuSlots.Empty()) {
+        em.gpuSlot = m_freeGpuSlots.Back();
+        m_freeGpuSlots.PopBack();
+    } else if (m_nextGpuSlot < MaxGpuEmitters) {
+        em.gpuSlot = m_nextGpuSlot++;
+    }
+    em.particles.Clear(); // switched from the CPU
+}
+
+void ParticleSystem::ReleaseGpuSlot(Emitter& em)
+{
+    if (em.gpuSlot == 0xFFFFFFFFu)
+        return;
+    ++m_gpuGenerations[em.gpuSlot]; // its particles die on the GPU
+    m_freeGpuSlots.PushBack(em.gpuSlot);
+    em.gpuSlot = 0xFFFFFFFFu;
+    em.gpuSpawn = 0;
+}
+
 void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
 {
+    ++m_tick;
     // Play start / stop: everything restarts from the scene state.
     if (playing != m_wasPlaying) {
         Clear();
@@ -173,11 +199,18 @@ void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
             em.lastWorld = em.world;
             em.world = wt.matrix;
             em.lightId = e.index + 1;
+            em.gpuSpawn = 0;
+            em.gpuDt = 0.0f;
             if (!playing && !desc.simulateInEditor) {
                 em.particles.Clear();
+                ReleaseGpuSlot(em);
                 em.started = false;
                 return;
             }
+            if (UsesGpu(desc))
+                AcquireGpuSlot(em); // no free slot: stays on the CPU
+            else
+                ReleaseGpuSlot(em);
             if (!em.started) {
                 em.started = true;
                 em.lastWorld = em.world;
@@ -185,7 +218,12 @@ void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
             }
             // Flicker: two slow noises (the light breathes rather than strobes).
             em.flicker = 1.0f - desc.lightFlicker * (0.5f + 0.3f * Sin(em.time * 9.1f + f32(e.index)) + 0.2f * Sin(em.time * 23.7f));
-            Advance(em, dt);
+            if (em.gpuSlot != 0xFFFFFFFFu) {
+                em.time += dt;
+                em.gpuDt = dt;
+            } else {
+                Advance(em, dt);
+            }
             // Emit.
             u32 count = em.pendingBurst;
             em.pendingBurst = 0;
@@ -195,13 +233,19 @@ void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
                 em.accumulator -= f32(n);
                 count += n;
             }
-            if (count)
+            if (count && em.gpuSlot != 0xFFFFFFFFu)
+                em.gpuSpawn += count;
+            else if (count)
                 Spawn(em, count);
         });
     // Scripted bursts.
     for (usize i = 0; i < m_pendingEmits.Size(); ++i)
-        if (Emitter* em = m_emitters.Find(m_pendingEmits[i].Pack()))
-            Spawn(*em, m_pendingCounts[i], m_pendingHasPosition[i] ? &m_pendingPositions[i] : nullptr);
+        if (Emitter* em = m_emitters.Find(m_pendingEmits[i].Pack())) {
+            if (em->gpuSlot != 0xFFFFFFFFu)
+                em->gpuSpawn += m_pendingCounts[i]; // from the emitter (GPU bursts have no explicit position)
+            else
+                Spawn(*em, m_pendingCounts[i], m_pendingHasPosition[i] ? &m_pendingPositions[i] : nullptr);
+        }
     m_pendingEmits.Clear();
     m_pendingPositions.Clear();
     m_pendingHasPosition.Clear();
@@ -214,11 +258,14 @@ void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
         });
         for (const Hit& h : m_hits)
             if (const ecs::Entity* target = byName.Find(h.emitter))
-                if (Emitter* em = m_emitters.Find(target->Pack()))
+                if (Emitter* em = m_emitters.Find(target->Pack()); em && em->gpuSlot == 0xFFFFFFFFu)
                     Spawn(*em, h.count, &h.position);
         m_hits.Clear();
     }
     m_pendingCounts.Clear();
+    for (auto& [key, em] : m_emitters)
+        if (!em.alive)
+            ReleaseGpuSlot(em);
     m_emitters.RemoveIf([](u64, const Emitter& em) { return !em.alive; });
     for (auto& [key, em] : m_free)
         Advance(em, dt);
@@ -338,6 +385,67 @@ void ParticleSystem::Gather(Vec3 cameraPosition, Array<render::GpuParticle>& out
     });
 }
 
+void ParticleSystem::GatherGpu(Array<render::GpuEmitter>& out, render::GpuParticleFrame& frame, const Function<u32(StringView), 32>* textures) const
+{
+    out.Clear();
+    frame.tick = m_tick;
+    frame.resetGeneration = m_resetGeneration;
+    if (m_nextGpuSlot == 0 || m_freeGpuSlots.Size() == m_nextGpuSlot) {
+        frame.emitters = {};
+        return;
+    }
+    out.Resize(m_nextGpuSlot); // unused slots stay inactive (flags 0)
+    for (const auto& [key, em] : m_emitters) {
+        if (em.gpuSlot == 0xFFFFFFFFu)
+            continue;
+        const ParticleEmitter& d = em.desc;
+        render::GpuEmitter& g = out[em.gpuSlot];
+        const bool additive = d.blend == ParticleBlend::Additive;
+        const render::ParticleShape shape = d.look == ParticleLook::Flame   ? render::ParticleShape::Flame
+                                            : d.look == ParticleLook::Spark ? render::ParticleShape::Spark
+                                                                            : render::ParticleShape::Soft;
+        const u32 atlas = !d.flipbook.Empty() && textures && *textures ? (*textures)(d.flipbook) : 0xFFFFFFFFu;
+        const u32 columns = u32(Clamp(d.flipbookColumns, 1, 16)), rows = u32(Clamp(d.flipbookRows, 1, 16));
+        const f32 glow = d.emissive ? d.intensity : 1.0f;
+        g.world = em.world;
+        g.acceleration = d.acceleration;
+        g.drag = d.drag;
+        g.startColor = d.startColor * glow;
+        g.endColor = d.endColor * glow;
+        g.startAlpha = d.startAlpha;
+        g.endAlpha = d.endAlpha;
+        g.boxSize = d.boxSize;
+        g.radius = d.radius;
+        g.startSize = d.startSize;
+        g.endSize = d.endSize;
+        g.sizeVariation = d.sizeVariation;
+        g.spin = d.spin;
+        g.speed = d.speed;
+        g.speedVariation = d.speedVariation;
+        g.lifetime = d.lifetime;
+        g.lifetimeVariation = d.lifetimeVariation;
+        g.coneAngle = d.coneAngle;
+        g.turbulence = d.turbulence;
+        g.fadeIn = d.fadeIn;
+        g.bounciness = d.bounciness;
+        g.dt = em.gpuDt;
+        g.time = em.time;
+        g.flipbookFps = d.flipbookFps;
+        g.flipbookFrames = f32(columns * rows);
+        g.spawnCount = em.gpuSpawn;
+        g.seed = u32(m_tick * 0x9E3779B1ull) ^ (em.gpuSlot * 0x85EBCA6Bu) ^ u32(d.seed);
+        g.generation = m_gpuGenerations[em.gpuSlot];
+        g.emitShape = u32(d.shape);
+        g.packedShape = atlas != 0xFFFFFFFFu ? render::PackParticleShape(u32(shape), columns, rows) : u32(shape);
+        g.renderFlags = (d.emissive ? u32(render::ParticleEmissive) : 0u) | (additive ? u32(render::ParticleAdditive) : 0u);
+        g.texture = atlas;
+        g.flags = render::GpuEmitter::Active | (d.worldSpace ? u32(render::GpuEmitter::WorldSpace) : 0u) |
+                  (d.collision == ParticleCollision::Bounce ? u32(render::GpuEmitter::Bounce) : 0u) |
+                  (d.collision == ParticleCollision::Die ? u32(render::GpuEmitter::Die) : 0u);
+    }
+    frame.emitters = out.View();
+}
+
 void ParticleSystem::ModulateLights(Span<render::LightDesc> lights) const
 {
     for (const auto& [key, em] : m_emitters) {
@@ -360,6 +468,11 @@ void ParticleSystem::Emit(ecs::Entity e, u32 count, const Vec3* position)
 void ParticleSystem::Clear()
 {
     m_emitters.Clear();
+    m_freeGpuSlots.Clear();
+    m_nextGpuSlot = 0;
+    for (u16& g : m_gpuGenerations)
+        ++g;
+    ++m_resetGeneration;
     m_free.Clear();
     m_extraLights.Clear();
     m_extraFogVolumes.Clear();

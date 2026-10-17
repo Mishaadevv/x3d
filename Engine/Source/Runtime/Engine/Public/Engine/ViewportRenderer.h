@@ -152,6 +152,8 @@ private:
     Array<render::FogVolumeDesc> m_fogVolumes;
     const class ParticleSystem* m_particleSource = nullptr;
     Array<render::GpuParticle> m_particleList;
+    Array<render::GpuEmitter> m_gpuEmitters;
+    render::GpuParticleFrame m_gpuParticleFrame;
     Array<render::WaterSurface> m_waterSurfaces;
     render::TemporalAA m_taa;
     render::ReflectionRenderer m_reflections;

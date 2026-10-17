@@ -1113,6 +1113,7 @@ void Editor::BuildStarterShowcase(bool withPrefabs)
             {"Effects/P_Torch", Vec3(2.5f, 0, 8), 0},           {"Effects/P_Fountain", Vec3(-9, 0, 6), 0},
             {"Effects/P_WaterPool", Vec3(10, 0.8f, 8), 0},      {"Effects/P_Magic", Vec3(-5, 1.6f, -1), 0},
             {"Effects/P_Steam", Vec3(5, 0, 1), 0},              {"Effects/P_Sparks", Vec3(8, 2.5f, -3), 0},
+            {"Effects/P_SparkShower", Vec3(11, 2.2f, 3), 0},
             {"Effects/P_Smoke", Vec3(-14, 0, 14), 0},           {"Effects/P_GroundFog", Vec3(-12, 0, 14), 0},
             {"Props/P_Door", Vec3(-3, 0, -6), 0},               {"Props/P_Elevator", Vec3(-12, 0, -6), 0},
             {"Props/P_JumpPad", Vec3(4, 0, -6), 0},             {"Props/P_CrateStack", Vec3(-6, 0, 12), 0},

@@ -143,6 +143,43 @@ ConCommand CmdStressInstances("stress.instances",
                                    ZX_LOG_INFO(LogCmd, "Spawned {} instances", n);
                                });
 
+ConCommand CmdStressParticles("stress.particles",
+                               "Adds a GPU-simulated spark fountain in front of the camera keeping about N particles alive (bouncing off the scene): stress.particles 200000",
+                               [](Span<const StringView> args) {
+                                   Editor* ed = Ed();
+                                   if (!ed)
+                                       return;
+                                   const u32 n = args.Empty() ? 100000u : u32(Clamp<i64>(ParseInt(args[0]).ValueOr(100000), 1, 250000));
+                                   const ecs::Entity e = scene::CreateNode(ed->world, "GPU Sparks", Transform(ed->camera.position + SafeNormalize(ed->camera.Forward() * Vec3(1.0f, 0.0f, 1.0f), Vec3(0, 0, 1)) * 6.0f + Vec3(0.0f, -1.5f, 0.0f)));
+                                   ParticleEmitter pe;
+                                   pe.gpuSimulation = true;
+                                   pe.lifetime = 4.0f;
+                                   pe.lifetimeVariation = 0.2f;
+                                   pe.rate = f32(n) / pe.lifetime;
+                                   pe.shape = EmitterShape::Cone;
+                                   pe.radius = 0.05f;
+                                   pe.coneAngle = 0.45f;
+                                   pe.speed = 7.0f;
+                                   pe.speedVariation = 0.35f;
+                                   pe.acceleration = Vec3(0.0f, -9.81f, 0.0f);
+                                   pe.drag = 0.1f;
+                                   pe.turbulence = 0.0f;
+                                   pe.startSize = 0.04f;
+                                   pe.endSize = 0.015f;
+                                   pe.startColor = Vec3(1.0f, 0.7f, 0.3f);
+                                   pe.endColor = Vec3(1.0f, 0.15f, 0.02f);
+                                   pe.endAlpha = 0.0f;
+                                   pe.fadeIn = 0.0f;
+                                   pe.look = ParticleLook::Spark;
+                                   pe.blend = ParticleBlend::Additive;
+                                   pe.intensity = 2.0f;
+                                   pe.collision = ParticleCollision::Bounce;
+                                   pe.bounciness = 0.45f;
+                                   ed->world.Add(e, pe);
+                                   scene::UpdateWorldTransforms(ed->world);
+                                   ZX_LOG_INFO(LogCmd, "GPU spark fountain: {:.0f} particles/s", pe.rate);
+                               });
+
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
     if (Ed())
         Ed()->Undo();

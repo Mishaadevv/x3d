@@ -122,6 +122,12 @@ Sun shadows: ShadowSettings::filter 3 = PCSS (SampleCascadePCSS in ForwardPBR, c
 ContactShadowSettings + Shaders/Lighting/ContactShadows.hlsl (R8 after the pre-pass, multiplies the sun shadow);
 cascade cache invalidation by moved casters (SceneRenderer::SetMovedInstances from ViewportRenderer's pairing).
 Cvars r.ShadowFilter, r.ContactShadows; stat.scene prints cascades re-rendered this frame.
+GPU particles: ParticleEmitter::gpuSimulation -> ParticleSystem keeps a persistent slot + generation per emitter
+(GatherGpu -> render::GpuEmitter rows, tick / resetGeneration); ParticleRenderer runs Shaders/Particles/ParticleSim.hlsl
+(InitCS / EmitCS / SimulateCS / ArgsCS, two SoA state buffers compacted every step, counters 64 bytes apart) and draws
+the GpuParticle render buffer with RHI DrawIndirect. Console stress.particles N; prefab Effects/P_SparkShower.
+RHI D3D12: a UAV->UAV transition request emits a UAV barrier (consecutive passes writing one resource).
+GPU timing: average several `stat.gpu` samples (scratchpad gpuavg.sh); the exit-time "GPU ..." lines are one frame.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

@@ -378,6 +378,14 @@ bool D3D12Device::CreateRootSignature()
     cs.pArgumentDescs = args;
     if (!ZX_DX_CHECK(m_device->CreateCommandSignature(&cs, m_rootSignature.Get(), ZX_DX_PPV(m_drawIndirectSignature))))
         return false;
+    D3D12_INDIRECT_ARGUMENT_DESC draw = {};
+    draw.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+    D3D12_COMMAND_SIGNATURE_DESC ps = {};
+    ps.ByteStride = sizeof(IndirectDrawArgsPlain);
+    ps.NumArgumentDescs = 1;
+    ps.pArgumentDescs = &draw;
+    if (!ZX_DX_CHECK(m_device->CreateCommandSignature(&ps, nullptr, ZX_DX_PPV(m_drawPlainSignature))))
+        return false;
     return true;
 }
 

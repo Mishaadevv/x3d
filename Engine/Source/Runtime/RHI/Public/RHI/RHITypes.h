@@ -106,6 +106,16 @@ enum class BufferUsage : u32
 };
 ZX_ENUM_FLAGS(BufferUsage)
 
+/// One draw of DrawIndirect (D3D12_DRAW_ARGUMENTS).
+struct IndirectDrawArgsPlain
+{
+    u32 vertexCount;
+    u32 instanceCount;
+    u32 firstVertex;
+    u32 firstInstance;
+};
+static_assert(sizeof(IndirectDrawArgsPlain) == 16);
+
 /// One draw of DrawIndexedIndirect: a draw id written to push constant dword IndirectDrawIdConstant, then the
 /// arguments of DrawIndexed.
 struct IndirectDrawArgs

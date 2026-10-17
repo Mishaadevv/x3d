@@ -352,6 +352,39 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             save(b, root, "Effects/P_Sparks");
         }
         {
+            // A welding / grinder spark shower: tens of thousands of sparks, simulated on the GPU, skittering off the
+            // floor and walls the camera sees.
+            PrefabBuilder b;
+            const ecs::Entity root = b.Node("Spark Shower");
+            ParticleEmitter p = Sparks();
+            p.gpuSimulation = true;
+            p.rate = 9000.0f;
+            p.lifetime = 2.2f;
+            p.lifetimeVariation = 0.35f;
+            p.coneAngle = 0.55f;
+            p.speed = 6.5f;
+            p.speedVariation = 0.45f;
+            p.drag = 0.15f;
+            p.startSize = 0.035f;
+            p.endSize = 0.015f;
+            p.intensity = 3.0f;
+            p.endAlpha = 0.0f;
+            p.bounciness = 0.45f;
+            b.world.Add(root, p);
+            PointLight light;
+            light.color = Vec3(1.0f, 0.7f, 0.4f);
+            light.lumens = 900.0f;
+            light.range = 6.0f;
+            b.world.Add(root, light);
+            AudioSource crackle; // a fast, bright crackle: the sizzle of the shower
+            crackle.clip = "StarterContent/Sounds/Fire_Crackle.ogg";
+            crackle.volume = 0.4f;
+            crackle.pitch = 1.9f;
+            crackle.maxDistance = 16.0f;
+            b.world.Add(root, crackle);
+            save(b, root, "Effects/P_SparkShower");
+        }
+        {
             PrefabBuilder b;
             const ecs::Entity root = b.Node("Steam Vent");
             b.Mesh("Grate", BuiltinShape::Cylinder, Vec3(0, 0.03f, 0), Vec3(0.6f, 0.06f, 0.6f), "M_Metal_Steel", root);

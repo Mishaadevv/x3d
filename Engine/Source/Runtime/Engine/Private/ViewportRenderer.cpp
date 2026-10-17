@@ -421,6 +421,10 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
             return decalTextures ? m_assets.GetTextureSrv(decalTextures(path, false)) : InvalidDescriptor;
         };
         m_particleSource->Gather(view.position, m_particleList, &textures);
+        m_particleSource->GatherGpu(m_gpuEmitters, m_gpuParticleFrame, &textures);
+    } else {
+        m_gpuEmitters.Clear();
+        m_gpuParticleFrame.emitters = {};
     }
     render::ParticleRenderer::FogVolumes particleFog;
     if (m_volumetric.IsActive()) {
@@ -430,7 +434,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         particleFog.slices = m_volumetric.Slices();
     }
     sceneColor = m_particleRenderer.AddPass(graph, sceneColor, sceneDepth, view, m_particleList.View(), m_lighting, exposure, f32(std::fmod(m_time, 3600.0)),
-                               particleFog);
+                               particleFog, &m_gpuParticleFrame);
     // After every pass that samples the cubes: sky cube update, the probe face, prefiltering.
     m_reflections.AddUpdatePasses(graph, m_settings.useSky ? m_sky.SkyViewTexture() : RGTexture(), m_sky.SkyRadianceScale(), faceColor,
                                   faceDepth, exposure, m_settings.useSky ? &m_settings.sky.hdri : nullptr);

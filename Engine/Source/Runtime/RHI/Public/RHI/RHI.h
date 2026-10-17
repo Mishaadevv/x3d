@@ -189,6 +189,8 @@ public:
     /// `maxCount` IndirectDrawArgs from `args` (IndirectArgument state) with the bound pipeline and index buffer;
     /// each writes its drawId to push constant dword IndirectDrawIdConstant first (GPU-driven rendering).
     virtual void DrawIndexedIndirect(Buffer* args, u64 offset, u32 maxCount) = 0;
+    /// One non-indexed draw whose arguments (IndirectDrawArgsPlain) the GPU wrote at `offset` of `args`.
+    virtual void DrawIndirect(Buffer* args, u64 offset) = 0;
 
     // --- Transfers ---
     /// Per-frame upload memory (aligned to 256 bytes).
