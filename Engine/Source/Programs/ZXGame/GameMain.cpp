@@ -36,6 +36,9 @@
 #include "Engine/Scripting.h"
 #include "Engine/Terrain.h"
 #include "Engine/SoftBody.h"
+#include "Engine/GameUI.h"
+#include "UI/UI.h"
+#include "UI/UIRenderer.h"
 #include "Engine/ViewportRenderer.h"
 #include "Platform/Platform.h"
 #include "Platform/Window.h"
@@ -138,6 +141,12 @@ private:
     FireSystem m_fire;
     TerrainSystem m_terrains;
     SoftBodySystem m_softBodies;
+    GameUISystem m_gameUI;
+    ui::FontSystem m_fonts;
+    UniquePtr<ui::Context> m_uiContext; // loads the fonts
+    UniquePtr<ui::UIRenderer> m_uiRenderer;
+    ui::DrawList m_uiList;
+    u64 m_uiFrame = 0;
     InputActionMap m_inputActions;
     InputActionState m_inputActionState;
     ecs::World m_world;
@@ -185,6 +194,7 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     fs::MountSourceAt("/DDC", fs::MakePakSource(pak, "DDC"));
     fs::MountSourceAt("/Project", fs::MakePakSource(pak, "Project"));
     fs::MountSourceAt("/Shaders", fs::MakePakSource(pak, "Shaders"), 10);
+    fs::MountSourceAt("/Engine/Fonts", fs::MakePakSource(pak, "Fonts"), 10); // game UI text
     fs::MountSourceAt("/Saved/ShaderCache", fs::MakePakSource(pak, "ShaderCache"), -10); // compiled with the game; misses compile and land in /Saved
 
     WindowDesc wd;
@@ -217,6 +227,13 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     m_swapChain = m_device->CreateSwapChain(SwapChainDesc{m_window->GetNativeHandle(), Max(size.x, 1u), Max(size.y, 1u), 3, Format::R8G8B8A8_UNORM,
                                                           !CommandLine::HasFlag("novsync")});
     if (!m_swapChain)
+        return false;
+    // Game UI: the engine's fonts and the 2D renderer over the frame.
+    m_uiContext.Reset(new ui::Context(m_fonts));
+    if (!m_uiContext->LoadDefaultFonts("/Engine/Fonts"))
+        ZX_LOG_WARN(LogGame, "Game UI fonts are missing (Fonts in Content.zpak): UI text will not show");
+    m_uiRenderer.Reset(new ui::UIRenderer(*m_device));
+    if (!m_uiRenderer->Init(m_swapChain->GetFormat()))
         return false;
 
     asset::AssetManagerSettings as;
@@ -342,7 +359,7 @@ bool Game::Frame()
     }
     if (!m_started && ready) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI};
         BeginGame(m_world, s);
         m_started = true;
         m_startFrame = m_frame;
@@ -354,11 +371,18 @@ bool Game::Frame()
         m_captured = false;
     else if (!m_captured && m_started && m_input.WasMousePressed(MouseButton::Left) && m_window->IsFocused() && m_autotest == 0)
         m_captured = true;
-    m_window->SetCursorLocked(m_captured && m_window->IsFocused());
+    m_window->SetCursorLocked(m_captured && m_window->IsFocused() && !m_gameUI.cursorRequested); // menus free the mouse
+    // Game UI: hover / clicks / drags while the game shows the cursor.
+    if (m_started && m_gameUI.cursorRequested) {
+        const UVec2 size = m_swapChain->GetSize();
+        m_gameUI.Layout(m_world, m_fonts, Rect(Vec2(0.0f), Vec2(f32(size.x), f32(size.y))));
+        m_gameUI.Interact(m_world, m_input.MousePosition(), m_input.IsMouseDown(MouseButton::Left), m_input.WasMousePressed(MouseButton::Left),
+                          m_input.WasMouseReleased(MouseButton::Left));
+    }
 
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI};
         ListenerPose fallback;
         fallback.position = m_sceneCamera.position;
         TickGame(m_world, s, dt, m_captured || m_autotest ? &m_input : nullptr, GameListener(m_world, fallback));
@@ -366,8 +390,13 @@ bool Game::Frame()
     m_terrains.Update(m_world, *m_assets, m_renderAssets.Get());
     m_softBodies.Update(m_world, *m_assets, m_renderAssets.Get());
     scene::UpdateWorldTransforms(m_world);
-    m_particles.Tick(m_world, dt, m_started);
-    m_animation->Tick(m_world, dt, m_started);
+    {
+        GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI};
+        const f32 gameDt = m_started ? dt * GameTimeScale(s) : dt; // time.scale (pause menus)
+        m_particles.Tick(m_world, gameDt, m_started);
+        m_animation->Tick(m_world, gameDt, m_started);
+    }
     Render();
     if (m_autotest && m_started && m_frame >= m_startFrame + m_autotest)
         return false;
@@ -417,6 +446,17 @@ void Game::Render()
         }
         m_environment.playing = true;
         m_viewport->AddPasses(graph, m_world, cam, m_environment, backBuffer, size, m_timer.DeltaSeconds());
+        // Game UI over the frame.
+        m_fonts.BeginFrame(++m_uiFrame);
+        const Rect screen(Vec2(0.0f), Vec2(f32(size.x), f32(size.y)));
+        m_uiList.Reset(&m_fonts, screen);
+        m_gameUI.Layout(m_world, m_fonts, screen);
+        m_gameUI.Draw(m_world, m_fonts, m_uiList, [this](asset::AssetId id) { return m_renderAssets->GetTextureSrv(id); });
+        if (m_uiList.PrimitiveCount() > 0) {
+            const ui::DrawList* lists[] = {&m_uiList};
+            m_uiRenderer->Prepare(*cmd, m_fonts, Span<const ui::DrawList* const>(lists, 1));
+            m_uiRenderer->AddPass(graph, backBuffer, size);
+        }
     } else {
         graph.AddPass(
             "Loading", PassType::Graphics, [&](PassBuilder& b) { b.RenderTarget(backBuffer, LoadOp::Clear, LinearColor(0, 0, 0, 1)); },
@@ -448,7 +488,7 @@ void Game::Shutdown()
     }
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, {}, nullptr, &m_softBodies};
+                      &m_inputActions, &m_inputActionState, {}, nullptr, &m_softBodies, &m_gameUI};
         EndGame(s);
     }
     ClearScene(m_world);
@@ -470,6 +510,7 @@ void Game::Shutdown()
     m_assets.Reset();
     if (m_device)
         debugLayerErrors = d3d12::GetDebugLayerErrorCount(*m_device);
+    m_uiRenderer.Reset();
     m_swapChain.Reset();
     m_device.Reset();
     m_window.Reset();

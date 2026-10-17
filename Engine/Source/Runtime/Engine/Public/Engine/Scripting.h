@@ -30,6 +30,8 @@ class AudioSystem;
 class PhysicsSystem;
 class FireSystem;
 class ParticleSystem;
+class GameUISystem;
+struct UIEvent;
 class SoftBodySystem;
 class AnimationSystem;
 struct AnimEvent;
@@ -89,12 +91,18 @@ public:
     /// Animators for entity.animParam / animTrigger / playAnim / animState (null = no animation control).
     AnimationSystem* animation = nullptr;
     SoftBodySystem* softBodies = nullptr; // vehicles: entity.carInput / carSpeed / ...
+    /// Game UI for ui.cursor / ui.overUI (null = no UI).
+    GameUISystem* gameUI = nullptr;
+    /// time.scale set by scripts (0 = paused); the host scales the game's dt with it. Reset to 1 by Begin.
+    f32 timeScale = 1.0f;
     /// Fire for entity.ignite / extinguish / burning and the fire global (null = nothing burns).
     FireSystem* fire = nullptr;
     /// Calls collisionEnter / collisionExit / triggerEnter / triggerExit on the scripts of both entities of each event.
     void DispatchPhysicsEvents(ecs::World& world, Span<const PhysicsEvent> events);
     /// Calls onAnimEvent(name) on the scripts of each event's entity and its ancestors (the player above its mesh).
     void DispatchAnimEvents(ecs::World& world, Span<const AnimEvent> events);
+    /// Calls onUIClick(name) / onUIChanged(name, value) on the widget's scripts and its ancestors' (the canvas).
+    void DispatchUIEvents(ecs::World& world, Span<const UIEvent> events);
 
     /// log()/print() output and errors (file:line: message).
     Function<void(StringView message, bool isError)> onLog;
@@ -127,6 +135,7 @@ public:
         ecs::World* world = nullptr;
         const InputState* input = nullptr;
         f32 dt = 0.0f;
+        f32 realDt = 0.0f; // unscaled by time.scale
         f64 elapsed = 0.0;
         u64 frame = 0;
         Array<ecs::Entity> destroyQueue;

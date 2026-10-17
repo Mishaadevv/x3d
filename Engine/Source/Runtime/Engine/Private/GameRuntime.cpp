@@ -1,6 +1,7 @@
 #include "Engine/GameRuntime.h"
 #include "Engine/Animation.h"
 #include "Engine/SoftBody.h"
+#include "Engine/GameUI.h"
 #include "Engine/Fire.h"
 #include "Engine/GameModule.h"
 #include "Engine/Gameplay.h"
@@ -30,6 +31,8 @@ void BeginGame(ecs::World& world, GameSystems& s)
 {
     if (GameplayClock* clock = world.GetSingleton<GameplayClock>())
         *clock = GameplayClock{};
+    if (s.gameUI)
+        s.gameUI->Reset();
     if (s.scripts)
         s.scripts->Begin(world);
     if (s.game)
@@ -58,8 +61,12 @@ void BeginGame(ecs::World& world, GameSystems& s)
     }
 }
 
-void TickGame(ecs::World& world, GameSystems& s, f32 dt, const InputState* input, const ListenerPose& listener, bool tickAudio)
+f32 GameTimeScale(const GameSystems& s) { return s.scripts && s.Enabled("scripts") ? Clamp(s.scripts->timeScale, 0.0f, 10.0f) : 1.0f; }
+
+void TickGame(ecs::World& world, GameSystems& s, f32 realDt, const InputState* input, const ListenerPose& listener, bool tickAudio)
 {
+    // Scripts may slow down or pause the game (time.scale); UI and audio keep running in real time.
+    const f32 dt = realDt * GameTimeScale(s);
     const bool physicsRunning = s.physics && s.physics->IsRunning();
     TickGameplay(world, dt);
     if (s.inputActionState && s.inputActions)
@@ -72,6 +79,10 @@ void TickGame(ecs::World& world, GameSystems& s, f32 dt, const InputState* input
         s.scripts->softBodies = s.softBodies;
         if (s.animation) // last frame's footsteps and authored events
             s.scripts->DispatchAnimEvents(world, s.animation->Events());
+        s.scripts->gameUI = s.gameUI;
+        if (s.gameUI) // button clicks, slider / toggle changes since the last frame
+            s.scripts->DispatchUIEvents(world, s.gameUI->Events());
+        s.scripts->context.realDt = realDt;
         s.scripts->fire = s.Enabled("fire") ? s.fire : nullptr;
         s.scripts->Tick(world, dt, input);
     }
@@ -114,8 +125,17 @@ void TickGame(ecs::World& world, GameSystems& s, f32 dt, const InputState* input
         s.fire->physics = physicsRunning ? s.physics : nullptr;
         s.fire->Tick(world, dt, *s.particles);
     }
+    // UI click sounds.
+    if (s.gameUI) {
+        if (s.audio)
+            for (const UIEvent& ev : s.gameUI->Events())
+                if (const UIButton* b = world.IsAlive(ev.entity) ? world.Get<const UIButton>(ev.entity) : nullptr;
+                    b && ev.type == UIEvent::Type::Click && !b->clickSound.Empty())
+                    s.audio->PlayOneShot(b->clickSound, 0.6f, false, Vec3(0.0f));
+        s.gameUI->ClearEvents();
+    }
     if (s.audio && tickAudio)
-        s.audio->Tick(world, dt, listener);
+        s.audio->Tick(world, realDt, listener);
 }
 
 void EndGame(GameSystems& s)
@@ -132,6 +152,8 @@ void EndGame(GameSystems& s)
         s.fire->Clear();
     if (s.softBodies)
         s.softBodies->Clear();
+    if (s.gameUI)
+        s.gameUI->Reset();
 }
 
 ListenerPose GameListener(ecs::World& world, const ListenerPose& fallback)

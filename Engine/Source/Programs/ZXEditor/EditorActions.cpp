@@ -173,6 +173,7 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "tool.scale", "Scale Tool", "Tools", ZX_ICON_SCALE_3D, "R", [](Editor& e) { e.tool = TransformTool::Scale; });
     Add(ed, "tool.space", "Toggle Local / World Space", "Tools", ZX_ICON_GLOBE, "", [](Editor& e) { e.localSpace = !e.localSpace; });
     Add(ed, "tool.snap", "Toggle Grid Snapping", "Tools", ZX_ICON_MAGNET, "", [](Editor& e) { e.snapEnabled = !e.snapEnabled; });
+    Add(ed, "view.gameUI", "Toggle Game UI", "View", ZX_ICON_MONITOR, "", [](Editor& e) { e.showGameUI = !e.showGameUI; });
     Add(ed, "view.physicsDebug", "Toggle Physics Debug", "View", ZX_ICON_BOXES, "", [](Editor& e) { e.showPhysicsDebug = !e.showPhysicsDebug; });
     Add(ed, "view.grid", "Toggle Grid", "View", ZX_ICON_GRID_3X3, "", [](Editor& e) { e.showGrid = !e.showGrid; });
     // Play
@@ -198,6 +199,14 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.reverbZone", "Create Reverb Zone", "Create", ZX_ICON_AUDIO_LINES, "", [spawn](Editor& e) { e.CreateReverbZone(spawn(e)); });
     Add(ed, "create.decal", "Create Decal", "Create", ZX_ICON_STAMP, "", [spawn](Editor& e) { e.CreateDecal(spawn(e)); });
     Add(ed, "create.terrain", "Create Terrain", "Create", ZX_ICON_MOUNTAIN, "", [](Editor& e) { e.CreateTerrain(); });
+    Add(ed, "create.ui.canvas", "UI Canvas", "Create", ZX_ICON_MONITOR, "", [](Editor& e) { e.CreateUIWidget("canvas"); });
+    Add(ed, "create.ui.panel", "UI Panel", "Create", ZX_ICON_RECTANGLE_HORIZONTAL, "", [](Editor& e) { e.CreateUIWidget("panel"); });
+    Add(ed, "create.ui.text", "UI Text", "Create", ZX_ICON_TYPE, "", [](Editor& e) { e.CreateUIWidget("text"); });
+    Add(ed, "create.ui.button", "UI Button", "Create", ZX_ICON_MOUSE_POINTER_CLICK, "", [](Editor& e) { e.CreateUIWidget("button"); });
+    Add(ed, "create.ui.image", "UI Image", "Create", ZX_ICON_IMAGE, "", [](Editor& e) { e.CreateUIWidget("image"); });
+    Add(ed, "create.ui.progress", "UI Progress Bar", "Create", ZX_ICON_GAUGE, "", [](Editor& e) { e.CreateUIWidget("progress"); });
+    Add(ed, "create.ui.slider", "UI Slider", "Create", ZX_ICON_SLIDERS_HORIZONTAL, "", [](Editor& e) { e.CreateUIWidget("slider"); });
+    Add(ed, "create.ui.toggle", "UI Toggle", "Create", ZX_ICON_TOGGLE_LEFT, "", [](Editor& e) { e.CreateUIWidget("toggle"); });
     Add(ed, "create.heightfog", "Create Height Fog", "Create", ZX_ICON_CLOUD_FOG, "", [](Editor& e) { e.CreateHeightFog(); });
     Add(ed, "create.fluidfire", "Create Fluid Fire", "Create", ZX_ICON_FLAME, "", [spawn](Editor& e) { e.CreateFluid(spawn(e), true); });
     Add(ed, "create.fluidsmoke", "Create Fluid Smoke", "Create", ZX_ICON_CLOUD, "", [spawn](Editor& e) { e.CreateFluid(spawn(e), false); });

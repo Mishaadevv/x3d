@@ -450,6 +450,8 @@ ConCommand CmdCreate("create", "Creates an object in front of the camera: create
         ed->CreateDecal(at);
     else if (kind.EqualsIgnoreCase("terrain"))
         ed->CreateTerrain();
+    else if (kind.StartsWith("ui."))
+        ed->CreateUIWidget(kind.SubStr(3));
     else if (kind.EqualsIgnoreCase("heightfog") || kind.EqualsIgnoreCase("fog"))
         ed->CreateHeightFog(args.Size() > 1 ? ParseFloat(args[1]).ValueOr(0.0f) : 0.0f);
     else if (kind.EqualsIgnoreCase("fogvolume"))

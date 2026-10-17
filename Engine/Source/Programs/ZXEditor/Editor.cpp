@@ -1053,6 +1053,113 @@ void Editor::BuildVehicleLevel()
     world.Add(cam, Script{String("StarterContent/Scripts/CarCamera.zs"), String()});
     EnsureEntityGuid(world, cam);
 
+    // HUD: speedometer and damage (bottom right), controls (bottom left), pause menu on Tab (CarHUD.zs).
+    {
+        const ecs::Entity hud = CreateEntity("HUD", Transform());
+        world.Add(hud, UICanvas{});
+        UIElement root;
+        root.padding = Vec4(36.0f);
+        world.Add(hud, root);
+        world.Add(hud, Script{String("StarterContent/Scripts/CarHUD.zs"), String()});
+        EnsureEntityGuid(world, hud);
+        auto node = [&](StringView name, ecs::Entity parent, UIElement el) {
+            const ecs::Entity e = CreateEntity(name, Transform(), parent);
+            world.Add(e, el);
+            EnsureEntityGuid(world, e);
+            return e;
+        };
+        auto text = [&](StringView name, ecs::Entity parent, StringView value, f32 size, UIFontWeight weight, UITextAlign align,
+                        LinearColor color = LinearColor(1, 1, 1, 1)) {
+            const ecs::Entity e = node(name, parent, UIElement{});
+            UIText t;
+            t.text = String(value);
+            t.fontSize = size;
+            t.weight = weight;
+            t.align = align;
+            t.color = color;
+            world.Add(e, t);
+            return e;
+        };
+        auto corner = [&](Vec2 anchor) {
+            UIElement el;
+            el.absolute = true;
+            el.anchor = el.pivot = anchor;
+            el.padding = Vec4(22.0f, 16.0f, 22.0f, 18.0f);
+            el.gap = 4.0f;
+            return el;
+        };
+        UIElement speedBox = corner(Vec2(1.0f, 1.0f));
+        speedBox.size = Vec2(260.0f, 0.0f);
+        const ecs::Entity gauge = node("Speedometer", hud, speedBox);
+        world.Add(gauge, UIPanel{});
+        UIElement speedRow;
+        speedRow.direction = UIDirection::Row;
+        speedRow.align = UIAlign::End;
+        speedRow.justify = UIJustify::End;
+        speedRow.gap = 8.0f;
+        const ecs::Entity speedLine = node("Speed Row", gauge, speedRow);
+        text("Speed", speedLine, "0", 84.0f, UIFontWeight::Bold, UITextAlign::Right);
+        UIElement unitBox;
+        unitBox.margin = Vec4(0, 0, 0, 14.0f);
+        const ecs::Entity unit = node("Unit", speedLine, unitBox);
+        UIText u;
+        u.text = "km/h";
+        u.fontSize = 24.0f;
+        u.color = LinearColor(0.75f, 0.78f, 0.82f, 1.0f);
+        world.Add(unit, u);
+        text("Damage Label", gauge, "DAMAGE", 18.0f, UIFontWeight::SemiBold, UITextAlign::Left, LinearColor(0.75f, 0.78f, 0.82f, 1.0f));
+        UIElement barBox;
+        barBox.size = Vec2(0.0f, 12.0f);
+        const ecs::Entity damage = node("Damage", gauge, barBox);
+        UIProgressBar bar;
+        bar.value = 0.0f;
+        bar.fillColor = LinearColor(1.0f, 0.25f, 0.05f, 1.0f);
+        world.Add(damage, bar);
+
+        const ecs::Entity hints = node("Controls", hud, corner(Vec2(0.0f, 1.0f)));
+        world.Add(hints, UIPanel{});
+        text("Controls Text", hints, "W / S  throttle, brake      A / D  steer      Space  handbrake\nR  repair      Tab  menu", 22.0f,
+             UIFontWeight::Medium, UITextAlign::Left, LinearColor(0.85f, 0.87f, 0.9f, 1.0f));
+
+        UIElement menuBox;
+        menuBox.absolute = true;
+        menuBox.size = Vec2(460.0f, 0.0f);
+        menuBox.padding = Vec4(36.0f);
+        menuBox.gap = 16.0f;
+        menuBox.visible = false; // shown by CarHUD.zs on Tab (tick Visible in Details to edit it)
+        const ecs::Entity menu = node("Pause Menu", hud, menuBox);
+        UIPanel menuPanel;
+        menuPanel.color = LinearColor(0.015f, 0.018f, 0.025f, 0.92f);
+        menuPanel.cornerRadius = 16.0f;
+        menuPanel.shadow = 40.0f;
+        world.Add(menu, menuPanel);
+        text("Title", menu, "Paused", 54.0f, UIFontWeight::Bold, UITextAlign::Center);
+        for (StringView label : {StringView("Resume"), StringView("Repair")}) {
+            UIElement b;
+            b.size = Vec2(0.0f, 64.0f);
+            b.justify = UIJustify::Center;
+            b.align = UIAlign::Center;
+            const ecs::Entity button = node(label, menu, b);
+            world.Add(button, UIButton{});
+            const ecs::Entity l = text(String::Format("{} Label", label), button, label, 28.0f, UIFontWeight::SemiBold, UITextAlign::Center);
+            world.Get<UIText>(l)->shadow = false;
+        }
+        UIElement volumeRow;
+        volumeRow.direction = UIDirection::Row;
+        volumeRow.align = UIAlign::Center;
+        volumeRow.gap = 16.0f;
+        volumeRow.margin = Vec4(0, 8.0f, 0, 0);
+        const ecs::Entity row = node("Volume Row", menu, volumeRow);
+        text("Volume Label", row, "Volume", 24.0f, UIFontWeight::Medium, UITextAlign::Left);
+        UIElement sliderBox;
+        sliderBox.grow = 1.0f;
+        sliderBox.size = Vec2(0.0f, 32.0f);
+        const ecs::Entity volume = node("Volume", row, sliderBox);
+        UISlider slider;
+        slider.value = 1.0f;
+        world.Add(volume, slider);
+    }
+
     camera.position = Vec3(4.2f, 2.1f, -5.6f);
     camera.LookAt(Vec3(-0.3f, 0.7f, 3.0f));
     environment.sunElevation = DegToRad(38.0f);
@@ -1568,6 +1675,93 @@ void Editor::DrawPhysicsDebug()
         debugDraw->Line(a, b, Color(255, 160, 60));
         debugDraw->Sphere(a, 0.05f, Color(255, 160, 60), 8);
     }
+}
+
+ecs::Entity Editor::CreateUIWidget(StringView kind)
+{
+    ecs::Entity parent;
+    if (world.IsAlive(selected) && world.Has<UIElement>(selected))
+        parent = selected;
+    if (!parent)
+        world.Query<const UICanvas>().Each([&](ecs::Entity e, const UICanvas&) {
+            if (!parent)
+                parent = e;
+        });
+    ecs::Entity created; // the root of what this call made (one undo step)
+    auto canvas = [&] {
+        const ecs::Entity c = CreateEntity("UI Canvas", Transform());
+        world.Add(c, UICanvas{});
+        UIElement el;
+        el.padding = Vec4(40.0f);
+        world.Add(c, el);
+        EnsureEntityGuid(world, c);
+        return c;
+    };
+    if (kind.EqualsIgnoreCase("canvas") || !parent) {
+        parent = canvas();
+        created = parent;
+        if (kind.EqualsIgnoreCase("canvas")) {
+            CommitCreated(created, "Create UI Canvas");
+            return created;
+        }
+    }
+    auto widget = [&](StringView name, UIElement el) {
+        const ecs::Entity e = CreateEntity(name, Transform(), parent);
+        world.Add(e, el);
+        EnsureEntityGuid(world, e);
+        return e;
+    };
+    UIElement el;
+    ecs::Entity e;
+    if (kind.EqualsIgnoreCase("panel")) {
+        el.size = Vec2(480.0f, 0.0f);
+        el.padding = Vec4(24.0f);
+        el.gap = 12.0f;
+        e = widget("Panel", el);
+        world.Add(e, UIPanel{});
+    } else if (kind.EqualsIgnoreCase("text")) {
+        e = widget("Text", el);
+        world.Add(e, UIText{});
+    } else if (kind.EqualsIgnoreCase("button")) {
+        el.size = Vec2(280.0f, 64.0f);
+        el.justify = UIJustify::Center;
+        el.align = UIAlign::Center;
+        e = widget("Button", el);
+        world.Add(e, UIButton{});
+        const ecs::Entity label = CreateEntity("Label", Transform(), e);
+        world.Add(label, UIElement{});
+        UIText t;
+        t.text = "Button";
+        t.align = UITextAlign::Center;
+        t.weight = UIFontWeight::SemiBold;
+        t.shadow = false;
+        world.Add(label, t);
+        EnsureEntityGuid(world, label);
+    } else if (kind.EqualsIgnoreCase("image")) {
+        el.size = Vec2(128.0f, 128.0f);
+        e = widget("Image", el);
+        world.Add(e, UIImage{});
+    } else if (kind.EqualsIgnoreCase("progress") || kind.EqualsIgnoreCase("progressbar")) {
+        el.size = Vec2(320.0f, 20.0f);
+        e = widget("Progress Bar", el);
+        world.Add(e, UIProgressBar{});
+    } else if (kind.EqualsIgnoreCase("slider")) {
+        el.size = Vec2(320.0f, 32.0f);
+        e = widget("Slider", el);
+        world.Add(e, UISlider{});
+    } else if (kind.EqualsIgnoreCase("toggle")) {
+        el.size = Vec2(64.0f, 34.0f);
+        e = widget("Toggle", el);
+        world.Add(e, UIToggle{});
+    } else {
+        ZX_LOG_WARN(LogEditor, "Unknown UI widget '{}' (canvas, panel, text, button, image, progress, slider, toggle)", kind);
+        if (created)
+            CommitCreated(created, "Create UI Canvas");
+        return created;
+    }
+    CommitCreated(created ? created : e, "Create UI Widget");
+    Select(e);
+    return e;
 }
 
 void Editor::CreateTerrain()
@@ -2254,6 +2448,7 @@ GameSystems Editor::GameSystemsForPlay()
     s.fire = &fire;
     s.animation = animation.Get();
     s.softBodies = &softBodies;
+    s.gameUI = &gameUI;
     s.renderAssets = renderAssets.Get();
     s.inputActions = &inputActions;
     s.inputActionState = &inputActionState;
@@ -3273,7 +3468,7 @@ bool Editor::Frame()
     }
     if (!flying)
         window->SetCursorShape(ui->GetCursorShape());
-    window->SetCursorLocked(flying || gameInputCaptured);
+    window->SetCursorLocked(flying || (gameInputCaptured && !gameUI.cursorRequested)); // menus free the mouse
     ProcessShortcuts();
 
     // --- Scene ---
@@ -3297,11 +3492,11 @@ bool Editor::Frame()
     // Particles: emitters with Simulate In Editor run live while editing, all of them while playing (frozen when paused).
     if (FeatureEnabled("particles")) {
         scene::UpdateWorldTransforms(world);
-        particles.Tick(world, playState == PlayState::Paused ? 0.0f : dt, IsPlaying());
+        particles.Tick(world, playState == PlayState::Paused ? 0.0f : dt * (IsPlaying() ? GameTimeScale(GameSystemsForPlay()) : 1.0f), IsPlaying());
     }
     // Animators pose their skinned meshes (frozen when paused).
     scene::UpdateWorldTransforms(world);
-    animation->Tick(world, playState == PlayState::Paused ? 0.0f : dt, IsPlaying());
+    animation->Tick(world, playState == PlayState::Paused ? 0.0f : dt * (IsPlaying() ? GameTimeScale(GameSystemsForPlay()) : 1.0f), IsPlaying());
     if (!IsPlaying() && scripts && (m_scriptCheckTimer += dt) > 0.5) {
         m_scriptCheckTimer = 0.0; // edit mode: keep the Details panel in sync with files edited elsewhere
         scripts->CheckForChanges();

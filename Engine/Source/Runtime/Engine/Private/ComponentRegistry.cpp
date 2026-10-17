@@ -2,6 +2,7 @@
 #include "Core/Memory/Memory.h"
 #include "Engine/Animation.h"
 #include "Engine/SoftBody.h"
+#include "Engine/GameUI.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/Fire.h"
 #include "Engine/GameModule.h"
@@ -67,6 +68,15 @@ void RegisterEngineComponents()
     RegisterComponent<ParticleEmitter>("Particle Emitter", "\xEE\x90\x92");        // sparkles
     RegisterComponent<Animator>("Animator", "\xEE\x8D\x98");                         // bone
     RegisterComponent<SoftBody>("Soft Body", "\xEE\x87\x95");                        // car
+    RegisterComponent<UICanvas>("UI Canvas", "\xEE\x84\x9D");                        // monitor
+    RegisterComponent<UIElement>("UI Element", "\xEE\x8A\x91");                      // frame
+    RegisterComponent<UIPanel>("UI Panel", "\xEE\x8D\xB6");                          // rectangle-horizontal
+    RegisterComponent<UIText>("UI Text", "\xEE\x86\x98");                            // type
+    RegisterComponent<UIImage>("UI Image", "\xEE\x83\xB6");                          // image
+    RegisterComponent<UIButton>("UI Button", "\xEE\x84\xA0");                        // mouse-pointer-click
+    RegisterComponent<UIProgressBar>("UI Progress Bar", "\xEE\x86\xBF");             // gauge
+    RegisterComponent<UISlider>("UI Slider", "\xEE\x8A\x9A");                        // sliders-horizontal
+    RegisterComponent<UIToggle>("UI Toggle", "\xEE\x86\x8B");                        // toggle-left
     RegisterComponent<Flammable>("Flammable", "\xEE\x83\x92");                     // flame
     RegisterComponent<Decal>("Decal", "\xEE\x8E\xBB");                                 // stamp
     RegisterComponent<ReflectionProbe>("Reflection Probe", "\xEE\x8D\x85");           // circle-dot

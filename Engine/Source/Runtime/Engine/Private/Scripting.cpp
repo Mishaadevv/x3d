@@ -6,6 +6,7 @@
 #include "Core/Log/Log.h"
 #include "Engine/Animation.h"
 #include "Engine/SoftBody.h"
+#include "Engine/GameUI.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/Fire.h"
 #include "Engine/Gameplay.h"
@@ -241,6 +242,31 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
                 out = Value(t.rotation.GetForward());
             return true;
         }
+        if (m == "text" || m == "value" || m == "visible") {
+            // UI widgets: text (UI Text), value (UI Progress Bar / Slider / Toggle), visible (UI Element).
+            ecs::World* w = SystemOf(o).context.world;
+            e = ecs::Entity::Unpack(o.id);
+            if (!w || !w->IsAlive(e))
+                return v.Fail("The entity was destroyed");
+            if (m == "text") {
+                const UIText* t = w->Get<const UIText>(e);
+                if (!t)
+                    return v.Fail("No UI Text on this entity");
+                out = Value(t->text.View());
+            } else if (m == "visible") {
+                const UIElement* el = w->Get<const UIElement>(e);
+                out = Value(el ? el->visible : true);
+            } else if (const UIProgressBar* p = w->Get<const UIProgressBar>(e)) {
+                out = Value(f64(p->value));
+            } else if (const UISlider* sl = w->Get<const UISlider>(e)) {
+                out = Value(f64(sl->value));
+            } else if (const UIToggle* tg = w->Get<const UIToggle>(e)) {
+                out = Value(tg->on);
+            } else {
+                return v.Fail("No UI Progress Bar, Slider or Toggle on this entity");
+            }
+            return true;
+        }
         if (m == "alive") {
             ecs::World* w = SystemOf(o).context.world;
             out = Value(w && w->IsAlive(ecs::Entity::Unpack(o.id)));
@@ -315,6 +341,32 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
     };
     entityType.set = [](script::VM& v, script::NativeObject& o, StringView m, const Value& value) {
         ecs::Entity e;
+        if (m == "text" || m == "value" || m == "visible") {
+            ecs::World* w = SystemOf(o).context.world;
+            e = ecs::Entity::Unpack(o.id);
+            if (!w || !w->IsAlive(e))
+                return v.Fail("The entity was destroyed");
+            if (m == "text") {
+                UIText* t = w->Get<UIText>(e);
+                if (!t)
+                    return v.Fail("No UI Text on this entity");
+                t->text = value.Type() == ValueType::String ? String(value.AsString()) : value.ToString();
+            } else if (m == "visible") {
+                UIElement* el = w->Get<UIElement>(e);
+                if (!el)
+                    return v.Fail("No UI Element on this entity");
+                el->visible = value.AsBool();
+            } else if (UIProgressBar* p = w->Get<UIProgressBar>(e)) {
+                p->value = Clamp(value.AsFloat(), 0.0f, 1.0f);
+            } else if (UISlider* sl = w->Get<UISlider>(e)) {
+                sl->value = Clamp(value.AsFloat(), Min(sl->minValue, sl->maxValue), Max(sl->minValue, sl->maxValue));
+            } else if (UIToggle* tg = w->Get<UIToggle>(e)) {
+                tg->on = value.AsBool();
+            } else {
+                return v.Fail("No UI Progress Bar, Slider or Toggle on this entity");
+            }
+            return true;
+        }
         if (m == "name") {
             e = ecs::Entity::Unpack(o.id);
             ecs::World* w = SystemOf(o).context.world;
@@ -822,13 +874,46 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             out = Value(c.dt);
         else if (m == "elapsed")
             out = Value(c.elapsed);
+        else if (m == "realDt")
+            out = Value(c.realDt);
+        else if (m == "scale")
+            out = Value(f64(SystemOf(o).timeScale));
         else if (m == "frame")
             out = Value(f64(c.frame));
         else
             return false;
         return true;
     };
+    timeType.set = [](script::VM& v, script::NativeObject& o, StringView m, const Value& value) {
+        if (m != "scale")
+            return false;
+        if (!value.IsNumber())
+            return v.Fail("time.scale must be a number (0 = paused, 1 = normal)");
+        SystemOf(o).timeScale = Clamp(value.AsFloat(), 0.0f, 10.0f);
+        return true;
+    };
     vm.SetGlobal("time", script::MakeNative(timeType, this));
+
+    // ui: cursor (true shows and frees the mouse while playing: menus), overUI (the mouse is over a button / slider).
+    script::NativeType& uiType = vm.AddType("UI");
+    uiType.get = [](script::VM&, script::NativeObject& o, StringView m, Value& out) {
+        const GameUISystem* ui = SystemOf(o).gameUI;
+        if (m == "cursor")
+            out = Value(ui && ui->cursorRequested);
+        else if (m == "overUI")
+            out = Value(ui && ui->MouseOverUI());
+        else
+            return false;
+        return true;
+    };
+    uiType.set = [](script::VM&, script::NativeObject& o, StringView m, const Value& value) {
+        if (m != "cursor")
+            return false;
+        if (GameUISystem* ui = SystemOf(o).gameUI)
+            ui->cursorRequested = value.AsBool();
+        return true;
+    };
+    vm.SetGlobal("ui", script::MakeNative(uiType, this));
 
     // audio: play(file[, volume]) / playAt(file, position[, volume]) -> id, stop(id), setVolume(bus, volume).
     script::NativeType& audioType = vm.AddType("Audio");
@@ -1148,6 +1233,7 @@ void ScriptSystem::Begin(ecs::World& world)
     m_running = true;
     context = Context{};
     context.world = &world;
+    timeScale = 1.0f;
     CheckForChanges();
     for (auto& [file, cp] : m_programs)
         cp->errorReported = false;
@@ -1284,6 +1370,36 @@ void ScriptSystem::DispatchPhysicsEvents(ecs::World& world, Span<const PhysicsEv
                     rs->failed = true;
                 }
             }
+        }
+    }
+}
+
+void ScriptSystem::DispatchUIEvents(ecs::World& world, Span<const UIEvent> events)
+{
+    if (!m_running || events.Empty())
+        return;
+    context.world = &world;
+    for (const UIEvent& ev : events) {
+        if (!world.IsAlive(ev.entity))
+            continue;
+        const scene::EntityName* n = world.Get<const scene::EntityName>(ev.entity);
+        const bool click = ev.type == UIEvent::Type::Click;
+        const StringView fn = click ? "onUIClick" : "onUIChanged";
+        const Value args[2] = {Value(n ? n->value.View() : StringView()), Value(f64(ev.value))};
+        for (ecs::Entity x = ev.entity; world.IsAlive(x);) {
+            for (UniquePtr<RunningScript>& rs : m_instances) {
+                if (rs->failed || !rs->started || rs->entity != x || !rs->instance->HasFunction(fn))
+                    continue;
+                RebindGlobals(*rs);
+                if (!rs->instance->Call(fn, Span<const Value>(args, click ? 1 : 2))) {
+                    Report(m_vm->LastError(), true);
+                    rs->failed = true;
+                }
+            }
+            const scene::Parent* p = world.Get<const scene::Parent>(x);
+            if (!p)
+                break;
+            x = p->entity;
         }
     }
 }

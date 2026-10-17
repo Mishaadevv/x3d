@@ -28,6 +28,7 @@ class RenderAssets;
 }
 
 class SoftBodySystem;
+class GameUISystem;
 
 struct GameSystems
 {
@@ -44,6 +45,7 @@ struct GameSystems
     Function<bool(StringView)> featureEnabled;
     AnimationSystem* animation = nullptr; // Animators (scripts set graph parameters / play clips)
     SoftBodySystem* softBodies = nullptr; // soft-body vehicles (simulated with the physics)
+    GameUISystem* gameUI = nullptr;       // UI events (clicks, changes) go to scripts; the host lays out and draws
 
     bool Enabled(StringView feature) const { return !featureEnabled || featureEnabled(feature); }
 };
@@ -53,6 +55,8 @@ void BeginGame(ecs::World& world, GameSystems& s);
 /// One frame: gameplay components, input actions, scripts, C++ module, characters, physics (+ collision callbacks
 /// and impact sounds), fire, audio. Particles and terrains are ticked by the owner (they also run while editing).
 void TickGame(ecs::World& world, GameSystems& s, f32 dt, const InputState* input, const ListenerPose& listener, bool tickAudio = true);
+/// The game's time scale (scripts set time.scale: 0 = paused); hosts scale animation / particles with it.
+f32 GameTimeScale(const GameSystems& s);
 /// Stops every system started by BeginGame.
 void EndGame(GameSystems& s);
 

@@ -127,6 +127,12 @@ void DrawMenus(Editor& ed)
         ui::Separator();
         ActionMenuItem(ed, "create.water");
         ActionMenuItem(ed, "create.terrain");
+        if (ui::BeginMenu(ZX_ICON_MONITOR "  UI")) {
+            for (StringView id : {StringView("create.ui.canvas"), StringView("create.ui.panel"), StringView("create.ui.text"), StringView("create.ui.button"),
+                                  StringView("create.ui.image"), StringView("create.ui.progress"), StringView("create.ui.slider"), StringView("create.ui.toggle")})
+                ActionMenuItem(ed, id);
+            ui::EndMenu();
+        }
         ActionMenuItem(ed, "create.audioSource");
         ActionMenuItem(ed, "create.reverbZone");
         ActionMenuItem(ed, "create.postProcessVolume");

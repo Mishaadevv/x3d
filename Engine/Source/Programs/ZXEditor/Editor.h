@@ -18,6 +18,7 @@
 #include "Core/Threading/Thread.h"
 #include "Engine/Terrain.h"
 #include "Engine/SoftBody.h"
+#include "Engine/GameUI.h"
 #include "Engine/Animation.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
@@ -255,6 +256,7 @@ public:
     FireSystem fire;                      // Flammable objects (Play only)
     TerrainSystem terrains;               // builds Terrain meshes (edit and Play)
     SoftBodySystem softBodies;            // soft-body vehicles (meshes while editing, simulation in Play)
+    GameUISystem gameUI;                  // UI Canvases: layout and drawing over the viewport, clicks while playing
     GameSystems GameSystemsForPlay();     // the systems Play drives (same loop as the packaged game)
     UniquePtr<GameModuleSystem> game;     // C++ game module of the open project (Source/<Name>), hot-reloaded
     i64 gameDllTime = 0;                  // modification time of the loaded Binaries/<Name>.dll
@@ -307,6 +309,7 @@ public:
     void ToggleEject();
     bool showGrid = true;
     bool showPhysicsDebug = false; // while playing: body bounds by island (grey = asleep), contacts, joints
+    bool showGameUI = true;        // UI Canvases over the viewport (always over the game camera while playing)
     // Viewport show flags for post-processing (motion blur only while playing).
     bool showPostVolumes = true, showDepthOfField = true, showMotionBlur = true;
     bool lastViewWasGame = false; // camera cut detection (editor <-> game camera)
@@ -386,6 +389,9 @@ public:
     void CreatePostProcessVolume(Vec3 position, ecs::Entity parent = {});
     void CreateReflectionProbe(Vec3 position, ecs::Entity parent = {});
     void CreateDecal(Vec3 position, ecs::Entity parent = {}); // on the surface under / in front of the point
+    /// Game UI: canvas, panel, text, button, image, progress, slider, toggle - under the selected UI element or the first
+    /// canvas (created when there is none).
+    ecs::Entity CreateUIWidget(StringView kind);
     void CreateTerrain();                                      // 200 m procedural terrain under the scene
     void DrawPhysicsDebug();
     void CreateHeightFog(f32 density = 0.0f);                  // replaces the scene's one; density 0 = default

@@ -362,6 +362,7 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
     if (ui::BeginPopup("##showflags")) {
         ui::MenuItem("Grid", {}, &ed.showGrid);
         ui::MenuItem("Physics Debug", {}, &ed.showPhysicsDebug);
+        ui::MenuItem("Game UI", {}, &ed.showGameUI);
         ui::MenuItem("Sky & Fog", {}, &vs.useSky);
         ui::MenuItem("Sun Shadows", {}, &vs.scene.shadows.enabled);
         ui::MenuItem("Local Shadows", {}, &vs.scene.shadows.localEnabled);
@@ -468,6 +469,18 @@ void DrawViewportPanel(Editor& ed)
     ed.EnsureViewportTexture(UVec2(u32(Max(r.Width(), 16.0f)), u32(Max(r.Height(), 16.0f))));
     DrawList& dl = ui::GetWindowDrawList();
     dl.AddImage(ed.viewportTexture->GetSrvIndex(), r);
+    // Game UI (UI Canvases) over the view: always over the game camera, as a preview while editing.
+    if (ed.showGameUI || ed.UsingGameCamera()) {
+        ed.gameUI.Layout(ed.world, ed.fonts, r);
+        if (ed.UsingGameCamera() && ed.gameInputCaptured && ed.gameUI.cursorRequested) {
+            const Vec2 mouse = ui::GetMousePos();
+            ed.gameUI.Interact(ed.world, mouse, ed.input.IsMouseDown(MouseButton::Left), ed.input.WasMousePressed(MouseButton::Left),
+                               ed.input.WasMouseReleased(MouseButton::Left));
+        }
+        dl.PushClipRect(r);
+        ed.gameUI.Draw(ed.world, ed.fonts, dl, [&](asset::AssetId id) { return ed.renderAssets ? ed.renderAssets->GetTextureSrv(id) : 0u; });
+        dl.PopClipRect();
+    }
 
     // Full-viewport invisible item: hover, clicks, drop target.
     ui::SetCursorPos(r.min);

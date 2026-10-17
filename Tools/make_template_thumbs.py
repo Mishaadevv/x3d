@@ -23,7 +23,7 @@ TEMPLATES = {  # -template value -> output name, extra console commands (camera 
     'thirdperson': ('ThirdPerson', ''),
     'water': ('Water', ''),
     'physics': ('Physics', ''),
-    'vehicle': ('Vehicle', ''),
+    'vehicle': ('Vehicle', 'action view.gameUI'),  # the HUD would be cut off by the crop
 }
 
 

@@ -635,6 +635,46 @@ script ThirdPersonCamera {
 
 /// Scripts of the Starter Content prefabs (vehicles and gameplay props).
 const StarterScript PropScripts[] = {
+    {"CarHUD.zs", R"zs(// Car HUD on a UI Canvas: speedometer, damage bar, and a pause menu on Tab (time stops, the mouse is free):
+// Resume, Repair, a volume slider. Widgets are found by name: "Speed", "Damage", "Pause Menu", buttons "Resume" /
+// "Repair" and the slider "Volume".
+script CarHUD {
+    @tooltip("Name of the car (Soft Body) to show")
+    prop car = "Car"
+
+    var paused = false
+
+    fn start() { find("Pause Menu").visible = false }
+
+    fn update(dt) {
+        let c = find(car)
+        if c != nil {
+            find("Speed").text = str(floor(abs(c.carSpeed()) * 3.6))
+            find("Damage").value = c.carDamage()
+        }
+        if input.pressed("Tab") { setPaused(not paused) }
+    }
+
+    fn setPaused(p) {
+        paused = p
+        find("Pause Menu").visible = p
+        ui.cursor = p
+        if p { time.scale = 0 } else { time.scale = 1 }
+    }
+
+    fn onUIClick(name) {
+        if name == "Resume" { setPaused(false) }
+        elif name == "Repair" {
+            find(car).carReset()
+            setPaused(false)
+        }
+    }
+
+    fn onUIChanged(name, value) {
+        if name == "Volume" { audio.setVolume("Master", value) }
+    }
+}
+)zs"},
     {"SoftBodyCar.zs", R"zs(// Soft-body car (Soft Body component, node-beam physics like BeamNG.drive): crashes dent the body where it hits.
 // W / S: throttle and brake (S reverses once stopped), A / D: steer, Space: handbrake, R: repair and put back on the
 // wheels. The Audio Source on the car is the engine (its pitch follows the revs); hard hits play a crunch.

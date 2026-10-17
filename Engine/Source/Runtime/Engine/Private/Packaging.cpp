@@ -137,6 +137,7 @@ Result<PackageReport> PackageProject(const PackageOptions& o, const Function<voi
     };
     say("Writing Content.zpak...");
     bool ok = addTree(o.contentDir, "Game") && addTree(staging, "DDC") && addTree(Path::Join(o.engineRoot, "Engine/Shaders"), "Shaders") &&
+              addTree(Path::Join(o.engineRoot, "Engine/Content/Fonts"), "Fonts") &&
               addTree(Path::Join(o.engineRoot, "Saved/ShaderCache"), "ShaderCache");
     const String inputConfig = Path::Join(o.projectRoot, "Config/Input.json");
     if (ok && platform::FileExists(inputConfig)) {

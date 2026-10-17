@@ -168,6 +168,13 @@ no statics holding engine allocations, they outlive the leak check). GameSystems
 (entity.carInput/...), Gather skins SoftBody meshes with SoftBody::palette. Template Vehicle (Editor::BuildVehicleLevel,
 prefab Characters/P_SoftCar from StarterAssets.cpp), scripts SoftBodyCar.zs / CarCamera.zs, console car.drive. Tests
 ZXTests SoftBody.*. Editor `camera x y z yaw pitch`: yaw = atan2(dx, dz) of the view direction.
+Game UI (M14): Engine/GameUI.h (UICanvas / UIElement / UIPanel / UIText / UIImage / UIButton / UIProgressBar / UISlider /
+UIToggle components; GameUISystem Layout -> Interact -> Draw into a ui::DrawList; events consumed by TickGame ->
+ScriptSystem::DispatchUIEvents). Editor: Editor::gameUI drawn in ViewportPanel over the viewport image (showGameUI,
+action view.gameUI), Interact only while the game shows the cursor (ui.cursor); CreateUIWidget / create ui.<kind>.
+ZXGame: m_fonts + ui::Context (fonts) + UIRenderer pass; Packaging adds Engine/Content/Fonts as pak "Fonts".
+time.scale = ScriptSystem::timeScale -> GameTimeScale(); hosts scale particles / animation with it. Tests GameUI.*.
+Engine module depends on UI now.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).
