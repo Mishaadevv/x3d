@@ -20,7 +20,7 @@ Editor smoke test: `Binaries/Win64/Debug/ZXEditor.exe -autotest=60` (exit code 0
 Editor flags: -scene=<gltf|zscene>, -resolution=WxH, -resetlayout, -screenshot=<path> (with -autotest), -savescene=<path>
 (saves when the autotest ends), -undotest (runs every undoable edit through the editor; exit code 4 on failure).
 Projects: no args = Project Browser; -autotest/-scene without -project use Samples/Samples.zproj (Sponza). -project=<zproj>,
--newproject=<dir>/<Name> [-template=sample|firstperson|thirdperson|water] [-starter] [-nodocs] [-git], -projectbrowser [-browserpage=new], -recentfile=<json> (keep tests out of the
+-newproject=<dir>/<Name> [-template=sample|firstperson|thirdperson|water|physics|vehicle] [-starter] [-nodocs] [-git], -projectbrowser [-browserpage=new], -recentfile=<json> (keep tests out of the
 user's real recent list in %LOCALAPPDATA%/ZeqouX3D).
 -exec="cmd; cmd" runs console commands once loaded (help, stat.gpu, stat.scene, import <path>, create <type>, undo, r.*);
 paths inside -exec must not contain spaces (the command-line parser splits quoted values). -browse=<dir under Content>.
@@ -161,6 +161,13 @@ with the vertices), CookedMesh::morphNames / morphDeltas (16 B per vertex per ta
 MorphTrack (glTF weights), GpuMesh::morphBuffer, RenderInstance::morphWeights (AnimationSystem::MorphWeights or the
 MorphTargets component), applied in Skinning.hlsl (skin = ~0: morph-only). Starter slime: Tools/make_starter_blob.py
 (Blender, NLA tracks merge bone + shape key actions), Editor::AddSlime, StarterContent/Scripts/Slime.zs.
+Soft bodies (0.13.1): Engine/SoftBody.h (SoftBody component with runtime palette, SoftBodySystem: Update = mesh
+SoftBodyCarMeshId + wheels at rest, Tick in TickGame before the physics step; node-beam XPBD, plastic beams, contact
+planes from PhysicsSystem::ClosestPoint once per frame, raycast suspension; CarRig()/BuildCarMesh() are built on demand -
+no statics holding engine allocations, they outlive the leak check). GameSystems::softBodies, ScriptSystem::softBodies
+(entity.carInput/...), Gather skins SoftBody meshes with SoftBody::palette. Template Vehicle (Editor::BuildVehicleLevel,
+prefab Characters/P_SoftCar from StarterAssets.cpp), scripts SoftBodyCar.zs / CarCamera.zs, console car.drive. Tests
+ZXTests SoftBody.*. Editor `camera x y z yaw pitch`: yaw = atan2(dx, dz) of the view direction.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

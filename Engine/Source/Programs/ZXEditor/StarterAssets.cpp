@@ -13,6 +13,7 @@
 #include "Engine/PhysicsSystem.h"
 #include "Engine/Prefab.h"
 #include "Engine/SceneRendering.h"
+#include "Engine/SoftBody.h"
 #include "Engine/Scripting.h"
 #include "Scene/Hierarchy.h"
 
@@ -713,6 +714,36 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             engine.maxDistance = 30.0f;
             b.world.Add(tank, engine);
             save(b, tank, "Characters/P_Tank");
+        }
+        {
+            // Soft-body car: node-beam body that dents in crashes, four wheels on suspension, engine sound.
+            PrefabBuilder b;
+            const ecs::Entity car = b.Node("Car");
+            b.world.Add(car, SoftBody{});
+            MeshRenderer mr;
+            mr.mesh = SoftBodyCarMeshId();
+            mr.collision = false;
+            for (StringView m : {"M_CarPaint", "M_CarGlass", "M_CarTrim", "M_CarHeadlight", "M_CarTaillight"})
+                mr.materials.PushBack(Guid::FromName(Guid(), m));
+            b.world.Add(car, mr);
+            AudioSource engine;
+            engine.clip = "StarterContent/Sounds/Props/Engine_Loop.ogg";
+            engine.volume = 0.4f;
+            engine.maxDistance = 45.0f;
+            b.world.Add(car, engine);
+            b.Script(car, "SoftBodyCar.zs");
+            const Quat axle = Quat::FromAxisAngle(Vec3(0, 0, 1), HalfPi); // cylinders stand on Y: lay them on X
+            for (u32 w = 0; w < 4; ++w) {
+                const ecs::Entity wheel = b.Node(SoftBodyWheelNames[w], SoftBodyWheelPosition(w), car);
+                const f32 d = SoftBodyWheelRadius * 2.0f;
+                b.Mesh("Tire", BuiltinShape::Cylinder, Vec3(), Vec3(d, SoftBodyWheelWidth, d), "M_Rubber_Black", wheel, axle);
+                b.Mesh("Rim", BuiltinShape::Cylinder, Vec3(), Vec3(d * 0.62f, SoftBodyWheelWidth + 0.01f, d * 0.62f), "M_Metal_Steel", wheel, axle);
+                for (u32 k = 0; k < 2; ++k) // spokes: show the wheel turning
+                    b.Mesh("Spoke", BuiltinShape::Cube, Vec3(), Vec3(SoftBodyWheelWidth + 0.02f, 0.07f, d * 0.58f), "M_CarTrim", wheel,
+                           Quat::FromAxisAngle(Vec3(1, 0, 0), f32(k) * HalfPi));
+            }
+            b.world.Query<MeshRenderer>().Each([](ecs::Entity, MeshRenderer& r) { r.collision = false; });
+            save(b, car, "Characters/P_SoftCar");
         }
     }
 

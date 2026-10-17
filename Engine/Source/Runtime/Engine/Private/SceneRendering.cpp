@@ -1,5 +1,6 @@
 #include "Engine/SceneRendering.h"
 #include "Engine/Animation.h"
+#include "Engine/SoftBody.h"
 #include "Engine/Fire.h"
 
 #include "Core/Jobs/JobSystem.h"
@@ -217,7 +218,7 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out, con
     };
     Array<ChunkRef> chunks;
     u32 total = 0;
-    world.Query<const WorldTransform, const MeshRenderer>().Without<Flammable>().Without<Animator>().Without<MorphTargets>().EachChunk([&](auto& v) {
+    world.Query<const WorldTransform, const MeshRenderer>().Without<Flammable>().Without<Animator>().Without<MorphTargets>().Without<SoftBody>().EachChunk([&](auto& v) {
         ChunkRef c{v.entities, v.template Column<0>(), v.template Column<1>(), v.count, total};
         for (u32 i = 0; i < v.count; ++i)
             total += c.renderers[i].visible && c.renderers[i].mesh.IsValid() ? 1u : 0u;
@@ -263,8 +264,20 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out, con
             if (const MorphTargets* m = world.Get<const MorphTargets>(e))
                 inst.morphWeights = m->weights.View();
     });
+    // Soft bodies: skinned to their nodes.
+    world.Query<const WorldTransform, const MeshRenderer, const SoftBody>().Without<Animator>().Each(
+        [&](Entity e, const WorldTransform& wt, const MeshRenderer& mr, const SoftBody& sb) {
+            if (!mr.visible || !mr.mesh.IsValid())
+                return;
+            render::RenderInstance& inst = out.AddDefaulted();
+            inst.id = e.Pack();
+            inst.world = wt.matrix;
+            inst.mesh = mr.mesh;
+            inst.materials = mr.materials.View();
+            inst.skinMatrices = sb.palette.View();
+        });
     // Meshes with morph targets (no Animator).
-    world.Query<const WorldTransform, const MeshRenderer, const MorphTargets>().Without<Animator>().Without<Flammable>().Each(
+    world.Query<const WorldTransform, const MeshRenderer, const MorphTargets>().Without<Animator>().Without<Flammable>().Without<SoftBody>().Each(
         [&](Entity e, const WorldTransform& wt, const MeshRenderer& mr, const MorphTargets& m) {
             if (!mr.visible || !mr.mesh.IsValid())
                 return;
@@ -275,7 +288,7 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out, con
             inst.materials = mr.materials.View();
             inst.morphWeights = m.weights.View();
         });
-    world.Query<const WorldTransform, const MeshRenderer, const Flammable>().Without<Animator>().Each([&](Entity e, const WorldTransform& wt, const MeshRenderer& mr, const Flammable& f) {
+    world.Query<const WorldTransform, const MeshRenderer, const Flammable>().Without<Animator>().Without<SoftBody>().Each([&](Entity e, const WorldTransform& wt, const MeshRenderer& mr, const Flammable& f) {
         if (!mr.visible || !mr.mesh.IsValid())
             return;
         render::RenderInstance& inst = out.AddDefaulted();

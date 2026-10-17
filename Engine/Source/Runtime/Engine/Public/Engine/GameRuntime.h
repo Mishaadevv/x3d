@@ -27,6 +27,8 @@ namespace render {
 class RenderAssets;
 }
 
+class SoftBodySystem;
+
 struct GameSystems
 {
     ScriptSystem* scripts = nullptr;
@@ -41,6 +43,7 @@ struct GameSystems
     /// Project Features (Features window); null = everything on.
     Function<bool(StringView)> featureEnabled;
     AnimationSystem* animation = nullptr; // Animators (scripts set graph parameters / play clips)
+    SoftBodySystem* softBodies = nullptr; // soft-body vehicles (simulated with the physics)
 
     bool Enabled(StringView feature) const { return !featureEnabled || featureEnabled(feature); }
 };

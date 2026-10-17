@@ -23,6 +23,7 @@ TEMPLATES = {  # -template value -> output name, extra console commands (camera 
     'thirdperson': ('ThirdPerson', ''),
     'water': ('Water', ''),
     'physics': ('Physics', ''),
+    'vehicle': ('Vehicle', ''),
 }
 
 

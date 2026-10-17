@@ -214,6 +214,18 @@ ConCommand CmdAnimGraph("anim.graph",
                             }
                         });
 
+ConCommand CmdCarDrive("car.drive",
+                       "Drives every soft-body car instead of its script: car.drive <throttle> <steer> [brake] (car.drive off: scripts again)",
+                       [](Span<const StringView> args) {
+                           if (!Ed() || args.Empty())
+                               return;
+                           SoftBodySystem& cars = Ed()->softBodies;
+                           cars.overrideInput = !args[0].EqualsIgnoreCase("off");
+                           cars.forcedInput.throttle = ParseFloat(args[0]).ValueOr(0.0f);
+                           cars.forcedInput.steer = args.Size() > 1 ? ParseFloat(args[1]).ValueOr(0.0f) : 0.0f;
+                           cars.forcedInput.brake = args.Size() > 2 ? ParseFloat(args[2]).ValueOr(0.0f) : 0.0f;
+                       });
+
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
     if (Ed())
         Ed()->Undo();

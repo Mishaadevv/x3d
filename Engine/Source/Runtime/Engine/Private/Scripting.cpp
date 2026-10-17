@@ -5,6 +5,7 @@
 #include "Core/HAL/PlatformFile.h"
 #include "Core/Log/Log.h"
 #include "Engine/Animation.h"
+#include "Engine/SoftBody.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/Fire.h"
 #include "Engine/Gameplay.h"
@@ -433,6 +434,47 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             }
             return true;
         }
+        if (m == "carInput" || m == "carSpeed" || m == "carDamage" || m == "carImpact" || m == "carReset") {
+            // Soft-body vehicle on this entity or an ancestor: carInput(throttle, steer, brake[, handbrake]), carSpeed()
+            // (m/s, negative in reverse), carDamage() 0..1, carImpact() (hardest hit since the last call, m/s), carReset().
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = sys.context.world;
+            if (!w || !w->IsAlive(e))
+                return v.Fail("The entity was destroyed");
+            ecs::Entity car;
+            for (ecs::Entity x = e; w->IsAlive(x) && !car;) {
+                if (w->Has<SoftBody>(x))
+                    car = x;
+                const scene::Parent* p = w->Get<const scene::Parent>(x);
+                if (!p)
+                    break;
+                x = p->entity;
+            }
+            if (!car)
+                return v.Fail("No Soft Body on this entity or its parents");
+            SoftBodySystem* cars = sys.softBodies;
+            if (m == "carInput") {
+                if (a.Size() < 2 || a.Size() > 4 || !a[0].IsNumber() || !a[1].IsNumber() || (a.Size() > 2 && !a[2].IsNumber()))
+                    return v.Fail("entity.carInput(throttle, steer, brake[, handbrake])");
+                VehicleInput in;
+                in.throttle = a[0].AsFloat();
+                in.steer = a[1].AsFloat();
+                in.brake = a.Size() > 2 ? a[2].AsFloat() : 0.0f;
+                in.handbrake = a.Size() > 3 && (a[3].Type() == ValueType::Bool ? a[3].AsBool() : a[3].IsNumber() && a[3].AsNumber() > 0.5);
+                if (cars)
+                    cars->SetInput(car, in);
+            } else if (m == "carSpeed") {
+                out = Value(f64(cars ? cars->Speed(car) : 0.0f));
+            } else if (m == "carDamage") {
+                out = Value(f64(cars ? cars->Damage(car) : 0.0f));
+            } else if (m == "carImpact") {
+                out = Value(f64(cars ? cars->TakeImpact(car) : 0.0f));
+            } else if (cars) {
+                cars->Reset(car);
+            }
+            return true;
+        }
         if (m == "setMorph" || m == "morph") {
             // setMorph(name, weight) / morph(name): Morph Targets weights on this entity or below it (the model's mesh).
             if (a.Empty() || a[0].Type() != ValueType::String || (m == "setMorph" && (a.Size() != 2 || !a[1].IsNumber())))
@@ -459,7 +501,22 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             }
             return v.Fail(String::Format("No morph target named '{}' on this entity or its children", a[0].AsString()));
         }
-        if (m == "animParam" || m == "animTrigger" || m == "playAnim" || m == "animState" || m == "lookAt") {
+        // lookAt: the head of an animated model (Animator here or below); other entities (cameras) turn their transform.
+        auto animatedLookAt = [&]() {
+            ecs::World* w = SystemOf(o).context.world;
+            const ecs::Entity self = ecs::Entity::Unpack(o.id);
+            if (!w || !w->IsAlive(self))
+                return false;
+            Array<ecs::Entity> queue;
+            queue.PushBack(self);
+            for (usize q = 0; q < queue.Size() && q < 256; ++q) {
+                if (w->Has<Animator>(queue[q]))
+                    return true;
+                queue.Append(scene::GetChildren(*w, queue[q]));
+            }
+            return false;
+        };
+        if (m == "animParam" || m == "animTrigger" || m == "playAnim" || m == "animState" || (m == "lookAt" && animatedLookAt())) {
             // Animator on this entity or its first descendant that has one (the mesh under a player):
             // animParam(name, value) sets a graph parameter, animTrigger(name) fires a trigger, playAnim(clip) plays
             // a clip by name (no graph), animState() returns the graph state's name.

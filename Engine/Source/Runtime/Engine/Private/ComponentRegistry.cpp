@@ -1,6 +1,7 @@
 #include "Engine/ComponentRegistry.h"
 #include "Core/Memory/Memory.h"
 #include "Engine/Animation.h"
+#include "Engine/SoftBody.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/Fire.h"
 #include "Engine/GameModule.h"
@@ -65,6 +66,7 @@ void RegisterEngineComponents()
     RegisterComponent<Terrain>("Terrain", "\xEE\x88\xB1");                            // mountain
     RegisterComponent<ParticleEmitter>("Particle Emitter", "\xEE\x90\x92");        // sparkles
     RegisterComponent<Animator>("Animator", "\xEE\x8D\x98");                         // bone
+    RegisterComponent<SoftBody>("Soft Body", "\xEE\x87\x95");                        // car
     RegisterComponent<Flammable>("Flammable", "\xEE\x83\x92");                     // flame
     RegisterComponent<Decal>("Decal", "\xEE\x8E\xBB");                                 // stamp
     RegisterComponent<ReflectionProbe>("Reflection Probe", "\xEE\x8D\x85");           // circle-dot

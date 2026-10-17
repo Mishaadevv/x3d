@@ -167,7 +167,7 @@ bool Editor::Initialize()
         if (Result<rhi::Texture*> t = render::LoadTexture(*device, "/Engine/Branding/ZeqouX3D_Logo.png", brand))
             appLogo = t.Value();
         // Template thumbnails: real captures of each template level (Tools/make_template_thumbs.py).
-        static const char* const TemplateNames[] = {"Blank", "Sample", "FirstPerson", "ThirdPerson", "Water", "Physics"};
+        static const char* const TemplateNames[] = {"Blank", "Sample", "FirstPerson", "ThirdPerson", "Water", "Physics", "Vehicle"};
         static_assert(ZX_ARRAY_COUNT(TemplateNames) == u32(ProjectTemplate::Count));
         render::TextureLoadOptions art;
         art.compression = render::TextureCompression::None;
@@ -337,6 +337,7 @@ bool Editor::Initialize()
                         : templateArg == "thirdperson" ? ProjectTemplate::ThirdPerson
                         : templateArg == "water"       ? ProjectTemplate::Water
                         : templateArg == "physics"     ? ProjectTemplate::Physics
+                        : templateArg == "vehicle"     ? ProjectTemplate::Vehicle
                                                        : ProjectTemplate::Blank;
         options.starterContent = CommandLine::HasFlag("starter");
         options.documentation = !CommandLine::HasFlag("nodocs");
@@ -477,8 +478,10 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
     NewProjectOptions prefabOptions = options;
     if (options.templ == ProjectTemplate::Physics)
         prefabOptions.starterProps = true;
-    const u32 starterPrefabs =
-        options.starterContent || options.templ == ProjectTemplate::Physics ? WriteStarterPrefabs(prefabOptions) : 0u;
+    if (options.templ == ProjectTemplate::Vehicle) // the car and the crate stacks come from the prefabs
+        prefabOptions.starterCharacters = prefabOptions.starterProps = true;
+    const bool needsPrefabs = options.templ == ProjectTemplate::Physics || options.templ == ProjectTemplate::Vehicle;
+    const u32 starterPrefabs = options.starterContent || needsPrefabs ? WriteStarterPrefabs(prefabOptions) : 0u;
     const String mainScene = ScenesDirectory() + "/Main.zscene";
     if (!helmet.Empty()) {
         ImportAsset(helmet, Vec3(0.0f, 1.2f, 0.0f), false);
@@ -516,6 +519,8 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
             BuildWaterLevel();
         else if (options.templ == ProjectTemplate::Physics)
             BuildPhysicsLevel();
+        else if (options.templ == ProjectTemplate::Vehicle)
+            BuildVehicleLevel();
         else if (characterTemplate)
             BuildCharacterLevel(options.templ == ProjectTemplate::ThirdPerson);
         else if (options.starterContent)
@@ -931,6 +936,128 @@ void Editor::BuildPhysicsLevel()
     environment.sunElevation = DegToRad(42.0f);
     environment.sunAzimuth = DegToRad(140.0f);
     AddAtmosphere(0.003f, 0.35f);
+}
+
+void Editor::BuildVehicleLevel()
+{
+    // Vehicle Playground (outside the undo history): a soft-body car on a big grid floor in the hills - a jump, a
+    // brick wall and concrete pillars to crash into, crate walls and barrels to plough through, a bumpy log road and a
+    // steep hill. The car is the Starter Content prefab (Characters/P_SoftCar); a chase camera follows it.
+    auto material = [&](StringView name) {
+        const String path = String::Format("{}/StarterContent/Materials/{}.zmat", contentRoot, name);
+        if (!platform::FileExists(path) || !materials)
+            return Guid();
+        const MaterialLibrary::Material* m = materials->FindByPath(path);
+        return m ? m->guid : materials->LoadFile(path);
+    };
+    auto shape = [&](StringView label, BuiltinShape s, Vec3 center, Vec3 size, StringView mat, Quat rotation = {}) {
+        Transform t(center, rotation);
+        t.scale = size;
+        const ecs::Entity e = CreateEntity(label, t);
+        MeshRenderer mr;
+        mr.mesh = builtin::Mesh(s);
+        if (const Guid g = material(mat); g.IsValid())
+            mr.materials.PushBack(g);
+        world.Add(e, mr);
+        EnsureEntityGuid(world, e);
+        return e;
+    };
+    auto dynamic = [&](ecs::Entity e, f32 mass, StringView sound, bool box) {
+        RigidBody rb;
+        rb.mass = mass;
+        world.Add(e, rb);
+        if (box)
+            world.Add(e, BoxCollider{});
+        else
+            world.Add(e, CylinderCollider{});
+        ImpactSound s;
+        s.sound = String::Format("StarterContent/Sounds/Impacts/{}", sound);
+        world.Add(e, s);
+        return e;
+    };
+    // A slab sloping up along `direction` (horizontal), its low edge at `start` on the ground.
+    auto ramp = [&](StringView label, Vec3 start, Vec3 direction, f32 length, f32 width, f32 degrees, StringView mat) {
+        const f32 a = DegToRad(degrees);
+        const Vec3 flat = SafeNormalize(Vec3(direction.x, 0, direction.z), Vec3(0, 0, 1));
+        const Vec3 along = flat * std::cos(a) + Vec3(0, std::sin(a), 0);
+        const Vec3 up = SafeNormalize(Cross(along, Cross(Vec3(0, 1, 0), flat)), Vec3(0, 1, 0)) * (Dot(Cross(along, Cross(Vec3(0, 1, 0), flat)), Vec3(0, 1, 0)) < 0 ? -1.0f : 1.0f);
+        const f32 thickness = 0.5f;
+        return shape(label, BuiltinShape::Cube, start + along * (length * 0.5f) - up * (thickness * 0.5f), Vec3(width, thickness, length), mat,
+                     Quat::LookRotation(along, up));
+    };
+
+    // Ground: a grid floor in the flat middle of rolling hills.
+    shape("Floor", BuiltinShape::Cube, Vec3(0, -0.5f, 0), Vec3(240, 1, 240), "M_Proto_Grey");
+    {
+        Terrain t;
+        t.size = 640.0f;
+        t.height = 55.0f;
+        t.flatCenter = 130.0f;
+        t.featureSize = 160.0f;
+        t.material = material("M_Terrain");
+        Array<f32> heights;
+        GenerateTerrainHeights(t, heights);
+        const u32 n = TerrainSamples(t);
+        const ecs::Entity terrain = CreateEntity("Terrain", Transform(Vec3(0.0f, -heights[usize(n / 2) * n + n / 2] - 0.2f, 0.0f)));
+        world.Add(terrain, t);
+        EnsureEntityGuid(world, terrain);
+    }
+
+    // 1. Straight ahead: a jump ramp, then open ground to land on.
+    ramp("Jump Ramp", Vec3(0, 0, 45), Vec3(0, 0, 1), 12.0f, 7.0f, 14.0f, "M_Proto_Orange");
+    shape("Jump Ramp Side L", BuiltinShape::Cube, Vec3(-3.8f, 0.7f, 50.8f), Vec3(0.6f, 1.4f, 11.6f), "M_Proto_Light");
+    shape("Jump Ramp Side R", BuiltinShape::Cube, Vec3(3.8f, 0.7f, 50.8f), Vec3(0.6f, 1.4f, 11.6f), "M_Proto_Light");
+
+    // 2. Crash zone (north-west): a brick wall and a row of concrete pillars.
+    shape("Brick Wall", BuiltinShape::Cube, Vec3(-40, 2.0f, 50), Vec3(16, 4, 1.2f), "M_Bricks");
+    for (u32 i = 0; i < 6; ++i)
+        shape(String::Format("Pillar {}", i + 1), BuiltinShape::Cylinder, Vec3(-55.0f + f32(i) * 6.0f, 2.5f, 20.0f), Vec3(1.2f, 5.0f, 1.2f),
+              "M_Proto_Light");
+
+    // 3. Crate walls (west) and a triangle of barrels (east) to plough through.
+    for (u32 wall = 0; wall < 2; ++wall)
+        for (u32 row = 0; row < 4; ++row)
+            for (u32 i = 0; i < 7; ++i) {
+                const ecs::Entity crate = shape(String::Format("Crate {}-{}-{}", wall + 1, row + 1, i + 1), BuiltinShape::Cube,
+                                                Vec3(-30.0f + f32(i) * 0.92f + f32(row % 2) * 0.46f, 0.45f + f32(row) * 0.9f, -15.0f - f32(wall) * 14.0f),
+                                                Vec3(0.9f), "M_Wood");
+                dynamic(crate, 25.0f, "Impact_Wood_Medium", true);
+            }
+    for (u32 row = 0; row < 5; ++row)
+        for (u32 i = 0; i <= row; ++i) {
+            const ecs::Entity barrel = shape(String::Format("Barrel {}-{}", row + 1, i + 1), BuiltinShape::Cylinder,
+                                             Vec3(30.0f + (f32(i) - f32(row) * 0.5f) * 1.1f, 0.6f, -15.0f - f32(row) * 1.0f), Vec3(0.75f, 1.2f, 0.75f),
+                                             i % 2 ? "M_Plastic_Red" : "M_Proto_Blue");
+            dynamic(barrel, 40.0f, "Impact_Metal_Medium", false);
+        }
+
+    // 4. Bumpy road (east): half-buried logs across the lane - watch the suspension work.
+    for (u32 i = 0; i < 14; ++i)
+        shape(String::Format("Log {}", i + 1), BuiltinShape::Cylinder, Vec3(45.0f, 0.02f, 10.0f + f32(i) * 2.6f), Vec3(0.4f, 6.0f, 0.4f), "M_Wood",
+              Quat::FromAxisAngle(Vec3(0, 0, 1), HalfPi));
+
+    // 5. A steep hill (south) with a plateau, and a long gentle ramp back down.
+    ramp("Hill Up", Vec3(-12, 0, -40), Vec3(0, 0, -1), 22.0f, 10.0f, 18.0f, "M_Proto_Grey");
+    const f32 top = 22.0f * std::sin(DegToRad(18.0f));
+    const f32 hillEnd = -40.0f - 22.0f * std::cos(DegToRad(18.0f));
+    shape("Plateau", BuiltinShape::Cube, Vec3(-12, top * 0.5f, hillEnd - 6.0f), Vec3(10, top, 12), "M_Proto_Light");
+    ramp("Hill Down", Vec3(-12, 0, hillEnd - 12.0f - top / std::tan(DegToRad(8.0f))), Vec3(0, 0, 1),
+         top / std::sin(DegToRad(8.0f)), 10.0f, 8.0f, "M_Proto_Grey");
+
+    // The car (Starter Content prefab) and a chase camera.
+    const String carPrefab = "StarterContent/Prefabs/Characters/P_SoftCar.zprefab";
+    if (prefabs && platform::FileExists(Path::Join(contentRoot, carPrefab)))
+        InstantiatePrefabFile(world, *prefabs, carPrefab, Transform(Vec3(0, 0.15f, 0)));
+    const ecs::Entity cam = CreateEntity("Camera", Transform(Vec3(0, 2.3f, -7.0f)));
+    world.Add(cam, Camera{});
+    world.Add(cam, Script{String("StarterContent/Scripts/CarCamera.zs"), String()});
+    EnsureEntityGuid(world, cam);
+
+    camera.position = Vec3(4.2f, 2.1f, -5.6f);
+    camera.LookAt(Vec3(-0.3f, 0.7f, 3.0f));
+    environment.sunElevation = DegToRad(38.0f);
+    environment.sunAzimuth = DegToRad(150.0f);
+    AddAtmosphere(0.002f, 0.35f);
 }
 
 void Editor::AddAtmosphere(f32 fogDensity, f32 cloudCoverage)
@@ -2126,6 +2253,7 @@ GameSystems Editor::GameSystemsForPlay()
     s.particles = &particles;
     s.fire = &fire;
     s.animation = animation.Get();
+    s.softBodies = &softBodies;
     s.renderAssets = renderAssets.Get();
     s.inputActions = &inputActions;
     s.inputActionState = &inputActionState;
@@ -3160,10 +3288,11 @@ bool Editor::Frame()
     } else if (audio && !IsPlaying()) {
         audio->TickIdle(dt); // previews
     }
-    // Terrains: (re)built when one appears or its shape changes.
+    // Terrains: (re)built when one appears or its shape changes. Soft bodies: their mesh, wheels at rest.
     {
         ZX_PROFILE_SCOPE("Terrains");
         terrains.Update(world, *assets, renderAssets.Get());
+        softBodies.Update(world, *assets, renderAssets.Get());
     }
     // Particles: emitters with Simulate In Editor run live while editing, all of them while playing (frozen when paused).
     if (FeatureEnabled("particles")) {

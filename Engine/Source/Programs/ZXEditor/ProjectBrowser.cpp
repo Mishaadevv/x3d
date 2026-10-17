@@ -304,6 +304,8 @@ const TemplateInfo Templates[] = {
     {ProjectTemplate::Water, "Water", "An island in the sea with realistic water: waves, reflections, refraction, foam. Walk around in first person.", {}},
     {ProjectTemplate::Physics, "Physics Playground",
      "Stacks, dominoes, a ramp of balls and rocks, joints (bridge, chain, door, seesaw), raycasts and a physics gun. First person.", {}},
+    {ProjectTemplate::Vehicle, "Vehicle Playground",
+     "A soft-body car (node-beam physics like BeamNG.drive) that dents where it crashes: jumps, walls, pillars, crates and bumps.", {}},
 };
 
 Color Hex(u32 rgb, u8 a = 255) { return Color(u8(rgb >> 16), u8(rgb >> 8), u8(rgb), a); }

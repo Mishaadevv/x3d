@@ -17,6 +17,7 @@
 #include "Engine/Packaging.h"
 #include "Core/Threading/Thread.h"
 #include "Engine/Terrain.h"
+#include "Engine/SoftBody.h"
 #include "Engine/Animation.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
@@ -124,6 +125,7 @@ enum class ProjectTemplate : u8
     ThirdPerson,
     Water,
     Physics,     // Physics Playground
+    Vehicle,     // Vehicle Playground (soft-body car)
     Count
 };
 
@@ -252,6 +254,7 @@ public:
     UniquePtr<AnimationSystem> animation; // Animators (Preview In Editor ones animate while editing)
     FireSystem fire;                      // Flammable objects (Play only)
     TerrainSystem terrains;               // builds Terrain meshes (edit and Play)
+    SoftBodySystem softBodies;            // soft-body vehicles (meshes while editing, simulation in Play)
     GameSystems GameSystemsForPlay();     // the systems Play drives (same loop as the packaged game)
     UniquePtr<GameModuleSystem> game;     // C++ game module of the open project (Source/<Name>), hot-reloaded
     i64 gameDllTime = 0;                  // modification time of the loaded Binaries/<Name>.dll
@@ -449,7 +452,8 @@ private:
     void BuildWaterLevel();
     void BuildPhysicsLevel();
     bool AddAnimatedCharacter(ecs::Entity player);
-    void AddSlime(const Transform& at, f32 speed); // skinned starter character + locomotion graph (false: not available)
+    void AddSlime(const Transform& at, f32 speed);
+    void BuildVehicleLevel(); // skinned starter character + locomotion graph (false: not available)
     /// Template atmosphere: a volumetric Height Fog and Volumetric Clouds (outside the undo history).
     void AddAtmosphere(f32 fogDensity, f32 cloudCoverage);
     JsonValue SceneSettings() const;

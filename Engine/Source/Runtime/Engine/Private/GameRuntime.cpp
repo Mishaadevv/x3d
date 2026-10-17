@@ -1,5 +1,6 @@
 #include "Engine/GameRuntime.h"
 #include "Engine/Animation.h"
+#include "Engine/SoftBody.h"
 #include "Engine/Fire.h"
 #include "Engine/GameModule.h"
 #include "Engine/Gameplay.h"
@@ -68,6 +69,7 @@ void TickGame(ecs::World& world, GameSystems& s, f32 dt, const InputState* input
         s.scripts->physics = physicsRunning ? s.physics : nullptr;
         s.scripts->particles = s.particles;
         s.scripts->animation = s.animation;
+        s.scripts->softBodies = s.softBodies;
         if (s.animation) // last frame's footsteps and authored events
             s.scripts->DispatchAnimEvents(world, s.animation->Events());
         s.scripts->fire = s.Enabled("fire") ? s.fire : nullptr;
@@ -89,6 +91,11 @@ void TickGame(ecs::World& world, GameSystems& s, f32 dt, const InputState* input
             TickCharacters(world, dt, *s.physics);
         else
             TickCharacters(world, dt, MeshBounds(s.renderAssets));
+        scene::UpdateWorldTransforms(world);
+    }
+    // Soft bodies (vehicles) against the world as it is before this frame's physics step; they push rigid bodies.
+    if (s.softBodies && s.Enabled("physics")) {
+        s.softBodies->Tick(world, dt, physicsRunning ? s.physics : nullptr);
         scene::UpdateWorldTransforms(world);
     }
     if (physicsRunning) {
@@ -123,6 +130,8 @@ void EndGame(GameSystems& s)
         s.physics->End();
     if (s.fire)
         s.fire->Clear();
+    if (s.softBodies)
+        s.softBodies->Clear();
 }
 
 ListenerPose GameListener(ecs::World& world, const ListenerPose& fallback)

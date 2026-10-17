@@ -36,6 +36,12 @@ const StarterMaterial Materials[] = {
     {"M_Gold_Glow", Vec4(1.0f, 0.77f, 0.34f, 1), 1.0f, 0.25f, Vec4(0.9f, 0.55f, 0.08f, 1)},
     {"M_Paint_Olive", Vec4(0.2f, 0.24f, 0.12f, 1), 0.0f, 0.55f, Vec4(0)},
     {"M_Emissive_Cyan", Vec4(0.02f, 0.05f, 0.06f, 1), 0.0f, 0.5f, Vec4(0.2f, 3.0f, 4.0f, 1)},
+    // Soft-body car (Characters/P_SoftCar).
+    {"M_CarPaint", Vec4(0.62f, 0.05f, 0.03f, 1), 0.55f, 0.22f, Vec4(0)},
+    {"M_CarGlass", Vec4(0.015f, 0.02f, 0.025f, 1), 0.9f, 0.04f, Vec4(0)},
+    {"M_CarTrim", Vec4(0.03f, 0.03f, 0.032f, 1), 0.0f, 0.55f, Vec4(0)},
+    {"M_CarHeadlight", Vec4(0.9f, 0.9f, 0.85f, 1), 0.0f, 0.2f, Vec4(4.0f, 3.8f, 3.2f, 1)},
+    {"M_CarTaillight", Vec4(0.5f, 0.02f, 0.02f, 1), 0.0f, 0.3f, Vec4(3.0f, 0.1f, 0.05f, 1)},
 };
 
 /// Output fed by named parameters (Base Color, Metallic, Roughness[, Emissive]) so material instances can override them.
@@ -629,6 +635,68 @@ script ThirdPersonCamera {
 
 /// Scripts of the Starter Content prefabs (vehicles and gameplay props).
 const StarterScript PropScripts[] = {
+    {"SoftBodyCar.zs", R"zs(// Soft-body car (Soft Body component, node-beam physics like BeamNG.drive): crashes dent the body where it hits.
+// W / S: throttle and brake (S reverses once stopped), A / D: steer, Space: handbrake, R: repair and put back on the
+// wheels. The Audio Source on the car is the engine (its pitch follows the revs); hard hits play a crunch.
+script SoftBodyCar {
+    @tooltip("Sound of hard hits (variants _0.._4 are picked at random)")
+    prop crashSound = "StarterContent/Sounds/Impacts/Impact_Metal_Heavy"
+    @range(0, 2) prop crashVolume = 1.0
+    @range(1, 30) @tooltip("Impact speed (m/s) for the loudest crunch")
+    prop crashScale = 14.0
+
+    fn update(dt) {
+        let move = input.move
+        let speed = entity.carSpeed()
+        var throttle = 0.0
+        var brake = 0.0
+        if move.z > 0.1 {
+            if speed < -1 { brake = move.z } else { throttle = move.z }
+        } elif move.z < -0.1 {
+            if speed > 1 { brake = -move.z } else { throttle = move.z }
+        }
+        entity.carInput(throttle, move.x, brake, input.key("Space"))
+        if input.pressed("R") { entity.carReset() }
+        let impact = entity.carImpact()
+        if impact > 3 {
+            audio.playAt(crashSound, entity.worldPosition, min(1, impact / crashScale) * crashVolume)
+        }
+    }
+}
+)zs"},
+    {"CarCamera.zs", R"zs(// Chase camera: follows a vehicle from behind and looks a little ahead of it. Hold the right mouse button to look
+// around; it eases back behind the car.
+script CarCamera {
+    @tooltip("Name of the entity to follow")
+    prop target = "Car"
+    @range(2, 30) prop distance = 7.0
+    @range(0, 10) prop height = 2.3
+    @range(0.5, 20) @tooltip("How tightly the camera follows")
+    prop stiffness = 5.0
+
+    var orbit = 0.0
+
+    fn update(dt) {
+        let car = find(target)
+        if car == nil { return }
+        var f = car.worldForward
+        f.y = 0
+        if f.length() < 0.01 { f = vec3(0, 0, 1) }
+        f = f.normalized()
+        if input.mouse("right") {
+            orbit += input.mouseDelta.x * 0.005
+        } else {
+            orbit -= orbit * min(1, 2 * dt)
+        }
+        let r = vec3(f.z, 0, -f.x)
+        let dir = f * cos(orbit) - r * sin(orbit)
+        let goal = car.worldPosition - dir * distance + vec3(0, height, 0)
+        let pos = entity.worldPosition
+        entity.worldPosition = pos + (goal - pos) * min(1, stiffness * dt)
+        entity.lookAt(car.worldPosition + vec3(0, 1, 0) + f * 2)
+    }
+}
+)zs"},
     {"Slime.zs", R"zs(// Starter slime (Characters/SK_Blob.glb playing its Bounce clip): a soft squish on every landing.
 // The clip lands once per cycle; Period is the clip length divided by the Animator speed.
 script Slime {

@@ -35,6 +35,7 @@
 #include "Engine/SceneSerialization.h"
 #include "Engine/Scripting.h"
 #include "Engine/Terrain.h"
+#include "Engine/SoftBody.h"
 #include "Engine/ViewportRenderer.h"
 #include "Platform/Platform.h"
 #include "Platform/Window.h"
@@ -136,6 +137,7 @@ private:
     UniquePtr<AnimationSystem> m_animation;
     FireSystem m_fire;
     TerrainSystem m_terrains;
+    SoftBodySystem m_softBodies;
     InputActionMap m_inputActions;
     InputActionState m_inputActionState;
     ecs::World m_world;
@@ -340,7 +342,7 @@ bool Game::Frame()
     }
     if (!m_started && ready) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get()};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies};
         BeginGame(m_world, s);
         m_started = true;
         m_startFrame = m_frame;
@@ -356,12 +358,13 @@ bool Game::Frame()
 
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get()};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies};
         ListenerPose fallback;
         fallback.position = m_sceneCamera.position;
         TickGame(m_world, s, dt, m_captured || m_autotest ? &m_input : nullptr, GameListener(m_world, fallback));
     }
     m_terrains.Update(m_world, *m_assets, m_renderAssets.Get());
+    m_softBodies.Update(m_world, *m_assets, m_renderAssets.Get());
     scene::UpdateWorldTransforms(m_world);
     m_particles.Tick(m_world, dt, m_started);
     m_animation->Tick(m_world, dt, m_started);
@@ -445,7 +448,7 @@ void Game::Shutdown()
     }
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, {}};
+                      &m_inputActions, &m_inputActionState, {}, nullptr, &m_softBodies};
         EndGame(s);
     }
     ClearScene(m_world);

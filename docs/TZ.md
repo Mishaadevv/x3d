@@ -1238,6 +1238,12 @@ Vulkan-бэкенд, HDR-вывод, плагины редактора, ZScript 
 - [x] Приёмка: персонаж из glTF бегает и прыгает с плавными переходами и foot IK (шаблон от третьего лица с 0.12.3;
   тесты AnimationSystem.LocomotionGraphFollowsTheCharacter / FootIK*) — **M13 закрыта в 0.13.0**
 
+### M13.x — запросы пользователя после M13
+- [x] (0.13.1) Мягкие тела (node-beam, как BeamNG.drive): компонент Soft Body + SoftBodySystem (XPBD-подшаги, балки с
+  пластической деформацией и разрывом, контакты узлов с миром и толкание твёрдых тел, подвеска на лучах, шины с кругом
+  трения, привод / тормоз / ручник), меш кузова скиннится к узлам; скрипты `carInput / carSpeed / carDamage /
+  carImpact / carReset`, `SoftBodyCar.zs`, `CarCamera.zs`, префаб Characters/P_SoftCar, шаблон Vehicle Playground
+
 ### M14 … M20
 Чекбоксы детализируются при старте вехи (переносом задач из раздела 11).
 

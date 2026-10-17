@@ -30,6 +30,7 @@ class AudioSystem;
 class PhysicsSystem;
 class FireSystem;
 class ParticleSystem;
+class SoftBodySystem;
 class AnimationSystem;
 struct AnimEvent;
 struct PhysicsEvent;
@@ -87,6 +88,7 @@ public:
     ParticleSystem* particles = nullptr;
     /// Animators for entity.animParam / animTrigger / playAnim / animState (null = no animation control).
     AnimationSystem* animation = nullptr;
+    SoftBodySystem* softBodies = nullptr; // vehicles: entity.carInput / carSpeed / ...
     /// Fire for entity.ignite / extinguish / burning and the fire global (null = nothing burns).
     FireSystem* fire = nullptr;
     /// Calls collisionEnter / collisionExit / triggerEnter / triggerExit on the scripts of both entities of each event.
