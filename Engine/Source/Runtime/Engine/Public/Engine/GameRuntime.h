@@ -19,6 +19,7 @@ class GameModuleSystem;
 class PhysicsSystem;
 class ParticleSystem;
 class FireSystem;
+class AnimationSystem;
 class InputActionState;
 class InputState;
 struct InputActionMap;
@@ -39,6 +40,7 @@ struct GameSystems
     InputActionState* inputActionState = nullptr;
     /// Project Features (Features window); null = everything on.
     Function<bool(StringView)> featureEnabled;
+    AnimationSystem* animation = nullptr; // Animators (scripts set graph parameters / play clips)
 
     bool Enabled(StringView feature) const { return !featureEnabled || featureEnabled(feature); }
 };

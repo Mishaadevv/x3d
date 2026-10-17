@@ -240,6 +240,7 @@ bool Editor::Initialize()
     };
     scripts.Reset(new ScriptSystem());
     scripts->SetContentRoot(contentRoot);
+    animation->contentRoot = contentRoot; // Animator graphs (.zanimgraph)
     scripts->audio = audio.Get();
     scripts->materialName = [this](asset::AssetId id) {
         const MaterialLibrary::Material* m = materials ? materials->Find(id) : nullptr;
@@ -387,6 +388,10 @@ bool Editor::OpenProject(StringView descriptorPath)
         scripts->SetContentRoot(contentRoot);
     if (audio)
         audio->SetContentRoot(contentRoot);
+    if (animation) {
+        animation->contentRoot = contentRoot;
+        animation->Clear();
+    }
     SetupGameModule(*this);
     scriptEditor.open = false;
     panels.browserCurrent = contentRoot;
@@ -626,14 +631,16 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
         camera.LookAt(Vec3(0.0f, 0.5f, 8.0f));
     } else {
         world.Add(player, Script{String("Scripts/ThirdPersonController.zs"), String()});
-        // A simple mannequin (part of the player, so it doesn't block it): body, head, visor, arms.
-        shape("Body", BuiltinShape::Cylinder, Vec3(0, 0.95f, 0), Vec3(0.55f, 1.1f, 0.4f), "M_Proto_Light", {}, player);
-        shape("Head", BuiltinShape::Sphere, Vec3(0, 1.7f, 0), Vec3(0.36f), "M_Proto_Light", {}, player);
-        shape("Visor", BuiltinShape::Cube, Vec3(0, 1.72f, 0.15f), Vec3(0.26f, 0.09f, 0.08f), "M_Emissive_Cyan", {}, player);
-        shape("Arm L", BuiltinShape::Cylinder, Vec3(-0.36f, 1.05f, 0), Vec3(0.14f, 0.7f, 0.14f), "M_Proto_Grey", {}, player);
-        shape("Arm R", BuiltinShape::Cylinder, Vec3(0.36f, 1.05f, 0), Vec3(0.14f, 0.7f, 0.14f), "M_Proto_Grey", {}, player);
-        shape("Leg L", BuiltinShape::Cylinder, Vec3(-0.13f, 0.25f, 0), Vec3(0.17f, 0.5f, 0.17f), "M_Proto_Grey", {}, player);
-        shape("Leg R", BuiltinShape::Cylinder, Vec3(0.13f, 0.25f, 0), Vec3(0.17f, 0.5f, 0.17f), "M_Proto_Grey", {}, player);
+        if (!AddAnimatedCharacter(player)) {
+            // A simple mannequin (part of the player, so it doesn't block it): body, head, visor, arms.
+            shape("Body", BuiltinShape::Cylinder, Vec3(0, 0.95f, 0), Vec3(0.55f, 1.1f, 0.4f), "M_Proto_Light", {}, player);
+            shape("Head", BuiltinShape::Sphere, Vec3(0, 1.7f, 0), Vec3(0.36f), "M_Proto_Light", {}, player);
+            shape("Visor", BuiltinShape::Cube, Vec3(0, 1.72f, 0.15f), Vec3(0.26f, 0.09f, 0.08f), "M_Emissive_Cyan", {}, player);
+            shape("Arm L", BuiltinShape::Cylinder, Vec3(-0.36f, 1.05f, 0), Vec3(0.14f, 0.7f, 0.14f), "M_Proto_Grey", {}, player);
+            shape("Arm R", BuiltinShape::Cylinder, Vec3(0.36f, 1.05f, 0), Vec3(0.14f, 0.7f, 0.14f), "M_Proto_Grey", {}, player);
+            shape("Leg L", BuiltinShape::Cylinder, Vec3(-0.13f, 0.25f, 0), Vec3(0.17f, 0.5f, 0.17f), "M_Proto_Grey", {}, player);
+            shape("Leg R", BuiltinShape::Cylinder, Vec3(0.13f, 0.25f, 0), Vec3(0.17f, 0.5f, 0.17f), "M_Proto_Grey", {}, player);
+        }
         const ecs::Entity cam = CreateEntity("Camera", Transform(Vec3(0, 3, -11)));
         world.Add(cam, Camera{});
         world.Add(cam, Script{String("Scripts/ThirdPersonCamera.zs"), String()});
@@ -644,6 +651,32 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
     environment.sunElevation = DegToRad(48.0f);
     environment.sunAzimuth = DegToRad(135.0f);
     AddAtmosphere(0.004f, 0.3f);
+}
+
+bool Editor::AddAnimatedCharacter(ecs::Entity player)
+{
+    // The Starter Content character (skinned glTF) under the player, driven by the locomotion graph: the Character
+    // Controller's speed and ground contact pick Idle / Walk / Run / Jump.
+    const String model = contentRoot + "/StarterContent/Characters/SK_Human.glb";
+    if (!assets || !platform::FileExists(model))
+        return false;
+    const asset::AssetId id = assets->LoadPath(model);
+    assets->WaitIdle(); // the template is built once, at project creation
+    const asset::PrefabAsset* prefab = assets->GetPrefab(id);
+    if (!prefab)
+        return false;
+    const ecs::Entity root = zx::InstantiatePrefab(world, *prefab, Transform(), player, assets.Get());
+    Array<ecs::Entity> stack;
+    stack.PushBack(root);
+    while (!stack.Empty()) {
+        const ecs::Entity e = stack.Back();
+        stack.PopBack();
+        EnsureEntityGuid(world, e);
+        if (Animator* a = world.Get<Animator>(e))
+            a->graph = "StarterContent/Characters/Locomotion.zanimgraph";
+        stack.Append(scene::GetChildren(world, e));
+    }
+    return true;
 }
 
 void Editor::BuildPhysicsLevel()
@@ -2050,6 +2083,7 @@ GameSystems Editor::GameSystemsForPlay()
     s.physics = &physics;
     s.particles = &particles;
     s.fire = &fire;
+    s.animation = animation.Get();
     s.renderAssets = renderAssets.Get();
     s.inputActions = &inputActions;
     s.inputActionState = &inputActionState;

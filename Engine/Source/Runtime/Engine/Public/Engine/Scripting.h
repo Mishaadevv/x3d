@@ -30,6 +30,7 @@ class AudioSystem;
 class PhysicsSystem;
 class FireSystem;
 class ParticleSystem;
+class AnimationSystem;
 struct PhysicsEvent;
 
 /// Runs a .zs file on the entity. `properties` holds the values of the script's `prop` fields that differ from the
@@ -83,6 +84,8 @@ public:
     PhysicsSystem* physics = nullptr;
     /// Particle Emitters for entity.emit(n) (null = no bursts).
     ParticleSystem* particles = nullptr;
+    /// Animators for entity.animParam / animTrigger / playAnim / animState (null = no animation control).
+    AnimationSystem* animation = nullptr;
     /// Fire for entity.ignite / extinguish / burning and the fire global (null = nothing burns).
     FireSystem* fire = nullptr;
     /// Calls collisionEnter / collisionExit / triggerEnter / triggerExit on the scripts of both entities of each event.

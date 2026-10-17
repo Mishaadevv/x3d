@@ -237,6 +237,7 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     m_audio->SetContentRoot("/Game");
     m_scripts.Reset(new ScriptSystem());
     m_scripts->SetContentRoot("/Game");
+    m_animation->contentRoot = "/Game";
     m_scripts->audio = m_audio.Get();
     m_scripts->materialName = [this](asset::AssetId id) {
         const MaterialLibrary::Material* m = m_materials ? m_materials->Find(id) : nullptr;
@@ -329,7 +330,7 @@ bool Game::Frame()
     }
     if (!m_started && ready) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get()};
         BeginGame(m_world, s);
         m_started = true;
         m_startFrame = m_frame;
@@ -345,7 +346,7 @@ bool Game::Frame()
 
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get()};
         ListenerPose fallback;
         fallback.position = m_sceneCamera.position;
         TickGame(m_world, s, dt, m_captured || m_autotest ? &m_input : nullptr, GameListener(m_world, fallback));

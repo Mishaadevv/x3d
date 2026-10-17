@@ -1,5 +1,6 @@
 // Starter Content: example materials and scripts copied into new projects (all plain files the user can edit).
 
+#include "Engine/AnimGraph.h"
 #include "Core/CoreInit.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
@@ -1084,6 +1085,8 @@ u32 WriteStarterContent(StringView contentDir)
     written += CopyLibrary("LUTs", root + "/LUTs");
     written += CopyLibrary("Flipbooks", root + "/Flipbooks");
     written += CopyLibrary("Characters", root + "/Characters"); // skinned, animated models (glTF)
+    // Locomotion state machine for them (Idle / Walk / Run by speed, jump): an editable .zanimgraph.
+    written += fs::WriteTextFile(root + "/Characters/Locomotion.zanimgraph", WriteAnimGraph(MakeLocomotionGraph())) ? 1u : 0u;
     const render::MaterialGraph textured[] = {MakeReliefMaterial("M_Bricks", "T_Bricks", 2.0f, 0.04f, 0.85f),
                                               MakeReliefMaterial("M_Cobblestone", "T_Cobble", 1.0f, 0.05f, 0.75f),
                                               MakeLeavesMaterial(), MakeTerrainMaterial()};

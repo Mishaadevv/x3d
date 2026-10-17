@@ -140,6 +140,10 @@ AnimationSystem ticked by the editor and ZXGame; Palette -> RenderInstance::skin
 Starter character Engine/Content/StarterContent/Characters/SK_Human.glb (+ .zmeta scale) from
 Tools/convert_starter_character.py (Blender 4.5 at C:/Program Files/Blender Foundation). Tests ZXTests Animation.*,
 AnimationSystem.*.
+AnimGraph: Engine/AnimGraph.h (.zanimgraph JSON: ParseAnimGraph / WriteAnimGraph / MakeLocomotionGraph), run by
+AnimationSystem (Animator::graph, contentRoot set by the host, SetParam / SetTrigger / CurrentState, CharacterState of
+the entity or an ancestor -> Speed / VerticalSpeed / Grounded). Starter Characters/Locomotion.zanimgraph is written by
+WriteStarterContent; the Third Person template puts SK_Human under the player (Editor::AddAnimatedCharacter).
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

@@ -4,6 +4,7 @@
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
 #include "Core/Log/Log.h"
+#include "Engine/Animation.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/Fire.h"
 #include "Engine/Gameplay.h"
@@ -430,6 +431,44 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             } else if (sys.physics) {
                 sys.physics->SetVelocity(e, a[0].AsVec3());
             }
+            return true;
+        }
+        if (m == "animParam" || m == "animTrigger" || m == "playAnim" || m == "animState") {
+            // Animator on this entity or its first descendant that has one (the mesh under a player):
+            // animParam(name, value) sets a graph parameter, animTrigger(name) fires a trigger, playAnim(clip) plays
+            // a clip by name (no graph), animState() returns the graph state's name.
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = sys.context.world;
+            if (!w || !w->IsAlive(e))
+                return v.Fail("The entity was destroyed");
+            ecs::Entity target;
+            Array<ecs::Entity> queue;
+            queue.PushBack(e);
+            for (usize q = 0; q < queue.Size() && !target && q < 256; ++q) {
+                if (w->Has<Animator>(queue[q]))
+                    target = queue[q];
+                else
+                    queue.Append(scene::GetChildren(*w, queue[q]));
+            }
+            if (!target)
+                return v.Fail("No Animator on this entity or its children");
+            if (m == "animState") {
+                const String state = sys.animation ? sys.animation->CurrentState(target) : String();
+                out = Value(state.View());
+                return true;
+            }
+            if (a.Empty() || a[0].Type() != ValueType::String || (m == "animParam" && (a.Size() != 2 || (!a[1].IsNumber() && a[1].Type() != ValueType::Bool))))
+                return v.Fail(m == "animParam" ? "entity.animParam(name, value)" : m == "animTrigger" ? "entity.animTrigger(name)" : "entity.playAnim(clip)");
+            if (!sys.animation)
+                return true;
+            const StringView name = a[0].AsString();
+            if (m == "animParam")
+                sys.animation->SetParam(target, name, a[1].Type() == ValueType::Bool ? (a[1].AsBool() ? 1.0f : 0.0f) : f32(a[1].AsNumber()));
+            else if (m == "animTrigger")
+                sys.animation->SetTrigger(target, name);
+            else if (!sys.animation->Play(*w, target, name))
+                return v.Fail(String::Format("The model has no clip named '{}'", name));
             return true;
         }
         if (m == "emit") {

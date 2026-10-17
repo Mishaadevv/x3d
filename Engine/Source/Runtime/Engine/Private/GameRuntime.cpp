@@ -66,6 +66,7 @@ void TickGame(ecs::World& world, GameSystems& s, f32 dt, const InputState* input
         s.scripts->actions = s.inputActionState;
         s.scripts->physics = physicsRunning ? s.physics : nullptr;
         s.scripts->particles = s.particles;
+        s.scripts->animation = s.animation;
         s.scripts->fire = s.Enabled("fire") ? s.fire : nullptr;
         s.scripts->Tick(world, dt, input);
     }

@@ -7,6 +7,7 @@
 #include "Core/Testing/Test.h"
 #include "Core/Threading/Thread.h"
 #include "Engine/Animation.h"
+#include "Engine/Gameplay.h"
 #include "Engine/SceneRendering.h"
 #include "Scene/Hierarchy.h"
 
@@ -125,4 +126,81 @@ ZX_TEST(AnimationSystem, EditModeWithoutPreviewShowsBindPose)
     identity.Resize(palette.Size(), Mat4::Identity());
     ZX_EXPECT_LT(MaxDifference(palette, identity.View()), 2e-3f);
     ZX_EXPECT_NEAR(anim.Time(ch.skinned), 0.0f, 1e-6f);
+}
+
+ZX_TEST(AnimGraph, WritesAndParsesTheLocomotionGraph)
+{
+    const AnimGraph g = MakeLocomotionGraph();
+    const String text = WriteAnimGraph(g);
+    AnimGraph back;
+    String error;
+    ZX_REQUIRE(ParseAnimGraph(text.View(), back, &error));
+    ZX_EXPECT_EQ(back.states.Size(), g.states.Size());
+    ZX_EXPECT_EQ(back.transitions.Size(), g.transitions.Size());
+    ZX_EXPECT_EQ(back.params.Size(), g.params.Size());
+    const i32 loco = back.FindState("Locomotion");
+    ZX_REQUIRE(loco >= 0);
+    ZX_EXPECT_EQ(back.states[usize(loco)].blend.Size(), usize(3));
+    ZX_EXPECT(back.states[usize(loco)].blendParam == "Speed");
+    ZX_EXPECT(!back.states[usize(back.FindState("Jump"))].loop);
+    ZX_EXPECT_EQ(back.transitions[0].conditions[0].op, AnimGraph::Op::IsFalse);
+    // Errors name what is wrong.
+    ZX_EXPECT(!ParseAnimGraph(R"({"states":[{"name":"A","clip":"Idle"}],"transitions":[{"from":"A","to":"B"}]})", back, &error));
+    ZX_EXPECT(error.View().Contains("unknown state"));
+    ZX_EXPECT(!ParseAnimGraph(R"({"states":[]})", back, &error));
+    ZX_EXPECT(!ParseAnimGraph(R"({"states":[{"name":"A","clip":"Idle"}],"transitions":[{"from":"*","to":"A","conditions":[{"param":"X","op":">"}]}]})",
+                              back, &error));
+    ZX_EXPECT(error.View().Contains("unknown parameter"));
+}
+
+ZX_TEST(AnimationSystem, LocomotionGraphFollowsTheCharacter)
+{
+    AnimatedCharacter ch;
+    ZX_REQUIRE(bool(ch.skinned));
+    const String graphPath = ch.ddc + "/Locomotion.zanimgraph";
+    ZX_REQUIRE(fs::WriteTextFile(graphPath, WriteAnimGraph(MakeLocomotionGraph()).View()));
+    ch.world.Get<Animator>(ch.skinned)->graph = "Locomotion.zanimgraph";
+    // A character controller on the model's root drives the parameters.
+    ecs::Entity root = ch.skinned;
+    while (const scene::Parent* p = ch.world.Get<scene::Parent>(root))
+        root = p->entity;
+    CharacterState st;
+    st.grounded = true;
+    st.velocity = Vec3(5.0f, 0.0f, 0.0f);
+    ch.world.Add(root, st);
+    AnimationSystem anim(*ch.assets);
+    anim.contentRoot = ch.ddc;
+    ch.Warm(anim, true);
+    for (u32 i = 0; i < 10; ++i) {
+        anim.Tick(ch.world, 1.0f / 60.0f, true);
+        ch.assets->WaitIdle();
+    }
+    ZX_EXPECT(anim.CurrentState(ch.skinned) == "Locomotion");
+    ZX_EXPECT_NEAR(anim.GetParam(ch.skinned, "Speed"), 5.0f, 1e-4f);
+    ZX_EXPECT_NEAR(anim.GetParam(ch.skinned, "Grounded"), 1.0f, 1e-6f);
+    Array<Mat4> running;
+    running.Append(anim.Palette(ch.skinned));
+    // Standing still blends to Idle: a different pose.
+    ch.world.Get<CharacterState>(root)->velocity = Vec3(0.0f);
+    for (u32 i = 0; i < 30; ++i)
+        anim.Tick(ch.world, 1.0f / 60.0f, true);
+    Array<Mat4> idle;
+    idle.Append(anim.Palette(ch.skinned));
+    ZX_EXPECT_GT(MaxDifference(running.View(), idle.View()), 1e-3f);
+    // A jump (rising, off the ground) enters Jump at once; landing returns.
+    CharacterState* c = ch.world.Get<CharacterState>(root);
+    c->grounded = false;
+    c->velocity = Vec3(0.0f, 6.0f, 0.0f);
+    anim.Tick(ch.world, 1.0f / 60.0f, true);
+    anim.Tick(ch.world, 1.0f / 60.0f, true);
+    ZX_EXPECT(anim.CurrentState(ch.skinned) == "Jump");
+    c->grounded = true;
+    c->velocity = Vec3(0.0f);
+    anim.Tick(ch.world, 1.0f / 60.0f, true);
+    ZX_EXPECT(anim.CurrentState(ch.skinned) == "Locomotion");
+    // Stepping off a stair (briefly airborne, not rising) is no jump.
+    c->grounded = false;
+    for (u32 i = 0; i < 4; ++i)
+        anim.Tick(ch.world, 1.0f / 60.0f, true);
+    ZX_EXPECT(anim.CurrentState(ch.skinned) == "Locomotion");
 }
