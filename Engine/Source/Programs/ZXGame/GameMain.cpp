@@ -37,6 +37,7 @@
 #include "Engine/Terrain.h"
 #include "Engine/SoftBody.h"
 #include "Engine/GameUI.h"
+#include "Engine/Wind.h"
 #include "UI/UI.h"
 #include "UI/UIRenderer.h"
 #include "Engine/ViewportRenderer.h"
@@ -388,6 +389,7 @@ bool Game::Frame()
         TickGame(m_world, s, dt, m_captured || m_autotest ? &m_input : nullptr, GameListener(m_world, fallback));
     }
     m_terrains.Update(m_world, *m_assets, m_renderAssets.Get());
+    TickWind(m_world, dt);
     m_softBodies.Update(m_world, *m_assets, m_renderAssets.Get());
     scene::UpdateWorldTransforms(m_world);
     {

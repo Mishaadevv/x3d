@@ -228,7 +228,9 @@ void SimulateCS(uint id : SV_DispatchThreadID)
         float3 accel = accelDrag.xyz;
         if (turbulence > 0.0)
             accel += Swirl(p.position * 1.3 + p.seed * 10.0, timing.y) * turbulence;
-        p.velocity = (p.velocity + accel * dt) / (1.0 + accelDrag.w * dt);
+        // Drag pulls the velocity towards the wind (still air: towards zero).
+        const float3 wind = world ? asfloat(eb.Load3(eo + 228)) : float3(0.0, 0.0, 0.0);
+        p.velocity = wind + (p.velocity - wind + accel * dt) / (1.0 + accelDrag.w * dt);
         p.position += p.velocity * dt;
         p.rotation += p.spin * dt;
         // Collision with the visible surfaces (depth buffer): behind the surface by less than a thickness = a hit.

@@ -8,6 +8,7 @@
 #include "Engine/AudioSystem.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/SceneRendering.h"
+#include "Engine/Wind.h"
 #include "Render/RenderAssets.h"
 #include "Scene/Hierarchy.h"
 
@@ -599,6 +600,7 @@ void SoftBodySystem::Simulate(ecs::World& world, ecs::Entity e, SoftBody& sb, Bo
         driven += (sb.drive == VehicleDrive::All || (sb.drive == VehicleDrive::Front) == b.wheels[w].front) ? 1u : 0u;
     const f32 maxSpeed = 70.0f;
 
+    const Vec3 wind = WindFor(world, e, b.position);
     f32 impact = 0.0f;
     for (u32 step = 0; step < steps; ++step) {
         UpdateFrame(b, 1);
@@ -675,7 +677,8 @@ void SoftBodySystem::Simulate(ecs::World& world, ecs::Entity e, SoftBody& sb, Bo
         // Predict.
         for (Node& n : b.nodes) {
             n.v += gravity * h;
-            n.v -= n.v * (Length(n.v) * 0.0006f * h); // air drag
+            const Vec3 rel = n.v - wind;
+            n.v -= rel * (Length(rel) * 0.0006f * h); // air drag (and the wind)
             n.prev = n.p;
             n.p += n.v * h;
         }

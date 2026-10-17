@@ -1,6 +1,7 @@
 #include "Engine/SceneRendering.h"
 #include "Engine/Animation.h"
 #include "Engine/SoftBody.h"
+#include "Engine/Wind.h"
 #include "Engine/Fire.h"
 
 #include "Core/Jobs/JobSystem.h"
@@ -439,7 +440,8 @@ const HeightFog* FindHeightFog(World& world, f32* height)
 render::CloudSettings FindClouds(World& world)
 {
     render::CloudSettings s;
-    world.Query<const VolumetricClouds>().Each([&](const VolumetricClouds& c) {
+    const bool sceneWind = HasWind(world);
+    world.Query<const VolumetricClouds>().Each([&](Entity e, const VolumetricClouds& c) {
         if (s.enabled)
             return;
         s.enabled = true;
@@ -450,6 +452,13 @@ render::CloudSettings FindClouds(World& world)
         s.detail = c.detail;
         s.windSpeed = c.windSpeed;
         s.windDirection = c.windDirection;
+        // Wind Zones (or the entity's own Wind Response) steer them; winds aloft blow ~2.5x harder than at the ground.
+        if (const WindResponse* r = world.Get<const WindResponse>(e); sceneWind || (r && r->customWind)) {
+            const Vec3 w = WindFor(world, e, Vec3(0.0f));
+            s.windSpeed = Length(Vec3(w.x, 0.0f, w.z)) * 2.5f;
+            if (s.windSpeed > 1e-3f)
+                s.windDirection = RadToDeg(Atan2(w.x, w.z));
+        }
         s.albedo = c.color;
         s.shadowStrength = c.shadows;
     });
@@ -484,7 +493,8 @@ void GatherFluidVolumes(World& world, Array<render::FluidVolumeDesc>& out, bool 
 
 void GatherFogVolumes(World& world, Array<render::FogVolumeDesc>& out)
 {
-    world.Query<const WorldTransform, const FogVolume>().Each([&](const WorldTransform& wt, const FogVolume& v) {
+    const bool sceneWind = HasWind(world);
+    world.Query<const WorldTransform, const FogVolume>().Each([&](Entity e, const WorldTransform& wt, const FogVolume& v) {
         if (v.density <= 0.0f)
             return;
         render::FogVolumeDesc& d = out.AddDefaulted();
@@ -497,6 +507,8 @@ void GatherFogVolumes(World& world, Array<render::FogVolumeDesc>& out)
         d.noiseScale = v.noiseScale;
         d.noiseAmount = v.noiseAmount;
         d.wind = v.wind;
+        if (const WindResponse* r = world.Get<const WindResponse>(e); sceneWind || (r && r->customWind))
+            d.wind = WindFor(world, e, wt.GetPosition()) * 0.6f; // the fog's noise drifts with the wind
     });
 }
 
@@ -527,7 +539,8 @@ void GatherDecals(World& world, Array<render::DecalDesc>& out, const Function<u3
 
 void GatherWater(World& world, Array<render::WaterSurface>& out)
 {
-    world.Query<const WorldTransform, const Water>().Each([&](const WorldTransform& wt, const Water& w) {
+    const bool sceneWind = HasWind(world);
+    world.Query<const WorldTransform, const Water>().Each([&](Entity e, const WorldTransform& wt, const Water& w) {
         render::WaterSurface& s = out.AddDefaulted();
         // Position + rotation only: the size is explicit.
         const Vec3 pos = wt.matrix.GetTranslation();
@@ -539,6 +552,17 @@ void GatherWater(World& world, Array<render::WaterSurface>& out)
         s.waveLength = w.waveLength;
         s.waveSpeed = w.waveSpeed;
         s.windDirection = DegToRad(w.windDirection);
+        // Wind Zones (or the entity's own wind): the waves run with the wind and grow with its speed (6 m/s = as set).
+        if (const WindResponse* r = world.Get<const WindResponse>(e); sceneWind || (r && r->customWind)) {
+            const Vec3 wind = WindFor(world, e, pos);
+            const f32 speed = Length(Vec3(wind.x, 0.0f, wind.z));
+            const f32 scale = Clamp(std::sqrt(speed / 6.0f), 0.25f, 2.0f);
+            if (speed > 0.05f)
+                if (const Vec3 local = Inverse(s.world).TransformVector(wind); Abs(local.x) + Abs(local.z) > 1e-5f)
+                    s.windDirection = Atan2(local.z, local.x); // render::WaterSurface: (cos, sin) on the local x / z
+            s.waveHeight *= scale;
+            s.waveSpeed *= 0.7f + 0.3f * scale;
+        }
         s.choppiness = w.choppiness;
         s.shallowColor = w.shallowColor;
         s.deepColor = w.deepColor;

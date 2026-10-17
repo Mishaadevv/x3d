@@ -175,6 +175,11 @@ action view.gameUI), Interact only while the game shows the cursor (ui.cursor); 
 ZXGame: m_fonts + ui::Context (fonts) + UIRenderer pass; Packaging adds Engine/Content/Fonts as pak "Fonts".
 time.scale = ScriptSystem::timeScale -> GameTimeScale(); hosts scale particles / animation with it. Tests GameUI.*.
 Engine module depends on UI now.
+Wind (0.13.6): Engine/Wind.h (WindZone / WindResponse components, WindClock singleton advanced by TickWind in the editor
+and ZXGame, WindAt / WindFor / HasWind / WindDragForce). Consumers: ParticleSystem (Emitter::wind; drag relaxes the
+velocity towards it; GpuEmitter::wind at byte 228, ParticleSim.hlsl), Fire smoke volumes, GatherFogVolumes / FindClouds
+/ GatherWater (only when the scene has a Wind Zone or the entity a custom Wind Response), TickGame (Rigid Bodies with a
+Wind Response), SoftBody air drag. AddAtmosphere adds a 4 m/s "Wind" zone to templates. Tests Wind.*.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

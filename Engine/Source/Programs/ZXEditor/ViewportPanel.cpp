@@ -131,6 +131,34 @@ void DrawLightIcons(Editor& ed, const ViewProjector& vp, DrawList& dl, f32 s)
         [&](ecs::Entity e, const ReflectionProbe&, const scene::WorldTransform& wt) { icon(e, wt, Vec3(0.45f, 0.85f, 1.0f), ZX_ICON_CIRCLE_DOT); });
     ed.world.Query<const PostProcessVolume, const scene::WorldTransform>().Each(
         [&](ecs::Entity e, const PostProcessVolume&, const scene::WorldTransform& wt) { icon(e, wt, Vec3(1.0f, 0.67f, 0.25f), ZX_ICON_APERTURE); });
+    // Wind Zones: an arrow downwind (Directional) or the radius ring (Spherical).
+    ed.world.Query<const WindZone, const scene::WorldTransform>().Each([&](ecs::Entity e, const WindZone& z, const scene::WorldTransform& wt) {
+        const Vec3 o = wt.GetPosition();
+        Vec2 a, b;
+        if (z.mode == WindZoneMode::Directional) {
+            const Vec3 dir = SafeNormalize(wt.matrix.TransformVector(Vec3(0, 0, 1)), Vec3(0, 0, 1));
+            const f32 len = 1.0f + z.speed * 0.25f;
+            if (vp.Project(o, a) && vp.Project(o + dir * len, b)) {
+                const Color c = e == ed.selected ? HotColor : Color(140, 200, 255, 200);
+                dl.AddLine(a, b, c, 2.0f * s);
+                const Vec2 d = SafeNormalize(b - a, Vec2(1, 0)), n(-d.y, d.x);
+                dl.AddTriangle(b + d * (8.0f * s), b - d * (4.0f * s) + n * (6.0f * s), b - d * (4.0f * s) - n * (6.0f * s), c);
+            }
+        } else if (e == ed.selected) {
+            Vec2 prev;
+            bool havePrev = false;
+            for (u32 i = 0; i <= 48; ++i) {
+                const f32 t = f32(i) / 48.0f * TwoPi;
+                Vec2 p;
+                const bool ok = vp.Project(o + Vec3(Cos(t), 0.0f, Sin(t)) * z.radius, p);
+                if (ok && havePrev)
+                    dl.AddLine(prev, p, Color(140, 200, 255, 160), 1.5f * s);
+                prev = p;
+                havePrev = ok;
+            }
+        }
+        icon(e, wt, Vec3(0.55f, 0.8f, 1.0f), ZX_ICON_WIND);
+    });
 }
 
 /// Draws and drives the transform gizmo. Returns true if the gizmo owns the mouse this frame.

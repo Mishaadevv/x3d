@@ -2,6 +2,7 @@
 #include "Engine/Animation.h"
 #include "Engine/SoftBody.h"
 #include "Engine/GameUI.h"
+#include "Engine/Wind.h"
 #include "Engine/Fire.h"
 #include "Engine/GameModule.h"
 #include "Engine/Gameplay.h"
@@ -109,6 +110,13 @@ void TickGame(ecs::World& world, GameSystems& s, f32 realDt, const InputState* i
         s.softBodies->Tick(world, dt, physicsRunning ? s.physics : nullptr);
         scene::UpdateWorldTransforms(world);
     }
+    // Wind on Rigid Bodies that have a Wind Response (aerodynamic drag towards the wind's speed).
+    if (physicsRunning && dt > 0.0f)
+        world.Query<const WindResponse, const RigidBody, const scene::WorldTransform>().Each(
+            [&](ecs::Entity e, const WindResponse& r, const RigidBody&, const scene::WorldTransform& wt) {
+                if (r.drag > 0.0f)
+                    s.physics->AddForce(e, WindDragForce(WindFor(world, e, wt.GetPosition()), s.physics->GetVelocity(e), r.drag));
+            });
     if (physicsRunning) {
         s.physics->Tick(world, dt);
         scene::UpdateWorldTransforms(world);

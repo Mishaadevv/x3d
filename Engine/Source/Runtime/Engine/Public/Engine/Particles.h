@@ -170,6 +170,7 @@ private:
         u32 lightId = 0; // entity index + 1 (LightDesc::id)
         f32 flicker = 1.0f;
         f32 time = 0.0f;
+        Vec3 wind; // this tick (world space, m/s)
         // GPU simulation (gpuSlot valid): what the last Tick asks the GPU to do.
         u32 gpuSlot = 0xFFFFFFFFu;
         u32 gpuSpawn = 0;

@@ -1,4 +1,5 @@
 #include "Engine/Fire.h"
+#include "Engine/Wind.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
@@ -612,7 +613,11 @@ void FireSystem::Tick(ecs::World& world, f32 dt, ParticleSystem& particles)
                 v.edgeFade = 0.6f;
                 v.noiseScale = 1.4f;
                 v.noiseAmount = 0.75f;
-                v.wind = Vec3(0.1f, 1.6f, 0.05f); // rising
+                const Vec3 wind = WindFor(world, it.entity, base);
+                v.wind = Vec3(0.1f, 1.6f, 0.05f) + wind * 0.7f; // rising, bent over by the wind
+                // The column leans downwind.
+                const Vec3 lean = Vec3(wind.x, 0.0f, wind.z) * 0.12f;
+                v.worldToVolume = Inverse(Mat4::Translation(base + up * (height * 0.45f) + lean * height * 0.5f) * Mat4::Scale(Vec3(width, height, width)));
                 m_smoke.PushBack(v);
             }
             if (b.addedSound)

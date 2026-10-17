@@ -3,6 +3,7 @@
 #include "Engine/Animation.h"
 #include "Engine/SoftBody.h"
 #include "Engine/GameUI.h"
+#include "Engine/Wind.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/Fire.h"
 #include "Engine/GameModule.h"
@@ -68,6 +69,8 @@ void RegisterEngineComponents()
     RegisterComponent<ParticleEmitter>("Particle Emitter", "\xEE\x90\x92");        // sparkles
     RegisterComponent<Animator>("Animator", "\xEE\x8D\x98");                         // bone
     RegisterComponent<SoftBody>("Soft Body", "\xEE\x87\x95");                        // car
+    RegisterComponent<WindZone>("Wind Zone", "\xEE\x86\xB0");                        // wind
+    RegisterComponent<WindResponse>("Wind Response", "\xEE\x86\xB0");                // wind
     RegisterComponent<UICanvas>("UI Canvas", "\xEE\x84\x9D");                        // monitor
     RegisterComponent<UIElement>("UI Element", "\xEE\x8A\x91");                      // frame
     RegisterComponent<UIPanel>("UI Panel", "\xEE\x8D\xB6");                          // rectangle-horizontal

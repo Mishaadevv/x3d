@@ -451,6 +451,8 @@ ConCommand CmdCreate("create", "Creates an object in front of the camera: create
         ed->CreateDecal(at);
     else if (kind.EqualsIgnoreCase("terrain"))
         ed->CreateTerrain();
+    else if (kind.EqualsIgnoreCase("wind") || kind.EqualsIgnoreCase("windzone"))
+        ed->CreateWindZone();
     else if (kind.StartsWith("ui."))
         ed->CreateUIWidget(kind.SubStr(3));
     else if (kind.EqualsIgnoreCase("heightfog") || kind.EqualsIgnoreCase("fog"))

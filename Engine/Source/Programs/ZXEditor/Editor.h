@@ -19,6 +19,7 @@
 #include "Engine/Terrain.h"
 #include "Engine/SoftBody.h"
 #include "Engine/GameUI.h"
+#include "Engine/Wind.h"
 #include "Engine/Animation.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
@@ -392,6 +393,8 @@ public:
     /// Game UI: canvas, panel, text, button, image, progress, slider, toggle - under the selected UI element or the first
     /// canvas (created when there is none).
     ecs::Entity CreateUIWidget(StringView kind);
+    /// A directional Wind Zone blowing the way the camera looks (level).
+    void CreateWindZone();
     void CreateTerrain();                                      // 200 m procedural terrain under the scene
     void DrawPhysicsDebug();
     void CreateHeightFog(f32 density = 0.0f);                  // replaces the scene's one; density 0 = default

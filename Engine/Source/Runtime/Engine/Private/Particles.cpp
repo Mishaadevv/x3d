@@ -1,4 +1,5 @@
 #include "Engine/Particles.h"
+#include "Engine/Wind.h"
 #include "Core/Reflection/Reflection.h"
 #include "Scene/Hierarchy.h"
 
@@ -217,6 +218,7 @@ void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
                 em.pendingBurst += u32(Max(desc.burst, 0));
             }
             // Flicker: two slow noises (the light breathes rather than strobes).
+            em.wind = desc.worldSpace ? WindFor(world, e, wt.GetPosition()) : Vec3();
             em.flicker = 1.0f - desc.lightFlicker * (0.5f + 0.3f * Sin(em.time * 9.1f + f32(e.index)) + 0.2f * Sin(em.time * 23.7f));
             if (em.gpuSlot != 0xFFFFFFFFu) {
                 em.time += dt;
@@ -267,8 +269,10 @@ void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
         if (!em.alive)
             ReleaseGpuSlot(em);
     m_emitters.RemoveIf([](u64, const Emitter& em) { return !em.alive; });
-    for (auto& [key, em] : m_free)
+    for (auto& [key, em] : m_free) {
+        em.wind = em.particles.Empty() ? Vec3() : WindAt(world, em.particles[0].position);
         Advance(em, dt);
+    }
     m_free.RemoveIf([](u64, const Emitter& em) { return em.particles.Empty(); });
 }
 
@@ -286,7 +290,7 @@ void ParticleSystem::Advance(Emitter& em, f32 dt)
         Vec3 accel = desc.acceleration;
         if (desc.turbulence > 0.0f)
             accel += Swirl(p.position * 1.3f + Vec3(p.seed * 10.0f), em.time) * desc.turbulence;
-        p.velocity = (p.velocity + accel * dt) * dragFactor;
+        p.velocity = em.wind + (p.velocity - em.wind + accel * dt) * dragFactor; // drag pulls towards the wind
         p.position += p.velocity * dt;
         p.rotation += p.spin * dt;
         if (p.willHit && Dot(p.position - p.hitPoint, p.hitNormal) < 0.0f) {
@@ -410,6 +414,7 @@ void ParticleSystem::GatherGpu(Array<render::GpuEmitter>& out, render::GpuPartic
         g.world = em.world;
         g.acceleration = d.acceleration;
         g.drag = d.drag;
+        g.wind = em.wind;
         g.startColor = d.startColor * glow;
         g.endColor = d.endColor * glow;
         g.startAlpha = d.startAlpha;

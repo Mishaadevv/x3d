@@ -79,7 +79,8 @@ struct GpuEmitter
     u32 renderFlags = 0; // ParticleFlags
     u32 texture = 0xFFFFFFFFu;
     u32 flags = 0;
-    u32 pad[7] = {};
+    Vec3 wind; // m/s the particles drift towards (at the drag rate); world-space emitters
+    u32 pad[4] = {};
 };
 static_assert(sizeof(GpuEmitter) == 256 && offsetof(GpuEmitter, spawnCount) == 192 && offsetof(GpuEmitter, flags) == 224);
 

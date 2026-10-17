@@ -1186,6 +1186,12 @@ void Editor::AddAtmosphere(f32 fogDensity, f32 cloudCoverage)
     c.coverage = cloudCoverage;
     world.Add(clouds, c);
     EnsureEntityGuid(world, clouds);
+    // A gentle breeze: smoke, fire, fog and clouds drift with it (tune or add Wind Zones; Wind Response per object).
+    const ecs::Entity windZone = CreateEntity("Wind", Transform(Vec3(0.0f, 4.0f, 0.0f), Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(60.0f))));
+    WindZone breeze;
+    breeze.speed = 4.0f;
+    world.Add(windZone, breeze);
+    EnsureEntityGuid(world, windZone);
     // Outdoor ambience: birds and a light breeze everywhere (2D), like the sky they belong to.
     const ecs::Entity ambience = CreateEntity("Ambience", Transform(Vec3(0.0f, 2.0f, 0.0f)));
     AudioSource birds;
@@ -1675,6 +1681,15 @@ void Editor::DrawPhysicsDebug()
         debugDraw->Line(a, b, Color(255, 160, 60));
         debugDraw->Sphere(a, 0.05f, Color(255, 160, 60), 8);
     }
+}
+
+void Editor::CreateWindZone()
+{
+    const Vec3 f = SafeNormalize(Vec3(camera.Forward().x, 0.0f, camera.Forward().z), Vec3(0, 0, 1));
+    const ecs::Entity e = CreateEntity("Wind Zone", Transform(camera.position + camera.Forward() * 5.0f, Quat::LookRotation(f, Vec3(0, 1, 0))));
+    world.Add(e, WindZone{});
+    CommitCreated(e, "Create Wind Zone");
+    Select(e);
 }
 
 ecs::Entity Editor::CreateUIWidget(StringView kind)
@@ -3492,6 +3507,7 @@ bool Editor::Frame()
         ZX_PROFILE_SCOPE("Terrains");
         terrains.Update(world, *assets, renderAssets.Get());
         softBodies.Update(world, *assets, renderAssets.Get());
+        TickWind(world, playState == PlayState::Paused ? 0.0f : dt * (IsPlaying() ? GameTimeScale(GameSystemsForPlay()) : 1.0f));
     }
     // Particles: emitters with Simulate In Editor run live while editing, all of them while playing (frozen when paused).
     if (FeatureEnabled("particles")) {
