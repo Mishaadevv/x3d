@@ -407,6 +407,23 @@ private:
                 anim::PackSkin(j, &weights[usize(i) * 4], v.joints, v.weights);
             }
         }
+        // Morph targets: POSITION / NORMAL offsets (scaled like positions; converted to engine space by MirrorX).
+        for (const JsonValue& target : prim.Get("targets").Elements()) {
+            MorphTarget& m = p.morphs.AddDefaulted();
+            Array<f32> dp, dn;
+            if (target.Contains("POSITION") && ReadFloats(target.Get("POSITION").AsInt(-1), 3, dp) && dp.Size() == usize(count) * 3) {
+                m.positions.ResizeUninitialized(count);
+                for (u32 i = 0; i < count; ++i)
+                    m.positions[i] = Vec3(dp[i * 3], dp[i * 3 + 1], dp[i * 3 + 2]) * m_options.scale;
+            } else {
+                m.positions.Resize(count, Vec3());
+            }
+            if (hasNormals && target.Contains("NORMAL") && ReadFloats(target.Get("NORMAL").AsInt(-1), 3, dn) && dn.Size() == usize(count) * 3) {
+                m.normals.ResizeUninitialized(count);
+                for (u32 i = 0; i < count; ++i)
+                    m.normals[i] = Vec3(dn[i * 3], dn[i * 3 + 1], dn[i * 3 + 2]);
+            }
+        }
         Array<u32> indices;
         if (prim.Contains("indices")) {
             if (!ReadIndices(prim.Get("indices").AsInt(-1), indices))
@@ -447,13 +464,10 @@ private:
         mesh::MirrorX(p);
         if (!hasNormals && m_options.generateNormals) {
             // glTF: missing normals mean flat shading - give every triangle its own vertices.
-            Array<MeshVertex> flat;
-            flat.ResizeUninitialized(p.lods[0].indices.Size());
-            for (usize i = 0; i < flat.Size(); ++i) {
-                flat[i] = p.vertices[p.lods[0].indices[i]];
+            Array<u32> flat = Array<u32>(p.lods[0].indices.View()); // one vertex per corner
+            for (usize i = 0; i < flat.Size(); ++i)
                 p.lods[0].indices[i] = u32(i);
-            }
-            p.vertices = move(flat);
+            mesh::PermuteVertices(p, flat.View());
             mesh::GenerateNormals(p);
             mesh::WeldVertices(p);
         }
@@ -473,6 +487,12 @@ private:
             mesh.lods.AddDefaulted();
             for (const JsonValue& prim : m.Get("primitives").Elements())
                 ZX_TRY(ImportPrimitive(prim, mesh, defaultMaterialUses));
+            // Morph target names (extras.targetNames, written by Blender and most exporters) and default weights.
+            const JsonValue& names = m.Get("extras").Get("targetNames");
+            for (usize t = 0; t < mesh.morphs.Size(); ++t) {
+                mesh.morphs[t].name = t < names.Size() ? String(names[t].AsString()) : String::Format("Morph{}", t);
+                mesh.morphs[t].defaultWeight = t < m.Get("weights").Size() ? m.Get("weights")[t].AsFloat() : 0.0f;
+            }
             mesh.ComputeBounds();
         }
         if (defaultMaterialUses || (m_scene.materials.Empty() && !m_scene.meshes.Empty())) {
@@ -734,6 +754,8 @@ private:
                 const JsonValue& smp = samplers[si];
                 const StringView interp = smp.Get("interpolation").AsString("LINEAR");
                 const bool cubic = interp == "CUBICSPLINE", step = interp == "STEP";
+                if (path == "weights")
+                    continue; // morph weights: below (their node is the skinned mesh, not a joint)
                 Array<f32> times, values;
                 const u32 comps = path == "rotation" ? 4u : 3u;
                 if ((path != "translation" && path != "rotation" && path != "scale") || !ReadFloats(smp.Get("input").AsInt(-1), 1, times) ||
@@ -762,7 +784,36 @@ private:
                                   : path == "rotation"  ? AnimationTrack::StepRotation
                                                         : AnimationTrack::StepScale;
             }
-            if (clip.tracks.Empty())
+            // Morph weights of a mesh using this skin.
+            for (const JsonValue& ch : a.Get("channels").Elements()) {
+                const i64 node = ch.Get("target").Get("node").AsInt(-1);
+                const usize si = usize(ch.Get("sampler").AsInt(-1));
+                if (ch.Get("target").Get("path").AsString() != "weights" || node < 0 || si >= samplers.Size() ||
+                    m_root.Get("nodes")[usize(node)].Get("skin").AsInt(-1) != i64(best))
+                    continue;
+                const i64 meshIndex = m_root.Get("nodes")[usize(node)].Get("mesh").AsInt(-1);
+                if (meshIndex < 0 || usize(meshIndex) >= m_scene.meshes.Size() || m_scene.meshes[usize(meshIndex)].morphs.Empty())
+                    continue;
+                const u32 targets = u32(m_scene.meshes[usize(meshIndex)].morphs.Size());
+                const JsonValue& smp = samplers[si];
+                const StringView interp = smp.Get("interpolation").AsString("LINEAR");
+                const bool cubic = interp == "CUBICSPLINE";
+                Array<f32> times, values;
+                if (!ReadFloats(smp.Get("input").AsInt(-1), 1, times) || !ReadFloats(smp.Get("output").AsInt(-1), 1, values) ||
+                    values.Size() < times.Size() * targets * (cubic ? 3 : 1))
+                    continue;
+                MorphTrack& t = clip.morphTracks.AddDefaulted();
+                t.targets = targets;
+                t.step = interp == "STEP";
+                t.times = move(times);
+                t.weights.ResizeUninitialized(t.times.Size() * targets);
+                for (usize k = 0; k < t.times.Size(); ++k) {
+                    clip.duration = Max(clip.duration, t.times[k]);
+                    for (u32 i = 0; i < targets; ++i) // cubic spline: the key value (tangents dropped)
+                        t.weights[k * targets + i] = values[(cubic ? k * 3 + 1 : k) * targets + i];
+                }
+            }
+            if (clip.tracks.Empty() && clip.morphTracks.Empty())
                 continue;
             m_scene.animations.PushBack(move(clip));
             m_scene.animationSkeleton.PushBack(best);

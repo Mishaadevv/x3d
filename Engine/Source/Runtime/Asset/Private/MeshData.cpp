@@ -160,6 +160,28 @@ void GenerateTangents(MeshData& mesh)
     mesh.attributes |= MeshAttributes::Tangents;
 }
 
+void PermuteVertices(MeshData& mesh, Span<const u32> newToOld)
+{
+    Array<MeshVertex> vertices;
+    vertices.ResizeUninitialized(newToOld.Size());
+    for (usize i = 0; i < newToOld.Size(); ++i)
+        vertices[i] = mesh.vertices[newToOld[i]];
+    mesh.vertices = move(vertices);
+    for (MorphTarget& m : mesh.morphs) {
+        Array<Vec3> positions, normals;
+        positions.ResizeUninitialized(newToOld.Size());
+        for (usize i = 0; i < newToOld.Size(); ++i)
+            positions[i] = newToOld[i] < m.positions.Size() ? m.positions[newToOld[i]] : Vec3();
+        if (!m.normals.Empty()) {
+            normals.ResizeUninitialized(newToOld.Size());
+            for (usize i = 0; i < newToOld.Size(); ++i)
+                normals[i] = newToOld[i] < m.normals.Size() ? m.normals[newToOld[i]] : Vec3();
+        }
+        m.positions = move(positions);
+        m.normals = move(normals);
+    }
+}
+
 void WeldVertices(MeshData& mesh)
 {
     const usize n = mesh.vertices.Size();
@@ -172,8 +194,14 @@ void WeldVertices(MeshData& mesh)
     table.Resize(cap, InvalidIndex);
     Array<u32> remap;
     remap.ResizeUninitialized(n);
-    Array<MeshVertex> unique;
+    Array<u32> unique; // new vertex -> old vertex
     unique.Reserve(n);
+    auto sameMorphs = [&](u32 a, u32 b) {
+        for (const MorphTarget& m : mesh.morphs)
+            if (m.positions[a] != m.positions[b] || (!m.normals.Empty() && m.normals[a] != m.normals[b]))
+                return false;
+        return true;
+    };
     for (usize v = 0; v < n; ++v) {
         const MeshVertex& vx = mesh.vertices[v];
         usize slot = usize(HashVertex(vx)) & (cap - 1);
@@ -182,10 +210,10 @@ void WeldVertices(MeshData& mesh)
             if (existing == InvalidIndex) {
                 table[slot] = u32(unique.Size());
                 remap[v] = u32(unique.Size());
-                unique.PushBack(vx);
+                unique.PushBack(u32(v));
                 break;
             }
-            if (SameVertex(unique[existing], vx)) {
+            if (SameVertex(mesh.vertices[unique[existing]], vx) && sameMorphs(unique[existing], u32(v))) {
                 remap[v] = existing;
                 break;
             }
@@ -193,23 +221,23 @@ void WeldVertices(MeshData& mesh)
         }
     }
     RemapIndices(mesh, remap);
-    mesh.vertices = move(unique);
+    PermuteVertices(mesh, unique.View());
 }
 
 void RemoveUnusedVertices(MeshData& mesh)
 {
     Array<u32> remap;
     remap.Resize(mesh.vertices.Size(), InvalidIndex);
-    Array<MeshVertex> used;
+    Array<u32> used; // new vertex -> old vertex
     ForEachTriangle(mesh, [&](u32 a, u32 b, u32 c) {
         for (u32 i : {a, b, c})
             if (remap[i] == InvalidIndex) {
                 remap[i] = u32(used.Size());
-                used.PushBack(mesh.vertices[i]);
+                used.PushBack(i);
             }
     });
     RemapIndices(mesh, remap);
-    mesh.vertices = move(used);
+    PermuteVertices(mesh, used.View());
 }
 
 u32 RemoveDegenerateTriangles(MeshData& mesh)
@@ -250,6 +278,12 @@ void MirrorX(MeshData& mesh)
         v.tangent.x = -v.tangent.x;
         v.tangent.w = -v.tangent.w;
     }
+    for (MorphTarget& m : mesh.morphs) {
+        for (Vec3& d : m.positions)
+            d.x = -d.x;
+        for (Vec3& d : m.normals)
+            d.x = -d.x;
+    }
     for (MeshLod& lod : mesh.lods)
         for (usize i = 0; i + 2 < lod.indices.Size(); i += 3)
             std::swap(lod.indices[i + 1], lod.indices[i + 2]);
@@ -266,6 +300,12 @@ void Transform(MeshData& mesh, const Mat4& m)
         const Vec3 t = SafeNormalize(m.TransformVector(v.tangent.XYZ()), Vec3::Right());
         v.tangent = Vec4(t, flip ? -v.tangent.w : v.tangent.w);
     }
+    for (MorphTarget& mt : mesh.morphs) { // offsets are directions: the linear part only
+        for (Vec3& d : mt.positions)
+            d = m.TransformVector(d);
+        for (Vec3& d : mt.normals)
+            d = normalMatrix.TransformVector(d);
+    }
     if (flip)
         for (MeshLod& lod : mesh.lods)
             for (usize i = 0; i + 2 < lod.indices.Size(); i += 3)
@@ -277,6 +317,26 @@ void Append(MeshData& dst, const MeshData& src, u32 materialOffset)
 {
     const u32 base = u32(dst.vertices.Size());
     dst.vertices.Append(src.vertices.View());
+    // Morph targets by index (primitives of one glTF mesh share them); vertices without an offset get zeros.
+    if (dst.morphs.Size() < src.morphs.Size())
+        dst.morphs.Resize(src.morphs.Size());
+    for (usize t = 0; t < dst.morphs.Size(); ++t) {
+        MorphTarget& d = dst.morphs[t];
+        const MorphTarget* sm = t < src.morphs.Size() ? &src.morphs[t] : nullptr;
+        if (sm && d.name.Empty()) {
+            d.name = sm->name;
+            d.defaultWeight = sm->defaultWeight;
+        }
+        const bool normals = !d.normals.Empty() || (sm && !sm->normals.Empty());
+        d.positions.Resize(base, Vec3());
+        if (normals)
+            d.normals.Resize(base, Vec3());
+        for (u32 i = 0; i < u32(src.vertices.Size()); ++i) {
+            d.positions.PushBack(sm && i < sm->positions.Size() ? sm->positions[i] : Vec3());
+            if (normals)
+                d.normals.PushBack(sm && i < sm->normals.Size() ? sm->normals[i] : Vec3());
+        }
+    }
     if (dst.lods.Empty())
         dst.lods.AddDefaulted();
     MeshLod& lod = dst.lods[0];

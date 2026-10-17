@@ -7,6 +7,11 @@
 
 namespace zx {
 
+ZX_REFLECT_STRUCT_BEGIN(MorphTargets)
+    ZX_FIELD(names, Meta::ReadOnly(), Meta::Tooltip("Morph targets of the mesh (from the model)"))
+    ZX_FIELD(weights, Meta::Range(0, 1), Meta::Tooltip("Weight per morph target, in the order of Names (scripts: entity.setMorph(name, w))"))
+ZX_REFLECT_STRUCT_END()
+
 ZX_REFLECT_STRUCT_BEGIN(MeshRenderer)
     ZX_FIELD(mesh, Meta::AssetType("Mesh"), Meta::ReadOnly())
     ZX_FIELD(materials, Meta::AssetType("Material"), Meta::ReadOnly())
@@ -172,6 +177,13 @@ Entity InstantiatePrefab(World& world, const asset::PrefabAsset& prefab, const T
             mr.materials = node.materials;
             mr.collision = !node.skeleton.IsValid(); // an animated mesh is no static obstacle
             world.Add(e, move(mr));
+            if (!node.morphNames.Empty()) {
+                MorphTargets morphs;
+                morphs.names = node.morphNames;
+                morphs.weights = node.morphWeights;
+                morphs.weights.Resize(morphs.names.Size(), 0.0f);
+                world.Add(e, move(morphs));
+            }
         }
         if (node.skeleton.IsValid()) {
             Animator a;
@@ -205,7 +217,7 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out, con
     };
     Array<ChunkRef> chunks;
     u32 total = 0;
-    world.Query<const WorldTransform, const MeshRenderer>().Without<Flammable>().Without<Animator>().EachChunk([&](auto& v) {
+    world.Query<const WorldTransform, const MeshRenderer>().Without<Flammable>().Without<Animator>().Without<MorphTargets>().EachChunk([&](auto& v) {
         ChunkRef c{v.entities, v.template Column<0>(), v.template Column<1>(), v.count, total};
         for (u32 i = 0; i < v.count; ++i)
             total += c.renderers[i].visible && c.renderers[i].mesh.IsValid() ? 1u : 0u;
@@ -243,9 +255,26 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out, con
         inst.world = wt.matrix;
         inst.mesh = mr.mesh;
         inst.materials = mr.materials.View();
-        if (animation)
+        if (animation) {
             inst.skinMatrices = animation->Palette(e);
+            inst.morphWeights = animation->MorphWeights(e);
+        }
+        if (inst.morphWeights.Empty())
+            if (const MorphTargets* m = world.Get<const MorphTargets>(e))
+                inst.morphWeights = m->weights.View();
     });
+    // Meshes with morph targets (no Animator).
+    world.Query<const WorldTransform, const MeshRenderer, const MorphTargets>().Without<Animator>().Without<Flammable>().Each(
+        [&](Entity e, const WorldTransform& wt, const MeshRenderer& mr, const MorphTargets& m) {
+            if (!mr.visible || !mr.mesh.IsValid())
+                return;
+            render::RenderInstance& inst = out.AddDefaulted();
+            inst.id = e.Pack();
+            inst.world = wt.matrix;
+            inst.mesh = mr.mesh;
+            inst.materials = mr.materials.View();
+            inst.morphWeights = m.weights.View();
+        });
     world.Query<const WorldTransform, const MeshRenderer, const Flammable>().Without<Animator>().Each([&](Entity e, const WorldTransform& wt, const MeshRenderer& mr, const Flammable& f) {
         if (!mr.visible || !mr.mesh.IsValid())
             return;

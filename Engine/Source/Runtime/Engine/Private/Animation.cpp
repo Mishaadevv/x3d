@@ -28,6 +28,10 @@ ZX_REFLECT_STRUCT_BEGIN(Animator)
     ZX_FIELD(rightFoot)
     ZX_FIELD(headBone, Meta::Tooltip("Turned towards entity.lookAt targets"))
     ZX_FIELD(footstepEvents, Meta::Tooltip("Scripts get onAnimEvent(\"Footstep\") when a foot touches down while moving"))
+    ZX_FIELD(rootMotion, Meta::Category("Root Motion"),
+             Meta::Tooltip("While playing, the root bone's horizontal movement in the clips moves the character (Character Controller "
+                           "or the top-level entity); the model stays on the entity"))
+    ZX_FIELD(rootBone, Meta::Tooltip("Bone that carries the motion; empty = the skeleton's root"))
     ZX_FIELD(skinToNode, Meta::Hidden())
 ZX_REFLECT_STRUCT_END()
 
@@ -43,6 +47,9 @@ String Lower(StringView s)
 }
 
 f32 Smooth(f32 x) { return x * x * (3.0f - 2.0f * x); }
+
+/// The part of `v` across `up` (root motion moves along the ground; falls and jumps stay in the animation).
+Vec3 Horizontal(Vec3 v, Vec3 up) { return v - up * Dot(v, up); }
 
 /// Character Controller state of the entity or the nearest ancestor that has one (the mesh is usually a child).
 const CharacterState* FindCharacter(ecs::World& world, ecs::Entity e)
@@ -96,71 +103,115 @@ f32 AnimationSystem::ParamValue(const State& s, const AnimGraph& g, StringView n
     return p >= 0 ? g.params[usize(p)].defaultValue : 0.0f;
 }
 
+bool AnimationSystem::StateClips(const AnimGraph& g, const AnimStateMachine::State& st, const Animator& a, State& s, Array<ClipWeight>& out)
+{
+    out.Clear();
+    if (!st.HasMotion())
+        return false;
+    if (st.blend.Empty()) {
+        const asset::AnimationClip* clip = ClipByName(a, st.clip);
+        if (clip)
+            out.PushBack(ClipWeight{clip, 1.0f});
+        return clip != nullptr;
+    }
+    if (st.Is2D()) {
+        // 2D blend space: every sample with weight.
+        BlendSpace2DWeights(st.blend.View(), ParamValue(s, g, st.blendParam), ParamValue(s, g, st.blendParamY), s.weights);
+        f32 total = 0.0f;
+        for (usize i = 0; i < st.blend.Size(); ++i)
+            if (s.weights[i] > 1e-3f)
+                if (const asset::AnimationClip* clip = ClipByName(a, st.blend[i].clip)) {
+                    out.PushBack(ClipWeight{clip, s.weights[i]});
+                    total += s.weights[i];
+                }
+        for (ClipWeight& c : out)
+            c.weight /= Max(total, 1e-6f);
+        return !out.Empty();
+    }
+    // 1D blend space: the two samples around the parameter.
+    const f32 v = ParamValue(s, g, st.blendParam);
+    usize i = 0;
+    while (i + 1 < st.blend.Size() && st.blend[i + 1].value <= v)
+        ++i;
+    const usize j = Min(i + 1, st.blend.Size() - 1);
+    const f32 span = st.blend[j].value - st.blend[i].value;
+    const f32 w = j != i && span > 1e-6f ? Clamp((v - st.blend[i].value) / span, 0.0f, 1.0f) : 0.0f;
+    const asset::AnimationClip* c0 = ClipByName(a, st.blend[i].clip);
+    const asset::AnimationClip* c1 = ClipByName(a, st.blend[j].clip);
+    if (!c0 || !c1)
+        return false;
+    out.PushBack(ClipWeight{c0, 1.0f - w});
+    if (w > 0.0f)
+        out.PushBack(ClipWeight{c1, w});
+    return true;
+}
+
+void AnimationSystem::StateMorphs(const AnimGraph& g, const AnimStateMachine& m, i32 stateIndex, f32 phase, const Animator& a, State& s,
+                                  Array<f32>& out)
+{
+    out.Clear();
+    const AnimStateMachine::State& st = m.states[usize(stateIndex)];
+    Array<ClipWeight> clips;
+    if (!StateClips(g, st, a, s, clips))
+        return;
+    f32 sample[64];
+    for (const ClipWeight& c : clips) {
+        if (c.clip->morphTracks.Empty())
+            continue;
+        const asset::MorphTrack& t = c.clip->morphTracks[0];
+        const u32 n = Min(t.targets, 64u);
+        if (out.Size() < n)
+            out.Resize(n, 0.0f);
+        asset::anim::SampleMorphWeights(t, c.clip->duration, phase * c.clip->duration, st.loop, Span<f32>(sample, n));
+        for (u32 i = 0; i < n; ++i)
+            out[i] += sample[i] * c.weight;
+    }
+}
+
+void AnimationSystem::StateRootMotion(const AnimGraph& g, const AnimStateMachine& m, i32 stateIndex, f32 from, f32 to, const Animator& a,
+                                      const asset::Skeleton& skeleton, State& s, Vec3& offset, Vec3& delta)
+{
+    offset = delta = Vec3();
+    const AnimStateMachine::State& st = m.states[usize(stateIndex)];
+    Array<ClipWeight> clips;
+    if (s.rootBone < 0 || !StateClips(g, st, a, s, clips))
+        return;
+    const u32 root = u32(s.rootBone);
+    for (const ClipWeight& c : clips) {
+        const f32 d = c.clip->duration;
+        offset += Horizontal(asset::anim::SampleBonePosition(*c.clip, skeleton, root, from * d) -
+                                 asset::anim::SampleBonePosition(*c.clip, skeleton, root, 0.0f),
+                             s.rootUp) *
+                  c.weight;
+        delta += Horizontal(asset::anim::RootMotionDelta(*c.clip, skeleton, root, from * d, to * d, st.loop), s.rootUp) * c.weight;
+    }
+}
+
 f32 AnimationSystem::EvaluateState(const AnimGraph& g, const AnimStateMachine& m, i32 stateIndex, f32 phase, bool additive, const Animator& a,
                                    const asset::Skeleton& skeleton, State& s, Span<Transform> out)
 {
     const AnimStateMachine::State& st = m.states[usize(stateIndex)];
     const u32 bones = skeleton.BoneCount();
-    auto bindPose = [&] {
+    // The clips at the same phase (cycles stay in step), blended by weight.
+    Array<ClipWeight> clips;
+    f32 length = 1.0f;
+    if (!StateClips(g, st, a, s, clips)) {
         for (u32 b = 0; b < bones; ++b)
             out[b] = skeleton.bindPose[b];
-    };
-    f32 length = 1.0f;
-    if (!st.HasMotion()) {
-        bindPose();
-    } else if (st.blend.Empty()) {
-        const asset::AnimationClip* clip = ClipByName(a, st.clip);
-        if (!clip) {
-            bindPose();
-        } else {
-            asset::anim::SampleClip(*clip, skeleton, phase * clip->duration, st.loop, out);
-            length = Max(clip->duration, 1e-3f);
-        }
-    } else if (st.Is2D()) {
-        // 2D blend space: every sample with weight, all at the same phase.
-        BlendSpace2DWeights(st.blend.View(), ParamValue(s, g, st.blendParam), ParamValue(s, g, st.blendParamY), s.weights);
-        f32 total = 0.0f, blendedLength = 0.0f;
-        s.scratch2.Resize(bones);
-        for (usize i = 0; i < st.blend.Size(); ++i) {
-            const f32 w = s.weights[i];
-            const asset::AnimationClip* clip = w > 1e-3f ? ClipByName(a, st.blend[i].clip) : nullptr;
-            if (!clip)
-                continue;
-            total += w;
-            blendedLength += w * clip->duration;
-            if (total == w) {
-                asset::anim::SampleClip(*clip, skeleton, phase * clip->duration, st.loop, out);
-            } else {
-                asset::anim::SampleClip(*clip, skeleton, phase * clip->duration, st.loop, s.scratch2.View());
-                asset::anim::BlendPoses(out, s.scratch2.View(), w / total, out);
-            }
-        }
-        if (total <= 0.0f)
-            bindPose();
-        else
-            length = Max(blendedLength / total, 1e-3f);
     } else {
-        // 1D blend space: the two samples around the parameter, both at the same phase (their cycles stay in step).
-        const f32 v = ParamValue(s, g, st.blendParam);
-        usize i = 0;
-        while (i + 1 < st.blend.Size() && st.blend[i + 1].value <= v)
-            ++i;
-        const usize j = Min(i + 1, st.blend.Size() - 1);
-        const f32 span = st.blend[j].value - st.blend[i].value;
-        const f32 w = j != i && span > 1e-6f ? Clamp((v - st.blend[i].value) / span, 0.0f, 1.0f) : 0.0f;
-        const asset::AnimationClip* c0 = ClipByName(a, st.blend[i].clip);
-        const asset::AnimationClip* c1 = ClipByName(a, st.blend[j].clip);
-        if (!c0 || !c1) {
-            bindPose();
-        } else {
-            asset::anim::SampleClip(*c0, skeleton, phase * c0->duration, st.loop, out);
-            if (w > 0.0f) {
-                s.scratch.Resize(bones);
-                asset::anim::SampleClip(*c1, skeleton, phase * c1->duration, st.loop, s.scratch.View());
-                asset::anim::BlendPoses(out, s.scratch.View(), w, out);
+        f32 total = 0.0f, blendedLength = 0.0f;
+        s.scratch.Resize(bones);
+        for (const ClipWeight& c : clips) {
+            total += c.weight;
+            blendedLength += c.weight * c.clip->duration;
+            if (total == c.weight) {
+                asset::anim::SampleClip(*c.clip, skeleton, phase * c.clip->duration, st.loop, out);
+            } else {
+                asset::anim::SampleClip(*c.clip, skeleton, phase * c.clip->duration, st.loop, s.scratch.View());
+                asset::anim::BlendPoses(out, s.scratch.View(), c.weight / Max(total, 1e-6f), out);
             }
-            length = Max(c0->duration + (c1->duration - c0->duration) * w, 1e-3f);
         }
+        length = Max(blendedLength / Max(total, 1e-6f), 1e-3f);
     }
     if (additive && st.HasMotion()) {
         // The change from the state's first frame (local space): pose = delta * reference.
@@ -176,8 +227,9 @@ f32 AnimationSystem::EvaluateState(const AnimGraph& g, const AnimStateMachine& m
 }
 
 f32 AnimationSystem::TickMachine(const AnimGraph& g, const AnimStateMachine& m, bool additive, MachineRun& r, const Animator& a,
-                                 const asset::Skeleton& skeleton, State& s, f32 dt, ecs::Entity e, Span<Transform> out)
+                                 const asset::Skeleton& skeleton, State& s, f32 dt, ecs::Entity e, Span<Transform> out, bool baseLayer)
 {
+    const bool rootMotion = baseLayer && s.rootBone >= 0;
     const u32 bones = skeleton.BoneCount();
     if (r.state < 0 || r.state >= i32(m.states.Size())) {
         r = MachineRun{};
@@ -218,6 +270,11 @@ f32 AnimationSystem::TickMachine(const AnimGraph& g, const AnimStateMachine& m, 
     const f32 length = EvaluateState(g, m, r.state, r.phase, additive, a, skeleton, s, out);
     const f32 before = r.phase;
     r.phase += dt * a.speed * cur.speed / length;
+    Vec3 rootOffset, rootDelta;
+    if (rootMotion)
+        StateRootMotion(g, m, r.state, before, r.phase, a, skeleton, s, rootOffset, rootDelta);
+    if (baseLayer)
+        StateMorphs(g, m, r.state, before, a, s, s.morphs);
     const bool wrapped = cur.loop && r.phase >= 1.0f;
     r.phase = cur.loop ? r.phase - Floor(r.phase) : Min(r.phase, 1.0f);
     for (const AnimStateMachine::Event& ev : cur.events) // authored events the phase passed this tick
@@ -230,7 +287,22 @@ f32 AnimationSystem::TickMachine(const AnimGraph& g, const AnimStateMachine& m, 
         if (from.HasMotion()) {
             s.fromPose.Resize(bones);
             const f32 fromLength = EvaluateState(g, m, r.fromState, r.fromPhase, additive, a, skeleton, s, s.fromPose.View());
+            const f32 fromBefore = r.fromPhase;
             r.fromPhase += dt * a.speed * from.speed / fromLength;
+            if (rootMotion) { // the motion blends like the pose
+                Vec3 fromOffset, fromDelta;
+                StateRootMotion(g, m, r.fromState, fromBefore, r.fromPhase, a, skeleton, s, fromOffset, fromDelta);
+                rootOffset = Lerp(fromOffset, rootOffset, t);
+                rootDelta = Lerp(fromDelta, rootDelta, t);
+            }
+            if (baseLayer) { // morph weights blend like the pose
+                StateMorphs(g, m, r.fromState, fromBefore, a, s, s.fromMorphs);
+                const usize n = Max(s.morphs.Size(), s.fromMorphs.Size());
+                s.morphs.Resize(n, 0.0f);
+                s.fromMorphs.Resize(n, 0.0f);
+                for (usize i = 0; i < n; ++i)
+                    s.morphs[i] = Lerp(s.fromMorphs[i], s.morphs[i], t);
+            }
             r.fromPhase = from.loop ? r.fromPhase - Floor(r.fromPhase) : Min(r.fromPhase, 1.0f);
             if (cur.HasMotion())
                 asset::anim::BlendPoses(s.fromPose.View(), out, t, out);
@@ -241,6 +313,10 @@ f32 AnimationSystem::TickMachine(const AnimGraph& g, const AnimStateMachine& m, 
         // A silent state on either side fades the layer instead of blending towards the bind pose.
         presence = cur.HasMotion() && from.HasMotion() ? 1.0f : cur.HasMotion() ? t : from.HasMotion() ? 1.0f - t : 0.0f;
         r.fade = Min(1.0f, r.fade + dt / Max(r.fadeDuration, 1e-3f));
+    }
+    if (rootMotion) {
+        s.rootOffset = rootOffset;
+        s.rootDelta = rootDelta;
     }
     return presence;
 }
@@ -261,7 +337,9 @@ void AnimationSystem::TickGraph(const AnimGraph& g, const Animator& a, const ass
             s.pose[b] = skeleton.bindPose[b];
         return;
     }
-    TickMachine(g, g, false, s.machines[0], a, skeleton, s, dt, e, s.pose.View());
+    TickMachine(g, g, false, s.machines[0], a, skeleton, s, dt, e, s.pose.View(), true);
+    if (s.rootBone >= 0) // the root stays over the entity; the motion moves the entity instead
+        s.pose[u32(s.rootBone)].position -= s.rootOffset;
 
     // Layers on top: bone masks (a bone and everything below it) resolved once per skeleton.
     if (!g.layers.Empty() && (s.maskSkeleton != a.skeleton || s.layerMasks.Size() != g.layers.Size())) {
@@ -331,6 +409,19 @@ void AnimationSystem::Tick(ecs::World& world, f32 dt, bool playing)
         s.model.Resize(bones);
         s.palette.Resize(bones);
         const bool animate = playing || a.previewInEditor;
+        s.rootBone = -1;
+        s.rootOffset = s.rootDelta = Vec3();
+        s.morphs.Clear();
+        if (a.rootMotion) {
+            s.rootBone = a.rootBone.Empty() ? -1 : skeleton->FindBone(a.rootBone.View());
+            for (u32 b = 0; b < bones && s.rootBone < 0 && a.rootBone.Empty(); ++b)
+                if (skeleton->parents[b] < 0)
+                    s.rootBone = i32(b);
+            if (s.rootBone >= 0 && skeleton->parents[u32(s.rootBone)] >= 0)
+                s.rootBone = -1; // only a root bone's position is in skeleton space
+            if (const scene::WorldTransform* wt = world.Get<const scene::WorldTransform>(e))
+                s.rootUp = SafeNormalize(Inverse(wt->matrix * a.skinToNode.ToMatrix()).TransformVector(Vec3(0, 1, 0)), Vec3(0, 1, 0));
+        }
 
         const GraphFile* graph = a.graph.Empty() ? nullptr : LoadGraph(a.graph.View());
         if (graph) {
@@ -369,6 +460,7 @@ void AnimationSystem::Tick(ecs::World& world, f32 dt, bool playing)
                 if (!clip && m_assets.GetState(s.clip) == asset::AssetState::Unknown)
                     m_assets.Load(s.clip);
             }
+            const f32 timeBefore = s.time, fromBefore = s.fromTime;
             if (animate && a.playing) {
                 const f32 step = dt * a.speed;
                 s.time += step;
@@ -385,13 +477,56 @@ void AnimationSystem::Tick(ecs::World& world, f32 dt, bool playing)
             else
                 for (u32 b = 0; b < bones; ++b)
                     s.pose[b] = skeleton->bindPose[b];
+            if (clip && animate && s.rootBone >= 0) {
+                const u32 root = u32(s.rootBone);
+                const f32 wrappedTime = a.loop && clip->duration > 0.0f ? s.time - clip->duration * Floor(s.time / clip->duration) : s.time;
+                s.rootOffset = Horizontal(asset::anim::SampleBonePosition(*clip, *skeleton, root, wrappedTime) -
+                                              asset::anim::SampleBonePosition(*clip, *skeleton, root, 0.0f),
+                                          s.rootUp);
+                s.rootDelta = Horizontal(asset::anim::RootMotionDelta(*clip, *skeleton, root, timeBefore, s.time, a.loop), s.rootUp);
+            }
             if (s.fade < 1.0f && animate)
                 if (const asset::AnimationClip* from = m_assets.GetAnimation(s.fromClip)) {
                     s.fromPose.Resize(bones);
                     asset::anim::SampleClip(*from, *skeleton, s.fromTime, a.loop, s.fromPose.View());
                     asset::anim::BlendPoses(s.fromPose.View(), s.pose.View(), Smooth(s.fade), s.pose.View());
+                    if (s.rootBone >= 0) {
+                        const u32 root = u32(s.rootBone);
+                        const f32 t = Smooth(s.fade);
+                        const f32 wrappedFrom =
+                            a.loop && from->duration > 0.0f ? s.fromTime - from->duration * Floor(s.fromTime / from->duration) : s.fromTime;
+                        const Vec3 offset = Horizontal(asset::anim::SampleBonePosition(*from, *skeleton, root, wrappedFrom) -
+                                                           asset::anim::SampleBonePosition(*from, *skeleton, root, 0.0f),
+                                                       s.rootUp);
+                        const Vec3 delta = Horizontal(asset::anim::RootMotionDelta(*from, *skeleton, root, fromBefore, s.fromTime, a.loop), s.rootUp);
+                        s.rootOffset = Lerp(offset, s.rootOffset, t);
+                        s.rootDelta = Lerp(delta, s.rootDelta, t);
+                    }
                 }
+            if (s.rootBone >= 0 && animate)
+                s.pose[u32(s.rootBone)].position -= s.rootOffset;
+            s.morphs.Clear();
+            auto clipMorphs = [&](const asset::AnimationClip* c, f32 time, f32 weight) {
+                if (!c || c->morphTracks.Empty() || weight <= 0.0f)
+                    return;
+                const asset::MorphTrack& t = c->morphTracks[0];
+                const u32 n = Min(t.targets, 64u);
+                f32 sample[64];
+                asset::anim::SampleMorphWeights(t, c->duration, time, a.loop, Span<f32>(sample, n));
+                if (s.morphs.Size() < n)
+                    s.morphs.Resize(n, 0.0f);
+                for (u32 i = 0; i < n; ++i)
+                    s.morphs[i] += sample[i] * weight;
+            };
+            if (animate) {
+                const f32 t = s.fade < 1.0f ? Smooth(s.fade) : 1.0f;
+                clipMorphs(clip, s.time, t);
+                if (t < 1.0f)
+                    clipMorphs(m_assets.GetAnimation(s.fromClip), s.fromTime, 1.0f - t);
+            }
         }
+        if (playing && s.rootBone >= 0)
+            ApplyRootMotion(world, e, a, s);
         if (animate)
             ApplyIK(world, e, a, *skeleton, s, dt, playing);
         asset::anim::LocalToModel(*skeleton, s.pose.View(), s.model.View());
@@ -522,6 +657,31 @@ void AnimationSystem::ApplyIK(ecs::World& world, ecs::Entity e, const Animator& 
     }
 }
 
+void AnimationSystem::ApplyRootMotion(ecs::World& world, ecs::Entity e, const Animator& a, const State& s)
+{
+    const scene::WorldTransform* wt = world.Get<const scene::WorldTransform>(e);
+    if (!wt || LengthSq(s.rootDelta) < 1e-14f)
+        return;
+    Vec3 move = (wt->matrix * a.skinToNode.ToMatrix()).TransformVector(s.rootDelta);
+    move.y = 0.0f;
+    // A Character Controller (here or on an ancestor) walks it, sweeping through the world; otherwise the top-level
+    // entity moves.
+    ecs::Entity top = e;
+    for (ecs::Entity x = e; world.IsAlive(x);) {
+        if (CharacterState* ch = world.Get<CharacterState>(x)) {
+            ch->rootMotion += move;
+            return;
+        }
+        top = x;
+        const scene::Parent* p = world.Get<const scene::Parent>(x);
+        if (!p)
+            break;
+        x = p->entity;
+    }
+    if (Transform* t = world.Get<Transform>(top))
+        t->position += move;
+}
+
 void AnimationSystem::SetTime(ecs::Entity e, f32 seconds)
 {
     State& s = *m_states.Insert(e.Pack(), State{}).first;
@@ -543,6 +703,12 @@ void AnimationSystem::SetLookAt(ecs::Entity e, Vec3 target, f32 weight)
     s.alive = true;
     s.lookTarget = target;
     s.lookTargetWeight = Clamp(weight, 0.0f, 1.0f);
+}
+
+Span<const f32> AnimationSystem::MorphWeights(ecs::Entity e) const
+{
+    const State* s = m_states.Find(e.Pack());
+    return s ? s->morphs.View() : Span<const f32>();
 }
 
 Span<const Mat4> AnimationSystem::Palette(ecs::Entity e) const

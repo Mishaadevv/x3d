@@ -116,6 +116,8 @@ SceneRenderer::~SceneRenderer()
     m_device.Destroy(m_skinPipeline);
     for (Buffer* b : m_paletteBuffers)
         m_device.Destroy(b);
+    for (Buffer* b : m_morphWeightBuffers)
+        m_device.Destroy(b);
     for (auto& kv : m_skinStates)
         for (Buffer* b : kv.second.buffers)
             m_device.Destroy(b);
@@ -1156,13 +1158,23 @@ void SceneRenderer::PrepareSkinning(Span<const RenderInstance> instances)
     m_skinSlot.Clear();
     if (!m_skinPipeline)
         return;
-    u32 paletteBones = 0;
+    u32 paletteBones = 0, morphWeights = 0;
     for (usize i = 0; i < instances.Size(); ++i) {
         const RenderInstance& inst = instances[i];
-        if (inst.skinMatrices.Empty())
+        if (inst.skinMatrices.Empty() && inst.morphWeights.Empty())
             continue;
         const GpuMesh* mesh = m_assets.GetMesh(inst.mesh);
-        if (!mesh || !mesh->skinBuffer || mesh->vertexCount == 0)
+        if (!mesh || mesh->vertexCount == 0)
+            continue;
+        const bool skinned = mesh->skinBuffer && !inst.skinMatrices.Empty();
+        // Morphs only when some weight is on (all zero: the plain mesh).
+        u32 morphs = mesh->morphBuffer ? Min(mesh->morphCount, u32(inst.morphWeights.Size())) : 0u;
+        bool anyMorph = false;
+        for (u32 m = 0; m < morphs; ++m)
+            anyMorph |= inst.morphWeights[m] != 0.0f;
+        if (!anyMorph)
+            morphs = 0;
+        if (!skinned && morphs == 0)
             continue;
         if (m_skinSlot.Empty())
             m_skinSlot.Resize(instances.Size(), InvalidIndex);
@@ -1188,10 +1200,14 @@ void SceneRenderer::PrepareSkinning(Span<const RenderInstance> instances)
         j.row = InvalidIndex;
         j.output = st.buffers[st.current];
         j.sourceVertices = mesh->vertexBuffer->GetSrvIndex();
-        j.skin = mesh->skinBuffer->GetSrvIndex();
+        j.skin = skinned ? mesh->skinBuffer->GetSrvIndex() : InvalidIndex;
         j.paletteBase = paletteBones;
         j.vertexCount = mesh->vertexCount;
-        j.boneCount = Min(u32(inst.skinMatrices.Size()), 256u);
+        j.boneCount = skinned ? Min(u32(inst.skinMatrices.Size()), 256u) : 0u;
+        j.morphDeltas = morphs ? mesh->morphBuffer->GetSrvIndex() : InvalidIndex;
+        j.morphBase = morphWeights;
+        j.morphCount = morphs;
+        morphWeights += morphs;
         j.current = st.buffers[st.current]->GetSrvIndex();
         j.previous = prevValid ? st.buffers[st.current ^ 1u]->GetSrvIndex() : j.current;
         paletteBones += j.boneCount;
@@ -1209,7 +1225,7 @@ void SceneRenderer::PrepareSkinning(Span<const RenderInstance> instances)
     if (m_skinJobs.Empty())
         return;
     // Skinning matrices of this frame: 3 rows (row-major 3x4) per bone.
-    const u64 bytes = u64(paletteBones) * 48;
+    const u64 bytes = Max<u64>(paletteBones, 1) * 48; // morph-only frames still bind a palette
     if (bytes > m_paletteCapacity) {
         u64 capacity = Max<u64>(m_paletteCapacity, 64 * 48);
         while (capacity < bytes)
@@ -1227,6 +1243,24 @@ void SceneRenderer::PrepareSkinning(Span<const RenderInstance> instances)
             const Mat4 rows = Transpose(palette[b]);
             MemCopy(dst + usize(j.paletteBase + b) * 48, &rows, 48);
         }
+    }
+    // Morph weights of this frame.
+    if (morphWeights > 0) {
+        const u64 weightBytes = u64(morphWeights) * 4;
+        if (weightBytes > m_morphWeightCapacity) {
+            u64 capacity = Max<u64>(m_morphWeightCapacity, 256);
+            while (capacity < weightBytes)
+                capacity *= 2;
+            for (Buffer*& b : m_morphWeightBuffers) {
+                m_device.Destroy(b);
+                b = m_device.CreateBuffer(BufferDesc{capacity, BufferUsage::ShaderResource, MemoryType::Upload, 0, "MorphWeights"});
+            }
+            m_morphWeightCapacity = capacity;
+        }
+        f32* weights = static_cast<f32*>(m_morphWeightBuffers[m_device.GetFrameIndex() % FramesInFlight]->GetMappedData());
+        for (const SkinJob& j : m_skinJobs)
+            for (u32 m = 0; m < j.morphCount; ++m)
+                weights[j.morphBase + m] = instances[j.instance].morphWeights[m];
     }
 }
 
@@ -1248,12 +1282,16 @@ void SceneRenderer::AddSkinningPass(RenderGraph& graph)
         [this](PassContext& ctx) {
             struct SkinParams
             {
-                u32 vertices, skin, palette, paletteBase, output, vertexCount, boneCount, pad;
+                u32 vertices, skin, palette, paletteBase, output, vertexCount, boneCount, morphDeltas;
+                u32 morphWeights, morphBase, morphCount, pad;
             };
-            const u32 palette = m_paletteBuffers[m_device.GetFrameIndex() % FramesInFlight]->GetSrvIndex();
+            const u32 frame = m_device.GetFrameIndex() % FramesInFlight;
+            const u32 palette = m_paletteBuffers[frame] ? m_paletteBuffers[frame]->GetSrvIndex() : InvalidIndex;
+            const u32 weights = m_morphWeightBuffers[frame] ? m_morphWeightBuffers[frame]->GetSrvIndex() : InvalidIndex;
             ctx.cmd.SetPipeline(m_skinPipeline);
             for (const SkinJob& j : m_skinJobs) {
-                const SkinParams p{j.sourceVertices, j.skin, palette, j.paletteBase, j.output->GetUavIndex(), j.vertexCount, j.boneCount, 0};
+                const SkinParams p{j.sourceVertices, j.skin,      palette,     j.paletteBase, j.output->GetUavIndex(), j.vertexCount,
+                                   j.boneCount,      j.morphDeltas, weights,   j.morphBase,   j.morphCount,            0};
                 ctx.cmd.SetPushConstants(p);
                 ctx.cmd.Dispatch((j.vertexCount + 63) / 64);
             }

@@ -90,6 +90,53 @@ void BlendPoses(Span<const Transform> a, Span<const Transform> b, f32 t, Span<Tr
         out[i] = Transform(Lerp(a[i].position, b[i].position, t), NlerpShortest(a[i].rotation, b[i].rotation, t), Lerp(a[i].scale, b[i].scale, t));
 }
 
+void SampleMorphWeights(const MorphTrack& track, f32 duration, f32 time, bool loop, Span<f32> out)
+{
+    const usize n = Min(usize(track.targets), out.Size());
+    if (track.times.Empty() || track.weights.Size() < track.times.Size() * track.targets) {
+        for (usize i = 0; i < n; ++i)
+            out[i] = 0.0f;
+        return;
+    }
+    if (duration > 0.0f)
+        time = loop ? time - duration * Floor(time / duration) : Clamp(time, 0.0f, duration);
+    usize k0, k1;
+    f32 f;
+    FindKeys(track.times.View(), time, k0, k1, f);
+    if (track.step)
+        f = 0.0f;
+    for (usize i = 0; i < n; ++i)
+        out[i] = Lerp(track.weights[k0 * track.targets + i], track.weights[k1 * track.targets + i], f);
+}
+
+Vec3 SampleBonePosition(const AnimationClip& clip, const Skeleton& skeleton, u32 bone, f32 time)
+{
+    Vec3 position = bone < skeleton.BoneCount() ? skeleton.bindPose[bone].position : Vec3();
+    time = clip.duration > 0.0f ? Clamp(time, 0.0f, clip.duration) : 0.0f;
+    for (const AnimationTrack& tr : clip.tracks)
+        if (tr.bone == bone && !tr.positions.Empty() && tr.positions.Size() == tr.positionTimes.Size()) {
+            usize k0, k1;
+            f32 f;
+            FindKeys(tr.positionTimes.View(), time, k0, k1, f);
+            position = (tr.stepMask & AnimationTrack::StepPosition) ? tr.positions[k0] : Lerp(tr.positions[k0], tr.positions[k1], f);
+        }
+    return position;
+}
+
+Vec3 RootMotionDelta(const AnimationClip& clip, const Skeleton& skeleton, u32 bone, f32 from, f32 to, bool loop)
+{
+    const f32 d = clip.duration;
+    if (d <= 0.0f)
+        return Vec3();
+    if (!loop)
+        return SampleBonePosition(clip, skeleton, bone, Min(to, d)) - SampleBonePosition(clip, skeleton, bone, Clamp(from, 0.0f, d));
+    // Whole cycles passed add the clip's start-to-end displacement each.
+    const f32 cyclesFrom = Floor(from / d), cyclesTo = Floor(to / d);
+    const Vec3 cycle = SampleBonePosition(clip, skeleton, bone, d) - SampleBonePosition(clip, skeleton, bone, 0.0f);
+    return SampleBonePosition(clip, skeleton, bone, to - cyclesTo * d) - SampleBonePosition(clip, skeleton, bone, from - cyclesFrom * d) +
+           cycle * (cyclesTo - cyclesFrom);
+}
+
 Transform BlendTransforms(const Transform& a, const Transform& b, f32 t)
 {
     return Transform(Lerp(a.position, b.position, t), NlerpShortest(a.rotation, b.rotation, t), Lerp(a.scale, b.scale, t));

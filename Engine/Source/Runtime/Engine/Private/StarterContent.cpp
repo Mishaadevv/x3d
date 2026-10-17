@@ -629,6 +629,25 @@ script ThirdPersonCamera {
 
 /// Scripts of the Starter Content prefabs (vehicles and gameplay props).
 const StarterScript PropScripts[] = {
+    {"Slime.zs", R"zs(// Starter slime (Characters/SK_Blob.glb playing its Bounce clip): a soft squish on every landing.
+// The clip lands once per cycle; Period is the clip length divided by the Animator speed.
+script Slime {
+    @range(0.2, 5) @tooltip("Seconds between landings")
+    prop period = 1.03
+    prop sound = "StarterContent/Sounds/Impacts/Impact_Soft"
+    @range(0, 1) prop volume = 0.3
+
+    var t = 0.0
+
+    fn update(dt) {
+        t += dt
+        if t >= period {
+            t -= period
+            audio.playAt(sound, entity.worldPosition, volume)
+        }
+    }
+}
+)zs"},
     {"TankController.zs", R"zs(// Tank: W/S drive, A/D turn the hull, the mouse aims the turret and the barrel, left click fires.
 // Needs a Character Controller on this entity and descendants named "Turret", "Barrel", "Muzzle" (with a Particle
 // Emitter for the muzzle flash) and "Impact" (a Particle Emitter moved to where the shell hits). Shells set Flammable

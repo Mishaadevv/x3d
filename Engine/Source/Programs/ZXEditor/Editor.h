@@ -448,7 +448,8 @@ private:
     void BuildCharacterLevel(bool thirdPerson);
     void BuildWaterLevel();
     void BuildPhysicsLevel();
-    bool AddAnimatedCharacter(ecs::Entity player); // skinned starter character + locomotion graph (false: not available)
+    bool AddAnimatedCharacter(ecs::Entity player);
+    void AddSlime(const Transform& at, f32 speed); // skinned starter character + locomotion graph (false: not available)
     /// Template atmosphere: a volumetric Height Fog and Volumetric Clouds (outside the undo history).
     void AddAtmosphere(f32 fogDensity, f32 cloudCoverage);
     JsonValue SceneSettings() const;

@@ -55,10 +55,20 @@ enum class MeshAttributes : u8
 };
 ZX_ENUM_FLAGS(MeshAttributes)
 
+/// Morph target (blend shape): per-vertex offsets added with a weight (0..1), parallel to MeshData::vertices.
+struct MorphTarget
+{
+    String name;
+    f32 defaultWeight = 0.0f;
+    Array<Vec3> positions; // position deltas
+    Array<Vec3> normals;   // normal deltas (empty = none)
+};
+
 struct MeshData
 {
     String name;
     Array<MeshVertex> vertices;
+    Array<MorphTarget> morphs; // follow `vertices` through welding, reordering and merging
     Array<MeshLod> lods; // lods[0] = full detail
     MeshAttributes attributes = MeshAttributes::None;
     AABB bounds;
@@ -76,7 +86,9 @@ namespace mesh {
 void GenerateNormals(MeshData& mesh);
 /// Per-vertex tangents from UV0 (accumulated per triangle, Gram-Schmidt orthogonalized). Needs normals and UV0.
 void GenerateTangents(MeshData& mesh);
-/// Merges bit-identical vertices and remaps indices of all LODs.
+/// Reorders / drops vertices: vertex i of the result is the old vertex newToOld[i] (morph targets follow).
+void PermuteVertices(MeshData& mesh, Span<const u32> newToOld);
+/// Merges bit-identical vertices (with identical morph offsets) and remaps indices of all LODs.
 void WeldVertices(MeshData& mesh);
 /// Drops vertices no LOD references and compacts.
 void RemoveUnusedVertices(MeshData& mesh);

@@ -64,7 +64,16 @@ struct SkyLight
 
 ZX_DECLARE_TYPE(DirectionalLight);
 ZX_DECLARE_TYPE(SkyLight);
+/// Morph target (blend shape) weights of the Mesh Renderer on this entity, 0..1 each in the mesh's target order (set
+/// on import from the model). While an Animator plays clips with morph animation, those weights win.
+struct MorphTargets
+{
+    Array<String> names;
+    Array<f32> weights;
+};
+
 ZX_DECLARE_TYPE(MeshRenderer);
+ZX_DECLARE_TYPE(MorphTargets);
 ZX_DECLARE_TYPE(PointLight);
 ZX_DECLARE_TYPE(SpotLight);
 

@@ -584,6 +584,10 @@ void AssetManager::CookSource(Source& s)
             pn.parent = node.parent >= 0 ? prefabIndex[usize(node.parent)] : -1;
             if (node.mesh >= 0) {
                 pn.mesh = SubAsset(s.id, "mesh", usize(node.mesh));
+                for (const MorphTarget& m : scene.meshes[usize(node.mesh)].morphs) {
+                    pn.morphNames.PushBack(m.name.Empty() ? String::Format("Morph{}", pn.morphNames.Size()) : m.name);
+                    pn.morphWeights.PushBack(m.defaultWeight);
+                }
                 for (u32 material : slotMaterials[usize(node.mesh)])
                     pn.materials.PushBack(SubAsset(s.id, "material", material));
                 if (node.skin >= 0) {

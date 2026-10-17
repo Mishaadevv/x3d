@@ -95,8 +95,10 @@ void AnimationPreview::Update(f32 dt, bool playing, f32 speed, bool loop, f32& t
     a->loop = loop;
     a->speed = speed;
     a->blendTime = 0.0f; // switching clips in the viewer shows the new one at once
-    if (!playing)
+    if (!playing) {
+        m_animation->Tick(m_world, 0.0f, true); // a clip switch restarts the clip: then scrub
         m_animation->SetTime(m_animated, time);
+    }
     m_animation->Tick(m_world, playing ? dt : 0.0f, true);
     time = m_animation->Time(m_animated);
     if (const asset::AnimationClip* clip = m_assets.GetAnimation(a->clip); clip && clip->duration > 0.0f)
@@ -257,6 +259,15 @@ void DrawAnimationViewer(Editor& ed)
         st.preview->Play(clips[usize(st.clip)]);
         st.time = 0.0f;
     }
+    if (!st.pendingClip.Empty())
+        for (usize c = 0; c < clips.Size(); ++c)
+            if (ed.assets->GetName(clips[c]).View().EqualsIgnoreCase(st.pendingClip)) {
+                st.clip = i32(c);
+                st.preview->Play(clips[c]);
+                st.time = Max(st.pendingTime, 0.0f);
+                st.playing = st.pendingTime < 0.0f;
+                st.pendingClip.Clear();
+            }
     const asset::AnimationClip* clip = ed.assets->GetAnimation(clips[usize(st.clip)]);
     const f32 duration = clip ? clip->duration : 0.0f;
     st.preview->Update(ed.dt, st.playing, st.speed, st.loop, st.time);

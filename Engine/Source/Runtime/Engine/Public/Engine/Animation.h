@@ -41,6 +41,10 @@ struct Animator
     String rightFoot = "RightFoot";
     String headBone = "Head";      // turned by look-at (entity.lookAt)
     bool footstepEvents = true;   // "Footstep" events when a foot touches down while moving (scripts: onAnimEvent)
+    // Root motion (while playing): the root bone's horizontal movement in the clips moves the character (its Character
+    // Controller, or the top-level entity) instead of the mesh; the model stays centered on the entity.
+    bool rootMotion = false;
+    String rootBone;              // empty = the skeleton's root (e.g. Hips)
     Transform skinToNode;         // skeleton space -> this entity (set on import)
 };
 
@@ -66,6 +70,8 @@ public:
     void Tick(ecs::World& world, f32 dt, bool playing);
     /// Skinning matrices of the entity's mesh this frame (mesh space; empty until its skeleton is loaded).
     Span<const Mat4> Palette(ecs::Entity e) const;
+    /// Morph target weights from the playing clips (glTF morph animation), empty when they animate none.
+    Span<const f32> MorphWeights(ecs::Entity e) const;
     /// Switches the entity's clip to the one named `clip` among Animator::clips (cross-fading; without a graph). False
     /// if unknown.
     bool Play(ecs::World& world, ecs::Entity e, StringView clip);
@@ -139,13 +145,32 @@ private:
         Vec3 lookTarget;
         f32 lookWeight = 0.0f, lookTargetWeight = 0.0f;
         bool footDown[2] = {true, true};
-        Array<Transform> pose, fromPose, scratch, scratch2, layerPose, refPose;
+        // Root motion (skeleton space, horizontal): offset of the root from the clips' first frames in this pose, and
+        // its movement over the last tick.
+        i32 rootBone = -1;
+        Vec3 rootUp = Vec3(0, 1, 0);
+        Vec3 rootOffset, rootDelta;
+        Array<f32> morphs, fromMorphs; // animated morph weights this tick (empty: none)
+        Array<Transform> pose, fromPose, scratch, layerPose, refPose;
         Array<f32> weights;
         Array<Mat4> model, palette;
         bool alive = false;
     };
     const GraphFile* LoadGraph(StringView path);
     const asset::AnimationClip* ClipByName(const Animator& a, StringView name);
+    struct ClipWeight
+    {
+        const asset::AnimationClip* clip;
+        f32 weight;
+    };
+    /// Clips of a state with their blend weights (summing to 1); false while one is not loaded (or the state has no
+    /// motion).
+    bool StateClips(const AnimGraph& g, const AnimStateMachine::State& st, const Animator& a, State& s, Array<ClipWeight>& out);
+    /// Root motion of a state between two phases (`to` may run past 1 when looping): offset at `from`, movement.
+    /// Animated morph weights of a state at a phase (empty when its clips have no morph animation).
+    void StateMorphs(const AnimGraph& g, const AnimStateMachine& m, i32 stateIndex, f32 phase, const Animator& a, State& s, Array<f32>& out);
+    void StateRootMotion(const AnimGraph& g, const AnimStateMachine& m, i32 stateIndex, f32 from, f32 to, const Animator& a,
+                         const asset::Skeleton& skeleton, State& s, Vec3& offset, Vec3& delta);
     /// Pose of a machine's state at a normalized phase (`additive`: the change from the state's first frame); returns
     /// the state's length in seconds (for advancing the phase).
     f32 EvaluateState(const AnimGraph& g, const AnimStateMachine& m, i32 stateIndex, f32 phase, bool additive, const Animator& a,
@@ -154,7 +179,9 @@ private:
     /// Fires transitions, advances and poses one machine into `out`; returns how present its motion is (0 = a state
     /// without motion, fading in / out with the transitions).
     f32 TickMachine(const AnimGraph& g, const AnimStateMachine& m, bool additive, MachineRun& r, const Animator& a,
-                    const asset::Skeleton& skeleton, State& s, f32 dt, ecs::Entity e, Span<Transform> out);
+                    const asset::Skeleton& skeleton, State& s, f32 dt, ecs::Entity e, Span<Transform> out, bool baseLayer = false);
+    /// Moves the character (or the top-level entity) by this tick's root motion.
+    void ApplyRootMotion(ecs::World& world, ecs::Entity e, const Animator& a, const State& s);
     void TickGraph(const AnimGraph& g, const Animator& a, const asset::Skeleton& skeleton, State& s, f32 dt, bool animate, ecs::Entity e);
     void ApplyIK(ecs::World& world, ecs::Entity e, const Animator& a, const asset::Skeleton& skeleton, State& s, f32 dt, bool playing);
     Array<AnimEvent> m_events;

@@ -87,6 +87,11 @@ struct CookedMesh
     /// empty for static meshes.
     Array<u32> skin;
     u32 boneCount = 0; // highest bone index used + 1
+    /// Morph targets: names, default weights and offsets, target-major, 4 u32 per vertex (position delta as 3 floats,
+    /// normal delta packed 10:10:10 snorm over [-2, 2]; see PackMorphNormal). Empty without morph targets.
+    Array<String> morphNames;
+    Array<f32> morphDefaults;
+    Array<u32> morphDeltas;
 
     u32 IndexCount() const { return u32(indexData.Size() / (index16 ? 2 : 4)); }
     u32 Index(u32 i) const;
@@ -96,9 +101,14 @@ struct CookedMesh
     {
         return sectionLods[s.firstLod + Min(lod, s.lodCount - 1)];
     }
-    u64 MemorySize() const { return vertices.SizeBytes() + indexData.Size() + skin.SizeBytes(); }
+    u64 MemorySize() const { return vertices.SizeBytes() + indexData.Size() + skin.SizeBytes() + morphDeltas.SizeBytes(); }
+    u32 MorphCount() const { return u32(morphNames.Size()); }
     bool IsSkinned() const { return !skin.Empty(); }
 };
+
+/// Normal offset of a morph target packed for the GPU (Shaders/Forward/Skinning.hlsl unpacks it).
+u32 PackMorphNormal(Vec3 delta);
+Vec3 UnpackMorphNormal(u32 packed);
 
 /// Splits large sections into chunks and generates LODs (optional), optimizes for the vertex cache/fetch and
 /// packs. `mesh` is modified.
@@ -236,6 +246,9 @@ struct PrefabNode
     AssetId skeleton;
     Mat4 skinToNode = Mat4::Identity();
     Array<AssetId> animations;
+    // Mesh with morph targets: their names and default weights.
+    Array<String> morphNames;
+    Array<f32> morphWeights;
 };
 
 struct PrefabAsset
@@ -262,6 +275,6 @@ bool Deserialize(ByteSpan data, Skeleton& out);
 bool Deserialize(ByteSpan data, AnimationClip& out);
 
 /// Bump when any cooked format or cooker output changes (part of every DDC key).
-inline constexpr u32 CookerVersion = 4;
+inline constexpr u32 CookerVersion = 5;
 
 } // namespace zx::asset

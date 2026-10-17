@@ -46,6 +46,7 @@ void RegisterEngineComponents()
     RegisterComponent<scene::EntityName>("Name", "\xEE\x85\xBF", false, false, true); // tag
     RegisterComponent<Transform>("Transform", "\xEE\x8B\xA5", false, false);          // move-3d
     RegisterComponent<MeshRenderer>("Mesh Renderer", "\xEE\x81\xA1");                 // box
+    RegisterComponent<MorphTargets>("Morph Targets", "\xEE\x95\x9A");                 // audio-lines (sliders)
     RegisterComponent<PointLight>("Point Light", "\xEE\x87\x82");                     // lightbulb
     RegisterComponent<SpotLight>("Spot Light", "\xEE\x9A\x82");                       // spotlight
     RegisterComponent<DirectionalLight>("Directional Light", "\xEE\x85\xB8");     // sun

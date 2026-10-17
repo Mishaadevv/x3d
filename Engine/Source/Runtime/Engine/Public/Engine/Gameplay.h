@@ -58,6 +58,7 @@ struct CharacterState
 {
     Vec3 velocity;        // m/s (vertical part from gravity / jumps)
     Vec3 desiredMove;     // horizontal velocity requested this frame (cleared after each step)
+    Vec3 rootMotion;      // horizontal displacement from animation root motion since the last step (m, world)
     f32 jumpSpeed = 0.0f; // requested jump (applied when grounded)
     bool grounded = false;
     bool initialized = false;

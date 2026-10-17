@@ -433,6 +433,32 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             }
             return true;
         }
+        if (m == "setMorph" || m == "morph") {
+            // setMorph(name, weight) / morph(name): Morph Targets weights on this entity or below it (the model's mesh).
+            if (a.Empty() || a[0].Type() != ValueType::String || (m == "setMorph" && (a.Size() != 2 || !a[1].IsNumber())))
+                return v.Fail(m == "setMorph" ? "entity.setMorph(name, weight)" : "entity.morph(name)");
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = sys.context.world;
+            if (!w || !w->IsAlive(e))
+                return v.Fail("The entity was destroyed");
+            Array<ecs::Entity> queue;
+            queue.PushBack(e);
+            for (usize q = 0; q < queue.Size() && q < 256; ++q) {
+                if (MorphTargets* mt = w->Get<MorphTargets>(queue[q]))
+                    for (usize i = 0; i < mt->names.Size(); ++i)
+                        if (mt->names[i].View().EqualsIgnoreCase(a[0].AsString())) {
+                            mt->weights.Resize(mt->names.Size(), 0.0f);
+                            if (m == "setMorph")
+                                mt->weights[i] = f32(a[1].AsNumber());
+                            else
+                                out = Value(f64(mt->weights[i]));
+                            return true;
+                        }
+                queue.Append(scene::GetChildren(*w, queue[q]));
+            }
+            return v.Fail(String::Format("No morph target named '{}' on this entity or its children", a[0].AsString()));
+        }
         if (m == "animParam" || m == "animTrigger" || m == "playAnim" || m == "animState" || m == "lookAt") {
             // Animator on this entity or its first descendant that has one (the mesh under a player):
             // animParam(name, value) sets a graph parameter, animTrigger(name) fires a trigger, playAnim(clip) plays

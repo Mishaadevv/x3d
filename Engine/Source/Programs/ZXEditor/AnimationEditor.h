@@ -62,6 +62,8 @@ struct AnimationViewerState
     f32 speed = 1.0f;
     bool playing = true;
     bool loop = true;
+    String pendingClip;      // console: select this clip once the model is loaded...
+    f32 pendingTime = -1.0f; // ...and pause at this time (s, -1 = play)
 };
 
 struct AnimGraphEditorState

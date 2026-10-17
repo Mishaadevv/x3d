@@ -22,7 +22,7 @@ struct AnimatedCharacter
     ecs::World world;
     ecs::Entity skinned;
 
-    AnimatedCharacter()
+    explicit AnimatedCharacter(StringView model = "SK_Human.glb")
     {
         scene::InstallHierarchyHooks(world);
         ddc = platform::GetTempDirectory() + String::Format("/zx_anim_test_{}", Thread::CurrentId());
@@ -30,7 +30,7 @@ struct AnimatedCharacter
         settings.ddcDirectory = ddc;
         settings.writeMetaFiles = false;
         assets.Reset(new asset::AssetManager(settings));
-        const asset::AssetId id = assets->LoadPath(FindEngineRootDirectory() + "/Engine/Content/StarterContent/Characters/SK_Human.glb");
+        const asset::AssetId id = assets->LoadPath(FindEngineRootDirectory() + "/Engine/Content/StarterContent/Characters/" + String(model));
         assets->WaitIdle();
         if (const asset::PrefabAsset* prefab = assets->GetPrefab(id)) {
             InstantiatePrefab(world, *prefab, {}, {}, assets.Get());
@@ -463,4 +463,77 @@ ZX_TEST(AnimationSystem, UpperBodyLayerPunchesWhileTheLegsRun)
     for (u32 i = 0; i < 180; ++i)
         punching.Tick(ch.world, 1.0f / 60.0f, true);
     ZX_EXPECT(punching.CurrentState(ch.skinned, 1) == "None");
+}
+
+ZX_TEST(AnimationSystem, RootMotionMovesTheEntityInsteadOfTheMesh)
+{
+    // The Death clip throws the hips backwards. With root motion the body ends in the same world place, but the
+    // entity moved there and the hips stayed over it.
+    auto run = [](bool rootMotion, Vec3& hips, Vec3& entity) {
+        AnimatedCharacter ch;
+        if (!ch.skinned)
+            return false;
+        Animator* a = ch.world.Get<Animator>(ch.skinned);
+        for (const asset::AssetId& id : a->clips)
+            if (ch.assets->GetName(id) == "Death")
+                a->clip = id;
+        a->loop = false;
+        a->rootMotion = rootMotion;
+        a->footIK = false;
+        const ecs::Entity root = RootOf(ch.world, ch.skinned);
+        AnimationSystem anim(*ch.assets);
+        ch.Warm(anim, true);
+        for (u32 i = 0; i < 240; ++i) {
+            anim.Tick(ch.world, 1.0f / 60.0f, true);
+            scene::UpdateWorldTransforms(ch.world);
+        }
+        hips = BoneWorld(ch, anim, "Hips");
+        entity = ch.world.Get<Transform>(root)->position;
+        return true;
+    };
+    Vec3 hipsPlain, entityPlain, hipsRoot, entityRoot;
+    ZX_REQUIRE(run(false, hipsPlain, entityPlain));
+    ZX_REQUIRE(run(true, hipsRoot, entityRoot));
+    const Vec3 moved = entityRoot - entityPlain;
+    ZX_EXPECT_GT(Length(moved), 0.3f);       // the entity walked with the animation...
+    ZX_EXPECT_NEAR(moved.y, 0.0f, 1e-5f);    // ...along the ground
+    const Vec3 offset = hipsRoot - entityRoot; // the hips stayed over it (horizontally)
+    ZX_EXPECT_LT(Length(Vec3(offset.x, 0.0f, offset.z)), 0.15f);
+    // The body ends where it would have without root motion (one tick of lag at most).
+    ZX_EXPECT_LT(Length(hipsRoot - hipsPlain), 0.1f);
+}
+
+ZX_TEST(AnimationSystem, MorphTargetsFromThePrefabAndTheClips)
+{
+    AnimatedCharacter ch("SK_Blob.glb");
+    ZX_REQUIRE(bool(ch.skinned));
+    // The prefab gives the mesh its Morph Targets (names from the model).
+    const MorphTargets* morphs = ch.world.Get<MorphTargets>(ch.skinned);
+    ZX_REQUIRE(morphs != nullptr);
+    ZX_REQUIRE(morphs->names.Size() == 3);
+    ZX_EXPECT(morphs->names[1] == "Stretch");
+    ZX_EXPECT_EQ(morphs->weights.Size(), usize(3));
+    // Bounce animates them: squashed when it lands, stretched on the way up.
+    Animator* a = ch.world.Get<Animator>(ch.skinned);
+    for (const asset::AssetId& id : a->clips)
+        if (ch.assets->GetName(id) == "Bounce")
+            a->clip = id;
+    a->blendTime = 0.0f;
+    AnimationSystem anim(*ch.assets);
+    ch.Warm(anim, true);
+    anim.Tick(ch.world, 0.0f, true);
+    Span<const f32> w = anim.MorphWeights(ch.skinned);
+    ZX_REQUIRE(w.Size() == 3);
+    ZX_EXPECT_NEAR(w[0], 0.9f, 0.05f);
+    for (u32 i = 0; i < 18; ++i) // 0.3 s: pushing off
+        anim.Tick(ch.world, 1.0f / 60.0f, true);
+    w = anim.MorphWeights(ch.skinned);
+    ZX_REQUIRE(w.Size() == 3);
+    ZX_EXPECT_LT(w[0], 0.1f);
+    ZX_EXPECT_GT(w[1], 0.5f);
+    // Editing without preview: no animated weights (the component's apply).
+    a->previewInEditor = false;
+    AnimationSystem editing(*ch.assets);
+    ch.Warm(editing, false);
+    ZX_EXPECT(editing.MorphWeights(ch.skinned).Empty());
 }

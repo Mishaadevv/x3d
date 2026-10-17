@@ -25,6 +25,8 @@ struct RenderInstance
     /// Skinned meshes: skinning matrices of this frame (mesh space), empty = static / bind pose. Must stay valid until
     /// AddPasses executes.
     Span<const Mat4> skinMatrices;
+    /// Morph target weights (the mesh's target order), empty = none applied. Must stay valid until AddPasses executes.
+    Span<const f32> morphWeights;
     AssetId mesh;
     /// Material per mesh slot (missing/invalid -> default material). Must stay valid until AddPasses executes.
     Span<const AssetId> materials;
@@ -501,7 +503,8 @@ private:
         u32 instance;        // index into Prepare's instances
         u32 row;             // instance row (GPU-driven frames: assigned by PrepareGpu)
         rhi::Buffer* output; // this frame's posed vertices
-        u32 sourceVertices, skin, paletteBase, vertexCount, boneCount;
+        u32 sourceVertices, skin, paletteBase, vertexCount, boneCount; // skin = InvalidIndex: morph targets only
+        u32 morphDeltas, morphBase, morphCount;                        // weights at morphBase in the weight buffer
         u32 current, previous; // SRVs (previous = current when last frame had no pose)
     };
     struct SkinState
@@ -529,6 +532,8 @@ private:
     Array<u32> m_skinSlot; // per instance: index into m_skinJobs (empty when nothing is skinned)
     rhi::Buffer* m_paletteBuffers[rhi::FramesInFlight] = {};
     u64 m_paletteCapacity = 0;
+    rhi::Buffer* m_morphWeightBuffers[rhi::FramesInFlight] = {};
+    u64 m_morphWeightCapacity = 0;
     rhi::ShaderBytecode m_skinCS;
     rhi::Pipeline* m_skinPipeline = nullptr;
     rhi::Texture* m_localAtlas = nullptr;

@@ -64,6 +64,18 @@ u32 CookedMesh::TriangleCount(u32 lod) const
     return n;
 }
 
+u32 PackMorphNormal(Vec3 d)
+{
+    auto q = [](f32 x) { return u32(i32(Round(Clamp(x * 0.5f, -1.0f, 1.0f) * 511.0f)) & 0x3FF); };
+    return q(d.x) | (q(d.y) << 10) | (q(d.z) << 20);
+}
+
+Vec3 UnpackMorphNormal(u32 p)
+{
+    auto u = [](u32 v) { return f32(i32(v << 22) >> 22) / 511.0f * 2.0f; };
+    return Vec3(u(p), u(p >> 10), u(p >> 20));
+}
+
 CookedMesh CookMesh(MeshData& mesh, bool generateLods)
 {
     if (generateLods) {
@@ -72,6 +84,9 @@ CookedMesh CookMesh(MeshData& mesh, bool generateLods)
     }
     mesh::OptimizeMesh(mesh);
     mesh.ComputeBounds();
+    for (const MorphTarget& m : mesh.morphs) // fully applied targets stay inside the bounds (culling)
+        for (usize v = 0; v < m.positions.Size() && v < mesh.vertices.Size(); ++v)
+            mesh.bounds.Expand(mesh.vertices[v].position + m.positions[v]);
 
     CookedMesh out;
     out.name = mesh.name;
@@ -91,6 +106,23 @@ CookedMesh CookMesh(MeshData& mesh, bool generateLods)
         }
     }
     out.index16 = mesh.vertices.Size() <= 0xFFFF;
+    // Morph targets (dense, target-major).
+    if (!mesh.morphs.Empty()) {
+        const usize n = mesh.vertices.Size();
+        out.morphDeltas.ResizeUninitialized(mesh.morphs.Size() * n * 4);
+        for (usize t = 0; t < mesh.morphs.Size(); ++t) {
+            const MorphTarget& m = mesh.morphs[t];
+            out.morphNames.PushBack(m.name.Empty() ? String::Format("Morph{}", t) : m.name);
+            out.morphDefaults.PushBack(m.defaultWeight);
+            for (usize v = 0; v < n; ++v) {
+                const Vec3 dp = v < m.positions.Size() ? m.positions[v] : Vec3();
+                const Vec3 dn = v < m.normals.Size() ? m.normals[v] : Vec3();
+                u32* d = &out.morphDeltas[(t * n + v) * 4];
+                MemCopy(d, &dp, 12);
+                d[3] = PackMorphNormal(dn);
+            }
+        }
+    }
 
     // Material slots: distinct source material indices in order of first appearance in LOD0.
     auto slotOf = [&](u32 material) {
@@ -113,8 +145,13 @@ CookedMesh CookMesh(MeshData& mesh, bool generateLods)
         CookedMeshSection cs;
         cs.materialSlot = slotOf(s0.materialIndex);
         cs.firstLod = u32(out.sectionLods.Size());
-        for (u32 i = 0; i < s0.indexCount; ++i)
-            cs.bounds.Expand(mesh.vertices[lod0.indices[s0.indexOffset + i]].position);
+        for (u32 i = 0; i < s0.indexCount; ++i) {
+            const u32 v = lod0.indices[s0.indexOffset + i];
+            cs.bounds.Expand(mesh.vertices[v].position);
+            for (const MorphTarget& m : mesh.morphs)
+                if (v < m.positions.Size())
+                    cs.bounds.Expand(mesh.vertices[v].position + m.positions[v]);
+        }
         cs.lodCount = 0;
         for (usize l = 0; l < mesh.lods.Size(); ++l) {
             if (si >= mesh.lods[l].sections.Size())
@@ -485,6 +522,11 @@ void Serialize(const CookedMesh& m, Array<u8>& out)
     w.WriteArray(m.indexData.View());
     w.WriteArray(m.skin.View());
     w.Write<u32>(m.boneCount);
+    w.WriteVarU64(m.morphNames.Size());
+    for (const String& name : m.morphNames)
+        w.WriteString(name);
+    w.WriteArray(m.morphDefaults.View());
+    w.WriteArray(m.morphDeltas.View());
 }
 
 bool Deserialize(ByteSpan data, CookedMesh& m)
@@ -504,7 +546,16 @@ bool Deserialize(ByteSpan data, CookedMesh& m)
     r.ReadArray(m.indexData);
     r.ReadArray(m.skin);
     m.boneCount = r.Read<u32>();
+    const u64 morphs = r.ReadVarU64();
+    if (morphs > 1024)
+        return false;
+    for (u64 i = 0; i < morphs && !r.HasError(); ++i)
+        m.morphNames.PushBack(r.ReadString());
+    r.ReadArray(m.morphDefaults);
+    r.ReadArray(m.morphDeltas);
     if (r.HasError() || (!m.skin.Empty() && m.skin.Size() != m.vertices.Size() * 2))
+        return false;
+    if (m.morphDefaults.Size() != morphs || m.morphDeltas.Size() != morphs * m.vertices.Size() * 4)
         return false;
     for (const CookedMeshSection& s : m.sections)
         if (s.lodCount == 0 || u64(s.firstLod) + s.lodCount > m.sectionLods.Size())
@@ -642,6 +693,10 @@ void Serialize(const PrefabAsset& p, Array<u8>& out)
         w.WriteVarU64(n.animations.Size());
         for (const AssetId& a : n.animations)
             WriteGuid(w, a);
+        w.WriteVarU64(n.morphNames.Size());
+        for (const String& name : n.morphNames)
+            w.WriteString(name);
+        w.WriteArray(n.morphWeights.View());
     }
 }
 
@@ -675,6 +730,12 @@ bool Deserialize(ByteSpan data, PrefabAsset& p)
             return false;
         for (u64 a = 0; a < animations; ++a)
             n.animations.PushBack(ReadGuid(r));
+        const u64 morphs = r.ReadVarU64();
+        if (morphs > 1024)
+            return false;
+        for (u64 m = 0; m < morphs; ++m)
+            n.morphNames.PushBack(r.ReadString());
+        r.ReadArray(n.morphWeights);
         if (n.parent >= i32(i))
             return false;
     }
@@ -742,6 +803,13 @@ void Serialize(const AnimationClip& c, Array<u8>& out)
         w.WriteArray(t.scaleTimes.View());
         w.WriteArray(t.scales.View());
     }
+    w.WriteVarU64(c.morphTracks.Size());
+    for (const MorphTrack& t : c.morphTracks) {
+        w.Write<u32>(t.targets);
+        w.WriteBool(t.step);
+        w.WriteArray(t.times.View());
+        w.WriteArray(t.weights.View());
+    }
 }
 
 bool Deserialize(ByteSpan data, AnimationClip& c)
@@ -767,6 +835,18 @@ bool Deserialize(ByteSpan data, AnimationClip& c)
         r.ReadArray(t.scales);
         if (t.positionTimes.Size() != t.positions.Size() || t.rotationTimes.Size() != t.rotations.Size() ||
             t.scaleTimes.Size() != t.scales.Size())
+            return false;
+    }
+    const u64 morphTracks = r.ReadVarU64();
+    if (morphTracks > 256)
+        return false;
+    for (u64 i = 0; i < morphTracks && !r.HasError(); ++i) {
+        MorphTrack& t = c.morphTracks.AddDefaulted();
+        t.targets = r.Read<u32>();
+        t.step = r.ReadBool();
+        r.ReadArray(t.times);
+        r.ReadArray(t.weights);
+        if (t.weights.Size() != t.times.Size() * t.targets)
             return false;
     }
     return !r.HasError();

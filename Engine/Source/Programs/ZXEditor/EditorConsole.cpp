@@ -13,6 +13,7 @@
 #include "Engine/BuiltinAssets.h"
 #include "Core/String/Parse.h"
 #include "Core/String/Path.h"
+#include "Core/HAL/PlatformFile.h"
 
 ZX_DEFINE_LOG_CATEGORY_STATIC(LogCmd, Info);
 
@@ -181,10 +182,19 @@ ConCommand CmdStressParticles("stress.particles",
                                    ZX_LOG_INFO(LogCmd, "GPU spark fountain: {:.0f} particles/s", pe.rate);
                                });
 
-ConCommand CmdAnimViewer("anim.viewer", "Opens a model in the Animation Viewer: anim.viewer <path of a .glb / .gltf>", [](Span<const StringView> args) {
-    if (Ed() && !args.Empty())
-        OpenAnimationViewer(*Ed(), args[0]);
-});
+ConCommand CmdAnimViewer("anim.viewer",
+                         "Opens a model in the Animation Viewer: anim.viewer <path of a .glb / .gltf> [clip [time]] (time pauses there)",
+                         [](Span<const StringView> args) {
+                             if (!Ed() || args.Empty())
+                                 return;
+                             const String path = Path::IsAbsolute(args[0]) || platform::FileExists(args[0]) ? String(args[0])
+                                                                                                           : Path::Join(Ed()->contentRoot, args[0]);
+                             OpenAnimationViewer(*Ed(), path);
+                             if (args.Size() > 1) {
+                                 Ed()->animViewer.pendingClip = String(args[1]);
+                                 Ed()->animViewer.pendingTime = args.Size() > 2 ? ParseFloat(args[2]).ValueOr(0.0f) : -1.0f;
+                             }
+                         });
 
 ConCommand CmdAnimGraph("anim.graph",
                         "Opens a .zanimgraph in the AnimGraph Editor: anim.graph <path> [layer [state]] (Content-relative or absolute; layer 0 = "

@@ -215,17 +215,17 @@ void OptimizeMesh(MeshData& mesh)
     // Vertex fetch order: first use (LOD0 first, then the remaining LODs).
     Array<u32> remap;
     remap.Resize(vertexCount, InvalidIndex);
-    Array<MeshVertex> ordered;
+    Array<u32> ordered; // new vertex -> old vertex
     ordered.Reserve(vertexCount);
     for (MeshLod& lod : mesh.lods)
         for (u32& i : lod.indices) {
             if (remap[i] == InvalidIndex) {
                 remap[i] = u32(ordered.Size());
-                ordered.PushBack(mesh.vertices[i]);
+                ordered.PushBack(i);
             }
             i = remap[i];
         }
-    mesh.vertices = move(ordered);
+    PermuteVertices(mesh, ordered.View());
 }
 
 // --- QEM simplification ---------------------------------------------------------------------------------------------

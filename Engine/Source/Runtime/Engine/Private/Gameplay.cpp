@@ -175,9 +175,10 @@ void TickCharacters(ecs::World& world, f32 dt, const MeshBoundsFn& meshBounds)
         }
         st.jumpSpeed = 0.0f;
         st.velocity.y = Max(st.velocity.y - c.gravity * dt, -c.maxFallSpeed);
-        st.velocity.x = st.desiredMove.x;
-        st.velocity.z = st.desiredMove.z;
+        st.velocity.x = st.desiredMove.x + (dt > 0.0f ? st.rootMotion.x / dt : 0.0f);
+        st.velocity.z = st.desiredMove.z + (dt > 0.0f ? st.rootMotion.z / dt : 0.0f);
         st.desiredMove = Vec3(0.0f);
+        st.rootMotion = Vec3(0.0f);
 
         const bool wasGrounded = st.grounded;
         MoveAxis(feet, 0, st.velocity.x * dt, c, colliders.View(), wasGrounded);
@@ -309,9 +310,10 @@ void TickCharacters(ecs::World& world, f32 dt, PhysicsSystem& physics)
         const bool jumped = st.velocity.y > 0.0f && wasGrounded && !st.grounded;
         st.jumpSpeed = 0.0f;
         st.velocity.y = Max(st.velocity.y - c.gravity * dt, -c.maxFallSpeed);
-        st.velocity.x = st.desiredMove.x;
-        st.velocity.z = st.desiredMove.z;
+        st.velocity.x = st.desiredMove.x + (dt > 0.0f ? st.rootMotion.x / dt : 0.0f);
+        st.velocity.z = st.desiredMove.z + (dt > 0.0f ? st.rootMotion.z / dt : 0.0f);
         st.desiredMove = Vec3(0.0f);
+        st.rootMotion = Vec3(0.0f);
 
         // Horizontal: step up, slide along what blocks us, step back down.
         const Vec3 horizontal(st.velocity.x * dt, 0.0f, st.velocity.z * dt);

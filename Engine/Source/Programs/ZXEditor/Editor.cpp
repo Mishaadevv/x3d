@@ -641,6 +641,10 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
         camera.LookAt(Vec3(0.0f, 0.5f, 8.0f));
     } else {
         world.Add(player, Script{String("Scripts/ThirdPersonController.zs"), String()});
+        // Bouncing slimes (morph targets) by the path.
+        AddSlime(Transform(Vec3(-3.5f, 0, 1.5f), Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(150.0f))), 1.0f);
+        AddSlime(Transform(Vec3(-4.8f, 0, 3.2f), Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(200.0f)), Vec3(0.7f)), 1.3f);
+        AddSlime(Transform(Vec3(-2.4f, 0, 3.6f), Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(170.0f)), Vec3(0.55f)), 1.6f);
         if (!AddAnimatedCharacter(player)) {
             // A simple mannequin (part of the player, so it doesn't block it): body, head, visor, arms.
             shape("Body", BuiltinShape::Cylinder, Vec3(0, 0.95f, 0), Vec3(0.55f, 1.1f, 0.4f), "M_Proto_Light", {}, player);
@@ -661,6 +665,34 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
     environment.sunElevation = DegToRad(48.0f);
     environment.sunAzimuth = DegToRad(135.0f);
     AddAtmosphere(0.004f, 0.3f);
+}
+
+void Editor::AddSlime(const Transform& at, f32 speed)
+{
+    // The Starter Content slime (skin + morph targets): bounces with squash and stretch, squishes on landing.
+    const String model = contentRoot + "/StarterContent/Characters/SK_Blob.glb";
+    if (!assets || !platform::FileExists(model))
+        return;
+    const asset::AssetId id = assets->LoadPath(model);
+    assets->WaitIdle();
+    const asset::PrefabAsset* prefab = assets->GetPrefab(id);
+    if (!prefab)
+        return;
+    const ecs::Entity root = zx::InstantiatePrefab(world, *prefab, at, {}, assets.Get());
+    if (scene::EntityName* n = world.Get<scene::EntityName>(root))
+        n->value = "Slime";
+    Array<ecs::Entity> members;
+    CollectHierarchy(world, root, members);
+    for (ecs::Entity e : members) {
+        EnsureEntityGuid(world, e);
+        if (Animator* a = world.Get<Animator>(e)) {
+            for (const asset::AssetId& clip : a->clips)
+                if (assets->GetName(clip).View().EqualsIgnoreCase("Bounce"))
+                    a->clip = clip;
+            a->speed = speed;
+        }
+    }
+    world.Add(root, Script{String("StarterContent/Scripts/Slime.zs"), String::Format(R"json({{"period":{}}})json", 1.0333f / speed)});
 }
 
 bool Editor::AddAnimatedCharacter(ecs::Entity player)

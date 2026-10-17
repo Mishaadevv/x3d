@@ -5,6 +5,21 @@
 одном месте — `project(ZeqouX3D VERSION ...)` в корневом CMakeLists.txt (оттуда его берут `Core/Version.h`, ресурс
 версии ZXEditor.exe, About и лог).
 
+## 0.13.0 — M13 «Анимация» закрыта: root motion, morph targets (2026-10-17)
+- **Root motion** (Animator → Root Motion): движение корневой кости в клипах двигает самого персонажа — его Character
+  Controller (с упором в стены и ступени) или сущность верхнего уровня; модель остаётся над сущностью. Работает в
+  графах (blend space и переходы смешивают и движение) и без графа; циклы клипа не «отпрыгивают» назад
+- **Morph targets** (blend shapes): импортируются из glTF вместе с именами и анимацией весов; смещения считаются на GPU
+  в том же проходе, что и скиннинг (и для мешей без скелета). Новый компонент **Morph Targets** — веса по именам в
+  Details; скрипты: `entity.setMorph("Blink", 1)`, `entity.morph("Blink")`
+- **Слайм** в Starter Content (`Characters/SK_Blob.glb`, создан скриптом `Tools/make_starter_blob.py` в Blender):
+  морфы Squash / Stretch / Blink, клипы Idle и Bounce. В шаблоне от третьего лица у дорожки прыгают три слайма с
+  «хлюпаньем» при приземлении (скрипт `Slime.zs`)
+- Animation Viewer: `anim.viewer <модель> [клип [время]]`; перемотка паузой больше не сбрасывается на ноль при смене клипа
+- Формат готовых ассетов изменился (CookerVersion 5): модели переготовятся при первом открытии
+- **M13 закрыта**: скелетная анимация, AnimGraph со слоями и blend space 1D / 2D, IK, события, root motion, morph targets,
+  редакторы анимации
+
 ## 0.12.5 — слои анимации, маски костей, additive, Blend Space 2D (2026-10-17)
 - **Слои AnimGraph** (как слои Animator в Unity / Layered blend per bone в UE): поверх базовой машины состояний —
   свои машины состояний на тех же параметрах. У слоя: **маска костей** (кость и всё ниже неё, например `Spine` —

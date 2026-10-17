@@ -154,6 +154,13 @@ AnimGraph layers (0.12.5): AnimGraph derives from AnimStateMachine (base layer) 
 override / additive vs. the state's first frame; states without motion silence the layer); runtime State::machines
 (MachineRun per layer), TickMachine returns the layer presence; BlendSpace2DWeights (gradient band). Editor: layer tabs,
 st.layer, undo / redo / layer deletion run at the end of the frame (they reallocate the machines).
+Root motion (0.13.0): Animator::rootMotion / rootBone; State::rootOffset (subtracted from the root bone) / rootDelta
+(StateRootMotion, asset::anim::RootMotionDelta) -> ApplyRootMotion -> CharacterState::rootMotion (TickCharacters adds
+it to the velocity) or the top-level entity's Transform. Morph targets: MeshData::morphs (PermuteVertices keeps them
+with the vertices), CookedMesh::morphNames / morphDeltas (16 B per vertex per target, PackMorphNormal), clip
+MorphTrack (glTF weights), GpuMesh::morphBuffer, RenderInstance::morphWeights (AnimationSystem::MorphWeights or the
+MorphTargets component), applied in Skinning.hlsl (skin = ~0: morph-only). Starter slime: Tools/make_starter_blob.py
+(Blender, NLA tracks merge bone + shape key actions), Editor::AddSlime, StarterContent/Scripts/Slime.zs.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

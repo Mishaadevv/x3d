@@ -19,6 +19,9 @@ struct GpuMesh
     rhi::Buffer* vertexBuffer = nullptr;
     rhi::Buffer* indexBuffer = nullptr;
     rhi::Buffer* skinBuffer = nullptr; // skinned meshes: packed bone indices + weights per vertex (GPU skinning input)
+    rhi::Buffer* morphBuffer = nullptr; // morph target offsets (CookedMesh::morphDeltas)
+    u32 morphCount = 0;
+    Array<String> morphNames;
     u32 vertexCount = 0;
     u32 boneCount = 0;
     bool index16 = false;

@@ -223,3 +223,105 @@ ZX_TEST(Animation, AdditiveDeltaRoundTrips)
     ZX_EXPECT_GT(Abs(Dot(added.rotation, Quat::FromAxisAngle(Vec3(1, 0, 0), 0.5f) * base.rotation)), 1.0f - 1e-5f);
     ZX_EXPECT_LT(Length(added.scale - Vec3(2.4f, 2.0f, 2.0f)), 1e-5f);
 }
+
+ZX_TEST(Animation, RootMotionDeltaAcrossLoops)
+{
+    Skeleton sk;
+    AnimationClip clip;
+    MakeTestRig(sk, clip); // the root moves 2 m/s along x for 2 s
+    ZX_EXPECT_NEAR(anim::SampleBonePosition(clip, sk, 0, 0.5f).x, 1.0f, 1e-5f);
+    ZX_EXPECT_NEAR(anim::RootMotionDelta(clip, sk, 0, 0.25f, 0.75f, true).x, 1.0f, 1e-5f);
+    // Passing the loop point: the wrap does not jump back, each cycle adds its displacement.
+    ZX_EXPECT_NEAR(anim::RootMotionDelta(clip, sk, 0, 1.5f, 2.5f, true).x, 2.0f, 1e-5f);
+    ZX_EXPECT_NEAR(anim::RootMotionDelta(clip, sk, 0, 0.5f, 4.5f, true).x, 8.0f, 1e-4f);
+    // Without looping the motion stops at the end.
+    ZX_EXPECT_NEAR(anim::RootMotionDelta(clip, sk, 0, 1.5f, 2.5f, false).x, 1.0f, 1e-5f);
+    ZX_EXPECT_NEAR(anim::RootMotionDelta(clip, sk, 0, 1.5f, 2.5f, true).y, 0.0f, 1e-6f);
+}
+
+namespace {
+
+String BlobPath() { return FindEngineRootDirectory() + "/Engine/Content/StarterContent/Characters/SK_Blob.glb"; }
+
+/// Highest point of the mesh with morph target `t` applied at `weight` (cooked data).
+f32 TopWithMorph(const CookedMesh& m, u32 t, f32 weight)
+{
+    f32 top = -1e30f;
+    for (usize v = 0; v < m.vertices.Size(); ++v) {
+        Vec3 d;
+        MemCopy(&d, &m.morphDeltas[(t * m.vertices.Size() + v) * 4], 12);
+        top = Max(top, m.vertices[v].position.y + d.y * weight);
+    }
+    return top;
+}
+
+} // namespace
+
+ZX_TEST(Animation, ImportsMorphTargetsAndTheirAnimation)
+{
+    Result<ImportedScene> scene = ImportGltf(BlobPath());
+    ZX_REQUIRE(scene.IsOk());
+    const ImportedNode* skinned = nullptr;
+    for (const ImportedNode& n : scene->nodes)
+        if (n.skin >= 0)
+            skinned = &n;
+    ZX_REQUIRE(skinned != nullptr);
+    MeshData& mesh = scene->meshes[usize(skinned->mesh)];
+    ZX_REQUIRE(mesh.morphs.Size() == 3);
+    ZX_EXPECT(mesh.morphs[0].name == "Squash");
+    ZX_EXPECT(mesh.morphs[2].name == "Blink");
+    for (const MorphTarget& m : mesh.morphs) {
+        ZX_EXPECT_EQ(m.positions.Size(), mesh.vertices.Size());
+        ZX_EXPECT_EQ(m.normals.Size(), mesh.vertices.Size());
+    }
+    // Blink moves the eyes only: a small part of the vertices.
+    usize blinking = 0;
+    f32 low = 1e30f, high = -1e30f;
+    for (usize v = 0; v < mesh.vertices.Size(); ++v)
+        if (LengthSq(mesh.morphs[2].positions[v]) > 1e-8f) {
+            ++blinking;
+            low = Min(low, mesh.vertices[v].position.y);
+            high = Max(high, mesh.vertices[v].position.y);
+        }
+    ZX_EXPECT_GT(blinking, 10u);
+    ZX_EXPECT_LT(blinking, mesh.vertices.Size());
+    ZX_EXPECT_GT(low, 0.35f); // eye height (the body around them stays)
+    ZX_EXPECT_LT(high, 0.75f);
+    // The clips carry the morph weights next to the bone tracks: Bounce starts squashed.
+    bool bounce = false;
+    for (const AnimationClip& c : scene->animations)
+        if (c.name == "Bounce") {
+            bounce = true;
+            ZX_REQUIRE(c.morphTracks.Size() == 1);
+            ZX_EXPECT_EQ(c.morphTracks[0].targets, 3u);
+            f32 w[3];
+            anim::SampleMorphWeights(c.morphTracks[0], c.duration, 0.0f, true, Span<f32>(w, 3));
+            ZX_EXPECT_NEAR(w[0], 0.9f, 0.02f);
+            // Serialized and back.
+            Array<u8> bytes;
+            Serialize(c, bytes);
+            AnimationClip back;
+            ZX_REQUIRE(Deserialize(bytes.View(), back));
+            ZX_REQUIRE(back.morphTracks.Size() == 1);
+            ZX_EXPECT_EQ(back.morphTracks[0].weights.Size(), c.morphTracks[0].weights.Size());
+        }
+    ZX_EXPECT(bounce);
+    // Cooking keeps the offsets with their vertices (splitting, LODs, vertex reordering): squash lowers the top,
+    // stretch raises it.
+    const CookedMesh cooked = CookMesh(mesh, true);
+    ZX_REQUIRE(cooked.MorphCount() == 3);
+    ZX_EXPECT_EQ(cooked.morphDeltas.Size(), cooked.vertices.Size() * 3 * 4);
+    const f32 top = TopWithMorph(cooked, 0, 0.0f);
+    ZX_EXPECT_LT(TopWithMorph(cooked, 0, 1.0f), top - 0.1f);
+    ZX_EXPECT_GT(TopWithMorph(cooked, 1, 1.0f), top + 0.1f);
+    ZX_EXPECT_GE(cooked.bounds.max.y, TopWithMorph(cooked, 1, 1.0f) - 1e-4f); // bounds cover the stretched shape
+    Array<u8> bytes;
+    Serialize(cooked, bytes);
+    CookedMesh back;
+    ZX_REQUIRE(Deserialize(bytes.View(), back));
+    ZX_EXPECT(back.morphNames[1] == "Stretch");
+    ZX_EXPECT_EQ(back.morphDeltas.Size(), cooked.morphDeltas.Size());
+    // Packed normal offsets.
+    const Vec3 n(0.5f, -1.25f, 1.99f);
+    ZX_EXPECT_LT(Length(UnpackMorphNormal(PackMorphNormal(n)) - n), 0.01f);
+}
