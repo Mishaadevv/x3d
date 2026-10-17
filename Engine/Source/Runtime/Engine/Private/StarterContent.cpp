@@ -495,17 +495,34 @@ script ThirdPersonController {
     prop footsteps = "StarterContent/Sounds/Footsteps/Footstep_"
     @range(0.3, 4) @tooltip("Meters walked between footsteps")
     prop stride = 1.7
+    @tooltip("AnimGraph trigger fired by the left mouse button or F (the Starter graph punches with its UpperBody layer); empty = off")
+    prop punchTrigger = "Punch"
+    @range(0, 2000) @tooltip("Impulse given to what the punch hits (N*s)")
+    prop punchImpulse = 60.0
 
     var stepDistance = 0.0
     var wasGrounded = true
     var fallSpeed = 0.0
     var animSteps = false // an animated model reports its footsteps (onAnimEvent) instead of the stride
+    var punchCooldown = 0.0
 
     // Footsteps of the animated model: when a foot touches the ground.
     fn onAnimEvent(name) {
         if name == "Footstep" and footsteps != "" {
             animSteps = true
             audio.playAt(footsteps + surface(), entity.worldPosition, 0.45)
+        }
+        // The punch lands: push the bodies in front of the chest.
+        if name == "PunchHit" {
+            let center = entity.worldPosition + entity.forward * 0.7 + vec3(0, 1.2, 0)
+            var hit = false
+            for body in physics.overlapSphere(center, 0.45) {
+                if body != entity {
+                    body.addImpulse(entity.forward * punchImpulse + vec3(0, punchImpulse * 0.25, 0), center)
+                    hit = true
+                }
+            }
+            if hit { audio.playAt("StarterContent/Sounds/Impacts/Impact_Punch", center, 0.8) }
         }
     }
 
@@ -528,6 +545,13 @@ script ThirdPersonController {
         character.move(dir * speed)
         if dir.length() > 0.1 {
             entity.rotation = entity.rotation.slerp(quat.lookAt(dir), min(1, turnRate * dt))
+        }
+        // Punch (the animation graph plays it over the legs; the hit comes with its PunchHit event).
+        punchCooldown -= dt
+        if punchTrigger != "" and punchCooldown <= 0 and (input.mousePressed("left") or input.pressed("F")) and entity.animState() != "" {
+            entity.animTrigger(punchTrigger)
+            punchCooldown = 0.6
+            audio.playAt("StarterContent/Sounds/Props/Cloth", entity.worldPosition, 0.3)
         }
         if input.pressed("Space") and character.grounded {
             character.jump(jumpSpeed)

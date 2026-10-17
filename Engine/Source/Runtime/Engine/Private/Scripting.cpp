@@ -451,6 +451,10 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
                 else
                     queue.Append(scene::GetChildren(*w, queue[q]));
             }
+            if (!target && m == "animState") { // lets scripts check for an animated model
+                out = Value(StringView());
+                return true;
+            }
             if (!target)
                 return v.Fail("No Animator on this entity or its children");
             if (m == "lookAt") {
@@ -462,7 +466,11 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
                 return true;
             }
             if (m == "animState") {
-                const String state = sys.animation ? sys.animation->CurrentState(target) : String();
+                // animState([layer]): 0 / none = the base machine, 1.. = the graph's layers.
+                if (a.Size() > 1 || (a.Size() == 1 && !a[0].IsNumber()))
+                    return v.Fail("entity.animState([layer: number])");
+                const u32 layer = a.Empty() ? 0u : u32(Max(a[0].AsNumber(), 0.0));
+                const String state = sys.animation ? sys.animation->CurrentState(target, layer) : String();
                 out = Value(state.View());
                 return true;
             }

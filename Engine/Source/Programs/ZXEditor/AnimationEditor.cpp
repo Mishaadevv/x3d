@@ -337,7 +337,7 @@ struct Canvas
     Vec2 ToGraph(Vec2 q) const { return (q - rect.min) / scale - pan; }
 };
 
-Vec2 NodePos(const AnimGraph& g, i32 state) { return state < 0 ? Vec2(g.anyX, g.anyY) : Vec2(g.states[usize(state)].x, g.states[usize(state)].y); }
+Vec2 NodePos(const AnimStateMachine& g, i32 state) { return state < 0 ? Vec2(g.anyX, g.anyY) : Vec2(g.states[usize(state)].x, g.states[usize(state)].y); }
 
 /// Point where the segment from the node center towards `dir` leaves the node box.
 Vec2 BoxExit(Vec2 center, Vec2 dir, Vec2 half)
@@ -355,7 +355,7 @@ f32 SegmentDistance(Vec2 p, Vec2 a, Vec2 b)
 }
 
 /// Screen endpoints of a transition (two-way pairs are drawn side by side).
-void TransitionEnds(const AnimGraph& g, const AnimGraph::Transition& t, const Canvas& c, Vec2& a, Vec2& b)
+void TransitionEnds(const AnimStateMachine& g, const AnimGraph::Transition& t, const Canvas& c, Vec2& a, Vec2& b)
 {
     const Vec2 half = Vec2(NodeW, NodeH) * 0.5f * c.scale;
     const Vec2 ca = c.ToScreen(NodePos(g, t.from) + Vec2(NodeW, NodeH) * 0.5f);
@@ -392,7 +392,7 @@ void SaveGraph(Editor& ed, AnimGraphEditorState& st)
 
 void DeleteState(AnimGraphEditorState& st, i32 index)
 {
-    AnimGraph& g = st.graph;
+    AnimStateMachine& g = st.graph.Machine(st.layer);
     if (index < 0 || usize(index) >= g.states.Size() || g.states.Size() <= 1)
         return;
     g.transitions.RemoveIf([&](const AnimGraph::Transition& t) { return t.from == index || t.to == index; });
@@ -421,7 +421,7 @@ i32 LiveState(Editor& ed, const AnimGraphEditorState& st)
     queue.PushBack(ed.selected);
     for (usize q = 0; q < queue.Size() && q < 256; ++q) {
         if (const Animator* a = ed.world.Get<const Animator>(queue[q]); a && a->graph.View().EqualsIgnoreCase(rel))
-            return st.graph.FindState(ed.animation->CurrentState(queue[q]));
+            return st.graph.Machine(st.layer).FindState(ed.animation->CurrentState(queue[q], st.layer));
         queue.Append(scene::GetChildren(ed.world, queue[q]));
     }
     return -1;
@@ -463,13 +463,21 @@ void ParamsPanel(AnimGraphEditorState& st)
         if (ui::InputText("##name", name) && !name.Empty()) {
             PushUndo(st);
             // Conditions and blend spaces follow the rename.
-            for (AnimGraph::Transition& t : g.transitions)
-                for (AnimGraph::Condition& c : t.conditions)
-                    if (c.param.View().EqualsIgnoreCase(p.name))
-                        c.param = name;
-            for (AnimGraph::State& s : g.states)
-                if (s.blendParam.View().EqualsIgnoreCase(p.name))
-                    s.blendParam = name;
+            for (usize m = 0; m < g.MachineCount(); ++m) {
+                for (AnimGraph::Transition& t : g.Machine(m).transitions)
+                    for (AnimGraph::Condition& c : t.conditions)
+                        if (c.param.View().EqualsIgnoreCase(p.name))
+                            c.param = name;
+                for (AnimGraph::State& s : g.Machine(m).states) {
+                    if (s.blendParam.View().EqualsIgnoreCase(p.name))
+                        s.blendParam = name;
+                    if (s.blendParamY.View().EqualsIgnoreCase(p.name))
+                        s.blendParamY = name;
+                }
+            }
+            for (AnimGraph::Layer& l : g.layers)
+                if (l.weightParam.View().EqualsIgnoreCase(p.name))
+                    l.weightParam = name;
             p.name = name;
             Changed(st);
         }
@@ -503,8 +511,9 @@ void ParamsPanel(AnimGraphEditorState& st)
         PushUndo(st);
         const String name = g.params[usize(remove)].name;
         g.params.RemoveAt(usize(remove));
-        for (AnimGraph::Transition& t : g.transitions)
-            t.conditions.RemoveIf([&](const AnimGraph::Condition& c) { return c.param.View().EqualsIgnoreCase(name); });
+        for (usize m = 0; m < g.MachineCount(); ++m)
+            for (AnimGraph::Transition& t : g.Machine(m).transitions)
+                t.conditions.RemoveIf([&](const AnimGraph::Condition& c) { return c.param.View().EqualsIgnoreCase(name); });
         Changed(st);
     }
     if (ui::Button(ZX_ICON_PLUS "  Parameter")) {
@@ -517,62 +526,212 @@ void ParamsPanel(AnimGraphEditorState& st)
     }
 }
 
+/// The 2D blend space: samples in the parameter plane and a draggable preview point; circles grow with their weight.
+void BlendSpacePlot(AnimGraphEditorState& st, const AnimGraph::State& s)
+{
+    ui::Context& ctx = *ui::GetCurrentContext();
+    const f32 k = ctx.GetScale();
+    const ui::Theme& th = ctx.GetStyle().colors;
+    Vec2 lo(1e30f, 1e30f), hi(-1e30f, -1e30f);
+    for (const AnimGraph::BlendSample& b : s.blend) {
+        lo = Vec2(Min(lo.x, b.value), Min(lo.y, b.y));
+        hi = Vec2(Max(hi.x, b.value), Max(hi.y, b.y));
+    }
+    if (hi.x - lo.x < 1e-3f) {
+        lo.x -= 1.0f;
+        hi.x += 1.0f;
+    }
+    if (hi.y - lo.y < 1e-3f) {
+        lo.y -= 1.0f;
+        hi.y += 1.0f;
+    }
+    const Vec2 margin = (hi - lo) * 0.12f;
+    lo -= margin;
+    hi += margin;
+    constexpr f32 Size = 220.0f;
+    const Vec2 origin = ui::GetCursorPos();
+    const Rect r(origin, origin + Vec2(Size, Size * 0.75f) * k);
+    ui::InvisibleButton("##blend2d", Vec2(Size, Size * 0.75f));
+    auto toScreen = [&](Vec2 p) {
+        return Vec2(r.min.x + (p.x - lo.x) / (hi.x - lo.x) * r.Width(), r.max.y - (p.y - lo.y) / (hi.y - lo.y) * r.Height());
+    };
+    if (ui::IsItemActive()) {
+        const Vec2 m = ui::GetMousePos();
+        st.blendPreview = Vec2(lo.x + Clamp((m.x - r.min.x) / r.Width(), 0.0f, 1.0f) * (hi.x - lo.x),
+                               lo.y + Clamp((r.max.y - m.y) / r.Height(), 0.0f, 1.0f) * (hi.y - lo.y));
+    }
+    Array<f32> weights;
+    BlendSpace2DWeights(s.blend.View(), st.blendPreview.x, st.blendPreview.y, weights);
+    DrawList& dl = ui::GetWindowDrawList();
+    dl.AddRect(r, Color(0x1C, 0x1C, 0x1E), ui::CornerRadii(4.0f * k), 1.0f, Color(0x3A, 0x3A, 0x3E));
+    if (lo.x < 0.0f && hi.x > 0.0f)
+        dl.AddLine(Vec2(toScreen(Vec2(0, 0)).x, r.min.y), Vec2(toScreen(Vec2(0, 0)).x, r.max.y), Color(0x30, 0x30, 0x34), 1.0f);
+    if (lo.y < 0.0f && hi.y > 0.0f)
+        dl.AddLine(Vec2(r.min.x, toScreen(Vec2(0, 0)).y), Vec2(r.max.x, toScreen(Vec2(0, 0)).y), Color(0x30, 0x30, 0x34), 1.0f);
+    const ui::FontHandle font = ctx.Fonts().FindFont("Inter");
+    for (usize i = 0; i < s.blend.Size(); ++i) {
+        const Vec2 p = toScreen(Vec2(s.blend[i].value, s.blend[i].y));
+        dl.AddCircle(p, (3.0f + 9.0f * weights[i]) * k, weights[i] > 0.01f ? th.accent : Color(0x8A, 0x8A, 0x90));
+        dl.AddTextInRect(font, 11.0f * k, Rect(p + Vec2(6.0f, -16.0f) * k, p + Vec2(120.0f, 0.0f) * k), th.textDisabled, s.blend[i].clip.View());
+    }
+    const Vec2 q = toScreen(st.blendPreview);
+    dl.AddLine(q - Vec2(6.0f * k, 0.0f), q + Vec2(6.0f * k, 0.0f), th.warning, 1.5f * k);
+    dl.AddLine(q - Vec2(0.0f, 6.0f * k), q + Vec2(0.0f, 6.0f * k), th.warning, 1.5f * k);
+    ui::TextDisabled(String::Format("Preview {} {:.2f}, {} {:.2f} (drag in the plot)", s.blendParam, st.blendPreview.x, s.blendParamY,
+                                    st.blendPreview.y));
+}
+
+/// Properties of an extra layer; true when the user asked to delete it.
+bool LayerPanel(AnimGraphEditorState& st, AnimGraph::Layer& layer)
+{
+    AnimGraph& g = st.graph;
+    ui::SeparatorText("Layer");
+    String name = layer.name;
+    if (ui::InputText("Layer Name", name) && !name.Empty()) {
+        PushUndo(st);
+        layer.name = name;
+        Changed(st);
+    }
+    i32 blend = layer.additive ? 1 : 0;
+    static const StringView Blends[] = {"Override", "Additive"};
+    if (ui::Combo("Blending", &blend, Span<const StringView>(Blends, 2))) {
+        PushUndo(st);
+        layer.additive = blend == 1;
+        Changed(st);
+    }
+    if (ui::IsItemHovered())
+        ui::SetTooltip("Override replaces the masked bones; Additive adds the motion relative to each state's first frame");
+    if (ui::SliderFloat("Weight", &layer.weight, 0.0f, 1.0f, "{:.2f}"))
+        Changed(st);
+    Array<String> floats;
+    floats.PushBack(String("(none)"));
+    for (const AnimGraph::Param& p : g.params)
+        if (p.type == AnimGraph::ParamType::Float)
+            floats.PushBack(p.name);
+    String weightParam = layer.weightParam.Empty() ? String("(none)") : layer.weightParam;
+    if (NameCombo("Weight Parameter", weightParam, floats.View())) {
+        PushUndo(st);
+        layer.weightParam = weightParam == "(none)" ? String() : weightParam;
+        Changed(st);
+    }
+    // Mask: comma-separated bones (each with everything below it).
+    String mask;
+    for (usize i = 0; i < layer.mask.Size(); ++i)
+        mask.Append(i ? String::Format(", {}", layer.mask[i]).View() : layer.mask[i].View());
+    if (ui::InputText("Mask Bones", mask)) {
+        PushUndo(st);
+        layer.mask.Clear();
+        usize begin = 0;
+        for (usize i = 0; i <= mask.Size(); ++i)
+            if (i == mask.Size() || mask[i] == ',') {
+                const StringView bone = mask.View().SubStr(begin, i - begin).Trim();
+                if (!bone.Empty())
+                    layer.mask.PushBack(String(bone));
+                begin = i + 1;
+            }
+        Changed(st);
+    }
+    ui::TextDisabled(layer.mask.Empty() ? "Empty mask: the whole skeleton" : "These bones and everything below them");
+    return ui::Button(ZX_ICON_TRASH_2 "  Delete Layer");
+}
+
 void StatePanel(Editor& ed, AnimGraphEditorState& st, AnimGraph::State& s)
 {
     AnimGraph& g = st.graph;
+    const AnimStateMachine& machine = g.Machine(st.layer);
     ui::SeparatorText("State");
     String name = s.name;
-    if (ui::InputText("Name", name) && !name.Empty() && (g.FindState(name) < 0 || name.View().EqualsIgnoreCase(s.name))) {
+    if (ui::InputText("Name", name) && !name.Empty() && (machine.FindState(name) < 0 || name.View().EqualsIgnoreCase(s.name))) {
         PushUndo(st);
         s.name = name;
         Changed(st);
     }
     const Array<String> clips = AnimationClipNames(ed);
-    i32 mode = s.blend.Empty() ? 0 : 1;
-    static const StringView Modes[] = {"Single Clip", "Blend Space 1D"};
-    if (ui::Combo("Motion", &mode, Span<const StringView>(Modes, 2))) {
+    // Motion kinds; layer states may have none (the layer is silent in them).
+    enum Motion : i32
+    {
+        MotionNone,
+        MotionClip,
+        MotionBlend1D,
+        MotionBlend2D,
+    };
+    const i32 current = !s.HasMotion() ? MotionNone : s.blend.Empty() ? MotionClip : s.Is2D() ? MotionBlend2D : MotionBlend1D;
+    static const StringView Modes[] = {"None (layer silent)", "Single Clip", "Blend Space 1D", "Blend Space 2D"};
+    const i32 first = st.layer > 0 ? 0 : 1;
+    i32 mode = current - first;
+    if (ui::Combo("Motion", &mode, Span<const StringView>(Modes + first, usize(4 - first)))) {
+        mode += first;
         PushUndo(st);
-        if (mode == 1 && s.blend.Empty()) {
-            s.blend.PushBack(AnimGraph::BlendSample{s.clip.Empty() ? String("Idle") : s.clip, 0.0f});
-            s.blend.PushBack(AnimGraph::BlendSample{String("Walk"), 2.0f});
-            if (s.blendParam.Empty())
-                for (const AnimGraph::Param& p : g.params)
-                    if (p.type == AnimGraph::ParamType::Float && s.blendParam.Empty())
-                        s.blendParam = p.name;
-        } else if (mode == 0 && !s.blend.Empty()) {
-            s.clip = s.blend[0].clip;
-            s.blend.Clear();
-        }
-        Changed(st);
-    }
-    if (s.blend.Empty()) {
-        if (NameCombo("Clip", s.clip, clips.View())) {
-            PushUndo(st);
-            Changed(st);
-        }
-    } else {
         Array<String> floats;
         for (const AnimGraph::Param& p : g.params)
             if (p.type == AnimGraph::ParamType::Float)
                 floats.PushBack(p.name);
-        if (NameCombo("Parameter", s.blendParam, floats.View())) {
+        const String firstClip = !s.clip.Empty() ? s.clip : !s.blend.Empty() ? s.blend[0].clip : String("Idle");
+        if (mode == MotionNone) {
+            s.clip.Clear();
+            s.blend.Clear();
+        } else if (mode == MotionClip) {
+            s.clip = firstClip;
+            s.blend.Clear();
+        } else {
+            s.clip.Clear();
+            if (s.blend.Empty()) {
+                s.blend.PushBack(AnimGraph::BlendSample{firstClip, 0.0f, 0.0f});
+                s.blend.PushBack(AnimGraph::BlendSample{String("Walk"), 2.0f, 0.0f});
+            }
+            if (s.blendParam.Empty() && !floats.Empty())
+                s.blendParam = floats[0];
+            if (mode == MotionBlend2D) {
+                if (s.blendParamY.Empty())
+                    s.blendParamY = floats.Size() > 1 ? floats[1] : String("Direction");
+                if (s.blend.Size() < 3)
+                    s.blend.PushBack(AnimGraph::BlendSample{String("Run"), 0.0f, 1.0f});
+            } else {
+                s.blendParamY.Clear();
+                Sort(s.blend, [](const AnimGraph::BlendSample& a, const AnimGraph::BlendSample& b) { return a.value < b.value; });
+            }
+        }
+        Changed(st);
+    }
+    if (current == MotionClip) {
+        if (NameCombo("Clip", s.clip, clips.View())) {
+            PushUndo(st);
+            Changed(st);
+        }
+    } else if (current == MotionBlend1D || current == MotionBlend2D) {
+        const bool twoD = current == MotionBlend2D;
+        Array<String> floats;
+        for (const AnimGraph::Param& p : g.params)
+            if (p.type == AnimGraph::ParamType::Float)
+                floats.PushBack(p.name);
+        if (NameCombo(twoD ? "Parameter X" : "Parameter", s.blendParam, floats.View())) {
+            PushUndo(st);
+            Changed(st);
+        }
+        if (twoD && NameCombo("Parameter Y", s.blendParamY, floats.View())) {
             PushUndo(st);
             Changed(st);
         }
         i32 remove = -1;
         for (usize i = 0; i < s.blend.Size(); ++i) {
             ui::PushID(i32(i) + 1000);
-            ui::SetNextItemWidth(120.0f);
+            ui::SetNextItemWidth(twoD ? 100.0f : 120.0f);
             if (NameCombo("##clip", s.blend[i].clip, clips.View())) {
                 PushUndo(st);
                 Changed(st);
             }
             ui::SameLine();
-            ui::SetNextItemWidth(70.0f);
-            if (ui::DragFloat("##value", &s.blend[i].value, 0.05f, -1000.0f, 1000.0f, "at {:.2f}")) {
-                // Keep the samples sorted by value.
-                Sort(s.blend, [](const AnimGraph::BlendSample& a, const AnimGraph::BlendSample& b) { return a.value < b.value; });
+            ui::SetNextItemWidth(twoD ? 58.0f : 70.0f);
+            if (ui::DragFloat("##value", &s.blend[i].value, 0.05f, -1000.0f, 1000.0f, twoD ? "x {:.2f}" : "at {:.2f}")) {
+                if (!twoD) // 1D samples stay sorted by value
+                    Sort(s.blend, [](const AnimGraph::BlendSample& a, const AnimGraph::BlendSample& b) { return a.value < b.value; });
                 Changed(st);
+            }
+            if (twoD) {
+                ui::SameLine();
+                ui::SetNextItemWidth(58.0f);
+                if (ui::DragFloat("##y", &s.blend[i].y, 0.05f, -1000.0f, 1000.0f, "y {:.2f}"))
+                    Changed(st);
             }
             ui::SameLine();
             if (s.blend.Size() > 1 && ui::IconButton(ZX_ICON_TRASH_2, "Remove the sample"))
@@ -586,9 +745,12 @@ void StatePanel(Editor& ed, AnimGraphEditorState& st, AnimGraph::State& s)
         }
         if (ui::Button(ZX_ICON_PLUS "  Sample")) {
             PushUndo(st);
-            s.blend.PushBack(AnimGraph::BlendSample{clips.Empty() ? String("Run") : clips[0], s.blend.Back().value + 2.0f});
+            const AnimGraph::BlendSample& last = s.blend.Back();
+            s.blend.PushBack(AnimGraph::BlendSample{clips.Empty() ? String("Run") : clips[0], last.value + (twoD ? 0.0f : 2.0f), last.y + (twoD ? 1.0f : 0.0f)});
             Changed(st);
         }
+        if (twoD)
+            BlendSpacePlot(st, s);
     }
     if (ui::DragFloat("Speed", &s.speed, 0.01f, 0.0f, 10.0f, "{:.2f}x"))
         Changed(st);
@@ -628,9 +790,10 @@ void StatePanel(Editor& ed, AnimGraphEditorState& st, AnimGraph::State& s)
 void TransitionPanel(AnimGraphEditorState& st, AnimGraph::Transition& t)
 {
     AnimGraph& g = st.graph;
+    const AnimStateMachine& machine = g.Machine(st.layer);
     ui::SeparatorText("Transition");
-    ui::Text(String::Format("{}  " ZX_ICON_ARROW_RIGHT "  {}", t.from < 0 ? StringView("Any State") : g.states[usize(t.from)].name.View(),
-                            g.states[usize(t.to)].name));
+    ui::Text(String::Format("{}  " ZX_ICON_ARROW_RIGHT "  {}", t.from < 0 ? StringView("Any State") : machine.states[usize(t.from)].name.View(),
+                            machine.states[usize(t.to)].name));
     if (ui::DragFloat("Duration", &t.duration, 0.005f, 0.0f, 5.0f, "{:.2f} s"))
         Changed(st);
     bool exit = t.exitTime >= 0.0f;
@@ -751,6 +914,7 @@ void DrawAnimGraphEditor(Editor& ed)
     const f32 s = ctx.GetScale();
     const ui::Theme& th = ctx.GetStyle().colors;
     AnimGraph& g = st.graph;
+    st.layer = Min(st.layer, u32(g.layers.Size()));
 
     // --- Toolbar ---
     if (ui::Button(ZX_ICON_SAVE "  Save", Vec2::Zero(), st.dirty ? ui::ButtonVariant::Primary : ui::ButtonVariant::Default))
@@ -773,11 +937,13 @@ void DrawAnimGraphEditor(Editor& ed)
         st.selectedState = st.selectedTransition = -1;
         Changed(st);
     };
+    bool wantUndo = false, wantRedo = false;
+    i32 deleteLayer = -1;
     if (ui::IconButton(ZX_ICON_UNDO_2, "Undo (Ctrl+Z)") && canUndo)
-        undo();
+        wantUndo = true;
     ui::SameLine();
     if (ui::IconButton(ZX_ICON_REDO_2, "Redo (Ctrl+Y)") && canRedo)
-        redo();
+        wantRedo = true;
     ui::SameLine();
     ui::AlignTextToFramePadding();
     ui::Text(String::Format("{}{}", Path::FileName(st.path), st.dirty ? "*" : ""));
@@ -788,6 +954,30 @@ void DrawAnimGraphEditor(Editor& ed)
         ui::TextColored(th.warning, ZX_ICON_GIT_BRANCH "  Click the target state (Esc cancels)");
     else
         ui::TextDisabled("Right-click: add states / transitions. Select an entity with this graph and press Play to see it run.");
+
+    // --- Layers ---
+    for (usize l = 0; l < g.MachineCount(); ++l) {
+        const String label = String::Format("{}##layer{}", l == 0 ? StringView("Base Layer") : g.layers[l - 1].name.View(), l);
+        if (ui::Button(label, Vec2::Zero(), st.layer == l ? ui::ButtonVariant::Primary : ui::ButtonVariant::Default)) {
+            st.layer = u32(l);
+            st.selectedState = st.selectedTransition = -1;
+            st.linkFrom = -3;
+        }
+        ui::SameLine();
+    }
+    if (ui::IconButton(ZX_ICON_PLUS, "Add a layer: another state machine over masked bones (override or additive)")) {
+        PushUndo(st);
+        AnimGraph::Layer layer;
+        layer.name = String::Format("Layer{}", g.layers.Size() + 1);
+        AnimGraph::State none;
+        none.name = "None";
+        layer.states.PushBack(none);
+        g.layers.PushBack(move(layer));
+        st.layer = u32(g.layers.Size());
+        st.selectedState = st.selectedTransition = -1;
+        Changed(st);
+    }
+    AnimStateMachine& m = g.Machine(st.layer);
 
     const Rect content = ui::GetWindowContentRect();
     const f32 sideW = Round(330.0f * s);
@@ -814,17 +1004,17 @@ void DrawAnimGraphEditor(Editor& ed)
 
     // Hit testing: nodes (Any State = -1), then transitions.
     i32 hotNode = -3, hotTransition = -1;
-    for (i32 i = i32(g.states.Size()) - 1; i >= -1 && hovered; --i) {
-        const Vec2 p = NodePos(g, i);
+    for (i32 i = i32(m.states.Size()) - 1; i >= -1 && hovered; --i) {
+        const Vec2 p = NodePos(m, i);
         if (Rect(c.ToScreen(p), c.ToScreen(p + Vec2(NodeW, NodeH))).Contains(mouse)) {
             hotNode = i;
             break;
         }
     }
     if (hotNode == -3 && hovered)
-        for (usize i = 0; i < g.transitions.Size(); ++i) {
+        for (usize i = 0; i < m.transitions.Size(); ++i) {
             Vec2 a, b;
-            TransitionEnds(g, g.transitions[i], c, a, b);
+            TransitionEnds(m, m.transitions[i], c, a, b);
             if (SegmentDistance(mouse, a, b) < 6.0f * s) {
                 hotTransition = i32(i);
                 break;
@@ -840,8 +1030,8 @@ void DrawAnimGraphEditor(Editor& ed)
                 AnimGraph::Transition t;
                 t.from = st.linkFrom;
                 t.to = hotNode;
-                g.transitions.PushBack(t);
-                st.selectedTransition = i32(g.transitions.Size() - 1);
+                m.transitions.PushBack(t);
+                st.selectedTransition = i32(m.transitions.Size() - 1);
                 st.selectedState = -1;
                 Changed(st);
             }
@@ -850,7 +1040,7 @@ void DrawAnimGraphEditor(Editor& ed)
             st.selectedState = hotNode < 0 ? -2 : hotNode;
             st.selectedTransition = -1;
             st.drag = AnimGraphEditorState::Drag::Node;
-            st.dragOffset = c.ToGraph(mouse) - NodePos(g, hotNode);
+            st.dragOffset = c.ToGraph(mouse) - NodePos(m, hotNode);
             st.beforeEdit = Snapshot(g);
         } else if (hotTransition >= 0) {
             st.selectedTransition = hotTransition;
@@ -867,11 +1057,11 @@ void DrawAnimGraphEditor(Editor& ed)
         const Vec2 p = c.ToGraph(mouse) - st.dragOffset;
         const Vec2 snapped(Round(p.x / 10.0f) * 10.0f, Round(p.y / 10.0f) * 10.0f);
         if (st.selectedState == -2) {
-            g.anyX = snapped.x;
-            g.anyY = snapped.y;
+            m.anyX = snapped.x;
+            m.anyY = snapped.y;
         } else {
-            g.states[usize(st.selectedState)].x = snapped.x;
-            g.states[usize(st.selectedState)].y = snapped.y;
+            m.states[usize(st.selectedState)].x = snapped.x;
+            m.states[usize(st.selectedState)].y = snapped.y;
         }
     }
     if (st.drag == AnimGraphEditorState::Drag::Pan && (ed.input.IsMouseDown(MouseButton::Right) || ed.input.IsMouseDown(MouseButton::Middle)))
@@ -906,9 +1096,9 @@ void DrawAnimGraphEditor(Editor& ed)
     c.pan = st.pan;
 
     // --- Drawing: transitions under the nodes ---
-    for (usize i = 0; i < g.transitions.Size(); ++i) {
+    for (usize i = 0; i < m.transitions.Size(); ++i) {
         Vec2 a, b;
-        TransitionEnds(g, g.transitions[i], c, a, b);
+        TransitionEnds(m, m.transitions[i], c, a, b);
         const bool sel = i32(i) == st.selectedTransition, hot = i32(i) == hotTransition;
         const Color col = sel ? th.accentHovered : hot ? Color(0xC8, 0xC8, 0xCC) : Color(0x8A, 0x8A, 0x90);
         dl.AddLine(a, b, col, (sel ? 2.5f : 1.6f) * s);
@@ -918,17 +1108,19 @@ void DrawAnimGraphEditor(Editor& ed)
         dl.AddTriangle(mid + d * h, mid - d * h * 0.6f + n * h * 0.7f, mid - d * h * 0.6f - n * h * 0.7f, col);
     }
     if (st.linkFrom != -3) {
-        const Vec2 from = c.ToScreen(NodePos(g, st.linkFrom) + Vec2(NodeW, NodeH) * 0.5f);
+        const Vec2 from = c.ToScreen(NodePos(m, st.linkFrom) + Vec2(NodeW, NodeH) * 0.5f);
         dl.AddLine(from, mouse, th.warning, 2.0f * s);
     }
     const i32 live = LiveState(ed, st);
-    DrawNode(dl, c, "Any State", "transitions from every state", Vec2(g.anyX, g.anyY), Color(0x2F, 0x6A, 0xB0), st.selectedState == -2, false, false);
-    for (usize i = 0; i < g.states.Size(); ++i) {
-        const AnimGraph::State& sd = g.states[i];
-        const String sub = sd.blend.Empty() ? String::Format(ZX_ICON_CLAPPERBOARD "  {}{}", sd.clip, sd.loop ? "" : " (once)")
-                                            : String::Format("Blend by {} ({} clips)", sd.blendParam, sd.blend.Size());
-        DrawNode(dl, c, sd.name.View(), sub.View(), Vec2(sd.x, sd.y), i32(i) == g.entry ? Color(0x3C, 0x86, 0x4C) : Color(0xAE, 0x7A, 0x2A),
-                 st.selectedState == i32(i), live == i32(i), i32(i) == g.entry);
+    DrawNode(dl, c, "Any State", "transitions from every state", Vec2(m.anyX, m.anyY), Color(0x2F, 0x6A, 0xB0), st.selectedState == -2, false, false);
+    for (usize i = 0; i < m.states.Size(); ++i) {
+        const AnimGraph::State& sd = m.states[i];
+        const String sub = !sd.HasMotion() ? String("no motion (layer silent)")
+                           : sd.blend.Empty() ? String::Format(ZX_ICON_CLAPPERBOARD "  {}{}", sd.clip, sd.loop ? "" : " (once)")
+                           : sd.Is2D()        ? String::Format("Blend by {}, {} ({} clips)", sd.blendParam, sd.blendParamY, sd.blend.Size())
+                                              : String::Format("Blend by {} ({} clips)", sd.blendParam, sd.blend.Size());
+        DrawNode(dl, c, sd.name.View(), sub.View(), Vec2(sd.x, sd.y), i32(i) == m.entry ? Color(0x3C, 0x86, 0x4C) : Color(0xAE, 0x7A, 0x2A),
+                 st.selectedState == i32(i), live == i32(i), i32(i) == m.entry);
     }
     dl.PopClipRect();
 
@@ -938,13 +1130,13 @@ void DrawAnimGraphEditor(Editor& ed)
             PushUndo(st);
             AnimGraph::State ns;
             ns.name = "State";
-            for (u32 n = 2; g.FindState(ns.name) >= 0; ++n)
+            for (u32 n = 2; m.FindState(ns.name) >= 0; ++n)
                 ns.name = String::Format("State{}", n);
             ns.clip = "Idle";
             ns.x = Round(st.dragOffset.x - NodeW * 0.5f);
             ns.y = Round(st.dragOffset.y - NodeH * 0.5f);
-            g.states.PushBack(ns);
-            st.selectedState = i32(g.states.Size() - 1);
+            m.states.PushBack(ns);
+            st.selectedState = i32(m.states.Size() - 1);
             st.selectedTransition = -1;
             Changed(st);
         }
@@ -954,12 +1146,12 @@ void DrawAnimGraphEditor(Editor& ed)
         const i32 state = st.selectedState == -2 ? -1 : st.selectedState;
         if (ui::MenuItem(ZX_ICON_GIT_BRANCH "  Make Transition"))
             st.linkFrom = state;
-        if (state >= 0 && ui::MenuItem(ZX_ICON_LOG_IN "  Set as Entry State", {}, false, state != g.entry)) {
+        if (state >= 0 && ui::MenuItem(ZX_ICON_LOG_IN "  Set as Entry State", {}, false, state != m.entry)) {
             PushUndo(st);
-            g.entry = state;
+            m.entry = state;
             Changed(st);
         }
-        if (state >= 0 && ui::MenuItem(ZX_ICON_TRASH_2 "  Delete", "Del", false, g.states.Size() > 1)) {
+        if (state >= 0 && ui::MenuItem(ZX_ICON_TRASH_2 "  Delete", "Del", false, m.states.Size() > 1)) {
             PushUndo(st);
             DeleteState(st, state);
             Changed(st);
@@ -972,19 +1164,19 @@ void DrawAnimGraphEditor(Editor& ed)
         if (ui::IsShortcutPressed(KeyModifiers::Control, Key::S))
             SaveGraph(ed, st);
         if (ui::IsShortcutPressed(KeyModifiers::Control, Key::Z) && canUndo)
-            undo();
+            wantUndo = true;
         if (ui::IsShortcutPressed(KeyModifiers::Control, Key::Y) && canRedo)
-            redo();
+            wantRedo = true;
         if (ui::IsKeyPressed(Key::Escape))
             st.linkFrom = -3;
         if (ui::IsKeyPressed(Key::Delete)) {
-            if (st.selectedState >= 0 && g.states.Size() > 1) {
+            if (st.selectedState >= 0 && m.states.Size() > 1) {
                 PushUndo(st);
                 DeleteState(st, st.selectedState);
                 Changed(st);
-            } else if (st.selectedTransition >= 0 && usize(st.selectedTransition) < g.transitions.Size()) {
+            } else if (st.selectedTransition >= 0 && usize(st.selectedTransition) < m.transitions.Size()) {
                 PushUndo(st);
-                g.transitions.RemoveAt(usize(st.selectedTransition));
+                m.transitions.RemoveAt(usize(st.selectedTransition));
                 st.selectedTransition = -1;
                 Changed(st);
             }
@@ -997,14 +1189,28 @@ void DrawAnimGraphEditor(Editor& ed)
     if (ui::BeginChild("##graph_side", sideRect.Size() / s, false)) {
         ParamsPanel(st);
         ui::Spacing();
-        if (st.selectedState >= 0 && usize(st.selectedState) < g.states.Size())
-            StatePanel(ed, st, g.states[usize(st.selectedState)]);
-        else if (st.selectedTransition >= 0 && usize(st.selectedTransition) < g.transitions.Size())
-            TransitionPanel(st, g.transitions[usize(st.selectedTransition)]);
+        if (st.layer > 0 && LayerPanel(st, g.layers[st.layer - 1]))
+            deleteLayer = i32(st.layer - 1);
+        ui::Spacing();
+        if (st.selectedState >= 0 && usize(st.selectedState) < m.states.Size())
+            StatePanel(ed, st, m.states[usize(st.selectedState)]);
+        else if (st.selectedTransition >= 0 && usize(st.selectedTransition) < m.transitions.Size())
+            TransitionPanel(st, m.transitions[usize(st.selectedTransition)]);
         else
             ui::TextDisabled("Select a state or a transition to edit it.");
     }
     ui::EndChild();
+    if (deleteLayer >= 0) {
+        PushUndo(st);
+        g.layers.RemoveAt(usize(deleteLayer));
+        st.layer = 0;
+        st.selectedState = st.selectedTransition = -1;
+        Changed(st);
+    }
+    if (wantUndo)
+        undo();
+    else if (wantRedo)
+        redo();
     ui::End();
 }
 

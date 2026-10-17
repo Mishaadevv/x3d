@@ -341,3 +341,126 @@ ZX_TEST(AnimationSystem, LookAtTurnsTheHead)
         rest = Max(rest, Length(SafeNormalize(back.columns[c].XYZ(), Vec3(1, 0, 0)) - SafeNormalize(ahead.columns[c].XYZ(), Vec3(1, 0, 0))));
     ZX_EXPECT_LT(rest, 0.05f);
 }
+
+ZX_TEST(AnimGraph, BlendSpace2DWeights)
+{
+    // Idle at the origin, forward / right / left walks around it.
+    const AnimGraph::BlendSample samples[] = {{String("Idle"), 0.0f, 0.0f}, {String("Fwd"), 0.0f, 2.0f}, {String("Right"), 2.0f, 0.0f},
+                                              {String("Left"), -2.0f, 0.0f}};
+    Array<f32> w;
+    auto sum = [&] {
+        f32 t = 0.0f;
+        for (f32 x : w)
+            t += x;
+        return t;
+    };
+    // On a sample: that sample alone.
+    BlendSpace2DWeights(Span<const AnimGraph::BlendSample>(samples, 4), 2.0f, 0.0f, w);
+    ZX_EXPECT_NEAR(w[2], 1.0f, 1e-5f);
+    ZX_EXPECT_NEAR(sum(), 1.0f, 1e-5f);
+    // Half way to Forward: Idle and Forward share, the sides stay out.
+    BlendSpace2DWeights(Span<const AnimGraph::BlendSample>(samples, 4), 0.0f, 1.0f, w);
+    ZX_EXPECT_NEAR(w[0], 0.5f, 1e-4f);
+    ZX_EXPECT_NEAR(w[1], 0.5f, 1e-4f);
+    ZX_EXPECT_NEAR(w[2] + w[3], 0.0f, 1e-4f);
+    // Anywhere (also outside the samples): non-negative and normalized.
+    for (f32 x = -3.0f; x <= 3.0f; x += 0.7f)
+        for (f32 y = -1.0f; y <= 3.0f; y += 0.6f) {
+            BlendSpace2DWeights(Span<const AnimGraph::BlendSample>(samples, 4), x, y, w);
+            ZX_EXPECT_NEAR(sum(), 1.0f, 1e-4f);
+            for (f32 v : w)
+                ZX_EXPECT_GE(v, 0.0f);
+        }
+}
+
+ZX_TEST(AnimGraph, LayersAnd2DBlendSpacesRoundTrip)
+{
+    AnimGraph g = MakeLocomotionGraph();
+    g.params.PushBack(AnimGraph::Param{"Direction", AnimGraph::ParamType::Float, 0.0f});
+    AnimGraph::State strafe;
+    strafe.name = "Strafe";
+    strafe.blendParam = "Speed";
+    strafe.blendParamY = "Direction";
+    strafe.blend = {AnimGraph::BlendSample{"Idle", 0.0f, 0.0f}, AnimGraph::BlendSample{"Walk", 0.0f, 1.0f}, AnimGraph::BlendSample{"Run", 3.0f, -1.0f}};
+    g.states.PushBack(strafe);
+    g.layers[0].weightParam = "Speed";
+    AnimGraph::Layer breathe;
+    breathe.name = "Breathe";
+    breathe.additive = true;
+    breathe.weight = 0.5f;
+    AnimGraph::State idle;
+    idle.name = "Idle";
+    idle.clip = "Idle";
+    breathe.states.PushBack(idle);
+    g.layers.PushBack(breathe);
+
+    AnimGraph back;
+    String error;
+    ZX_REQUIRE(ParseAnimGraph(WriteAnimGraph(g).View(), back, &error));
+    ZX_REQUIRE(back.layers.Size() == 2);
+    const AnimGraph::Layer& upper = back.layers[0];
+    ZX_EXPECT(upper.name == "UpperBody");
+    ZX_REQUIRE(upper.mask.Size() == 1);
+    ZX_EXPECT(upper.mask[0] == "Spine");
+    ZX_EXPECT(upper.weightParam == "Speed");
+    ZX_EXPECT(!upper.additive);
+    ZX_EXPECT(!upper.states[usize(upper.FindState("None"))].HasMotion()); // silent states are fine in layers
+    ZX_EXPECT_EQ(upper.transitions[0].from, -1);
+    ZX_EXPECT_EQ(upper.transitions[1].exitTime, 0.85f);
+    ZX_EXPECT(back.layers[1].additive);
+    ZX_EXPECT_NEAR(back.layers[1].weight, 0.5f, 1e-6f);
+    ZX_EXPECT(back.layers[1].mask.Empty());
+    const AnimGraph::State& s2 = back.states[usize(back.FindState("Strafe"))];
+    ZX_EXPECT(s2.Is2D());
+    ZX_EXPECT(s2.blendParamY == "Direction");
+    ZX_EXPECT_NEAR(s2.blend[2].value, 3.0f, 1e-6f);
+    ZX_EXPECT_NEAR(s2.blend[2].y, -1.0f, 1e-6f); // 2D samples keep their order (no sorting by value)
+    // The base machine still needs motion in every state; layer errors name the layer.
+    ZX_EXPECT(!ParseAnimGraph(R"({"states":[{"name":"A"}]})", back, &error));
+    ZX_EXPECT(!ParseAnimGraph(R"({"states":[{"name":"A","clip":"Idle"}],"layers":[{"name":"Arms","states":[{"name":"X"}],"transitions":[{"from":"X","to":"Y"}]}]})",
+                              back, &error));
+    ZX_EXPECT(error.View().Contains("Arms"));
+}
+
+ZX_TEST(AnimationSystem, UpperBodyLayerPunchesWhileTheLegsRun)
+{
+    AnimatedCharacter ch;
+    ZX_REQUIRE(bool(ch.skinned));
+    ZX_REQUIRE(fs::WriteTextFile(ch.ddc + "/Locomotion.zanimgraph", WriteAnimGraph(MakeLocomotionGraph()).View()));
+    Animator* a = ch.world.Get<Animator>(ch.skinned);
+    a->graph = "Locomotion.zanimgraph";
+    a->footIK = false;
+    // Two systems over the same character: one punches, the other only runs.
+    AnimationSystem punching(*ch.assets), running(*ch.assets);
+    punching.contentRoot = running.contentRoot = ch.ddc;
+    for (AnimationSystem* anim : {&punching, &running}) {
+        anim->SetParam(ch.skinned, "Speed", 6.0f); // warm up with the Run clip loaded
+        ch.Warm(*anim, true);
+    }
+    const asset::Skeleton* sk = ch.assets->GetSkeleton(a->skeleton);
+    ZX_REQUIRE(sk != nullptr);
+    const i32 hand = sk->FindBone("RightHand"), foot = sk->FindBone("LeftFoot");
+    ZX_REQUIRE(hand >= 0 && foot >= 0);
+    for (u32 i = 0; i < 10; ++i) {
+        punching.Tick(ch.world, 1.0f / 60.0f, true);
+        running.Tick(ch.world, 1.0f / 60.0f, true);
+    }
+    ZX_EXPECT(punching.CurrentState(ch.skinned, 1) == "None");
+    punching.SetTrigger(ch.skinned, "Punch");
+    f32 handDiff = 0.0f, footDiff = 0.0f;
+    for (u32 i = 0; i < 20; ++i) {
+        punching.Tick(ch.world, 1.0f / 60.0f, true);
+        running.Tick(ch.world, 1.0f / 60.0f, true);
+        const Span<const Mat4> p = punching.Palette(ch.skinned), r = running.Palette(ch.skinned);
+        handDiff = Max(handDiff, MaxDifference(p.SubSpan(usize(hand), 1), r.SubSpan(usize(hand), 1)));
+        footDiff = Max(footDiff, MaxDifference(p.SubSpan(usize(foot), 1), r.SubSpan(usize(foot), 1)));
+    }
+    ZX_EXPECT(punching.CurrentState(ch.skinned, 1) == "Punch");
+    ZX_EXPECT(punching.CurrentState(ch.skinned) == "Locomotion");
+    ZX_EXPECT_GT(handDiff, 1e-2f); // the arm punches...
+    ZX_EXPECT_LT(footDiff, 1e-4f); // ...the legs keep running exactly as without the layer
+    // The punch plays once and the layer falls silent again.
+    for (u32 i = 0; i < 180; ++i)
+        punching.Tick(ch.world, 1.0f / 60.0f, true);
+    ZX_EXPECT(punching.CurrentState(ch.skinned, 1) == "None");
+}

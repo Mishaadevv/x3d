@@ -202,3 +202,24 @@ ZX_TEST(Animation, TwoBoneIKReachesTheTarget)
     anim::LocalToModel(sk, Span<const Transform>(pose, 3), Span<Mat4>(model, 3));
     ZX_EXPECT_LT(model[2].GetTranslation().y, -0.99f);
 }
+
+ZX_TEST(Animation, AdditiveDeltaRoundTrips)
+{
+    using namespace asset::anim;
+    const Transform reference(Vec3(0.1f, 1.0f, 0.0f), Quat::FromAxisAngle(Vec3(0, 1, 0), 0.3f), Vec3(1.0f));
+    const Transform pose(Vec3(0.2f, 1.1f, -0.1f), Quat::FromAxisAngle(Vec3(1, 0, 0), 0.5f) * reference.rotation, Vec3(1.2f, 1.0f, 1.0f));
+    const Transform delta = AdditiveDelta(reference, pose);
+    // Applied to the reference with full weight: the pose again; weight 0: unchanged.
+    const Transform back = ApplyAdditive(reference, delta, 1.0f);
+    ZX_EXPECT_LT(Length(back.position - pose.position), 1e-5f);
+    ZX_EXPECT_GT(Abs(Dot(back.rotation, pose.rotation)), 1.0f - 1e-5f);
+    ZX_EXPECT_LT(Length(back.scale - pose.scale), 1e-5f);
+    const Transform base(Vec3(3.0f, 0.0f, 0.0f), Quat::FromAxisAngle(Vec3(0, 0, 1), 1.0f), Vec3(2.0f));
+    const Transform none = ApplyAdditive(base, delta, 0.0f);
+    ZX_EXPECT_LT(Length(none.position - base.position), 1e-6f);
+    ZX_EXPECT_GT(Abs(Dot(none.rotation, base.rotation)), 1.0f - 1e-6f);
+    // On another base, the same rotation change is added on top.
+    const Transform added = ApplyAdditive(base, delta, 1.0f);
+    ZX_EXPECT_GT(Abs(Dot(added.rotation, Quat::FromAxisAngle(Vec3(1, 0, 0), 0.5f) * base.rotation)), 1.0f - 1e-5f);
+    ZX_EXPECT_LT(Length(added.scale - Vec3(2.4f, 2.0f, 2.0f)), 1e-5f);
+}

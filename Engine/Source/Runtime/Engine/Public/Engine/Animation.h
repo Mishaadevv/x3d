@@ -84,8 +84,9 @@ public:
     /// Ground query for foot IK: hit point / normal between `from` and `to`, ignoring the character itself (`ignore`:
     /// the entity with the Character Controller). Set by the host (physics); none = no foot IK.
     Function<bool(Vec3 from, Vec3 to, ecs::Entity ignore, Vec3& point, Vec3& normal), 48> raycast;
-    /// Name of the graph state the entity is in ("Locomotion"), empty without a graph.
-    String CurrentState(ecs::Entity e) const;
+    /// Name of the graph state the entity is in ("Locomotion"; `layer` 0 = base, 1.. = AnimGraph::layers), empty
+    /// without a graph.
+    String CurrentState(ecs::Entity e, u32 layer = 0) const;
     /// Name of a clip asset ("Run"), empty while unknown.
     String ClipName(asset::AssetId clip) const { return m_assets.GetName(clip); }
     /// Seconds into the current clip (without a graph).
@@ -104,6 +105,15 @@ private:
         AnimGraph graph;
         bool ok = false;
     };
+    struct MachineRun // one layer's state machine
+    {
+        i32 state = -1;
+        f32 phase = 0.0f; // normalized time in the state
+        i32 fromState = -1;
+        f32 fromPhase = 0.0f;
+        f32 fade = 1.0f;
+        f32 fadeDuration = 0.0f;
+    };
     struct State
     {
         asset::AssetId clip;
@@ -114,10 +124,9 @@ private:
         f32 fadeDuration = 0.0f;
         // Graph mode.
         String graphPath;
-        i32 graphState = -1;
-        f32 phase = 0.0f; // normalized time in the state
-        i32 fromState = -1;
-        f32 fromPhase = 0.0f;
+        Array<MachineRun> machines;      // base + layers (empty: restart in the entry states)
+        Array<Array<u8>> layerMasks;     // per layer: 1 for bones it affects
+        asset::AssetId maskSkeleton;     // masks resolved for this skeleton
         HashMap<String, f32> params; // by lower-case name, set before / between ticks
         // IK.
         asset::AssetId rigSkeleton; // bones below resolved for this skeleton
@@ -130,16 +139,22 @@ private:
         Vec3 lookTarget;
         f32 lookWeight = 0.0f, lookTargetWeight = 0.0f;
         bool footDown[2] = {true, true};
-        Array<Transform> pose, fromPose, scratch;
+        Array<Transform> pose, fromPose, scratch, scratch2, layerPose, refPose;
+        Array<f32> weights;
         Array<Mat4> model, palette;
         bool alive = false;
     };
     const GraphFile* LoadGraph(StringView path);
     const asset::AnimationClip* ClipByName(const Animator& a, StringView name);
-    /// Pose of a graph state at a normalized phase; returns the state's length in seconds (for advancing the phase).
-    f32 EvaluateState(const AnimGraph& g, i32 stateIndex, f32 phase, const Animator& a, const asset::Skeleton& skeleton, State& s,
-                      Span<Transform> out);
+    /// Pose of a machine's state at a normalized phase (`additive`: the change from the state's first frame); returns
+    /// the state's length in seconds (for advancing the phase).
+    f32 EvaluateState(const AnimGraph& g, const AnimStateMachine& m, i32 stateIndex, f32 phase, bool additive, const Animator& a,
+                      const asset::Skeleton& skeleton, State& s, Span<Transform> out);
     f32 ParamValue(const State& s, const AnimGraph& g, StringView name) const;
+    /// Fires transitions, advances and poses one machine into `out`; returns how present its motion is (0 = a state
+    /// without motion, fading in / out with the transitions).
+    f32 TickMachine(const AnimGraph& g, const AnimStateMachine& m, bool additive, MachineRun& r, const Animator& a,
+                    const asset::Skeleton& skeleton, State& s, f32 dt, ecs::Entity e, Span<Transform> out);
     void TickGraph(const AnimGraph& g, const Animator& a, const asset::Skeleton& skeleton, State& s, f32 dt, bool animate, ecs::Entity e);
     void ApplyIK(ecs::World& world, ecs::Entity e, const Animator& a, const asset::Skeleton& skeleton, State& s, f32 dt, bool playing);
     Array<AnimEvent> m_events;

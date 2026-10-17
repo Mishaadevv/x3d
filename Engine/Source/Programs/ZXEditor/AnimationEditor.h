@@ -73,6 +73,7 @@ struct AnimGraphEditorState
     String error;
     Vec2 pan = Vec2(300.0f, 200.0f);
     f32 zoom = 1.0f;
+    u32 layer = 0;               // edited machine: 0 = base, 1.. = AnimGraph::layers
     i32 selectedState = -1;      // index, -2 = the Any State node
     i32 selectedTransition = -1;
     i32 linkFrom = -3;           // "Make Transition": source state (-1 = any state), -3 = not linking
@@ -86,6 +87,7 @@ struct AnimGraphEditorState
     Vec2 dragOffset;
     Array<String> undo, redo;
     String beforeEdit; // snapshot for one-step property edits
+    Vec2 blendPreview; // 2D blend space plot: the previewed parameter point
 };
 
 void OpenAnimationViewer(Editor& ed, StringView modelPath);

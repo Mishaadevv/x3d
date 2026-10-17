@@ -90,6 +90,26 @@ void BlendPoses(Span<const Transform> a, Span<const Transform> b, f32 t, Span<Tr
         out[i] = Transform(Lerp(a[i].position, b[i].position, t), NlerpShortest(a[i].rotation, b[i].rotation, t), Lerp(a[i].scale, b[i].scale, t));
 }
 
+Transform BlendTransforms(const Transform& a, const Transform& b, f32 t)
+{
+    return Transform(Lerp(a.position, b.position, t), NlerpShortest(a.rotation, b.rotation, t), Lerp(a.scale, b.scale, t));
+}
+
+Transform AdditiveDelta(const Transform& reference, const Transform& pose)
+{
+    const Vec3 rs = reference.scale;
+    const Vec3 scale(Abs(rs.x) > 1e-6f ? pose.scale.x / rs.x : 1.0f, Abs(rs.y) > 1e-6f ? pose.scale.y / rs.y : 1.0f,
+                     Abs(rs.z) > 1e-6f ? pose.scale.z / rs.z : 1.0f);
+    return Transform(pose.position - reference.position, Normalize(pose.rotation * Inverse(reference.rotation)), scale);
+}
+
+Transform ApplyAdditive(const Transform& base, const Transform& delta, f32 weight)
+{
+    const Quat rotation = NlerpShortest(Quat::Identity(), delta.rotation, weight);
+    return Transform(base.position + delta.position * weight, Normalize(rotation * base.rotation),
+                     base.scale * Lerp(Vec3(1.0f), delta.scale, weight));
+}
+
 void LocalToModel(const Skeleton& skeleton, Span<const Transform> local, Span<Mat4> out)
 {
     const u32 bones = Min(Min(skeleton.BoneCount(), u32(local.Size())), u32(out.Size()));

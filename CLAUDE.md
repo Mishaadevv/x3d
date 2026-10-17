@@ -149,7 +149,11 @@ AnimationSystem::raycast set by the host = physics, ignoring the character entit
 -> ScriptSystem::DispatchAnimEvents (TickGame start: onAnimEvent on the entity and its ancestors).
 Animation editors: ZXEditor/AnimationEditor.cpp (AnimationPreview = own world + AnimationSystem + ViewportRenderer;
 Animation Viewer; AnimGraph Editor with canvas, ParamsPanel / StatePanel / TransitionPanel, SaveGraph ->
-AnimationSystem::ReloadGraph). Console anim.viewer <model>, anim.graph <graph>.
+AnimationSystem::ReloadGraph). Console anim.viewer <model>, anim.graph <graph> [layer [state]].
+AnimGraph layers (0.12.5): AnimGraph derives from AnimStateMachine (base layer) + layers (mask bones, weight / weightParam,
+override / additive vs. the state's first frame; states without motion silence the layer); runtime State::machines
+(MachineRun per layer), TickMachine returns the layer presence; BlendSpace2DWeights (gradient band). Editor: layer tabs,
+st.layer, undo / redo / layer deletion run at the end of the frame (they reallocate the machines).
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

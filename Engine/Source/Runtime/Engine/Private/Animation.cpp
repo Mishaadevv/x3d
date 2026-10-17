@@ -96,112 +96,208 @@ f32 AnimationSystem::ParamValue(const State& s, const AnimGraph& g, StringView n
     return p >= 0 ? g.params[usize(p)].defaultValue : 0.0f;
 }
 
-f32 AnimationSystem::EvaluateState(const AnimGraph& g, i32 stateIndex, f32 phase, const Animator& a, const asset::Skeleton& skeleton, State& s,
-                                   Span<Transform> out)
+f32 AnimationSystem::EvaluateState(const AnimGraph& g, const AnimStateMachine& m, i32 stateIndex, f32 phase, bool additive, const Animator& a,
+                                   const asset::Skeleton& skeleton, State& s, Span<Transform> out)
 {
-    const AnimGraph::State& st = g.states[usize(stateIndex)];
+    const AnimStateMachine::State& st = m.states[usize(stateIndex)];
     const u32 bones = skeleton.BoneCount();
     auto bindPose = [&] {
         for (u32 b = 0; b < bones; ++b)
             out[b] = skeleton.bindPose[b];
     };
-    if (st.blend.Empty()) {
+    f32 length = 1.0f;
+    if (!st.HasMotion()) {
+        bindPose();
+    } else if (st.blend.Empty()) {
         const asset::AnimationClip* clip = ClipByName(a, st.clip);
         if (!clip) {
             bindPose();
-            return 1.0f;
+        } else {
+            asset::anim::SampleClip(*clip, skeleton, phase * clip->duration, st.loop, out);
+            length = Max(clip->duration, 1e-3f);
         }
-        asset::anim::SampleClip(*clip, skeleton, phase * clip->duration, st.loop, out);
-        return Max(clip->duration, 1e-3f);
+    } else if (st.Is2D()) {
+        // 2D blend space: every sample with weight, all at the same phase.
+        BlendSpace2DWeights(st.blend.View(), ParamValue(s, g, st.blendParam), ParamValue(s, g, st.blendParamY), s.weights);
+        f32 total = 0.0f, blendedLength = 0.0f;
+        s.scratch2.Resize(bones);
+        for (usize i = 0; i < st.blend.Size(); ++i) {
+            const f32 w = s.weights[i];
+            const asset::AnimationClip* clip = w > 1e-3f ? ClipByName(a, st.blend[i].clip) : nullptr;
+            if (!clip)
+                continue;
+            total += w;
+            blendedLength += w * clip->duration;
+            if (total == w) {
+                asset::anim::SampleClip(*clip, skeleton, phase * clip->duration, st.loop, out);
+            } else {
+                asset::anim::SampleClip(*clip, skeleton, phase * clip->duration, st.loop, s.scratch2.View());
+                asset::anim::BlendPoses(out, s.scratch2.View(), w / total, out);
+            }
+        }
+        if (total <= 0.0f)
+            bindPose();
+        else
+            length = Max(blendedLength / total, 1e-3f);
+    } else {
+        // 1D blend space: the two samples around the parameter, both at the same phase (their cycles stay in step).
+        const f32 v = ParamValue(s, g, st.blendParam);
+        usize i = 0;
+        while (i + 1 < st.blend.Size() && st.blend[i + 1].value <= v)
+            ++i;
+        const usize j = Min(i + 1, st.blend.Size() - 1);
+        const f32 span = st.blend[j].value - st.blend[i].value;
+        const f32 w = j != i && span > 1e-6f ? Clamp((v - st.blend[i].value) / span, 0.0f, 1.0f) : 0.0f;
+        const asset::AnimationClip* c0 = ClipByName(a, st.blend[i].clip);
+        const asset::AnimationClip* c1 = ClipByName(a, st.blend[j].clip);
+        if (!c0 || !c1) {
+            bindPose();
+        } else {
+            asset::anim::SampleClip(*c0, skeleton, phase * c0->duration, st.loop, out);
+            if (w > 0.0f) {
+                s.scratch.Resize(bones);
+                asset::anim::SampleClip(*c1, skeleton, phase * c1->duration, st.loop, s.scratch.View());
+                asset::anim::BlendPoses(out, s.scratch.View(), w, out);
+            }
+            length = Max(c0->duration + (c1->duration - c0->duration) * w, 1e-3f);
+        }
     }
-    // 1D blend space: the two samples around the parameter, both at the same phase (their cycles stay in step).
-    const f32 v = ParamValue(s, g, st.blendParam);
-    usize i = 0;
-    while (i + 1 < st.blend.Size() && st.blend[i + 1].value <= v)
-        ++i;
-    const usize j = Min(i + 1, st.blend.Size() - 1);
-    const f32 span = st.blend[j].value - st.blend[i].value;
-    const f32 w = j != i && span > 1e-6f ? Clamp((v - st.blend[i].value) / span, 0.0f, 1.0f) : 0.0f;
-    const asset::AnimationClip* c0 = ClipByName(a, st.blend[i].clip);
-    const asset::AnimationClip* c1 = ClipByName(a, st.blend[j].clip);
-    if (!c0 || !c1) {
-        bindPose();
-        return 1.0f;
+    if (additive && st.HasMotion()) {
+        // The change from the state's first frame (local space): pose = delta * reference.
+        s.refPose.Resize(bones);
+        EvaluateState(g, m, stateIndex, 0.0f, false, a, skeleton, s, s.refPose.View());
+        for (u32 b = 0; b < bones; ++b)
+            out[b] = asset::anim::AdditiveDelta(s.refPose[b], out[b]);
+    } else if (additive) {
+        for (u32 b = 0; b < bones; ++b)
+            out[b] = Transform();
     }
-    asset::anim::SampleClip(*c0, skeleton, phase * c0->duration, st.loop, out);
-    if (w > 0.0f) {
-        s.scratch.Resize(bones);
-        asset::anim::SampleClip(*c1, skeleton, phase * c1->duration, st.loop, s.scratch.View());
-        asset::anim::BlendPoses(out, s.scratch.View(), w, out);
+    return length;
+}
+
+f32 AnimationSystem::TickMachine(const AnimGraph& g, const AnimStateMachine& m, bool additive, MachineRun& r, const Animator& a,
+                                 const asset::Skeleton& skeleton, State& s, f32 dt, ecs::Entity e, Span<Transform> out)
+{
+    const u32 bones = skeleton.BoneCount();
+    if (r.state < 0 || r.state >= i32(m.states.Size())) {
+        r = MachineRun{};
+        r.state = Clamp(m.entry, 0, i32(m.states.Size()) - 1);
     }
-    return Max(c0->duration + (c1->duration - c0->duration) * w, 1e-3f);
+    // Transitions (any-state ones too): the first whose conditions all hold fires; triggers it tests are consumed.
+    for (const AnimStateMachine::Transition& t : m.transitions) {
+        if ((t.from >= 0 && t.from != r.state) || t.to == r.state)
+            continue;
+        if (t.exitTime >= 0.0f && r.phase < t.exitTime)
+            continue;
+        bool pass = true;
+        for (const AnimStateMachine::Condition& c : t.conditions) {
+            const f32 v = ParamValue(s, g, c.param);
+            switch (c.op) {
+            case AnimStateMachine::Op::Greater: pass &= v > c.value; break;
+            case AnimStateMachine::Op::Less: pass &= v < c.value; break;
+            case AnimStateMachine::Op::IsTrue:
+            case AnimStateMachine::Op::Triggered: pass &= v > 0.5f; break;
+            case AnimStateMachine::Op::IsFalse: pass &= v <= 0.5f; break;
+            }
+        }
+        if (!pass)
+            continue;
+        for (const AnimStateMachine::Condition& c : t.conditions)
+            if (c.op == AnimStateMachine::Op::Triggered)
+                s.params.InsertOrAssign(Lower(c.param), 0.0f);
+        r.fromState = r.state;
+        r.fromPhase = r.phase;
+        r.state = t.to;
+        r.phase = 0.0f;
+        r.fade = t.duration > 0.0f ? 0.0f : 1.0f;
+        r.fadeDuration = t.duration;
+        break;
+    }
+    // Pose of the current state, advanced by its (blended) length; the previous one keeps playing while fading out.
+    const AnimStateMachine::State& cur = m.states[usize(r.state)];
+    const f32 length = EvaluateState(g, m, r.state, r.phase, additive, a, skeleton, s, out);
+    const f32 before = r.phase;
+    r.phase += dt * a.speed * cur.speed / length;
+    const bool wrapped = cur.loop && r.phase >= 1.0f;
+    r.phase = cur.loop ? r.phase - Floor(r.phase) : Min(r.phase, 1.0f);
+    for (const AnimStateMachine::Event& ev : cur.events) // authored events the phase passed this tick
+        if (wrapped ? (ev.time > before || ev.time <= r.phase) : (ev.time > before && ev.time <= r.phase))
+            m_events.PushBack(AnimEvent{e, ev.name});
+    f32 presence = cur.HasMotion() ? 1.0f : 0.0f;
+    if (r.fade < 1.0f && r.fromState >= 0) {
+        const AnimStateMachine::State& from = m.states[usize(r.fromState)];
+        const f32 t = Smooth(r.fade);
+        if (from.HasMotion()) {
+            s.fromPose.Resize(bones);
+            const f32 fromLength = EvaluateState(g, m, r.fromState, r.fromPhase, additive, a, skeleton, s, s.fromPose.View());
+            r.fromPhase += dt * a.speed * from.speed / fromLength;
+            r.fromPhase = from.loop ? r.fromPhase - Floor(r.fromPhase) : Min(r.fromPhase, 1.0f);
+            if (cur.HasMotion())
+                asset::anim::BlendPoses(s.fromPose.View(), out, t, out);
+            else
+                for (u32 b = 0; b < bones; ++b)
+                    out[b] = s.fromPose[b];
+        }
+        // A silent state on either side fades the layer instead of blending towards the bind pose.
+        presence = cur.HasMotion() && from.HasMotion() ? 1.0f : cur.HasMotion() ? t : from.HasMotion() ? 1.0f - t : 0.0f;
+        r.fade = Min(1.0f, r.fade + dt / Max(r.fadeDuration, 1e-3f));
+    }
+    return presence;
 }
 
 void AnimationSystem::TickGraph(const AnimGraph& g, const Animator& a, const asset::Skeleton& skeleton, State& s, f32 dt, bool animate,
                                 ecs::Entity e)
 {
     const u32 bones = skeleton.BoneCount();
-    if (s.graphState < 0 || s.graphState >= i32(g.states.Size())) {
-        s.graphState = Clamp(g.entry, 0, i32(g.states.Size()) - 1);
-        s.phase = 0.0f;
-        s.fade = 1.0f;
+    if (s.machines.Size() != g.MachineCount()) {
+        s.machines.Clear();
+        s.machines.Resize(g.MachineCount());
+        s.maskSkeleton = {};
     }
     if (!animate) {
-        s.graphState = Clamp(g.entry, 0, i32(g.states.Size()) - 1);
-        s.phase = 0.0f;
-        s.fade = 1.0f;
+        for (MachineRun& r : s.machines)
+            r = MachineRun{};
         for (u32 b = 0; b < bones; ++b)
             s.pose[b] = skeleton.bindPose[b];
         return;
     }
-    // Transitions (any-state ones too): the first whose conditions all hold fires; triggers it tests are consumed.
-    for (const AnimGraph::Transition& t : g.transitions) {
-        if ((t.from >= 0 && t.from != s.graphState) || t.to == s.graphState)
-            continue;
-        if (t.exitTime >= 0.0f && s.phase < t.exitTime)
-            continue;
-        bool pass = true;
-        for (const AnimGraph::Condition& c : t.conditions) {
-            const f32 v = ParamValue(s, g, c.param);
-            switch (c.op) {
-            case AnimGraph::Op::Greater: pass &= v > c.value; break;
-            case AnimGraph::Op::Less: pass &= v < c.value; break;
-            case AnimGraph::Op::IsTrue:
-            case AnimGraph::Op::Triggered: pass &= v > 0.5f; break;
-            case AnimGraph::Op::IsFalse: pass &= v <= 0.5f; break;
+    TickMachine(g, g, false, s.machines[0], a, skeleton, s, dt, e, s.pose.View());
+
+    // Layers on top: bone masks (a bone and everything below it) resolved once per skeleton.
+    if (!g.layers.Empty() && (s.maskSkeleton != a.skeleton || s.layerMasks.Size() != g.layers.Size())) {
+        s.maskSkeleton = a.skeleton;
+        s.layerMasks.Clear();
+        s.layerMasks.Resize(g.layers.Size());
+        for (usize l = 0; l < g.layers.Size(); ++l) {
+            Array<u8>& mask = s.layerMasks[l];
+            mask.Resize(bones);
+            for (u32 b = 0; b < bones; ++b) {
+                bool in = g.layers[l].mask.Empty();
+                for (const String& name : g.layers[l].mask)
+                    in |= skeleton.boneNames[b].View().EqualsIgnoreCase(name);
+                const i32 parent = skeleton.parents[b];
+                mask[b] = in || (parent >= 0 && mask[u32(parent)]) ? 1 : 0;
             }
         }
-        if (!pass)
-            continue;
-        for (const AnimGraph::Condition& c : t.conditions)
-            if (c.op == AnimGraph::Op::Triggered)
-                s.params.InsertOrAssign(Lower(c.param), 0.0f);
-        s.fromState = s.graphState;
-        s.fromPhase = s.phase;
-        s.graphState = t.to;
-        s.phase = 0.0f;
-        s.fade = t.duration > 0.0f ? 0.0f : 1.0f;
-        s.fadeDuration = t.duration;
-        break;
     }
-    // Pose of the current state, advanced by its (blended) length; the previous one keeps playing while fading out.
-    const AnimGraph::State& cur = g.states[usize(s.graphState)];
-    const f32 length = EvaluateState(g, s.graphState, s.phase, a, skeleton, s, s.pose.View());
-    const f32 before = s.phase;
-    s.phase += dt * a.speed * cur.speed / length;
-    const bool wrapped = cur.loop && s.phase >= 1.0f;
-    s.phase = cur.loop ? s.phase - Floor(s.phase) : Min(s.phase, 1.0f);
-    for (const AnimGraph::Event& ev : cur.events) // authored events the phase passed this tick
-        if (wrapped ? (ev.time > before || ev.time <= s.phase) : (ev.time > before && ev.time <= s.phase))
-            m_events.PushBack(AnimEvent{e, ev.name});
-    if (s.fade < 1.0f && s.fromState >= 0) {
-        s.fromPose.Resize(bones);
-        const AnimGraph::State& from = g.states[usize(s.fromState)];
-        const f32 fromLength = EvaluateState(g, s.fromState, s.fromPhase, a, skeleton, s, s.fromPose.View());
-        s.fromPhase += dt * a.speed * from.speed / fromLength;
-        s.fromPhase = from.loop ? s.fromPhase - Floor(s.fromPhase) : Min(s.fromPhase, 1.0f);
-        asset::anim::BlendPoses(s.fromPose.View(), s.pose.View(), Smooth(s.fade), s.pose.View());
-        s.fade = Min(1.0f, s.fade + dt / Max(s.fadeDuration, 1e-3f));
+    s.layerPose.Resize(bones);
+    for (usize l = 0; l < g.layers.Size(); ++l) {
+        const AnimGraph::Layer& layer = g.layers[l];
+        const f32 presence = TickMachine(g, layer, layer.additive, s.machines[l + 1], a, skeleton, s, dt, e, s.layerPose.View());
+        f32 w = layer.weight * presence;
+        if (!layer.weightParam.Empty())
+            w *= Clamp(ParamValue(s, g, layer.weightParam), 0.0f, 1.0f);
+        if (w <= 1e-4f)
+            continue;
+        const Span<const u8> mask = s.layerMasks[l].View();
+        for (u32 b = 0; b < bones; ++b) {
+            if (!mask[b])
+                continue;
+            if (layer.additive)
+                s.pose[b] = asset::anim::ApplyAdditive(s.pose[b], s.layerPose[b], w);
+            else
+                s.pose[b] = asset::anim::BlendTransforms(s.pose[b], s.layerPose[b], w);
+        }
     }
     // Triggers nobody consumed this tick expire.
     for (const AnimGraph::Param& p : g.params)
@@ -240,7 +336,7 @@ void AnimationSystem::Tick(ecs::World& world, f32 dt, bool playing)
         if (graph) {
             if (s.graphPath != a.graph) {
                 s.graphPath = a.graph;
-                s.graphState = -1;
+                s.machines.Clear();
             }
             // A Character Controller (here or on an ancestor) drives the locomotion parameters.
             if (const CharacterState* ch = FindCharacter(world, e); ch && playing) {
@@ -438,7 +534,7 @@ void AnimationSystem::ReloadGraph(StringView path)
     m_graphs.RemoveIf([&](const String& key, const GraphFile&) { return key.View().EqualsIgnoreCase(path); });
     for (auto& [key, s] : m_states)
         if (s.graphPath.View().EqualsIgnoreCase(path))
-            s.graphState = -1;
+            s.machines.Clear();
 }
 
 void AnimationSystem::SetLookAt(ecs::Entity e, Vec3 target, f32 weight)
@@ -475,13 +571,17 @@ f32 AnimationSystem::GetParam(ecs::Entity e, StringView name) const
     return v ? *v : 0.0f;
 }
 
-String AnimationSystem::CurrentState(ecs::Entity e) const
+String AnimationSystem::CurrentState(ecs::Entity e, u32 layer) const
 {
     const State* s = m_states.Find(e.Pack());
-    if (!s || s->graphState < 0)
+    if (!s || layer >= s->machines.Size() || s->machines[layer].state < 0)
         return String();
     const GraphFile* g = m_graphs.Find(s->graphPath);
-    return g && g->ok && s->graphState < i32(g->graph.states.Size()) ? g->graph.states[usize(s->graphState)].name : String();
+    if (!g || !g->ok || layer >= g->graph.MachineCount())
+        return String();
+    const AnimStateMachine& m = g->graph.Machine(layer);
+    const i32 state = s->machines[layer].state;
+    return state < i32(m.states.Size()) ? m.states[usize(state)].name : String();
 }
 
 bool AnimationSystem::Play(ecs::World& world, ecs::Entity e, StringView clip)

@@ -186,12 +186,22 @@ ConCommand CmdAnimViewer("anim.viewer", "Opens a model in the Animation Viewer: 
         OpenAnimationViewer(*Ed(), args[0]);
 });
 
-ConCommand CmdAnimGraph("anim.graph", "Opens a .zanimgraph in the AnimGraph Editor: anim.graph <path> (Content-relative or absolute)",
+ConCommand CmdAnimGraph("anim.graph",
+                        "Opens a .zanimgraph in the AnimGraph Editor: anim.graph <path> [layer [state]] (Content-relative or absolute; layer 0 = "
+                        "base, state = name to select)",
                         [](Span<const StringView> args) {
                             if (!Ed() || args.Empty())
                                 return;
                             const String path = Path::IsAbsolute(args[0]) ? String(args[0]) : Path::Join(Ed()->contentRoot, args[0]);
                             OpenAnimGraphEditor(*Ed(), path);
+                            AnimGraphEditorState& st = Ed()->animGraphEditor;
+                            if (args.Size() > 1 && st.open) {
+                                const i64 layer = ParseInt(args[1]).ValueOr(-1);
+                                if (layer >= 0 && usize(layer) <= st.graph.layers.Size())
+                                    st.layer = u32(layer);
+                                if (args.Size() > 2)
+                                    st.selectedState = st.graph.Machine(st.layer).FindState(args[2]);
+                            }
                         });
 
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {

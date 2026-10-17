@@ -64,6 +64,12 @@ namespace anim {
 void SampleClip(const AnimationClip& clip, const Skeleton& skeleton, f32 time, bool loop, Span<Transform> out);
 /// Linear blend of two poses (rotations nlerp along the shorter arc): out = a * (1 - t) + b * t.
 void BlendPoses(Span<const Transform> a, Span<const Transform> b, f32 t, Span<Transform> out);
+/// One bone of BlendPoses.
+Transform BlendTransforms(const Transform& a, const Transform& b, f32 t);
+/// Additive animation: the change from `reference` to `pose` (local space; pose = delta * reference) and that change
+/// applied to `base` with `weight` (0 = base unchanged).
+Transform AdditiveDelta(const Transform& reference, const Transform& pose);
+Transform ApplyAdditive(const Transform& base, const Transform& delta, f32 weight);
 /// Skeleton-space matrices from local transforms.
 void LocalToModel(const Skeleton& skeleton, Span<const Transform> local, Span<Mat4> out);
 /// Skinning matrices: model[b] * inverseBind[b], optionally pre-multiplied by `skinToMesh`.
