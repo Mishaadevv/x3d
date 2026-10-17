@@ -391,7 +391,8 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     m_waterSurfaces.Clear();
     if (features.water)
         GatherWater(world, m_waterSurfaces);
-    m_water.AddPasses(graph, sceneColor, sceneDepth, view, m_waterSurfaces.View(), m_lighting, m_settings.useSky ? &m_sky : nullptr,
+    m_water.AddPasses(graph, sceneColor, sceneDepth, view, m_waterSurfaces.View(), m_lighting, &m_scene.GetLightingInputs(),
+                      m_settings.useSky ? &m_sky : nullptr,
                       f32(std::fmod(m_time, 3600.0)), exposure);
     if (m_settings.useSky)
         m_sky.AddFogPass(graph, sceneColor, sceneDepth, m_lighting, m_settings.sky);

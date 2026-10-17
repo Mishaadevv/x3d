@@ -94,21 +94,84 @@ ZX_REFLECT_STRUCT_BEGIN(FogVolume)
     ZX_FIELD(wind, Meta::Units("m/s"), Meta::Tooltip("How the wisps drift"))
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_ENUM_BEGIN(WaterPreset)
+    ZX_ENUM_VALUE(Custom)
+    ZX_ENUM_VALUE(Ocean)
+    ZX_ENUM_VALUE(Lake)
+    ZX_ENUM_VALUE(Pool)
+    ZX_ENUM_VALUE(Storm)
+    ZX_ENUM_VALUE(Tropical)
+ZX_REFLECT_ENUM_END()
+
 ZX_REFLECT_STRUCT_BEGIN(Water)
+    ZX_FIELD(preset, Meta::Tooltip("Fills in every setting below for this kind of water (then tweak them)"))
     ZX_FIELD(size, Meta::Tooltip("Width and length in meters"))
-    ZX_FIELD(waveHeight, Meta::Range(0, 5), Meta::Units("m"))
-    ZX_FIELD(waveLength, Meta::Range(0.5, 100), Meta::Units("m"))
-    ZX_FIELD(waveSpeed, Meta::Range(0, 5))
-    ZX_FIELD(windDirection, Meta::Range(-180, 180), Meta::Units("deg"))
-    ZX_FIELD(choppiness, Meta::Range(0, 1), Meta::Tooltip("0 = round waves, 1 = sharp crests"))
-    ZX_FIELD(shallowColor, Meta::Color())
+    ZX_FIELD(windSpeed, Meta::Range(0.5, 40), Meta::Units("m/s"), Meta::Category("Waves"),
+             Meta::Tooltip("The wind that raised the sea: stronger = bigger, longer waves (Wind Zones steer them)"))
+    ZX_FIELD(fetch, Meta::Range(0.005, 2000), Meta::Units("km"), Meta::Tooltip("Open water the wind blew over: pool 0.03, lake 3, ocean 100+"))
+    ZX_FIELD(windDirection, Meta::Range(-180, 180), Meta::Units("deg"), Meta::Tooltip("Where the waves run, around +Y (0 = towards +Z)"))
+    ZX_FIELD(waveAmount, Meta::Range(0, 4), Meta::Tooltip("Height multiplier"))
+    ZX_FIELD(choppiness, Meta::Range(0, 2), Meta::Tooltip("0 = round swells, 1+ = sharp, pinched crests"))
+    ZX_FIELD(shallowColor, Meta::Color(), Meta::Category("Look"))
     ZX_FIELD(deepColor, Meta::Color())
+    ZX_FIELD(scatterColor, Meta::Color(), Meta::Tooltip("Light shining through the wave crests"))
     ZX_FIELD(clarity, Meta::Range(0.1, 50), Meta::Units("m"), Meta::Tooltip("How deep you can see into the water"))
     ZX_FIELD(refraction, Meta::Range(0, 0.2))
-    ZX_FIELD(foam, Meta::Range(0, 2))
-    ZX_FIELD(shoreFoam, Meta::Range(0, 5), Meta::Units("m"), Meta::Tooltip("Width of the foam line along shores"))
     ZX_FIELD(roughness, Meta::Range(0.01, 0.5), Meta::Tooltip("Sharpness of the sun glints"))
+    ZX_FIELD(foam, Meta::Range(0, 3), Meta::Tooltip("Whitecaps on breaking crests"))
+    ZX_FIELD(shoreFoam, Meta::Range(0, 5), Meta::Units("m"), Meta::Tooltip("Width of the foam line along shores"))
+    ZX_FIELD(caustics, Meta::Range(0, 3), Meta::Tooltip("Light patterns dancing on what lies below"))
+    ZX_FIELD(reflections, Meta::Tooltip("The scene reflects in the water (screen space); off: only the sky"))
+    ZX_FIELD(appliedPreset, Meta::Hidden())
 ZX_REFLECT_STRUCT_END()
+
+void ApplyWaterPreset(Water& w, WaterPreset preset)
+{
+    struct P
+    {
+        f32 wind, fetch, amount, chop;
+        Vec3 shallow, deep, scatter;
+        f32 clarity, roughness, foam, shore, caustics;
+    };
+    static const P Presets[] = {
+        // Custom: left as is.
+        {0, 0, 0, 0, {}, {}, {}, 0, 0, 0, 0, 0},
+        // Ocean: long swell under a fresh breeze, deep blue-green.
+        {11.0f, 400.0f, 1.0f, 1.1f, Vec3(0.03f, 0.36f, 0.42f), Vec3(0.004f, 0.03f, 0.07f), Vec3(0.03f, 0.45f, 0.42f), 6.0f, 0.06f, 1.0f, 1.5f, 0.8f},
+        // Lake: short, choppy waves, greener and murkier.
+        {6.0f, 3.0f, 1.0f, 0.8f, Vec3(0.12f, 0.40f, 0.32f), Vec3(0.01f, 0.05f, 0.06f), Vec3(0.06f, 0.35f, 0.25f), 3.0f, 0.05f, 0.4f, 0.6f, 0.8f},
+        // Pool: clear, bright, tiny ripples, strong caustics.
+        {3.0f, 0.03f, 1.5f, 0.5f, Vec3(0.20f, 0.75f, 0.80f), Vec3(0.02f, 0.25f, 0.45f), Vec3(0.10f, 0.60f, 0.70f), 12.0f, 0.02f, 0.0f, 0.15f, 1.5f},
+        // Storm: towering, breaking seas, white with foam.
+        {22.0f, 800.0f, 1.0f, 1.4f, Vec3(0.06f, 0.25f, 0.25f), Vec3(0.01f, 0.03f, 0.04f), Vec3(0.05f, 0.30f, 0.28f), 4.0f, 0.12f, 1.6f, 2.5f, 0.3f},
+        // Tropical: turquoise lagoon, crystal clear.
+        {5.0f, 30.0f, 0.8f, 0.9f, Vec3(0.15f, 0.85f, 0.75f), Vec3(0.0f, 0.12f, 0.25f), Vec3(0.05f, 0.70f, 0.60f), 9.0f, 0.04f, 0.5f, 1.2f, 1.6f},
+    };
+    w.preset = w.appliedPreset = preset;
+    if (preset == WaterPreset::Custom)
+        return;
+    const P& p = Presets[u32(preset)];
+    w.windSpeed = p.wind;
+    w.fetch = p.fetch;
+    w.waveAmount = p.amount;
+    w.choppiness = p.chop;
+    w.shallowColor = p.shallow;
+    w.deepColor = p.deep;
+    w.scatterColor = p.scatter;
+    w.clarity = p.clarity;
+    w.roughness = p.roughness;
+    w.foam = p.foam;
+    w.shoreFoam = p.shore;
+    w.caustics = p.caustics;
+}
+
+void UpdateWaterPresets(ecs::World& world)
+{
+    world.Query<Water>().Each([](ecs::Entity, Water& w) {
+        if (w.preset != w.appliedPreset)
+            ApplyWaterPreset(w, w.preset);
+    });
+}
 
 ZX_REFLECT_STRUCT_BEGIN(ReflectionProbe)
     ZX_FIELD(extent, Meta::Tooltip("Half size of the box (meters, scaled by the transform) whose surfaces use this probe"))
@@ -548,24 +611,25 @@ void GatherWater(World& world, Array<render::WaterSurface>& out)
         const f32 yaw = (Abs(fwd.x) + Abs(fwd.z)) > 1e-6f ? Atan2(fwd.x, fwd.z) : 0.0f; // the surface stays level
         s.world = Mat4::TRS(pos, Quat::FromAxisAngle(Vec3::Up(), yaw), Vec3(1.0f));
         s.size = Vec2(Max(w.size.x, 0.1f), Max(w.size.y, 0.1f));
-        s.waveHeight = w.waveHeight;
-        s.waveLength = w.waveLength;
-        s.waveSpeed = w.waveSpeed;
+        s.windSpeed = w.windSpeed;
+        s.fetch = w.fetch;
         s.windDirection = DegToRad(w.windDirection);
-        // Wind Zones (or the entity's own wind): the waves run with the wind and grow with its speed (6 m/s = as set).
+        s.waveAmount = w.waveAmount;
+        // Wind Zones (or the entity's own wind) steer the waves; a stronger wind raises a bigger sea, a breeze doesn't
+        // calm an ocean (its swell comes from far away). The steady wind: gusts would rebuild the spectrum all the time.
         if (const WindResponse* r = world.Get<const WindResponse>(e); sceneWind || (r && r->customWind)) {
-            const Vec3 wind = WindFor(world, e, pos);
+            const Vec3 wind = WindSteadyFor(world, e, pos);
             const f32 speed = Length(Vec3(wind.x, 0.0f, wind.z));
-            const f32 scale = Clamp(std::sqrt(speed / 6.0f), 0.25f, 2.0f);
             if (speed > 0.05f)
-                if (const Vec3 local = Inverse(s.world).TransformVector(wind); Abs(local.x) + Abs(local.z) > 1e-5f)
-                    s.windDirection = Atan2(local.z, local.x); // render::WaterSurface: (cos, sin) on the local x / z
-            s.waveHeight *= scale;
-            s.waveSpeed *= 0.7f + 0.3f * scale;
+                s.windDirection = Atan2(wind.x, wind.z);
+            s.windSpeed = Max(s.windSpeed, speed);
         }
         s.choppiness = w.choppiness;
         s.shallowColor = w.shallowColor;
         s.deepColor = w.deepColor;
+        s.scatterColor = w.scatterColor;
+        s.caustics = w.caustics;
+        s.reflections = w.reflections;
         s.clarity = w.clarity;
         s.refraction = w.refraction;
         s.foam = w.foam;

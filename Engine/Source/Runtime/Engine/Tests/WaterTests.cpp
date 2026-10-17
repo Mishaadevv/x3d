@@ -27,3 +27,31 @@ ZX_TEST(Water, GatherKeepsTheSurfaceLevel)
     ZX_EXPECT(s.size == Vec2(80, 40));
     ZX_EXPECT_NEAR(s.windDirection, DegToRad(90.0f), 1e-5f);
 }
+
+ZX_TEST(Water, PresetsFillTheSettings)
+{
+    ecs::World world;
+    Water w;
+    w.size = Vec2(12, 7);
+    w.preset = WaterPreset::Storm; // chosen in Details
+    const ecs::Entity e = world.Create(w);
+    UpdateWaterPresets(world);
+    const Water& after = *world.Get<const Water>(e);
+    ZX_EXPECT_GT(after.windSpeed, 15.0f);
+    ZX_EXPECT_GT(after.foam, 1.0f);
+    ZX_EXPECT(after.size == Vec2(12, 7)); // size is left alone
+    // Tweaks after applying stay (the preset applies once).
+    world.Get<Water>(e)->windSpeed = 3.0f;
+    UpdateWaterPresets(world);
+    ZX_EXPECT_EQ(world.Get<const Water>(e)->windSpeed, 3.0f);
+    // Ocean and pool make different seas; the same settings share one simulation.
+    render::WaterSurface ocean, pool, ocean2;
+    ocean.windSpeed = 11.0f;
+    ocean.fetch = 400.0f;
+    pool.windSpeed = 3.0f;
+    pool.fetch = 0.03f;
+    ocean2 = ocean;
+    ocean2.waveAmount = 2.0f; // looks are not part of the spectrum
+    ZX_EXPECT(render::WaterSpectrumKey(ocean) != render::WaterSpectrumKey(pool));
+    ZX_EXPECT(render::WaterSpectrumKey(ocean) == render::WaterSpectrumKey(ocean2));
+}

@@ -68,13 +68,15 @@ bool HasWind(ecs::World& world)
     return any;
 }
 
-Vec3 WindAt(ecs::World& world, Vec3 position)
+namespace {
+
+Vec3 ZonesAt(ecs::World& world, Vec3 position, bool steady)
 {
     const f64 t = Clock(world);
     Vec3 wind;
     world.Query<const WindZone, const scene::WorldTransform>().Each([&](ecs::Entity e, const WindZone& z, const scene::WorldTransform& wt) {
         const f32 phase = f32(e.index % 97) * 1.37f;
-        const f32 gust = 1.0f + z.gustStrength * Gust(t * f64(Max(z.gustFrequency, 0.0f)) * 6.2831853, phase) * 1.2f;
+        const f32 gust = steady ? 1.0f : 1.0f + z.gustStrength * Gust(t * f64(Max(z.gustFrequency, 0.0f)) * 6.2831853, phase) * 1.2f;
         Vec3 dir;
         f32 speed = z.speed * gust;
         if (z.mode == WindZoneMode::Directional) {
@@ -89,14 +91,14 @@ Vec3 WindAt(ecs::World& world, Vec3 position)
             speed *= fade * fade;
         }
         Vec3 w = dir * speed;
-        if (z.turbulence > 0.0f)
+        if (z.turbulence > 0.0f && !steady)
             w += Swirl(position + Vec3(phase), t) * (z.speed * z.turbulence);
         wind += w;
     });
     return wind;
 }
 
-Vec3 WindFor(ecs::World& world, ecs::Entity entity, Vec3 position)
+Vec3 Felt(ecs::World& world, ecs::Entity entity, Vec3 position, bool steady)
 {
     const WindResponse* r = nullptr;
     for (ecs::Entity x = entity; world.IsAlive(x) && !r;) {
@@ -110,9 +112,15 @@ Vec3 WindFor(ecs::World& world, ecs::Entity entity, Vec3 position)
         const f32 a = DegToRad(r->customDirection);
         return Vec3(std::sin(a), 0.0f, std::cos(a)) * (r->customSpeed * r->strength);
     }
-    const Vec3 w = WindAt(world, position);
+    const Vec3 w = ZonesAt(world, position, steady);
     return r ? w * r->strength : w;
 }
+
+} // namespace
+
+Vec3 WindAt(ecs::World& world, Vec3 position) { return ZonesAt(world, position, false); }
+Vec3 WindFor(ecs::World& world, ecs::Entity entity, Vec3 position) { return Felt(world, entity, position, false); }
+Vec3 WindSteadyFor(ecs::World& world, ecs::Entity entity, Vec3 position) { return Felt(world, entity, position, true); }
 
 Vec3 WindDragForce(Vec3 wind, Vec3 velocity, f32 dragArea)
 {

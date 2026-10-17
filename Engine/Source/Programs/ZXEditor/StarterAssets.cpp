@@ -530,13 +530,10 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             b.Mesh("Pillar", BuiltinShape::Cylinder, Vec3(0, 0.6f, 0), Vec3(0.35f, 1.0f, 0.35f), "M_Proto_Light", root);
             const ecs::Entity basinWater = b.Node("Water", Vec3(0, 0.45f, 0), root);
             Water w;
+            ApplyWaterPreset(w, WaterPreset::Pool);
             w.size = Vec2(3.7f, 3.7f);
-            w.waveHeight = 0.02f;
-            w.waveLength = 0.9f;
-            w.choppiness = 0.2f;
-            w.foam = 0.3f;
-            w.shoreFoam = 0.15f;
-            w.clarity = 2.0f;
+            w.waveAmount = 2.5f; // stirred by the jet
+            w.shoreFoam = 0.25f;
             b.world.Add(basinWater, w);
             ParticleEmitter jet;
             jet.radius = 0.05f;
@@ -577,14 +574,8 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
                 b.Mesh(String::Format("Wall {}", i + 1), BuiltinShape::Cube, walls[i][0], walls[i][1], "M_Proto_Light", root);
             const ecs::Entity water = b.Node("Water", Vec3(0, 0.1f, 0), root);
             Water w;
+            ApplyWaterPreset(w, WaterPreset::Pool);
             w.size = Vec2(8.0f, 8.0f);
-            w.waveHeight = 0.04f;
-            w.waveLength = 1.6f;
-            w.choppiness = 0.25f;
-            w.foam = 0.2f;
-            w.shoreFoam = 0.2f;
-            w.clarity = 5.0f;
-            w.shallowColor = Vec3(0.1f, 0.65f, 0.7f);
             b.world.Add(water, w);
             save(b, root, "Effects/P_WaterPool");
         }

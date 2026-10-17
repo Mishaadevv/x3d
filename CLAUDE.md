@@ -180,6 +180,10 @@ and ZXGame, WindAt / WindFor / HasWind / WindDragForce). Consumers: ParticleSyst
 velocity towards it; GpuEmitter::wind at byte 228, ParticleSim.hlsl), Fire smoke volumes, GatherFogVolumes / FindClouds
 / GatherWater (only when the scene has a Wind Zone or the entity a custom Wind Response), TickGame (Rigid Bodies with a
 Wind Response), SoftBody air drag. AddAtmosphere adds a 4 m/s "Wind" zone to templates. Tests Wind.*.
+Water v2 (0.13.7): Render/Water.h + Shaders/Water/Ocean.hlsl (Evolve / FFT / Assemble / Mip; foam from the Jacobian)
++ Shaders/Water/Water.hlsl (rings or grid in the VS, SSR, sun shadows via LightingInputs, baked caustic / foam
+textures); Water component presets (WaterPreset, ApplyWaterPreset / UpdateWaterPresets), console water.preset.
+Autotest ignores the real mouse/keyboard unless -autotestinput.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

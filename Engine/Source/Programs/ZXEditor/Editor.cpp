@@ -1338,15 +1338,10 @@ void Editor::BuildWaterLevel()
     // The sea: level at y = 0, with its sound all around the island.
     const ecs::Entity sea = CreateEntity("Sea", Transform(Vec3(0, 0, 0)));
     Water w;
-    w.size = Vec2(300.0f, 300.0f);
-    w.waveHeight = 0.22f;
-    w.waveLength = 10.0f;
-    w.choppiness = 0.45f;
-    w.foam = 0.35f;
-    w.shoreFoam = 0.6f;
-    w.clarity = 6.0f;
-    w.shallowColor = Vec3(0.08f, 0.6f, 0.58f);
-    w.deepColor = Vec3(0.01f, 0.09f, 0.16f);
+    ApplyWaterPreset(w, WaterPreset::Tropical); // turquoise lagoon around the island
+    w.size = Vec2(3000.0f, 3000.0f);            // to the horizon
+    w.windSpeed = 7.0f;
+    w.fetch = 60.0f;
     world.Add(sea, w);
     AudioSource surf;
     surf.clip = "StarterContent/Sounds/Waves_Loop.ogg";
@@ -1622,7 +1617,9 @@ void Editor::CreateSpotLight(Vec3 position, ecs::Entity parent)
 void Editor::CreateWater(Vec3 position, ecs::Entity parent)
 {
     const ecs::Entity e = CreateEntity("Water", Transform(Vec3(position.x, 0.0f, position.z)), parent);
-    world.Add(e, Water{});
+    Water w;
+    ApplyWaterPreset(w, WaterPreset::Lake);
+    world.Add(e, w);
     CommitCreated(e, "Create Water");
 }
 
@@ -3443,6 +3440,16 @@ bool Editor::Frame()
     dt = timer.Tick();
     m_events.Clear();
     platform::UpdateInput(*window, input, m_events);
+    // Automated runs ignore the person at the machine (their mouse over the test window would fly the camera);
+    // -autotestinput keeps the real input (tests that post input messages).
+    static const bool s_autotestInput = CommandLine::HasFlag("autotestinput");
+    if (m_autotestFrames > 0 && !s_autotestInput) {
+        input.ReleaseAll();
+        m_events.RemoveIf([](const WindowEvent& e) {
+            return e.type == WindowEventType::MouseDown || e.type == WindowEventType::MouseUp || e.type == WindowEventType::MouseWheel ||
+                   e.type == WindowEventType::KeyDown || e.type == WindowEventType::KeyUp || e.type == WindowEventType::Char;
+        });
+    }
     const UVec2 client = window->GetClientSize();
     if (client.x == 0 || client.y == 0 || window->IsMinimized()) {
         Thread::SleepMs(16);
@@ -3507,6 +3514,7 @@ bool Editor::Frame()
         ZX_PROFILE_SCOPE("Terrains");
         terrains.Update(world, *assets, renderAssets.Get());
         softBodies.Update(world, *assets, renderAssets.Get());
+        UpdateWaterPresets(world);
         TickWind(world, playState == PlayState::Paused ? 0.0f : dt * (IsPlaying() ? GameTimeScale(GameSystemsForPlay()) : 1.0f));
     }
     // Particles: emitters with Simulate In Editor run live while editing, all of them while playing (frozen when paused).

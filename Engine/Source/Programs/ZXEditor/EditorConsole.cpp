@@ -227,6 +227,16 @@ ConCommand CmdCarDrive("car.drive",
                            cars.forcedInput.brake = args.Size() > 2 ? ParseFloat(args[2]).ValueOr(0.0f) : 0.0f;
                        });
 
+ConCommand CmdWaterPreset("water.preset", "Applies a water preset to every Water: water.preset <ocean|lake|pool|storm|tropical>",
+                           [](Span<const StringView> args) {
+                               if (!Ed() || args.Empty())
+                                   return;
+                               static const char* const Names[] = {"custom", "ocean", "lake", "pool", "storm", "tropical"};
+                               for (u32 i = 0; i < ZX_ARRAY_COUNT(Names); ++i)
+                                   if (args[0].EqualsIgnoreCase(Names[i]))
+                                       Ed()->world.Query<Water>().Each([&](ecs::Entity, Water& w) { ApplyWaterPreset(w, WaterPreset(i)); });
+                           });
+
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
     if (Ed())
         Ed()->Undo();

@@ -63,6 +63,8 @@ Vec3 WindAt(ecs::World& world, Vec3 position);
 /// Wind felt by `entity` at `position`: the zones scaled by its Wind Response (or the nearest ancestor's), or its own
 /// custom wind.
 Vec3 WindFor(ecs::World& world, ecs::Entity entity, Vec3 position);
+/// The mean wind (no gusts, no swirls) felt by `entity` - for things that must not flicker with every gust (waves).
+Vec3 WindSteadyFor(ecs::World& world, ecs::Entity entity, Vec3 position);
 /// True when the scene has at least one Wind Zone (systems with their own wind settings use those otherwise).
 bool HasWind(ecs::World& world);
 /// Air drag force on a body moving at `velocity` in `wind`: 0.5 * rho * CdA * |v_rel| * v_rel (N).

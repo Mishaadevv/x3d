@@ -77,25 +77,49 @@ ZX_DECLARE_TYPE(MorphTargets);
 ZX_DECLARE_TYPE(PointLight);
 ZX_DECLARE_TYPE(SpotLight);
 
+enum class WaterPreset : u8
+{
+    Custom,
+    Ocean,
+    Lake,
+    Pool,
+    Storm,
+    Tropical,
+};
+ZX_DECLARE_ENUM(WaterPreset);
+
 /// A rectangular body of water centered on the entity (its local XZ plane; rotate around Y only, scale is ignored -
-/// use `size`). Waves, colors and foam are per surface.
+/// use `size`). The waves are an FFT ocean simulation of the sea state the wind raises (Render/Water.h); a Preset fills
+/// in every setting (then tweak them).
 struct Water
 {
+    WaterPreset preset = WaterPreset::Custom;
     Vec2 size = Vec2(50.0f, 50.0f); // meters
-    f32 waveHeight = 0.35f;         // meters
-    f32 waveLength = 8.0f;          // meters
-    f32 waveSpeed = 1.0f;
-    f32 windDirection = 30.0f; // degrees around +Y
-    f32 choppiness = 0.6f;
+    // Waves.
+    f32 windSpeed = 7.0f;      // m/s (Wind Zones in the scene steer them and make them bigger when stronger)
+    f32 fetch = 20.0f;         // km of open water the wind blew over: pools ~0.03, lakes ~3, oceans 100+
+    f32 windDirection = 30.0f; // degrees around +Y, 0 = towards +Z
+    f32 waveAmount = 1.0f;     // height multiplier
+    f32 choppiness = 1.0f;     // 0 = round swells, 1+ = sharp crests
+    // Look.
     Vec3 shallowColor = Vec3(0.10f, 0.55f, 0.55f);
     Vec3 deepColor = Vec3(0.01f, 0.07f, 0.13f);
+    Vec3 scatterColor = Vec3(0.05f, 0.45f, 0.38f); // light shining through the crests
     f32 clarity = 4.0f;     // meters
     f32 refraction = 0.04f;
-    f32 foam = 1.0f;
+    f32 roughness = 0.05f;
+    f32 foam = 1.0f;        // whitecaps on breaking crests
     f32 shoreFoam = 0.8f;   // meters
-    f32 roughness = 0.04f;
+    f32 caustics = 1.0f;    // light patterns on what lies below
+    bool reflections = true; // the scene reflects in the water (screen space), else only the sky
+    WaterPreset appliedPreset = WaterPreset::Custom; // the preset last applied (changing Preset applies the new one)
 };
 ZX_DECLARE_TYPE(Water);
+
+/// The settings of a water preset (size and placement left alone).
+void ApplyWaterPreset(Water& w, WaterPreset preset);
+/// Applies the presets that changed since last time (the editor calls it every frame).
+void UpdateWaterPresets(ecs::World& world);
 
 /// Exponential height fog for the whole scene (the first one counts), densest at the entity's height and thinning out
 /// above it. Volumetric: near the camera the fog is a real volume - lit by the sun through the shadows (light shafts),
