@@ -140,6 +140,7 @@ struct NewProjectOptions
     bool starterEffects = true;    // fire, campfire, torch, smoke, sparks, steam, ground fog, magic, rain, fountain, pool
     bool starterCharacters = true; // first / third person characters, tank
     bool starterProps = true;      // door, elevator, jump pad, coin, crates, swinging lamp, rope bridge
+    Array<String> assetPacks;      // Engine/Content/Packs folders copied into Content/Packs (ListAssetPacks)
     bool documentation = true;  // README.md, Docs/ for the team, AGENTS.md / CLAUDE.md for AI assistants
     bool gitRepository = false; // git init + .gitattributes + an initial commit (needs git on PATH)
 };
@@ -155,6 +156,8 @@ struct ProjectBrowserState
     String newName = "MyProject";
     String newLocation;
     NewProjectOptions options;
+    Array<AssetPackInfo> packs; // Engine/Content/Packs, read when the New Project page opens
+    bool packsLoaded = false;
     Array<u32> recentColors; // tile color per recent project (read from the .zproj files)
     String error;
 };
@@ -335,6 +338,8 @@ public:
     // Panel visibility (Window menu).
     bool showOutliner = true, showDetails = true, showContent = true, showLog = true, showViewport = true, showStats = false;
     bool showAbout = false;
+    bool showProfileDialog = false; // Engine Profile (click on the LITE / FULL badge)
+    String restartCommandLine;      // started after a clean shutdown (profile switch); empty = just quit
     bool showMixer = false; // Window > Audio Mixer
     bool showInputActions = false; // Window > Input Actions
     bool showPackageWindow = false; // File > Package Project
@@ -436,6 +441,7 @@ public:
     // Scene files.
     void RequestSceneAction(SceneAction action, StringView path = {}); // asks to save first if dirty
     void RunSceneAction(SceneAction action);
+    void RequestRestart(); // quits (asking to save first) and starts the editor again on the same project
     void NewScene();
     bool OpenScene(StringView physicalPath);
     bool SaveScene(bool saveAs);

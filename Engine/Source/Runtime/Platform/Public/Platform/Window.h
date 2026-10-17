@@ -175,6 +175,8 @@ void RevealInFileExplorer(StringView path);
 /// Runs a command line (no console window) in `workingDirectory` and waits up to `timeoutMs`. Returns false if it could
 /// not be started or timed out; `exitCode` receives the process exit code.
 bool RunProcess(StringView commandLine, StringView workingDirectory, i32* exitCode = nullptr, u32 timeoutMs = 30000);
+/// Starts a command line (e.g. a new editor instance) without waiting for it. Returns false if it could not be started.
+bool LaunchProcess(StringView commandLine, StringView workingDirectory);
 
 } // namespace platform
 } // namespace zx

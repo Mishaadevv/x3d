@@ -2,7 +2,9 @@
 // the panels, status bar.
 
 #include "Editor.h"
+#include "Core/HAL/PlatformMisc.h"
 #include "Core/Version.h"
+#include "RHI/EngineProfile.h"
 #include "Engine/SceneRendering.h"
 #include "Platform/Platform.h"
 
@@ -180,6 +182,7 @@ void DrawMenus(Editor& ed)
     }
     if (ui::BeginMenu("Help")) {
         ActionMenuItem(ed, "help.docs");
+        ActionMenuItem(ed, "help.engineProfile");
         ActionMenuItem(ed, "help.about");
         ui::EndMenu();
     }
@@ -350,7 +353,12 @@ void DrawToolbar(Editor& ed, const Rect& r)
     const ui::FontHandle bold = ctx.Fonts().FindFont("Inter SemiBold");
     const f32 bwText = ctx.Fonts().MeasureWidth(bold, 11.0f * s, badge) + 14.0f * s;
     const Rect br(Vec2(r.max.x - bwText - 10.0f * s, r.Center().y - 10.0f * s), Vec2(r.max.x - 10.0f * s, r.Center().y + 10.0f * s));
-    dl.AddRect(br, WithAlpha(c.accent, 0.18f), ui::CornerRadii(4.0f * s), 1.0f, WithAlpha(c.accent, 0.6f));
+    ui::SetCursorPos(br.min);
+    if (ui::InvisibleButton("##engine_profile", br.Size() / s))
+        ed.showProfileDialog = true;
+    const bool badgeHovered = ui::IsItemHovered();
+    ui::ItemTooltip(String::Format("Engine profile: {} - click to change", ed.lite ? "Lite (for laptops and integrated graphics)" : "Full"));
+    dl.AddRect(br, WithAlpha(c.accent, badgeHovered ? 0.32f : 0.18f), ui::CornerRadii(4.0f * s), 1.0f, WithAlpha(c.accent, 0.6f));
     dl.AddTextInRect(bold, 11.0f * s, br, c.accentHovered, badge, ui::TextAlign::Center, false);
     EndStrip();
 }
@@ -405,6 +413,63 @@ void DrawAbout(Editor& ed)
     }
 }
 
+void DrawProfileDialog(Editor& ed)
+{
+    static constexpr StringView Title = "Engine Profile";
+    static i32 choice = 0; // 0 = Lite, 1 = Full
+    if (ed.showProfileDialog) {
+        ui::OpenPopup(Title);
+        ed.showProfileDialog = false;
+        choice = ed.lite ? 0 : 1;
+    }
+    if (!ui::BeginPopupModal(Title))
+        return;
+    const ui::Theme& c = ui::GetCurrentContext()->GetStyle().colors;
+    const bool recommendedLite = RecommendedEngineProfile(ed.device->GetCaps()) == EngineProfile::Lite;
+    ui::Text(String::Format("Current profile: {}", ed.lite ? "Lite" : "Full"));
+    ui::TextDisabled(String::Format("Recommended for this computer ({}): {}", ed.device->GetCaps().adapter.name, recommendedLite ? "Lite" : "Full"));
+    ui::Spacing();
+    ui::RadioButton("Lite", &choice, 0);
+    ui::Indent(24.0f);
+    ui::TextDisabled("For laptops and integrated graphics: forward renderer, lighter shadows, effects,\n"
+                     "water and clouds tuned for 60 FPS on Intel UHD-class GPUs.");
+    ui::Unindent(24.0f);
+    ui::RadioButton("Full", &choice, 1);
+    ui::Indent(24.0f);
+    ui::TextDisabled("Everything at high quality: deferred renderer, bigger shadow maps, full-resolution\n"
+                     "effects, water and clouds. Made for dedicated graphics cards.");
+    ui::Unindent(24.0f);
+    ui::Spacing();
+    if (choice == 1 && recommendedLite) {
+        ui::PushTextColor(c.warning);
+        ui::TextWrapped(ZX_ICON_TRIANGLE_ALERT "  This computer has integrated graphics (or little memory). With Full the editor and "
+                        "your game will run at a very low frame rate (FPS) and the laptop may get hot. You can switch "
+                        "back to Lite here at any time.");
+        ui::PopTextColor();
+        ui::Spacing();
+    }
+    if (IsEngineProfileForced()) {
+        ui::PushTextColor(c.warning);
+        ui::TextWrapped("The editor was started with -lite / -full (or engine.Profile is set): that setting wins until it is removed.");
+        ui::PopTextColor();
+        ui::Spacing();
+    }
+    ui::TextDisabled("The editor restarts to apply the profile (you will be asked to save changes first).");
+    ui::Spacing();
+    const bool changed = (choice == 0) != ed.lite;
+    ui::BeginDisabled(!changed);
+    if (ui::Button(ZX_ICON_ROTATE_CCW "  Restart Now", Vec2(150.0f, 0.0f), ui::ButtonVariant::Primary)) {
+        ui::CloseCurrentPopup();
+        SaveEngineProfilePreference(choice == 0 ? "lite" : "full");
+        ed.RequestRestart();
+    }
+    ui::EndDisabled();
+    ui::SameLine();
+    if (ui::Button("Cancel", Vec2(100.0f, 0.0f)) || ui::IsKeyPressed(Key::Escape, false))
+        ui::CloseCurrentPopup();
+    ui::EndPopup();
+}
+
 void DrawSaveChangesDialog(Editor& ed)
 {
     static constexpr StringView Title = "Save Changes?";
@@ -432,6 +497,7 @@ void DrawSaveChangesDialog(Editor& ed)
         if (ui::Button("Cancel", Vec2(100.0f, 0.0f)) || ui::IsKeyPressed(Key::Escape, false)) {
             ui::CloseCurrentPopup();
             ed.pendingAction = SceneAction::None;
+            ed.restartCommandLine.Clear(); // a profile switch waits for the next restart
         }
         ui::EndPopup();
     }
@@ -484,6 +550,7 @@ void DrawShell(Editor& ed)
         DrawTitleBar(ed, Rect(Vec2::Zero(), Vec2(display.x, th)), false);
         DrawProjectBrowser(ed, Rect(Vec2(0.0f, th), display));
         DrawAbout(ed);
+        DrawProfileDialog(ed);
         return;
     }
     DrawTitleBar(ed, Rect(Vec2::Zero(), Vec2(display.x, th)), true);
@@ -521,6 +588,7 @@ void DrawShell(Editor& ed)
     DrawPackagePanel(ed);
     DrawScriptEditorPanel(ed);
     DrawAbout(ed);
+    DrawProfileDialog(ed);
     DrawSaveChangesDialog(ed);
     DrawProgress(ed);
     DrawCommandPalette(ed);

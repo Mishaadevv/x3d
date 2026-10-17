@@ -117,8 +117,15 @@ void DrawSidebar(Editor& ed)
     dl.AddRect(Rect(fr.min, Vec2(fr.max.x, fr.min.y + 1.0f)), c.separator);
     dl.AddTextInRect(ctx.Fonts().FindFont("Inter"), 11.5f * s, Rect(fr.min + Vec2(0.0f, 6.0f * s), Vec2(fr.max.x, fr.Center().y + 3.0f * s)),
                      c.textDim, String::Format(ZX_ICON_CPU "  {}", ed.device->GetCaps().adapter.name));
-    dl.AddTextInRect(ctx.Fonts().FindFont("Inter"), 11.5f * s, Rect(Vec2(fr.min.x, fr.Center().y + 3.0f * s), fr.max), c.textDisabled,
-                     ed.lite ? "Lite profile (integrated GPU)" : "Full profile");
+    // The profile line opens the Engine Profile dialog (switch Lite / Full, restarts the editor).
+    const Rect pr(Vec2(fr.min.x, fr.Center().y + 3.0f * s), fr.max);
+    ui::SetCursorPos(pr.min);
+    if (ui::InvisibleButton("##pb_profile", pr.Size() / s))
+        ed.showProfileDialog = true;
+    const bool hovered = ui::IsItemHovered();
+    ui::ItemTooltip("Change the engine profile (Lite / Full)");
+    dl.AddTextInRect(ctx.Fonts().FindFont("Inter"), 11.5f * s, pr, hovered ? c.accentHovered : c.textDisabled,
+                     String::Format("{} profile  " ZX_ICON_CHEVRON_RIGHT " Change", ed.lite ? "Lite" : "Full"));
 }
 
 /// One project card; returns true when it was activated (double click / Enter on the selection).
@@ -594,6 +601,33 @@ void DrawNewProjectPage(Editor& ed)
             ui::ItemTooltip("A door that opens with E (hinge joint), an elevator (slider joint), a jump pad, a coin pickup,\n"
                             "a stack of physics crates, a swinging lamp and a rope bridge.");
             ui::Unindent(18.0f);
+        }
+        if (!b.packsLoaded) {
+            b.packs = ListAssetPacks(ed.engineRoot);
+            b.packsLoaded = true;
+        }
+        if (!b.packs.Empty()) {
+            ui::Spacing();
+            ui::TextDisabled("ASSET PACKS");
+            for (const AssetPackInfo& pack : b.packs) {
+                usize index = o.assetPacks.Size();
+                for (usize i = 0; i < o.assetPacks.Size(); ++i)
+                    if (o.assetPacks[i] == pack.folder)
+                        index = i;
+                bool on = index < o.assetPacks.Size();
+                if (ui::Checkbox(String::Format("{}##pack_{}", pack.name, pack.folder), &on)) {
+                    if (on)
+                        o.assetPacks.PushBack(pack.folder);
+                    else
+                        o.assetPacks.RemoveAt(index);
+                }
+                ui::ItemTooltip(String::Format("{}\n\n{} models, {:.0f} MB, copied into Content/Packs/{}.\nBy {} - {} (free for any use).",
+                                               pack.description, pack.models, f64(pack.bytes) / (1024.0 * 1024.0), pack.folder,
+                                               pack.author, pack.license));
+                ui::SameLine();
+                ui::TextDisabled(String::Format("{} models", pack.models));
+            }
+            ui::Spacing();
         }
         ui::Checkbox("Documentation", &o.documentation);
         ui::ItemTooltip("README.md and Docs/ (getting started, ZeqouScript reference) for your team,\n"

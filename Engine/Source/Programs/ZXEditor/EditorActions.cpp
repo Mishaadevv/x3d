@@ -269,6 +269,7 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "editor.keys", "Edit Keyboard Shortcuts", "Editor", ZX_ICON_KEYBOARD, "", [](Editor&) { platform::OpenUrl(fs::ToPhysicalPath(KeysFile)); });
     // Help
     Add(ed, "help.docs", "Documentation", "Help", ZX_ICON_BOOK_OPEN, "F1", [](Editor& e) { platform::OpenUrl("file:///" + e.engineRoot + "/docs/TZ.md"); });
+    Add(ed, "help.engineProfile", "Engine Profile (Lite / Full)...", "Help", ZX_ICON_GAUGE, "", [](Editor& e) { e.showProfileDialog = true; });
     Add(ed, "help.about", "About ZeqouX3D", "Help", ZX_ICON_INFO, "", [](Editor& e) { e.showAbout = true; });
 
     // Keys.ini: "id = Ctrl+S" or "id = Ctrl+Y, Ctrl+Shift+Z" ("id =" unbinds). Written with the defaults if missing.

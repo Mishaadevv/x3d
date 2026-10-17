@@ -342,6 +342,12 @@ bool Editor::Initialize()
         options.starterContent = CommandLine::HasFlag("starter");
         options.documentation = !CommandLine::HasFlag("nodocs");
         options.gitRepository = CommandLine::HasFlag("git");
+        StringView packsArg; // -packs=SurvivalPack,StylizedNature or -packs=all
+        if (CommandLine::GetValue("packs", packsArg)) {
+            for (const AssetPackInfo& pack : ListAssetPacks(engineRoot))
+                if (packsArg == "all" || packsArg.Contains(pack.folder.View()))
+                    options.assetPacks.PushBack(pack.folder);
+        }
         StringView languageArg;
         if (CommandLine::GetValue("language", languageArg) && languageArg.EqualsIgnoreCase("cpp"))
             options.language = ProjectLanguage::Cpp;
@@ -439,6 +445,8 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
                                    options.templ == ProjectTemplate::Water || options.templ == ProjectTemplate::Physics;
     if (characterTemplate)
         WriteGameplayScripts(created->contentDir);
+    for (const String& pack : options.assetPacks)
+        ZX_LOG_INFO(LogEditor, "Asset pack {}: {} files", pack, CopyAssetPack(engineRoot, pack, created->contentDir));
     if (options.language == ProjectLanguage::Cpp) {
         // Source/<Name>: built in the background as soon as the project opens.
         const String module = GameModuleName(created.Value());
@@ -3212,6 +3220,14 @@ void Editor::RequestSceneAction(SceneAction action, StringView path)
         pendingAction = action; // the shell shows the save-changes dialog
     else
         RunSceneAction(action);
+}
+
+void Editor::RequestRestart()
+{
+    restartCommandLine = String::Format("\"{}\"", platform::GetExecutablePath());
+    if (!project.descriptorPath.Empty())
+        restartCommandLine += String::Format(" \"-project={}\"", project.descriptorPath);
+    RequestSceneAction(SceneAction::Quit);
 }
 
 void Editor::RunSceneAction(SceneAction action)

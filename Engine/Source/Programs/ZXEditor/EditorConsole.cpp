@@ -15,6 +15,7 @@
 #include "Core/String/Parse.h"
 #include "Core/String/Path.h"
 #include "Core/HAL/PlatformFile.h"
+#include "RHI/EngineProfile.h"
 
 ZX_DEFINE_LOG_CATEGORY_STATIC(LogCmd, Info);
 
@@ -285,13 +286,39 @@ ConCommand CmdFocus("focus", "Moves the camera to the selection (or to: focus <n
     Ed()->FocusSelected();
 });
 
-ConCommand CmdImport("import", "Imports a model into the project and places it in front of the camera: import <path>",
+ConCommand CmdImport("import", "Imports a model into the project and places it in front of the camera (or at x y z): import <path> [x y z]",
                      [](Span<const StringView> args) {
                          Editor* ed = Ed();
                          if (!ed || args.Empty())
                              return;
-                         ed->ImportAsset(args[0], ed->camera.position + ed->camera.Forward() * 5.0f);
+                         const Vec3 at = args.Size() >= 4 ? Vec3(ParseFloat(args[1]).ValueOr(0.0f), ParseFloat(args[2]).ValueOr(0.0f), ParseFloat(args[3]).ValueOr(0.0f))
+                                                          : ed->camera.position + ed->camera.Forward() * 5.0f;
+                         // Paths under Content may be given relative to it (Packs/StylizedNature/Pine.gltf).
+                         const String underContent = Path::Join(ed->contentRoot, args[0]);
+                         ed->ImportAsset(!Path::IsAbsolute(args[0]) && platform::FileExists(underContent) ? underContent : String(args[0]), at);
                      });
+
+ConCommand CmdEngineProfile("profile.switch",
+                            "Engine profile for the next start: profile.switch [lite|full|auto] [restart] (no args prints it)",
+                            [](Span<const StringView> args) {
+                                Editor* ed = Ed();
+                                if (!ed)
+                                    return;
+                                if (args.Empty()) {
+                                    ZX_LOG_INFO(LogCmd, "Engine profile: {} (recommended {}, next start: {})", ed->lite ? "Lite" : "Full",
+                                                EngineProfileName(RecommendedEngineProfile(ed->device->GetCaps())),
+                                                LoadEngineProfilePreference());
+                                    return;
+                                }
+                                if (args[0] != "lite" && args[0] != "full" && args[0] != "auto") {
+                                    ZX_LOG_WARN(LogCmd, "profile.switch: expected lite, full or auto");
+                                    return;
+                                }
+                                SaveEngineProfilePreference(args[0]);
+                                ZX_LOG_INFO(LogCmd, "Engine profile '{}' applies after a restart", args[0]);
+                                if (args.Size() > 1 && args[1] == "restart")
+                                    ed->RequestRestart();
+                            });
 
 ConCommand CmdAudioPlay("audio.play", "Plays a sound file once (path under Content): audio.play Sounds/x.wav", [](Span<const StringView> args) {
     Editor* ed = Ed();

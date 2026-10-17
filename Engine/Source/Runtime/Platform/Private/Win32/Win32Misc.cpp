@@ -281,4 +281,19 @@ bool RunProcess(StringView commandLine, StringView workingDirectory, i32* exitCo
     return finished;
 }
 
+bool LaunchProcess(StringView commandLine, StringView workingDirectory)
+{
+    Array<wchar_t> cmd = Utf8ToUtf16(commandLine);
+    const Array<wchar_t> dir = Utf8ToUtf16(workingDirectory);
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+    if (!::CreateProcessW(nullptr, cmd.Data(), nullptr, nullptr, FALSE, 0, nullptr, workingDirectory.Empty() ? nullptr : dir.Data(),
+                          &si, &pi))
+        return false;
+    ::CloseHandle(pi.hThread);
+    ::CloseHandle(pi.hProcess);
+    return true;
+}
+
 } // namespace zx::platform

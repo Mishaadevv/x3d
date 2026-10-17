@@ -1,9 +1,11 @@
+#include "Core/CoreInit.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
 #include "Core/String/Path.h"
 #include "Core/Testing/Test.h"
 #include "Engine/Project.h"
 #include "Render/MaterialGraph.h"
+#include "RHI/EngineProfile.h"
 #include "Script/ZeqouScript.h"
 
 using namespace zx;
@@ -149,4 +151,62 @@ ZX_TEST(Project, SettingsAndStarterContent)
             script::DestroyProgram(*program);
     }
     platform::DeleteDirectoryTree(parent);
+}
+
+ZX_TEST(Project, AssetPacks)
+{
+    // A fake engine with one pack: listed with its Pack.json, copied (models + license) into Content/Packs/<folder>.
+    const String engine = TempRoot("packs_engine");
+    const String pack = engine + "/Engine/Content/Packs/TestPack";
+    platform::CreateDirectoryTree(pack + "/Models/Textures");
+    fs::WriteTextFile(pack + "/Pack.json", R"({"name": "Test Pack", "description": "d", "author": "a", "license": "CC0 1.0", "models": 1})");
+    fs::WriteTextFile(pack + "/License.txt", "CC0");
+    fs::WriteTextFile(pack + "/Models/Rock.gltf", "{}");
+    fs::WriteTextFile(pack + "/Models/Textures/Rock.png", "png");
+    platform::CreateDirectoryTree(engine + "/Engine/Content/Packs/NotAPack"); // no Pack.json: ignored
+
+    const Array<AssetPackInfo> packs = ListAssetPacks(engine);
+    ZX_EXPECT_EQ(packs.Size(), usize(1));
+    if (packs.Size() != 1)
+        return;
+    ZX_EXPECT_EQ(packs[0].folder, String("TestPack"));
+    ZX_EXPECT_EQ(packs[0].name, String("Test Pack"));
+    ZX_EXPECT_EQ(packs[0].models, 1u);
+    ZX_EXPECT_EQ(packs[0].bytes, u64(5)); // "{}" + "png"
+
+    const String content = TempRoot("packs_project");
+    ZX_EXPECT_EQ(CopyAssetPack(engine, "TestPack", content), 3u);
+    ZX_EXPECT(platform::FileExists(content + "/Packs/TestPack/Rock.gltf"));
+    ZX_EXPECT(platform::FileExists(content + "/Packs/TestPack/Textures/Rock.png"));
+    ZX_EXPECT(platform::FileExists(content + "/Packs/TestPack/License.txt"));
+    ZX_EXPECT(!platform::FileExists(content + "/Packs/TestPack/Pack.json"));
+    ZX_EXPECT_EQ(CopyAssetPack(engine, "Missing", content), 0u);
+    ZX_EXPECT_EQ(CopyAssetPack(engine, "../Packs/TestPack", content), 0u);
+}
+
+ZX_TEST(Project, EnginePacksShipWithTheEngine)
+{
+    const Array<AssetPackInfo> packs = ListAssetPacks(FindEngineRootDirectory());
+    u32 found = 0;
+    for (const AssetPackInfo& p : packs) {
+        if (p.folder == "SurvivalPack" || p.folder == "MedievalVillage" || p.folder == "StylizedNature")
+            ++found;
+        ZX_EXPECT(p.models > 0);
+        ZX_EXPECT(p.license == "CC0 1.0");
+    }
+    ZX_EXPECT_EQ(found, 3u);
+}
+
+ZX_TEST(Project, EngineProfilePreference)
+{
+    const String file = TempRoot("profile") + "/EngineProfile.txt";
+    ZX_EXPECT_EQ(LoadEngineProfilePreference(file), String("auto")); // no file yet
+    ZX_EXPECT(SaveEngineProfilePreference("full", file));
+    ZX_EXPECT_EQ(LoadEngineProfilePreference(file), String("full"));
+    ZX_EXPECT(SaveEngineProfilePreference("lite", file));
+    ZX_EXPECT_EQ(LoadEngineProfilePreference(file), String("lite"));
+    fs::WriteTextFile(file, "  FULL \r\n");
+    ZX_EXPECT_EQ(LoadEngineProfilePreference(file), String("full"));
+    fs::WriteTextFile(file, "ultra");
+    ZX_EXPECT_EQ(LoadEngineProfilePreference(file), String("auto"));
 }

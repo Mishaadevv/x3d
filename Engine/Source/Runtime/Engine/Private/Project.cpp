@@ -1,4 +1,5 @@
 #include "Engine/Project.h"
+#include "Core/Containers/Algorithm.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/Hash/Hash.h"
 #include "Core/HAL/PlatformFile.h"
@@ -332,6 +333,88 @@ Result<String> CopySourceWithDependencies(StringView sourcePathIn, StringView de
     if (platform::FileExists(source + ".zmeta"))
         platform::CopyFileAt(source + ".zmeta", target + ".zmeta");
     return target;
+}
+
+// --- Asset packs --------------------------------------------------------------------------------------------------------
+
+namespace {
+
+void MeasureTree(StringView dir, u64& bytes)
+{
+    Array<platform::DirectoryEntry> entries;
+    platform::ListDirectory(dir, entries);
+    for (const platform::DirectoryEntry& e : entries) {
+        if (e.isDirectory)
+            MeasureTree(Path::Join(dir, e.name), bytes);
+        else
+            bytes += e.size;
+    }
+}
+
+u32 CopyTree(StringView from, StringView to)
+{
+    Array<platform::DirectoryEntry> entries;
+    if (!platform::ListDirectory(from, entries) || !platform::CreateDirectoryTree(to))
+        return 0;
+    u32 copied = 0;
+    for (const platform::DirectoryEntry& e : entries) {
+        const String src = Path::Join(from, e.name), dst = Path::Join(to, e.name);
+        if (e.isDirectory)
+            copied += CopyTree(src, dst);
+        else if (platform::CopyFileAt(src, dst))
+            ++copied;
+        else
+            ZX_LOG_WARN(LogProject, "Can't copy '{}'", src);
+    }
+    return copied;
+}
+
+String PacksDirectory(StringView engineRoot) { return Path::Join(engineRoot, "Engine/Content/Packs"); }
+
+} // namespace
+
+Array<AssetPackInfo> ListAssetPacks(StringView engineRoot)
+{
+    Array<AssetPackInfo> out;
+    const String root = PacksDirectory(engineRoot);
+    Array<platform::DirectoryEntry> entries;
+    platform::ListDirectory(root, entries);
+    for (const platform::DirectoryEntry& e : entries) {
+        if (!e.isDirectory)
+            continue;
+        const String dir = Path::Join(root, e.name);
+        String text;
+        JsonValue doc;
+        if (!fs::ReadTextFile(Path::Join(dir, "Pack.json"), text) || !ParseJson(text.View(), doc))
+            continue;
+        AssetPackInfo p;
+        p.folder = e.name;
+        p.name = doc.Get("name").AsString(e.name.View());
+        p.description = doc.Get("description").AsString();
+        p.author = doc.Get("author").AsString();
+        p.license = doc.Get("license").AsString();
+        p.models = u32(doc.Get("models").AsInt());
+        for (StringView preview : {StringView("Preview.jpg"), StringView("Preview.png")})
+            if (p.preview.Empty() && platform::FileExists(Path::Join(dir, preview)))
+                p.preview = Path::Join(dir, preview);
+        MeasureTree(Path::Join(dir, "Models"), p.bytes);
+        out.PushBack(move(p));
+    }
+    Sort(out, [](const AssetPackInfo& a, const AssetPackInfo& b) { return a.name < b.name; });
+    return out;
+}
+
+u32 CopyAssetPack(StringView engineRoot, StringView folder, StringView contentDir)
+{
+    const String dir = Path::Join(PacksDirectory(engineRoot), folder);
+    if (folder.Empty() || folder.Contains("/") || folder.Contains("\\") || folder.Contains("..") ||
+        !platform::FileExists(Path::Join(dir, "Pack.json")))
+        return 0;
+    const String dest = Path::Join(contentDir, String::Format("Packs/{}", folder));
+    u32 copied = CopyTree(Path::Join(dir, "Models"), dest);
+    if (platform::FileExists(Path::Join(dir, "License.txt")) && platform::CopyFileAt(Path::Join(dir, "License.txt"), Path::Join(dest, "License.txt")))
+        ++copied;
+    return copied;
 }
 
 } // namespace zx

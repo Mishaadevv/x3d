@@ -106,4 +106,27 @@ String DefaultProjectsDirectory();
 /// physical path of the copied main file.
 Result<String> CopySourceWithDependencies(StringView sourcePath, StringView destDirectory);
 
+// --- Asset packs -------------------------------------------------------------------------------------------------------
+//
+// Optional model packs shipped with the engine in Engine/Content/Packs/<Folder>/ (Pack.json + License.txt + Models/,
+// built by Tools/import_asset_packs.py). New projects copy the packs the user picks into Content/Packs/<Folder>.
+
+struct AssetPackInfo
+{
+    String folder; // directory name under Engine/Content/Packs (the id, e.g. "StylizedNature")
+    String name;
+    String description;
+    String author;
+    String license;
+    String preview; // physical path of Preview.jpg/.png (empty = none)
+    u32 models = 0;
+    u64 bytes = 0;
+};
+
+/// Packs available in <engineRoot>/Engine/Content/Packs, sorted by name.
+Array<AssetPackInfo> ListAssetPacks(StringView engineRoot);
+/// Copies the pack into <contentDir>/Packs/<folder> (Pack.json and the preview stay in the engine). Returns the number
+/// of files copied (0 if the pack does not exist).
+u32 CopyAssetPack(StringView engineRoot, StringView folder, StringView contentDir);
+
 } // namespace zx

@@ -184,6 +184,11 @@ Water v2 (0.13.7): Render/Water.h + Shaders/Water/Ocean.hlsl (Evolve / FFT / Ass
 + Shaders/Water/Water.hlsl (rings or grid in the VS, SSR, sun shadows via LightingInputs, baked caustic / foam
 textures); Water component presets (WaterPreset, ApplyWaterPreset / UpdateWaterPresets), console water.preset.
 Autotest ignores the real mouse/keyboard unless -autotestinput.
+Asset packs (0.13.8): Engine/Content/Packs/<Folder> (Pack.json, License.txt, Models/) built by
+`python Tools/import_asset_packs.py <dir with the Quaternius zips>` (Blender for the Survival .blend files);
+Engine/Project.h ListAssetPacks / CopyAssetPack, NewProjectOptions::assetPacks, -packs=all|A,B. Engine profile choice:
+RHI/EngineProfile.h Save/LoadEngineProfilePreference (%LOCALAPPDATA%/ZeqouX3D/EngineProfile.txt; tests must not leave it
+behind), Editor::RequestRestart, DrawProfileDialog (badge / browser footer / help.engineProfile), console profile.switch.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

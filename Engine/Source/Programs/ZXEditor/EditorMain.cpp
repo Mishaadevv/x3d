@@ -6,7 +6,10 @@
 #include "Core/CoreInit.h"
 #include "Core/Memory/Pointers.h"
 #include "Editor.h"
+#include "Core/HAL/PlatformFile.h"
+#include "Core/HAL/PlatformMisc.h"
 #include "Platform/Platform.h"
+#include "Platform/Window.h"
 #include "RHI/ShaderCompiler.h"
 
 int main()
@@ -29,6 +32,8 @@ int main()
             result = 1;
         }
         ed->Shutdown();
+        if (!ed->restartCommandLine.Empty() && !platform::LaunchProcess(ed->restartCommandLine, platform::GetCurrentDirectoryPath()))
+            platform::ShowErrorMessageBox("ZeqouX3D", "Couldn't restart the editor - start it again to use the new engine profile.");
         if (ed->debugLayerErrors > 0)
             result = 3;
         if (ed->selfTestFailed)
