@@ -12,6 +12,8 @@ const char* AssetTypeName(AssetType type)
     case AssetType::Mesh: return "Mesh";
     case AssetType::Material: return "Material";
     case AssetType::Prefab: return "Prefab";
+    case AssetType::Skeleton: return "Skeleton";
+    case AssetType::Animation: return "Animation";
     default: return "Unknown";
     }
 }
@@ -77,6 +79,17 @@ CookedMesh CookMesh(MeshData& mesh, bool generateLods)
     out.vertices.ResizeUninitialized(mesh.vertices.Size());
     for (usize i = 0; i < mesh.vertices.Size(); ++i)
         out.vertices[i] = PackVertex(mesh.vertices[i]);
+    if ((mesh.attributes & MeshAttributes::Skin) != MeshAttributes::None) {
+        out.skin.ResizeUninitialized(mesh.vertices.Size() * 2);
+        for (usize i = 0; i < mesh.vertices.Size(); ++i) {
+            const MeshVertex& v = mesh.vertices[i];
+            out.skin[i * 2] = v.joints;
+            out.skin[i * 2 + 1] = v.weights;
+            for (u32 k = 0; k < 4; ++k)
+                if ((v.weights >> (k * 8)) & 0xFFu)
+                    out.boneCount = Max(out.boneCount, ((v.joints >> (k * 8)) & 0xFFu) + 1);
+        }
+    }
     out.index16 = mesh.vertices.Size() <= 0xFFFF;
 
     // Material slots: distinct source material indices in order of first appearance in LOD0.
@@ -470,6 +483,8 @@ void Serialize(const CookedMesh& m, Array<u8>& out)
     w.WriteArray(m.sectionLods.View());
     w.WriteArray(m.vertices.View());
     w.WriteArray(m.indexData.View());
+    w.WriteArray(m.skin.View());
+    w.Write<u32>(m.boneCount);
 }
 
 bool Deserialize(ByteSpan data, CookedMesh& m)
@@ -487,7 +502,9 @@ bool Deserialize(ByteSpan data, CookedMesh& m)
     r.ReadArray(m.sectionLods);
     r.ReadArray(m.vertices);
     r.ReadArray(m.indexData);
-    if (r.HasError())
+    r.ReadArray(m.skin);
+    m.boneCount = r.Read<u32>();
+    if (r.HasError() || (!m.skin.Empty() && m.skin.Size() != m.vertices.Size() * 2))
         return false;
     for (const CookedMeshSection& s : m.sections)
         if (s.lodCount == 0 || u64(s.firstLod) + s.lodCount > m.sectionLods.Size())
@@ -620,6 +637,11 @@ void Serialize(const PrefabAsset& p, Array<u8>& out)
         w.WriteVarU64(n.materials.Size());
         for (const AssetId& m : n.materials)
             WriteGuid(w, m);
+        WriteGuid(w, n.skeleton);
+        WritePod(w, n.skinToNode);
+        w.WriteVarU64(n.animations.Size());
+        for (const AssetId& a : n.animations)
+            WriteGuid(w, a);
     }
 }
 
@@ -646,7 +668,105 @@ bool Deserialize(ByteSpan data, PrefabAsset& p)
             return false;
         for (u64 m = 0; m < materials; ++m)
             n.materials.PushBack(ReadGuid(r));
+        n.skeleton = ReadGuid(r);
+        ReadPod(r, n.skinToNode);
+        const u64 animations = r.ReadVarU64();
+        if (animations > 4096)
+            return false;
+        for (u64 a = 0; a < animations; ++a)
+            n.animations.PushBack(ReadGuid(r));
         if (n.parent >= i32(i))
+            return false;
+    }
+    return !r.HasError();
+}
+
+void Serialize(const Skeleton& s, Array<u8>& out)
+{
+    BinaryWriter w(out);
+    WriteHeader(w, AssetType::Skeleton);
+    w.WriteString(s.name);
+    w.WriteVarU64(s.boneNames.Size());
+    for (usize b = 0; b < s.boneNames.Size(); ++b) {
+        w.WriteString(s.boneNames[b]);
+        w.Write<i32>(s.parents[b]);
+        WritePod(w, s.bindPose[b].position);
+        WritePod(w, s.bindPose[b].rotation);
+        WritePod(w, s.bindPose[b].scale);
+        WritePod(w, s.inverseBind[b]);
+    }
+}
+
+bool Deserialize(ByteSpan data, Skeleton& s)
+{
+    BinaryReader r(data);
+    if (!ReadHeader(r, AssetType::Skeleton))
+        return false;
+    s.name = r.ReadString();
+    const u64 bones = r.ReadVarU64();
+    if (bones > 4096)
+        return false;
+    for (u64 b = 0; b < bones && !r.HasError(); ++b) {
+        s.boneNames.PushBack(r.ReadString());
+        const i32 parent = r.Read<i32>();
+        if (parent >= i32(b))
+            return false; // parents precede children
+        s.parents.PushBack(parent);
+        Transform t;
+        ReadPod(r, t.position);
+        ReadPod(r, t.rotation);
+        ReadPod(r, t.scale);
+        s.bindPose.PushBack(t);
+        Mat4 inv;
+        ReadPod(r, inv);
+        s.inverseBind.PushBack(inv);
+    }
+    return !r.HasError();
+}
+
+void Serialize(const AnimationClip& c, Array<u8>& out)
+{
+    BinaryWriter w(out);
+    WriteHeader(w, AssetType::Animation);
+    w.WriteString(c.name);
+    w.Write<f32>(c.duration);
+    w.Write<u32>(c.boneCount);
+    w.WriteVarU64(c.tracks.Size());
+    for (const AnimationTrack& t : c.tracks) {
+        w.Write<u32>(t.bone);
+        w.Write<u8>(t.stepMask);
+        w.WriteArray(t.positionTimes.View());
+        w.WriteArray(t.positions.View());
+        w.WriteArray(t.rotationTimes.View());
+        w.WriteArray(t.rotations.View());
+        w.WriteArray(t.scaleTimes.View());
+        w.WriteArray(t.scales.View());
+    }
+}
+
+bool Deserialize(ByteSpan data, AnimationClip& c)
+{
+    BinaryReader r(data);
+    if (!ReadHeader(r, AssetType::Animation))
+        return false;
+    c.name = r.ReadString();
+    c.duration = r.Read<f32>();
+    c.boneCount = r.Read<u32>();
+    const u64 tracks = r.ReadVarU64();
+    if (tracks > 4096)
+        return false;
+    for (u64 i = 0; i < tracks && !r.HasError(); ++i) {
+        AnimationTrack& t = c.tracks.AddDefaulted();
+        t.bone = r.Read<u32>();
+        t.stepMask = r.Read<u8>();
+        r.ReadArray(t.positionTimes);
+        r.ReadArray(t.positions);
+        r.ReadArray(t.rotationTimes);
+        r.ReadArray(t.rotations);
+        r.ReadArray(t.scaleTimes);
+        r.ReadArray(t.scales);
+        if (t.positionTimes.Size() != t.positions.Size() || t.rotationTimes.Size() != t.rotations.Size() ||
+            t.scaleTimes.Size() != t.scales.Size())
             return false;
     }
     return !r.HasError();

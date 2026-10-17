@@ -18,6 +18,9 @@ struct GpuMesh
 {
     rhi::Buffer* vertexBuffer = nullptr;
     rhi::Buffer* indexBuffer = nullptr;
+    rhi::Buffer* skinBuffer = nullptr; // skinned meshes: packed bone indices + weights per vertex (GPU skinning input)
+    u32 vertexCount = 0;
+    u32 boneCount = 0;
     bool index16 = false;
     Array<asset::CookedMeshSection> sections;
     Array<asset::CookedSectionLod> sectionLods;

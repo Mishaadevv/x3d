@@ -81,6 +81,8 @@ struct AssetManager::Entry
     UniquePtr<CookedTexture> tex;
     UniquePtr<MaterialAsset> material;
     UniquePtr<PrefabAsset> prefab;
+    UniquePtr<Skeleton> skeleton;
+    UniquePtr<AnimationClip> animation;
 };
 
 struct AssetManager::Source
@@ -88,6 +90,7 @@ struct AssetManager::Source
     AssetId id;
     String path;
     SourceKind kind = SourceKind::Scene;
+    f32 importScale = 1.0f; // scenes: .zmeta settings.scale (models authored in other units)
     std::atomic<u8> state{0}; // 0 = not cooked, 1 = cooking, 2 = cooked, 3 = failed
 };
 
@@ -151,6 +154,7 @@ Result<AssetId> AssetManager::RegisterSource(StringView pathIn)
     // GUID from the .zmeta (created on first import).
     AssetId id;
     TextureSettings texSettings;
+    f32 importScale = 1.0f;
     const String metaPath = path + ".zmeta";
     String metaText;
     JsonValue meta;
@@ -161,6 +165,7 @@ Result<AssetId> AssetManager::RegisterSource(StringView pathIn)
         texSettings.srgb = s.Get("srgb").AsBool(true);
         texSettings.normalMap = s.Get("normalMap").AsBool(false);
         texSettings.compression = ParseTextureCompression(s.Get("compression").AsString());
+        importScale = Clamp(s.Get("scale").AsFloat(1.0f), 1e-4f, 1e4f);
     }
     if (!id.IsValid()) {
         if (m_settings.writeMetaFiles) {
@@ -187,6 +192,7 @@ Result<AssetId> AssetManager::RegisterSource(StringView pathIn)
         s->id = id;
         s->path = path;
         s->kind = scene ? SourceKind::Scene : SourceKind::Image;
+        s->importScale = importScale;
         m_sources.InsertOrAssign(id, move(s));
         Entry& e = GetOrAddEntry(id);
         e.source = id;
@@ -385,6 +391,7 @@ void AssetManager::CookSource(Source& s)
     }
     h.UpdateValue(m_settings.generateMeshLods);
     h.UpdateValue(m_settings.textureMaxSize);
+    h.UpdateValue(s.importScale);
     // The manifest holds sub-asset ids derived from the source GUID and absolute paths of external textures, so a
     // copy of the same file (another project, a duplicate) must not share it.
     h.UpdateValue(s.id.high);
@@ -405,7 +412,9 @@ void AssetManager::CookSource(Source& s)
         m_ddcHits.fetch_add(1, std::memory_order_relaxed);
     } else {
         items.Clear();
-        Result<ImportedScene> imported = ImportScene(s.path);
+        ImportOptions importOptions;
+        importOptions.scale = s.importScale;
+        Result<ImportedScene> imported = ImportScene(s.path, importOptions);
         if (!imported) {
             s.state.store(3);
             ScopedLock lock(m_mutex);
@@ -533,6 +542,28 @@ void AssetManager::CookSource(Source& s)
         });
         items.Append(meshItems.View());
 
+        // Skeletons and animation clips.
+        auto writeItem = [&](AssetId id, AssetType type, const String& name, StringView suffix, const Array<u8>& out) {
+            ManifestItem& it = items.AddDefaulted();
+            it.id = id;
+            it.type = type;
+            it.origin = EntryOrigin::DdcFile;
+            it.name = name;
+            it.file = DdcPath(key, suffix);
+            fs::WriteFile(it.file, out.View());
+        };
+        for (usize k = 0; k < scene.skeletons.Size(); ++k) {
+            Array<u8> out;
+            Serialize(scene.skeletons[k], out);
+            const String name = scene.skeletons[k].name.Empty() ? String::Format("{}_Skeleton{}", Path::Stem(s.path), k) : scene.skeletons[k].name;
+            writeItem(SubAsset(s.id, "skeleton", k), AssetType::Skeleton, name, String::Format("_skel{}.zasset", k), out);
+        }
+        for (usize k = 0; k < scene.animations.Size(); ++k) {
+            Array<u8> out;
+            Serialize(scene.animations[k], out);
+            writeItem(SubAsset(s.id, "animation", k), AssetType::Animation, scene.animations[k].name, String::Format("_anim{}.zasset", k), out);
+        }
+
         // Prefab: breadth-first from the roots so parents precede children.
         PrefabAsset prefab;
         prefab.name = String(Path::Stem(s.path));
@@ -544,6 +575,8 @@ void AssetManager::CookSource(Source& s)
             if (ni < 0 || usize(ni) >= scene.nodes.Size() || prefabIndex[usize(ni)] >= 0)
                 continue;
             const ImportedNode& node = scene.nodes[usize(ni)];
+            if (node.isBone && node.mesh < 0)
+                continue; // bones live in the skeleton asset, not as entities (their subtree too)
             prefabIndex[usize(ni)] = i32(prefab.nodes.Size());
             PrefabNode& pn = prefab.nodes.AddDefaulted();
             pn.name = node.name;
@@ -553,6 +586,13 @@ void AssetManager::CookSource(Source& s)
                 pn.mesh = SubAsset(s.id, "mesh", usize(node.mesh));
                 for (u32 material : slotMaterials[usize(node.mesh)])
                     pn.materials.PushBack(SubAsset(s.id, "material", material));
+                if (node.skin >= 0) {
+                    pn.skeleton = SubAsset(s.id, "skeleton", usize(node.skin));
+                    pn.skinToNode = node.skinToNode;
+                    for (usize a = 0; a < scene.animations.Size(); ++a)
+                        if (scene.animationSkeleton[a] == u32(node.skin))
+                            pn.animations.PushBack(SubAsset(s.id, "animation", a));
+                }
             }
             for (i32 c : node.children)
                 queue.PushBack(c);
@@ -570,8 +610,8 @@ void AssetManager::CookSource(Source& s)
         Array<u8> manifest;
         WriteManifest(items, manifest);
         fs::WriteFile(manifestPath, manifest.View());
-        ZX_LOG_INFO(LogAssets, "Cooked {}: {} meshes, {} materials, {} textures", Path::FileName(s.path), scene.meshes.Size(),
-                    scene.materials.Size(), scene.textures.Size());
+        ZX_LOG_INFO(LogAssets, "Cooked {}: {} meshes, {} materials, {} textures, {} skeletons, {} animations", Path::FileName(s.path),
+                    scene.meshes.Size(), scene.materials.Size(), scene.textures.Size(), scene.skeletons.Size(), scene.animations.Size());
     }
 
     // Register sub-assets and start the loads that were waiting for this source.
@@ -669,6 +709,14 @@ void AssetManager::LoadEntry(Entry& e)
         e.prefab = MakeUnique<PrefabAsset>();
         ok = Deserialize(bytes.View(), *e.prefab);
         break;
+    case AssetType::Skeleton:
+        e.skeleton = MakeUnique<Skeleton>();
+        ok = Deserialize(bytes.View(), *e.skeleton);
+        break;
+    case AssetType::Animation:
+        e.animation = MakeUnique<AnimationClip>();
+        ok = Deserialize(bytes.View(), *e.animation);
+        break;
     default: break;
     }
     if (!ok)
@@ -720,7 +768,16 @@ ZX_ASSET_GETTER(GetMesh, CookedMesh, mesh)
 ZX_ASSET_GETTER(GetTexture, CookedTexture, tex)
 ZX_ASSET_GETTER(GetMaterial, MaterialAsset, material)
 ZX_ASSET_GETTER(GetPrefab, PrefabAsset, prefab)
+ZX_ASSET_GETTER(GetSkeleton, Skeleton, skeleton)
+ZX_ASSET_GETTER(GetAnimation, AnimationClip, animation)
 #undef ZX_ASSET_GETTER
+
+String AssetManager::GetName(AssetId id) const
+{
+    ScopedLock lock(m_mutex);
+    const Entry* e = FindEntry(id);
+    return e ? e->name : String();
+}
 
 void AssetManager::AddMemoryMesh(AssetId id, CookedMesh mesh)
 {

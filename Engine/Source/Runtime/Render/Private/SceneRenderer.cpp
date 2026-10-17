@@ -71,6 +71,7 @@ struct DrawPush
     u32 vertexBuffer;
     u32 lod;
     u32 drawId = InvalidIndex; // direct draw (indirect ones get theirs from DrawIndexedIndirect)
+    u32 prevVertexBuffer = InvalidIndex; // velocity of skinned meshes
 };
 
 Result<ShaderBytecode> Compile(StringView entry, ShaderStage stage, Span<const ShaderDefine> defines)
@@ -112,6 +113,12 @@ SceneRenderer::~SceneRenderer()
     m_device.Destroy(m_localAtlas);
     m_device.Destroy(m_clearTilePipeline);
     m_device.Destroy(m_deferredPipeline);
+    m_device.Destroy(m_skinPipeline);
+    for (Buffer* b : m_paletteBuffers)
+        m_device.Destroy(b);
+    for (auto& kv : m_skinStates)
+        for (Buffer* b : kv.second.buffers)
+            m_device.Destroy(b);
     m_device.Destroy(m_clusterBuffer);
     m_device.Destroy(m_clusterPipeline);
     m_device.Destroy(m_velocityPipeline);
@@ -179,6 +186,22 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
             return false;
         }
         *j.out = move(*r);
+    }
+    {
+        ShaderCompileDesc sd;
+        sd.path = "/Shaders/Forward/Skinning.hlsl";
+        sd.entryPoint = "SkinCS";
+        sd.stage = ShaderStage::Compute;
+        Result<ShaderBytecode> r = ShaderCompiler::Compile(sd);
+        if (!r) {
+            ZX_LOG_ERROR(LogSceneRenderer, "{}", r.GetError().message);
+            return false;
+        }
+        m_skinCS = move(*r);
+        ComputePipelineDesc pd;
+        pd.computeShader = &m_skinCS;
+        pd.debugName = "Skinning";
+        m_skinPipeline = m_device.CreateComputePipeline(pd);
     }
     const Job velocityJobs[] = {{&m_velocityVS, "VelocityVS", ShaderStage::Vertex, {}}, {&m_velocityPS, "VelocityPS", ShaderStage::Pixel, {}}};
     for (const Job& j : velocityJobs) {
@@ -741,8 +764,10 @@ void SceneRenderer::PrepareLocalShadows(Span<const LightDesc> lights, const Rend
                 while (lod + 1 < section.lodCount && caster.mesh->SectionLodAt(section, lod + 1).error * scale <= texel * 1.5f)
                     ++lod;
                 const asset::CookedSectionLod& range = caster.mesh->SectionLodAt(section, lod);
-                u.draws.PushBack(DrawItem{u64(masked) << 56 | material, caster.index, material, caster.mesh, range.indexOffset,
-                                          range.indexCount, u8(masked ? Masked : Opaque), u8(lod), info.shader});
+                DrawItem cd{u64(masked) << 56 | material, caster.index, material, caster.mesh, range.indexOffset,
+                            range.indexCount, u8(masked ? Masked : Opaque), u8(lod), info.shader};
+                cd.vertexBuffer = caster.vertexBuffer;
+                u.draws.PushBack(cd);
             }
         }
         Sort(u.draws, [](const DrawItem& a, const DrawItem& b) { return a.sortKey < b.sortKey; });
@@ -789,6 +814,14 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
             m_movedCasters.PushBack(Sphere{inst.prevWorld->TransformPoint(mesh->sphere.center), mesh->sphere.radius * MaxScale(*inst.prevWorld)});
     }
     m_movedInstances.Clear();
+    PrepareSkinning(instances);
+    for (const SkinJob& j : m_skinJobs) {
+        const RenderInstance& inst = instances[j.instance];
+        if (!inst.castShadows)
+            continue;
+        if (const GpuMesh* mesh = m_assets.GetMesh(inst.mesh))
+            m_movedCasters.PushBack(Sphere{inst.world.TransformPoint(mesh->sphere.center), mesh->sphere.radius * 1.5f * MaxScale(inst.world)});
+    }
     SetupCascades(view, lighting);
     Frustum cascadeFrustums[MaxCascades];
     u32 cascadeMask = 0; // cascades re-rendered this frame
@@ -801,21 +834,28 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
     const Frustum frustum = Frustum::FromMatrix(view.viewProj);
     const f32 invTanHalfFov = 1.0f / Tan(view.fovY * 0.5f);
     m_gpuFrame = settings.gpuDriven && settings.depthPrepass && m_cullPipeline && m_cullInitPipeline && m_hizPipeline;
-    if (m_gpuFrame) {
+    if (m_gpuFrame)
         PrepareGpu(instances, view, frustum, invTanHalfFov, instanceData);
-    } else {
+    // CPU draw lists: every instance in CPU frames, the skinned ones (own vertex buffers) in GPU-driven frames.
+    if (!m_gpuFrame || !m_skinJobs.Empty()) {
         u32 instanceCount = 0;
-        for (const RenderInstance& inst : instances) {
+        for (usize instIndex = 0; instIndex < instances.Size(); ++instIndex) {
+            const RenderInstance& inst = instances[instIndex];
+            const u32 skinSlot = SkinSlot(instIndex);
+            if (m_gpuFrame && skinSlot == InvalidIndex)
+                continue;
             const GpuMesh* mesh = m_assets.GetMesh(inst.mesh);
             if (!mesh) {
                 ++m_stats.notResident;
                 continue;
             }
-            const f32 scale = MaxScale(inst.world);
+            const SkinJob* skin = skinSlot != InvalidIndex ? &m_skinJobs[skinSlot] : nullptr;
+            // Posed meshes reach beyond their bind-pose bounds.
+            const f32 scale = MaxScale(inst.world) * (skin ? 1.5f : 1.0f);
             const Sphere worldSphere{inst.world.TransformPoint(mesh->sphere.center), mesh->sphere.radius * scale};
 
             // Instance row: world matrix rows + normal matrix rows (inverse transpose of the upper 3x3).
-            const u32 index = instanceCount++;
+            const u32 index = m_gpuFrame ? skin->row : instanceCount++;
             const Mat4 rows = Transpose(inst.world);
             const Mat4 inverse = Inverse(inst.world);
             u8* dst = instanceData + usize(index) * InstanceStride;
@@ -832,9 +872,11 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
             // Last frame's world rows (velocity of moving objects).
             const Mat4 prevRows = Transpose(inst.prevWorld ? *inst.prevWorld : inst.world);
             MemCopy(dst + 128, &prevRows, 64);
-            const bool moved = inst.prevWorld != nullptr;
+            // Skinned meshes always have motion (their pose changes) once last frame's pose exists.
+            const bool moved = inst.prevWorld != nullptr || (skin && skin->previous != skin->current);
+            const u32 vertexOverride = skin ? skin->current : InvalidIndex;
             if (inst.castShadows)
-                m_casters.PushBack(InstanceRef{index, mesh, &inst});
+                m_casters.PushBack(InstanceRef{index, mesh, &inst, vertexOverride});
 
             const bool inView = frustum.Intersects(worldSphere);
             bool inShadow = false;
@@ -890,8 +932,10 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
                                mesh->SectionLodAt(section, shadowLod + 1).error * scale <= texel * 1.5f)
                             ++shadowLod;
                         const asset::CookedSectionLod& range = mesh->SectionLodAt(section, shadowLod);
-                        m_shadowDraws[c].PushBack(DrawItem{u64(masked) << 56 | material, index, material, mesh, range.indexOffset,
-                                                           range.indexCount, u8(masked ? Masked : Opaque), u8(shadowLod), info.shader});
+                        DrawItem sd{u64(masked) << 56 | material, index, material, mesh, range.indexOffset,
+                                    range.indexCount, u8(masked ? Masked : Opaque), u8(shadowLod), info.shader};
+                        sd.vertexBuffer = vertexOverride;
+                        m_shadowDraws[c].PushBack(sd);
                         ++m_stats.shadowDraws;
                         m_stats.shadowTriangles += range.indexCount / 3;
                     }
@@ -908,6 +952,8 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
                 d.indexCount = range.indexCount;
                 d.lod = u8(lod);
                 d.shader = info.shader;
+                d.vertexBuffer = vertexOverride;
+                d.prevVertexBuffer = skin ? skin->previous : InvalidIndex;
                 if (info.blend == MaterialBlend::Translucent) {
                     d.pipeline = info.doubleSided ? TranslucentTwoSided : Translucent;
                     d.sortKey = ~u64(depthBits); // back to front
@@ -1099,14 +1145,127 @@ void SceneRenderer::Draw(CommandList& cmd, const DrawItem& d, PipelineVariant va
         bound = p;
     }
     cmd.SetIndexBuffer(d.mesh->indexBuffer, d.mesh->index16 ? IndexFormat::UInt16 : IndexFormat::UInt32);
-    const DrawPush push{d.instance, d.material, d.mesh->vertexBuffer->GetSrvIndex(), d.lod};
+    const DrawPush push{d.instance, d.material, d.vertexBuffer != InvalidIndex ? d.vertexBuffer : d.mesh->vertexBuffer->GetSrvIndex(), d.lod};
     cmd.SetPushConstants(push);
     cmd.DrawIndexed(d.indexCount, 1, d.indexOffset, 0, 0);
+}
+
+void SceneRenderer::PrepareSkinning(Span<const RenderInstance> instances)
+{
+    m_skinJobs.Clear();
+    m_skinSlot.Clear();
+    if (!m_skinPipeline)
+        return;
+    u32 paletteBones = 0;
+    for (usize i = 0; i < instances.Size(); ++i) {
+        const RenderInstance& inst = instances[i];
+        if (inst.skinMatrices.Empty())
+            continue;
+        const GpuMesh* mesh = m_assets.GetMesh(inst.mesh);
+        if (!mesh || !mesh->skinBuffer || mesh->vertexCount == 0)
+            continue;
+        if (m_skinSlot.Empty())
+            m_skinSlot.Resize(instances.Size(), InvalidIndex);
+        SkinState& st = *m_skinStates.Insert(inst.id, SkinState{}).first;
+        bool fresh = false;
+        if (st.vertexCount != mesh->vertexCount || !st.buffers[0]) {
+            for (Buffer*& b : st.buffers) {
+                m_device.Destroy(b); // deferred
+                b = m_device.CreateBuffer(BufferDesc{u64(mesh->vertexCount) * sizeof(asset::PackedVertex),
+                                                     BufferUsage::ShaderResource | BufferUsage::UnorderedAccess, MemoryType::GpuOnly, 0,
+                                                     "SkinnedVertices"});
+            }
+            st.vertexCount = mesh->vertexCount;
+            fresh = true;
+        }
+        if (!st.buffers[0] || !st.buffers[1])
+            continue;
+        const bool prevValid = !fresh && st.lastFrame + 1 == m_frame;
+        st.current ^= 1u;
+        st.lastFrame = m_frame;
+        SkinJob j;
+        j.instance = u32(i);
+        j.row = InvalidIndex;
+        j.output = st.buffers[st.current];
+        j.sourceVertices = mesh->vertexBuffer->GetSrvIndex();
+        j.skin = mesh->skinBuffer->GetSrvIndex();
+        j.paletteBase = paletteBones;
+        j.vertexCount = mesh->vertexCount;
+        j.boneCount = Min(u32(inst.skinMatrices.Size()), 256u);
+        j.current = st.buffers[st.current]->GetSrvIndex();
+        j.previous = prevValid ? st.buffers[st.current ^ 1u]->GetSrvIndex() : j.current;
+        paletteBones += j.boneCount;
+        m_skinSlot[i] = u32(m_skinJobs.Size());
+        m_skinJobs.PushBack(j);
+    }
+    // Instances gone for a couple of frames free their buffers.
+    m_skinStates.RemoveIf([this](u64, const SkinState& st) {
+        if (st.lastFrame + 2 >= m_frame)
+            return false;
+        for (Buffer* b : st.buffers)
+            m_device.Destroy(b);
+        return true;
+    });
+    if (m_skinJobs.Empty())
+        return;
+    // Skinning matrices of this frame: 3 rows (row-major 3x4) per bone.
+    const u64 bytes = u64(paletteBones) * 48;
+    if (bytes > m_paletteCapacity) {
+        u64 capacity = Max<u64>(m_paletteCapacity, 64 * 48);
+        while (capacity < bytes)
+            capacity *= 2;
+        for (Buffer*& b : m_paletteBuffers) {
+            m_device.Destroy(b);
+            b = m_device.CreateBuffer(BufferDesc{capacity, BufferUsage::ShaderResource, MemoryType::Upload, 0, "SkinPalette"});
+        }
+        m_paletteCapacity = capacity;
+    }
+    u8* dst = static_cast<u8*>(m_paletteBuffers[m_device.GetFrameIndex() % FramesInFlight]->GetMappedData());
+    for (const SkinJob& j : m_skinJobs) {
+        const Span<const Mat4> palette = instances[j.instance].skinMatrices;
+        for (u32 b = 0; b < j.boneCount; ++b) {
+            const Mat4 rows = Transpose(palette[b]);
+            MemCopy(dst + usize(j.paletteBase + b) * 48, &rows, 48);
+        }
+    }
+}
+
+void SceneRenderer::AddSkinningPass(RenderGraph& graph)
+{
+    if (m_skinJobs.Empty())
+        return;
+    // The posed buffers are read by passes that do not declare them (every draw of the frame): the pass leaves them
+    // in the shader-resource state itself.
+    Array<RGBuffer> outputs;
+    for (const SkinJob& j : m_skinJobs)
+        outputs.PushBack(graph.ImportBuffer(j.output, ResourceState::ShaderResource));
+    graph.AddPass(
+        "Skinning", PassType::Compute,
+        [outputs](PassBuilder& b) {
+            for (RGBuffer o : outputs)
+                b.WriteBuffer(o);
+        },
+        [this](PassContext& ctx) {
+            struct SkinParams
+            {
+                u32 vertices, skin, palette, paletteBase, output, vertexCount, boneCount, pad;
+            };
+            const u32 palette = m_paletteBuffers[m_device.GetFrameIndex() % FramesInFlight]->GetSrvIndex();
+            ctx.cmd.SetPipeline(m_skinPipeline);
+            for (const SkinJob& j : m_skinJobs) {
+                const SkinParams p{j.sourceVertices, j.skin, palette, j.paletteBase, j.output->GetUavIndex(), j.vertexCount, j.boneCount, 0};
+                ctx.cmd.SetPushConstants(p);
+                ctx.cmd.Dispatch((j.vertexCount + 63) / 64);
+            }
+            for (const SkinJob& j : m_skinJobs)
+                ctx.cmd.Barrier(j.output, ResourceState::ShaderResource);
+        });
 }
 
 void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture depth, LinearColor clearColor,
                               Function<void(RenderGraph&, RGTexture, RGTexture, RGTexture)> afterOpaque)
 {
+    AddSkinningPass(graph); // posed vertices for every pass of the frame
     if (!m_shadersOk)
         return;
     // GPU-driven: culling of the main view (phase 1) and of the cascades that re-render, before anything draws.
@@ -1153,7 +1312,7 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 ctx.cmd.SetConstants(1, &cascadeView, sizeof(cascadeView));
                 if (gpu) {
                     DrawIndirect(ctx.cmd, 2 + c, VariantShadow);
-                    return;
+                    // GPU-driven frames: the CPU lists hold only the skinned meshes (their own vertex buffers).
                 }
                 Pipeline* bound = nullptr;
                 for (const DrawItem& d : m_shadowDraws[c])
@@ -1202,7 +1361,7 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 ctx.cmd.SetConstants(1, &m_viewConstants, sizeof(m_viewConstants));
                 if (gpu) {
                     DrawIndirect(ctx.cmd, 0, VariantDepth);
-                    return;
+                    // GPU-driven frames: the CPU lists hold only the skinned meshes (their own vertex buffers).
                 }
                 Pipeline* bound = nullptr;
                 for (const DrawItem& d : m_opaque)
@@ -1398,7 +1557,7 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                     DrawIndirect(ctx.cmd, 0, VariantGBuffer);
                     if (occlusion)
                         DrawIndirect(ctx.cmd, 1, VariantGBuffer);
-                    return;
+                    // GPU-driven frames: the CPU lists hold only the skinned meshes (their own vertex buffers).
                 }
                 Pipeline* bound = nullptr;
                 for (const DrawItem& d : m_opaque)
@@ -1445,7 +1604,7 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                     DrawIndirect(ctx.cmd, 0, variant);
                     if (occlusion)
                         DrawIndirect(ctx.cmd, 1, variant);
-                    return;
+                    // GPU-driven frames: the CPU lists hold only the skinned meshes (their own vertex buffers).
                 }
                 Pipeline* bound = nullptr;
                 for (const DrawItem& d : m_opaque)
@@ -1482,7 +1641,8 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 ctx.cmd.SetConstants(0, &vp, sizeof(vp));
                 for (const DrawItem& d : m_velocityDraws) {
                     ctx.cmd.SetIndexBuffer(d.mesh->indexBuffer, d.mesh->index16 ? IndexFormat::UInt16 : IndexFormat::UInt32);
-                    const DrawPush push{d.instance, d.material, d.mesh->vertexBuffer->GetSrvIndex(), d.lod};
+                    const DrawPush push{d.instance, d.material, d.vertexBuffer != InvalidIndex ? d.vertexBuffer : d.mesh->vertexBuffer->GetSrvIndex(),
+                                        d.lod, InvalidIndex, d.prevVertexBuffer};
                     ctx.cmd.SetPushConstants(push);
                     ctx.cmd.DrawIndexed(d.indexCount, 1, d.indexOffset, 0, 0);
                 }

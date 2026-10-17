@@ -65,6 +65,10 @@ public:
     const CookedTexture* GetTexture(AssetId id) const;
     const MaterialAsset* GetMaterial(AssetId id) const;
     const PrefabAsset* GetPrefab(AssetId id) const;
+    const Skeleton* GetSkeleton(AssetId id) const;
+    const AnimationClip* GetAnimation(AssetId id) const;
+    /// Display name of a known asset (the clip / mesh / material name), empty if unknown.
+    String GetName(AssetId id) const;
     /// Registers a ready mesh (built-in shapes, procedural geometry) as a Loaded asset. Kept for the manager's lifetime.
     void AddMemoryMesh(AssetId id, CookedMesh mesh);
     /// Frees the CPU copy (e.g. after GPU upload); the state stays Loaded.

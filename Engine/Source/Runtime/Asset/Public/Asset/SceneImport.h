@@ -6,6 +6,7 @@
 //
 //   Result<ImportedScene> scene = asset::ImportScene("C:/Models/Sponza/Sponza.gltf");
 
+#include "Asset/Animation.h"
 #include "Asset/MeshData.h"
 #include "Core/Result.h"
 
@@ -78,6 +79,11 @@ struct ImportedNode
     i32 parent = -1;
     i32 mesh = -1; // index into ImportedScene::meshes
     Array<i32> children;
+    /// Skinned mesh: index into ImportedScene::skeletons; skinning matrices are skinToNode * model * inverseBind
+    /// (skinToNode maps skeleton space into this node's space at import time).
+    i32 skin = -1;
+    Mat4 skinToNode = Mat4::Identity();
+    bool isBone = false; // a joint of some skin (not instantiated as an entity)
 };
 
 struct ImportedScene
@@ -88,6 +94,9 @@ struct ImportedScene
     Array<ImportedTexture> textures;
     Array<ImportedNode> nodes;
     Array<i32> rootNodes;
+    Array<Skeleton> skeletons;          // one per glTF skin
+    Array<AnimationClip> animations;
+    Array<u32> animationSkeleton;       // per animation: the skeleton it drives
 
     u32 TotalTriangles() const;
 };

@@ -212,6 +212,14 @@ void SceneRenderer::PrepareGpu(Span<const RenderInstance> instances, const Rende
     m_instanceCache.Resize(n);
     for (usize i = 0; i < n; ++i) {
         const RenderInstance& inst = instances[i];
+        if (const u32 skin = SkinSlot(i); skin != InvalidIndex) {
+            // Skinned: own vertex buffer, drawn from the CPU lists (Prepare); only the instance row is made here.
+            meshes[i] = m_assets.GetMesh(inst.mesh);
+            rows[i] = rowCount++;
+            m_skinJobs[skin].row = rows[i];
+            templates[i] = InvalidIndex;
+            continue;
+        }
         InstanceCache& cache = m_instanceCache[i];
         bool hit = cache.gpuMesh && cache.mesh == inst.mesh && cache.materialCount == inst.materials.Size() &&
                    cache.materials == inst.materials.Data();
@@ -342,6 +350,12 @@ void SceneRenderer::PrepareGpu(Span<const RenderInstance> instances, const Rende
                 const Mat4 prevRows = Transpose(*inst.prevWorld);
                 MemCopy(dst + 128, &prevRows, 64);
             }
+            if (templates[i] == InvalidIndex) { // skinned: the velocity pass draws it every frame
+                if (!inst.prevWorld)
+                    MemCopy(dst + 128, &rowsT, 64);
+                moved[i] = 0;
+                continue;
+            }
             const f32 scale = MaxScaleOf(inst.world);
             const DrawTemplate& tmpl = m_templates[templates[i]];
             u32 item = firstItem[i];
@@ -368,7 +382,7 @@ void SceneRenderer::PrepareGpu(Span<const RenderInstance> instances, const Rende
     // C. Serial, few: translucent sections (sorted, CPU-drawn) and the velocity draws of instances that moved.
     for (usize i = 0; i < n; ++i) {
         const GpuMesh* mesh = meshes[i];
-        if (!mesh || (!m_templates[templates[i]].hasTranslucent && !(moved[i] && m_motion)))
+        if (!mesh || templates[i] == InvalidIndex || (!m_templates[templates[i]].hasTranslucent && !(moved[i] && m_motion)))
             continue;
         const RenderInstance& inst = instances[i];
         const f32 scale = MaxScaleOf(inst.world);

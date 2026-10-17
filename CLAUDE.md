@@ -132,6 +132,14 @@ Deferred path: SceneRenderSettings::deferred (r.Renderer.Path, Full profile defa
 (PSGBuffer, SetGBufferFormats; graph materials compile gbuffer / gbufferAlphaTest), passes GBuffer + DeferredLighting
 (DeferredVS/PS in ForwardPBR.hlsl: depth -> world via ViewData::invViewProj). Forward and deferred share
 EvaluateSurface / LightSurface; the regression compares their images (TAA off).
+Animation (M13): Asset/Animation.h (Skeleton, AnimationClip, anim::SampleClip / BlendPoses / LocalToModel /
+SkinningMatrices / PackSkin; glTF skins + animations in GltfImporter ImportSkins / ImportAnimations, sub-assets
+"skeleton/i", "animation/i", PrefabNode skeleton / skinToNode / animations), Engine/Animation.h (Animator component,
+AnimationSystem ticked by the editor and ZXGame; Palette -> RenderInstance::skinMatrices), Shaders/Forward/Skinning.hlsl
+(SceneRenderer PrepareSkinning / AddSkinningPass, DrawItem vertex buffer overrides, SkinnedVertexBuffer for the outline).
+Starter character Engine/Content/StarterContent/Characters/SK_Human.glb (+ .zmeta scale) from
+Tools/convert_starter_character.py (Blender 4.5 at C:/Program Files/Blender Foundation). Tests ZXTests Animation.*,
+AnimationSystem.*.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

@@ -22,6 +22,8 @@ struct DrawData
     uint materialIndex;
     uint vertexBuffer;
     uint lod;
+    uint drawId;
+    uint prevVertexBuffer; // skinned meshes: last frame's posed vertices
 };
 ZX_PUSH_CONSTANTS(DrawData, g_Draw);
 
@@ -43,7 +45,8 @@ VSOut VelocityVS(uint vertexId : SV_VertexID)
     ByteAddressBuffer instances = GetBuffer(g_Vel.instanceBuffer);
     const uint o = g_Draw.instanceIndex * g_Vel.instanceStride;
     const float4 world = mul(LoadRows(instances, o), float4(v.position, 1.0));
-    const float4 prevWorld = mul(LoadRows(instances, o + 128), float4(v.position, 1.0)); // previous world rows
+    const float3 prevPosition = g_Draw.prevVertexBuffer != ZX_INVALID_INDEX ? LoadMeshVertex(GetBuffer(g_Draw.prevVertexBuffer), vertexId).position : v.position;
+    const float4 prevWorld = mul(LoadRows(instances, o + 128), float4(prevPosition, 1.0)); // previous world rows
     VSOut r;
     r.position = mul(g_Vel.viewProj, world);
     r.current = mul(g_Vel.viewProjNoJitter, world);

@@ -194,6 +194,7 @@ bool Editor::Initialize()
     as.ddcDirectory = engineRoot + "/Intermediate/DDC";
     as.textureMaxSize = lite ? 1024 : 0;
     assets.Reset(new asset::AssetManager(as));
+    animation.Reset(new AnimationSystem(*assets));
     RegisterBuiltinAssets(*assets);
     renderAssets.Reset(new RenderAssets(*device, *assets));
     prefabs.Reset(new PrefabLibrary(assets.Get(), contentRoot));
@@ -266,6 +267,7 @@ bool Editor::Initialize()
     debugDraw.Reset(new DebugDraw(*device));
     pool.Reset(new TransientResourcePool(*device));
     viewport->SetParticleSystem(&particles);
+    viewport->SetAnimationSystem(animation.Get());
     if (!renderAssets->Init() || !viewport->Init(lite, Format::R8G8B8A8_UNORM) ||
         !debugDraw->Init(viewport->HdrFormat(), viewport->DepthFormat()))
         return false;
@@ -2956,7 +2958,7 @@ void Editor::UpdateImports()
     for (usize i = 0; i < pendingImports.Size();) {
         PendingImport& p = pendingImports[i];
         if (const asset::PrefabAsset* prefab = assets->GetPrefab(p.id)) {
-            const ecs::Entity root = zx::InstantiatePrefab(world, *prefab, p.transform);
+            const ecs::Entity root = zx::InstantiatePrefab(world, *prefab, p.transform, {}, assets.Get());
             if (scene::EntityName* n = world.Get<scene::EntityName>(root))
                 n->value = p.name;
             if (p.undoable)
@@ -3092,6 +3094,9 @@ bool Editor::Frame()
         scene::UpdateWorldTransforms(world);
         particles.Tick(world, playState == PlayState::Paused ? 0.0f : dt, IsPlaying());
     }
+    // Animators pose their skinned meshes (frozen when paused).
+    scene::UpdateWorldTransforms(world);
+    animation->Tick(world, playState == PlayState::Paused ? 0.0f : dt, IsPlaying());
     if (!IsPlaying() && scripts && (m_scriptCheckTimer += dt) > 0.5) {
         m_scriptCheckTimer = 0.0; // edit mode: keep the Details panel in sync with files edited elsewhere
         scripts->CheckForChanges();
@@ -3435,6 +3440,7 @@ void Editor::Shutdown()
     prefabs.Reset();
     viewport.Reset();
     renderAssets.Reset();
+    animation.Reset(); // holds the asset manager
     assets.Reset();
     uiRenderer.Reset();
     ui.Reset();

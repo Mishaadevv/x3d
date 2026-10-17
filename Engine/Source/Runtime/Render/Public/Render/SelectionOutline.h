@@ -16,6 +16,7 @@ struct OutlineItem
 {
     const GpuMesh* mesh = nullptr;
     Mat4 world = Mat4::Identity();
+    u32 vertexBuffer = 0xFFFFFFFFu; // skinned: this frame's posed vertices (SRV) instead of the mesh's
 };
 
 struct OutlineSettings

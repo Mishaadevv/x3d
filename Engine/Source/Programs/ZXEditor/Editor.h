@@ -17,6 +17,7 @@
 #include "Engine/Packaging.h"
 #include "Core/Threading/Thread.h"
 #include "Engine/Terrain.h"
+#include "Engine/Animation.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/PostProcessVolume.h"
@@ -247,6 +248,7 @@ public:
     UniquePtr<AudioSystem> audio;         // Audio Sources of the scene while playing, previews
     PhysicsSystem physics;                // rigid bodies and colliders while playing
     ParticleSystem particles;             // Particle Emitters (live in the editor too)
+    UniquePtr<AnimationSystem> animation; // Animators (Preview In Editor ones animate while editing)
     FireSystem fire;                      // Flammable objects (Play only)
     TerrainSystem terrains;               // builds Terrain meshes (edit and Play)
     GameSystems GameSystemsForPlay();     // the systems Play drives (same loop as the packaged game)

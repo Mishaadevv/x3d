@@ -236,7 +236,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     {
         ZX_PROFILE_SCOPE("GatherInstances");
         m_instances.Clear();
-        GatherRenderInstances(world, m_instances);
+        GatherRenderInstances(world, m_instances, m_animation);
     }
     {
         // Object motion: pair each instance with its world matrix of last frame (none after a cut).
@@ -476,7 +476,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         const scene::WorldTransform* wt = world.Get<const scene::WorldTransform>(e);
         if (mr && wt && mr->visible)
             if (const GpuMesh* mesh = m_assets.GetMesh(mr->mesh))
-                m_outlineItems.PushBack(OutlineItem{mesh, wt->matrix});
+                m_outlineItems.PushBack(OutlineItem{mesh, wt->matrix, m_scene.SkinnedVertexBuffer(e.Pack())});
     }
     if (!m_outlineItems.Empty())
         m_outline.AddPasses(graph, m_outlineItems.View(), m_viewProjNoJitter, camera.nearPlane, sceneDepth, renderSize, output, outputSize,

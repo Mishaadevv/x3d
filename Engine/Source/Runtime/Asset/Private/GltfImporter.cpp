@@ -115,6 +115,8 @@ public:
         ImportMaterials();
         ZX_TRY(ImportMeshes());
         ImportNodes();
+        ImportSkins();
+        ImportAnimations();
         return move(m_scene);
     }
 
@@ -371,6 +373,10 @@ private:
         const bool hasTangents = hasNormals && attrs.Contains("TANGENT") && ReadFloats(attrs.Get("TANGENT").AsInt(-1), 4, tan);
         const bool hasUv0 = attrs.Contains("TEXCOORD_0") && ReadFloats(attrs.Get("TEXCOORD_0").AsInt(-1), 2, uv0);
         const bool hasUv1 = attrs.Contains("TEXCOORD_1") && ReadFloats(attrs.Get("TEXCOORD_1").AsInt(-1), 2, uv1);
+        Array<f32> joints, weights;
+        const bool hasSkin = attrs.Contains("JOINTS_0") && attrs.Contains("WEIGHTS_0") && ReadFloats(attrs.Get("JOINTS_0").AsInt(-1), 4, joints) &&
+                             ReadFloats(attrs.Get("WEIGHTS_0").AsInt(-1), 4, weights) && joints.Size() == usize(count) * 4 &&
+                             weights.Size() == usize(count) * 4;
         u32 colorComponents = 0;
         if (attrs.Contains("COLOR_0")) {
             if (ReadFloats(attrs.Get("COLOR_0").AsInt(-1), 4, col))
@@ -395,6 +401,10 @@ private:
             if (colorComponents) {
                 const f32* c = &col[usize(i) * colorComponents];
                 v.color = PackUnorm4x8(Vec4(c[0], c[1], c[2], colorComponents == 4 ? c[3] : 1.0f));
+            }
+            if (hasSkin) { // glTF skin joint indices; remapped to skeleton bones by ImportSkins
+                const u32 j[4] = {u32(joints[i * 4]), u32(joints[i * 4 + 1]), u32(joints[i * 4 + 2]), u32(joints[i * 4 + 3])};
+                anim::PackSkin(j, &weights[usize(i) * 4], v.joints, v.weights);
             }
         }
         Array<u32> indices;
@@ -431,7 +441,8 @@ private:
                        (hasTangents ? MeshAttributes::Tangents : MeshAttributes::None) |
                        (hasUv0 ? MeshAttributes::UV0 : MeshAttributes::None) |
                        (hasUv1 ? MeshAttributes::UV1 : MeshAttributes::None) |
-                       (colorComponents ? MeshAttributes::Colors : MeshAttributes::None);
+                       (colorComponents ? MeshAttributes::Colors : MeshAttributes::None) |
+                       (hasSkin ? MeshAttributes::Skin : MeshAttributes::None);
 
         mesh::MirrorX(p);
         if (!hasNormals && m_options.generateNormals) {
@@ -533,6 +544,237 @@ private:
                 m_scene.rootNodes.PushBack(i32(m_scene.nodes.Size() - 1));
             }
     }
+
+    // --- Skins and animations ----------------------------------------------------------------------------------------
+
+    static Mat4 MirrorMatrix(const Mat4& m, f32 scale)
+    {
+        // Right- to left-handed (mirror X on both sides) and the import scale on the translation.
+        Mat4 r = m;
+        for (u32 c = 0; c < 4; ++c) {
+            r.columns[c].x = -r.columns[c].x;
+            if (c == 0)
+                r.columns[c] = -r.columns[c];
+        }
+        r.columns[3] = Vec4(r.columns[3].x * scale, r.columns[3].y * scale, r.columns[3].z * scale, r.columns[3].w);
+        return r;
+    }
+
+    Mat4 NodeGlobal(i32 node) const
+    {
+        Mat4 m = Mat4::Identity();
+        for (i32 n = node; n >= 0; n = m_scene.nodes[usize(n)].parent)
+            m = m_scene.nodes[usize(n)].local.ToMatrix() * m;
+        return m;
+    }
+
+    void ImportSkins()
+    {
+        const JsonValue& skins = m_root.Get("skins");
+        m_nodeBone.Resize(m_scene.nodes.Size());
+        for (NodeBone& nb : m_nodeBone)
+            nb = NodeBone{-1, -1};
+        Array<u8> meshRemapped;
+        meshRemapped.Resize(m_scene.meshes.Size(), 0);
+        for (usize si = 0; si < skins.Size(); ++si) {
+            const JsonValue& skin = skins[si];
+            Array<i32> joints; // glTF joint index -> node
+            for (const JsonValue& j : skin.Get("joints").Elements()) {
+                const i64 n = j.AsInt(-1);
+                joints.PushBack(n >= 0 && usize(n) < m_scene.nodes.Size() ? i32(n) : -1);
+            }
+            Skeleton& sk = m_scene.skeletons.AddDefaulted();
+            sk.name = String(skin.Get("name").AsString());
+            Array<u32> remap; // glTF joint index -> bone
+            remap.Resize(joints.Size(), 0);
+            if (joints.Empty())
+                continue;
+            // Parent bone = nearest ancestor that is a joint of this skin; order so parents precede children.
+            auto jointOf = [&](i32 node) {
+                for (usize j = 0; j < joints.Size(); ++j)
+                    if (joints[j] == node)
+                        return i32(j);
+                return -1;
+            };
+            Array<i32> parentJoint;
+            parentJoint.Resize(joints.Size(), -1);
+            for (usize j = 0; j < joints.Size(); ++j)
+                for (i32 n = joints[j] >= 0 ? m_scene.nodes[usize(joints[j])].parent : -1; n >= 0; n = m_scene.nodes[usize(n)].parent)
+                    if (const i32 pj = jointOf(n); pj >= 0) {
+                        parentJoint[j] = pj;
+                        break;
+                    }
+            Array<i32> boneOfJoint;
+            boneOfJoint.Resize(joints.Size(), -1);
+            Array<u32> order;
+            while (order.Size() < joints.Size()) {
+                const usize before = order.Size();
+                for (usize j = 0; j < joints.Size(); ++j)
+                    if (boneOfJoint[j] < 0 && (parentJoint[j] < 0 || boneOfJoint[usize(parentJoint[j])] >= 0)) {
+                        boneOfJoint[j] = i32(order.Size());
+                        order.PushBack(u32(j));
+                    }
+                if (order.Size() == before)
+                    break; // cycle (invalid file)
+            }
+            // Skeleton space = the space of the first root bone's parent node (the armature).
+            i32 rootParent = -1;
+            for (u32 j : order)
+                if (parentJoint[j] < 0 && joints[j] >= 0) {
+                    rootParent = m_scene.nodes[usize(joints[j])].parent;
+                    break;
+                }
+            const Mat4 rootParentGlobal = rootParent >= 0 ? NodeGlobal(rootParent) : Mat4::Identity();
+            Array<f32> ibm;
+            const bool hasIbm = skin.Contains("inverseBindMatrices") && ReadFloats(skin.Get("inverseBindMatrices").AsInt(-1), 16, ibm) &&
+                                ibm.Size() >= joints.Size() * 16;
+            for (u32 j : order) {
+                const i32 node = joints[j];
+                sk.boneNames.PushBack(node >= 0 ? m_scene.nodes[usize(node)].name : String::Format("bone{}", j));
+                sk.parents.PushBack(parentJoint[j] >= 0 ? boneOfJoint[usize(parentJoint[j])] : -1);
+                sk.bindPose.PushBack(node >= 0 ? m_scene.nodes[usize(node)].local : Transform());
+                Mat4 inv = Mat4::Identity();
+                if (hasIbm) {
+                    Mat4 m;
+                    for (u32 c = 0; c < 4; ++c)
+                        m.columns[c] = Vec4(ibm[j * 16 + c * 4], ibm[j * 16 + c * 4 + 1], ibm[j * 16 + c * 4 + 2], ibm[j * 16 + c * 4 + 3]);
+                    // Bind-time mesh (scene) space -> bone space; jointModel * inv maps it into skeleton space, which
+                    // skinToNode then maps into the skinned node's space.
+                    inv = MirrorMatrix(m, m_options.scale);
+                }
+                sk.inverseBind.PushBack(inv);
+                if (node >= 0) {
+                    m_scene.nodes[usize(node)].isBone = true;
+                    m_nodeBone[usize(node)] = NodeBone{i32(si), boneOfJoint[j]};
+                }
+                remap[j] = u32(boneOfJoint[j]);
+            }
+            // Exporters differ in the space they leave skinned vertices in (glTF only defines jointGlobal * inverseBind *
+            // vertex). The bind shape B = node^-1 * jointGlobal * inverseBind of the first node using the skin moves its
+            // vertices into node space (bounds, picking and the unskinned look are then right) and inverseBind * B^-1
+            // compensates, so the skinning matrices are identity in the bind pose.
+            Mat4 bindShape = Mat4::Identity();
+            bool haveBindShape = false;
+            for (usize n = 0; n < m_scene.nodes.Size() && !haveBindShape && !order.Empty(); ++n)
+                if (m_root.Get("nodes")[n].Get("skin").AsInt(-1) == i64(si) && m_scene.nodes[n].mesh >= 0 && joints[order[0]] >= 0) {
+                    bindShape = Inverse(NodeGlobal(i32(n))) * NodeGlobal(joints[order[0]]) * sk.inverseBind[0];
+                    haveBindShape = true;
+                }
+            const Mat4 invBindShape = Inverse(bindShape);
+            for (Mat4& inv : sk.inverseBind)
+                inv = inv * invBindShape;
+            // Nodes using this skin: their mesh's joint indices become bone indices; skinToNode maps skeleton space.
+            for (usize n = 0; n < m_scene.nodes.Size(); ++n) {
+                const JsonValue& jn = m_root.Get("nodes")[n];
+                if (jn.Get("skin").AsInt(-1) != i64(si) || m_scene.nodes[n].mesh < 0)
+                    continue;
+                ImportedNode& node = m_scene.nodes[n];
+                node.skin = i32(m_scene.skeletons.Size() - 1);
+                node.skinToNode = Inverse(NodeGlobal(i32(n))) * rootParentGlobal;
+                if (meshRemapped[usize(node.mesh)])
+                    continue;
+                meshRemapped[usize(node.mesh)] = 1;
+                mesh::Transform(m_scene.meshes[usize(node.mesh)], bindShape);
+                m_scene.meshes[usize(node.mesh)].ComputeBounds();
+                for (MeshVertex& v : m_scene.meshes[usize(node.mesh)].vertices) {
+                    u32 packed = 0;
+                    for (u32 k = 0; k < 4; ++k) {
+                        const u32 j = (v.joints >> (k * 8)) & 0xFFu;
+                        packed |= (j < remap.Size() ? Min(remap[j], 255u) : 0u) << (k * 8);
+                    }
+                    v.joints = packed;
+                }
+            }
+        }
+    }
+
+    void ImportAnimations()
+    {
+        if (m_scene.skeletons.Empty())
+            return;
+        const JsonValue& animations = m_root.Get("animations");
+        for (usize ai = 0; ai < animations.Size(); ++ai) {
+            const JsonValue& a = animations[ai];
+            const JsonValue& samplers = a.Get("samplers");
+            // The skeleton most of the channels drive.
+            Array<u32> votes;
+            votes.Resize(m_scene.skeletons.Size(), 0);
+            for (const JsonValue& ch : a.Get("channels").Elements()) {
+                const i64 node = ch.Get("target").Get("node").AsInt(-1);
+                if (node >= 0 && usize(node) < m_nodeBone.Size() && m_nodeBone[usize(node)].skin >= 0)
+                    ++votes[usize(m_nodeBone[usize(node)].skin)];
+            }
+            u32 best = 0;
+            for (u32 s = 1; s < votes.Size(); ++s)
+                if (votes[s] > votes[best])
+                    best = s;
+            if (votes[best] == 0)
+                continue;
+            AnimationClip clip;
+            clip.name = String(a.Get("name").AsString());
+            if (clip.name.Empty())
+                clip.name = String::Format("Animation{}", ai);
+            clip.boneCount = m_scene.skeletons[best].BoneCount();
+            auto trackOf = [&](u32 bone) -> AnimationTrack& {
+                for (AnimationTrack& t : clip.tracks)
+                    if (t.bone == bone)
+                        return t;
+                AnimationTrack& t = clip.tracks.AddDefaulted();
+                t.bone = bone;
+                return t;
+            };
+            for (const JsonValue& ch : a.Get("channels").Elements()) {
+                const i64 node = ch.Get("target").Get("node").AsInt(-1);
+                if (node < 0 || usize(node) >= m_nodeBone.Size() || m_nodeBone[usize(node)].skin != i32(best))
+                    continue;
+                const StringView path = ch.Get("target").Get("path").AsString();
+                const usize si = usize(ch.Get("sampler").AsInt(-1));
+                if (si >= samplers.Size())
+                    continue;
+                const JsonValue& smp = samplers[si];
+                const StringView interp = smp.Get("interpolation").AsString("LINEAR");
+                const bool cubic = interp == "CUBICSPLINE", step = interp == "STEP";
+                Array<f32> times, values;
+                const u32 comps = path == "rotation" ? 4u : 3u;
+                if ((path != "translation" && path != "rotation" && path != "scale") || !ReadFloats(smp.Get("input").AsInt(-1), 1, times) ||
+                    !ReadFloats(smp.Get("output").AsInt(-1), comps, values))
+                    continue;
+                const usize keys = times.Size();
+                if (values.Size() < keys * comps * (cubic ? 3 : 1))
+                    continue;
+                AnimationTrack& t = trackOf(u32(m_nodeBone[usize(node)].bone));
+                for (usize k = 0; k < keys; ++k) {
+                    const f32* v = &values[(cubic ? k * 3 + 1 : k) * comps]; // cubic spline: the key value (tangents dropped)
+                    clip.duration = Max(clip.duration, times[k]);
+                    if (path == "translation") {
+                        t.positionTimes.PushBack(times[k]);
+                        t.positions.PushBack(ToEngine(Vec3(v[0], v[1], v[2])) * m_options.scale);
+                    } else if (path == "rotation") {
+                        t.rotationTimes.PushBack(times[k]);
+                        t.rotations.PushBack(ToEngine(Normalize(Quat(v[0], v[1], v[2], v[3]))));
+                    } else {
+                        t.scaleTimes.PushBack(times[k]);
+                        t.scales.PushBack(Vec3(v[0], v[1], v[2]));
+                    }
+                }
+                if (step)
+                    t.stepMask |= path == "translation" ? AnimationTrack::StepPosition
+                                  : path == "rotation"  ? AnimationTrack::StepRotation
+                                                        : AnimationTrack::StepScale;
+            }
+            if (clip.tracks.Empty())
+                continue;
+            m_scene.animations.PushBack(move(clip));
+            m_scene.animationSkeleton.PushBack(best);
+        }
+    }
+
+    struct NodeBone
+    {
+        i32 skin;
+        i32 bone;
+    };
+    Array<NodeBone> m_nodeBone; // per node: the skin and bone it is a joint of (or -1)
 
     const JsonValue& m_root;
     String m_baseDir;

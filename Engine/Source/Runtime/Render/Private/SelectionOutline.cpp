@@ -119,7 +119,7 @@ void SelectionOutline::AddPasses(RenderGraph& graph, Span<const OutlineItem> ite
                 const GpuMesh& m = *it.mesh;
                 MaskPush p{};
                 p.worldViewProj = viewProj * it.world;
-                p.vertexBuffer = m.vertexBuffer->GetSrvIndex();
+                p.vertexBuffer = it.vertexBuffer != 0xFFFFFFFFu ? it.vertexBuffer : m.vertexBuffer->GetSrvIndex();
                 p.sceneDepth = ctx.Texture(sceneDepth)->GetSrvIndex();
                 p.outputToDepth = outputToDepth;
                 p.nearPlane = nearPlane;

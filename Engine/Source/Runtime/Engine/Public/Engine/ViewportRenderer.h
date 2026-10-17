@@ -133,6 +133,8 @@ public:
     void SetOutlinedEntities(Span<const ecs::Entity> entities) { m_outlined.Clear(); m_outlined.Append(entities); }
     /// Particles drawn (and flickering lights modulated) each frame; null = none.
     void SetParticleSystem(const class ParticleSystem* particles) { m_particleSource = particles; }
+    /// Poses of skinned meshes (none: bind pose).
+    void SetAnimationSystem(const class AnimationSystem* animation) { m_animation = animation; }
     render::OutlineSettings& Outline() { return m_outlineSettings; }
 
 private:
@@ -151,6 +153,7 @@ private:
     Array<render::FluidVolumeDesc> m_fluidVolumes;
     Array<render::FogVolumeDesc> m_fogVolumes;
     const class ParticleSystem* m_particleSource = nullptr;
+    const class AnimationSystem* m_animation = nullptr;
     Array<render::GpuParticle> m_particleList;
     Array<render::GpuEmitter> m_gpuEmitters;
     render::GpuParticleFrame m_gpuParticleFrame;

@@ -6,6 +6,8 @@
 //   Texture  -> CookedTexture  (mips, BCn compressed, optional size cap for the Lite profile)
 //   Material -> MaterialAsset  (PBR parameters + texture asset ids)
 //   Scene    -> PrefabAsset    (node hierarchy referencing mesh/material assets)
+//   Skin     -> Skeleton       (bones, bind pose, inverse bind matrices; Asset/Animation.h)
+//   Anim     -> AnimationClip  (keyed bone tracks)
 //
 // All cooked formats serialize to a small binary container: magic + type + version + payload.
 
@@ -24,6 +26,8 @@ enum class AssetType : u8
     Mesh,
     Material,
     Prefab,
+    Skeleton,
+    Animation,
     Count
 };
 
@@ -79,6 +83,10 @@ struct CookedMesh
     u32 materialSlotCount = 0;
     /// Source (importer) material index per slot.
     Array<u32> slotSourceMaterial;
+    /// Skinned meshes: per vertex (same order as `vertices`) packed bone indices then packed weights (u8 x 4 each);
+    /// empty for static meshes.
+    Array<u32> skin;
+    u32 boneCount = 0; // highest bone index used + 1
 
     u32 IndexCount() const { return u32(indexData.Size() / (index16 ? 2 : 4)); }
     u32 Index(u32 i) const;
@@ -88,7 +96,8 @@ struct CookedMesh
     {
         return sectionLods[s.firstLod + Min(lod, s.lodCount - 1)];
     }
-    u64 MemorySize() const { return vertices.SizeBytes() + indexData.Size(); }
+    u64 MemorySize() const { return vertices.SizeBytes() + indexData.Size() + skin.SizeBytes(); }
+    bool IsSkinned() const { return !skin.Empty(); }
 };
 
 /// Splits large sections into chunks and generates LODs (optional), optimizes for the vertex cache/fetch and
@@ -223,6 +232,10 @@ struct PrefabNode
     i32 parent = -1;
     AssetId mesh;
     Array<AssetId> materials; // one per mesh material slot
+    // Skinned mesh: its skeleton, the clips made for it and the skeleton -> node transform (see ImportedNode).
+    AssetId skeleton;
+    Mat4 skinToNode = Mat4::Identity();
+    Array<AssetId> animations;
 };
 
 struct PrefabAsset
@@ -237,14 +250,18 @@ void Serialize(const CookedMesh& mesh, Array<u8>& out);
 void Serialize(const CookedTexture& texture, Array<u8>& out);
 void Serialize(const MaterialAsset& material, Array<u8>& out);
 void Serialize(const PrefabAsset& prefab, Array<u8>& out);
+void Serialize(const Skeleton& skeleton, Array<u8>& out);
+void Serialize(const AnimationClip& clip, Array<u8>& out);
 /// Reads the container header; returns Unknown for invalid data.
 AssetType PeekAssetType(ByteSpan data);
 bool Deserialize(ByteSpan data, CookedMesh& out);
 bool Deserialize(ByteSpan data, CookedTexture& out);
 bool Deserialize(ByteSpan data, MaterialAsset& out);
 bool Deserialize(ByteSpan data, PrefabAsset& out);
+bool Deserialize(ByteSpan data, Skeleton& out);
+bool Deserialize(ByteSpan data, AnimationClip& out);
 
 /// Bump when any cooked format or cooker output changes (part of every DDC key).
-inline constexpr u32 CookerVersion = 3;
+inline constexpr u32 CookerVersion = 4;
 
 } // namespace zx::asset

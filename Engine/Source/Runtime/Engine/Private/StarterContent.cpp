@@ -1083,6 +1083,7 @@ u32 WriteStarterContent(StringView contentDir)
     written += CopyLibrary("Textures", root + "/Textures");
     written += CopyLibrary("LUTs", root + "/LUTs");
     written += CopyLibrary("Flipbooks", root + "/Flipbooks");
+    written += CopyLibrary("Characters", root + "/Characters"); // skinned, animated models (glTF)
     const render::MaterialGraph textured[] = {MakeReliefMaterial("M_Bricks", "T_Bricks", 2.0f, 0.04f, 0.85f),
                                               MakeReliefMaterial("M_Cobblestone", "T_Cobble", 1.0f, 0.05f, 0.75f),
                                               MakeLeavesMaterial(), MakeTerrainMaterial()};

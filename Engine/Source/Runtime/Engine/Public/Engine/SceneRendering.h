@@ -221,14 +221,16 @@ struct Decal
 };
 ZX_DECLARE_TYPE(Decal);
 
-/// Creates entities for all prefab nodes (Transform, WorldTransform, EntityName, hierarchy, MeshRenderer).
+/// Creates entities for all prefab nodes (Transform, WorldTransform, EntityName, hierarchy, MeshRenderer; an Animator
+/// on skinned meshes, playing "Idle" when `assets` can name the clips, else the first one).
 /// Returns the instance root (a new entity parenting the prefab's root nodes).
 ecs::Entity InstantiatePrefab(ecs::World& world, const asset::PrefabAsset& prefab, const Transform& rootTransform = {},
-                              ecs::Entity parent = {});
+                              ecs::Entity parent = {}, const asset::AssetManager* assets = nullptr);
 
 /// Appends one RenderInstance per visible MeshRenderer. The materials spans point into the components, so the world
 /// must not change structurally until the frame's render passes have been recorded.
-void GatherRenderInstances(ecs::World& world, Array<render::RenderInstance>& out);
+/// Skinned meshes (Animator) take their skinning matrices from `animation` (none: drawn in the bind pose).
+void GatherRenderInstances(ecs::World& world, Array<render::RenderInstance>& out, const class AnimationSystem* animation = nullptr);
 /// Appends a LightDesc per PointLight/SpotLight entity (needs WorldTransform).
 void GatherLights(ecs::World& world, Array<render::LightDesc>& out);
 /// Appends a WaterSurface per Water entity (needs WorldTransform; scale is removed from the matrix).

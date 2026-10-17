@@ -27,6 +27,7 @@
 #include "Engine/Gameplay.h"
 #include "Engine/InputActions.h"
 #include "Engine/Materials.h"
+#include "Engine/Animation.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/Prefab.h"
@@ -132,6 +133,7 @@ private:
     UniquePtr<TransientResourcePool> m_pool;
     PhysicsSystem m_physics;
     ParticleSystem m_particles;
+    UniquePtr<AnimationSystem> m_animation;
     FireSystem m_fire;
     TerrainSystem m_terrains;
     InputActionMap m_inputActions;
@@ -221,6 +223,7 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     as.writeMetaFiles = false;
     m_assets.Reset(new asset::AssetManager(as));
     RegisterBuiltinAssets(*m_assets);
+    m_animation.Reset(new AnimationSystem(*m_assets));
     m_renderAssets.Reset(new RenderAssets(*m_device, *m_assets));
     m_prefabs.Reset(new PrefabLibrary(m_assets.Get(), "/Game"));
     m_materials.Reset(new MaterialLibrary(*m_assets, *m_renderAssets, "/Game"));
@@ -266,6 +269,7 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     m_viewport.Reset(new ViewportRenderer(*m_device, *m_renderAssets));
     m_viewport->decalTextures = [this](StringView path, bool normalMap) { return m_materials->TextureAsset(path, normalMap); };
     m_viewport->SetParticleSystem(&m_particles);
+    m_viewport->SetAnimationSystem(m_animation.Get());
     m_pool.Reset(new TransientResourcePool(*m_device));
     if (!m_renderAssets->Init() || !m_viewport->Init(lite, Format::R8G8B8A8_UNORM))
         return false;
@@ -349,6 +353,7 @@ bool Game::Frame()
     m_terrains.Update(m_world, *m_assets, m_renderAssets.Get());
     scene::UpdateWorldTransforms(m_world);
     m_particles.Tick(m_world, dt, m_started);
+    m_animation->Tick(m_world, dt, m_started);
     Render();
     if (m_autotest && m_started && m_frame >= m_startFrame + m_autotest)
         return false;
@@ -447,6 +452,7 @@ void Game::Shutdown()
     m_prefabs.Reset();
     m_pool.Reset();
     m_renderAssets.Reset();
+    m_animation.Reset(); // holds the asset manager
     m_assets.Reset();
     if (m_device)
         debugLayerErrors = d3d12::GetDebugLayerErrorCount(*m_device);

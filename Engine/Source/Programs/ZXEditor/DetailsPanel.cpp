@@ -30,6 +30,12 @@ String AssetName(const Guid& g, StringView assetType, StringView& icon)
             icon = ZX_ICON_SHAPES;
             return String::Format("{} (built-in)", builtin::ShapeName(BuiltinShape(i)));
         }
+    if (g_editor && g_editor->assets && (assetType == "Animation" || assetType == "Skeleton")) {
+        icon = assetType == "Animation" ? ZX_ICON_CLAPPERBOARD : ZX_ICON_BONE;
+        const String clip = g_editor->assets->GetName(g);
+        if (!clip.Empty())
+            return clip;
+    }
     if (g_editor && g_editor->assets) {
         const String source = g_editor->assets->GetSourcePath(g);
         if (!source.Empty())
@@ -177,6 +183,26 @@ bool EditValue(const FieldInfo* field, const TypeInfo& type, void* p, const Stri
     case TypeKind::Guid: {
         Guid& g = *static_cast<Guid*>(p);
         const StringView assetType = field ? field->meta.GetText(Meta::KeyAssetType(), "Asset") : StringView("Asset");
+        if (assetType == "Animation" && field && field->name == zx::Name("clip") && g_editor && g_editor->assets) {
+            // Animator::clip: one of the model's own clips.
+            const Animator* owner = reinterpret_cast<const Animator*>(static_cast<const u8*>(p) - field->offset);
+            Array<String> names;
+            Array<StringView> views;
+            i32 current = -1;
+            for (usize c = 0; c < owner->clips.Size(); ++c) {
+                const String n = g_editor->assets->GetName(owner->clips[c]);
+                names.PushBack(n.Empty() ? String::Format("Clip {}", c) : n);
+                if (owner->clips[c] == g)
+                    current = i32(c);
+            }
+            for (const String& n : names)
+                views.PushBack(n.View());
+            if (ui::Combo(id, &current, views.View()) && current >= 0 && owner->clips[usize(current)] != g) {
+                g = owner->clips[usize(current)];
+                return true;
+            }
+            return false;
+        }
         StringView icon;
         const String name = AssetName(g, assetType, icon);
         const bool isMaterial = assetType == "Material";

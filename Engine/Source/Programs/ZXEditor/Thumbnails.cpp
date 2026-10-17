@@ -236,7 +236,7 @@ void ThumbnailCache::UpdateModel(RenderGraph& graph, Array<RGTexture>& sampled)
                 finish(State::Failed);
             return;
         }
-        InstantiatePrefab(m_world, *prefab);
+        InstantiatePrefab(m_world, *prefab, {}, {}, &m_assets);
         scene::UpdateWorldTransforms(m_world);
         m_modelInstantiated = true;
     }

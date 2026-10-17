@@ -22,6 +22,9 @@ struct RenderInstance
     // Motion (per-object motion blur, TAA): last frame's world matrix when it differs from world (the instance moved).
     // Null = did not move / did not exist. Must stay valid until AddPasses executes.
     const Mat4* prevWorld = nullptr;
+    /// Skinned meshes: skinning matrices of this frame (mesh space), empty = static / bind pose. Must stay valid until
+    /// AddPasses executes.
+    Span<const Mat4> skinMatrices;
     AssetId mesh;
     /// Material per mesh slot (missing/invalid -> default material). Must stay valid until AddPasses executes.
     Span<const AssetId> materials;
@@ -289,6 +292,8 @@ private:
         u8 pipeline; // PipelineKind
         u8 lod;
         u32 shader = 0; // material graph shader (MaterialShaderCache id), 0 = standard
+        u32 vertexBuffer = InvalidIndex;     // skinned: the instance's posed vertices (SRV) instead of the mesh's
+        u32 prevVertexBuffer = InvalidIndex; // skinned: last frame's posed vertices (velocity)
     };
     enum PipelineKind : u8
     {
@@ -488,7 +493,44 @@ private:
         u32 index;
         const GpuMesh* mesh;
         const RenderInstance* instance;
+        u32 vertexBuffer = InvalidIndex; // skinned: posed vertices
     };
+    // GPU skinning: each skinned instance owns two vertex buffers used in turn (this frame's pose, last frame's).
+    struct SkinJob
+    {
+        u32 instance;        // index into Prepare's instances
+        u32 row;             // instance row (GPU-driven frames: assigned by PrepareGpu)
+        rhi::Buffer* output; // this frame's posed vertices
+        u32 sourceVertices, skin, paletteBase, vertexCount, boneCount;
+        u32 current, previous; // SRVs (previous = current when last frame had no pose)
+    };
+    struct SkinState
+    {
+        rhi::Buffer* buffers[2] = {};
+        u32 current = 0;
+        u32 vertexCount = 0;
+        u64 lastFrame = 0;
+    };
+    void PrepareSkinning(Span<const RenderInstance> instances);
+    void AddSkinningPass(RenderGraph& graph);
+    u32 SkinSlot(usize instance) const { return m_skinSlot.Empty() ? InvalidIndex : m_skinSlot[instance]; }
+
+public:
+    /// Posed vertex buffer (SRV) of a skinned instance this frame (after Prepare), or InvalidIndex.
+    u32 SkinnedVertexBuffer(u64 instanceId) const
+    {
+        const SkinState* st = m_skinStates.Find(instanceId);
+        return st && st->lastFrame == m_frame && st->buffers[st->current] ? st->buffers[st->current]->GetSrvIndex() : InvalidIndex;
+    }
+
+private:
+    HashMap<u64, SkinState> m_skinStates; // instance id -> buffers
+    Array<SkinJob> m_skinJobs;
+    Array<u32> m_skinSlot; // per instance: index into m_skinJobs (empty when nothing is skinned)
+    rhi::Buffer* m_paletteBuffers[rhi::FramesInFlight] = {};
+    u64 m_paletteCapacity = 0;
+    rhi::ShaderBytecode m_skinCS;
+    rhi::Pipeline* m_skinPipeline = nullptr;
     rhi::Texture* m_localAtlas = nullptr;
     u32 m_localAtlasSize = 0;
     u32 m_localTileSize = 0;

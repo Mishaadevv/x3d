@@ -17,6 +17,9 @@ struct MeshVertex
     Vec2 uv0;
     Vec2 uv1;
     u32 color = 0xFFFFFFFF; // RGBA8, linear
+    // Skinning (MeshAttributes::Skin): four bone indices (u8 each) and their weights (unorm8, summing to 255).
+    u32 joints = 0;
+    u32 weights = 0;
 };
 
 /// Index range drawn with one material.
@@ -48,6 +51,7 @@ enum class MeshAttributes : u8
     UV0 = 1 << 2,
     UV1 = 1 << 3,
     Colors = 1 << 4,
+    Skin = 1 << 5, // joints / weights (bone indices into the skeleton of the node's skin)
 };
 ZX_ENUM_FLAGS(MeshAttributes)
 

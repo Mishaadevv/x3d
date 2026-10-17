@@ -65,6 +65,7 @@ RenderAssets::~RenderAssets()
 {
     for (auto& kv : m_meshes) {
         m_device.Destroy(kv.second->mesh.vertexBuffer);
+        m_device.Destroy(kv.second->mesh.skinBuffer);
         m_device.Destroy(kv.second->mesh.indexBuffer);
     }
     for (auto& kv : m_textures)
@@ -300,6 +301,8 @@ void RenderAssets::ReloadMesh(AssetId id)
     MeshEntry* e = found->Get();
     ++m_meshGeneration; // cached GpuMesh pointers die here
     m_device.Destroy(e->mesh.vertexBuffer);
+    m_device.Destroy(e->mesh.skinBuffer);
+    e->mesh.skinBuffer = nullptr;
     m_device.Destroy(e->mesh.indexBuffer);
     m_meshes.Remove(id);
     for (usize i = 0; i < m_pendingMeshes.Size(); ++i)
@@ -320,7 +323,7 @@ bool RenderAssets::TryUploadMesh(AssetId id, MeshEntry& e, u64& budget)
     const asset::CookedMesh* m = state == AssetState::Loaded ? m_assets.GetMesh(id) : nullptr;
     if (!m)
         return false;
-    const u64 bytes = m->vertices.SizeBytes() + m->indexData.Size();
+    const u64 bytes = m->vertices.SizeBytes() + m->indexData.Size() + m->skin.SizeBytes();
     if (bytes > budget && budget != m_uploadBudget)
         return false; // wait for the next frame (always allow one item per frame)
     budget -= Min(budget, bytes);
@@ -332,6 +335,11 @@ bool RenderAssets::TryUploadMesh(AssetId id, MeshEntry& e, u64& budget)
     g.indexBuffer = m_device.CreateBuffer(
         BufferDesc{m->indexData.Size(), BufferUsage::Index | BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, m->name.View()},
         m->indexData.Data());
+    if (m->IsSkinned())
+        g.skinBuffer = m_device.CreateBuffer(
+            BufferDesc{m->skin.SizeBytes(), BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, m->name.View()}, m->skin.Data());
+    g.vertexCount = u32(m->vertices.Size());
+    g.boneCount = m->boneCount;
     g.index16 = m->index16;
     g.sections = m->sections;
     g.sectionLods = m->sectionLods;

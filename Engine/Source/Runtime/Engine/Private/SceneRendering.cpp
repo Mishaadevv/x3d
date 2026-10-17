@@ -1,4 +1,5 @@
 #include "Engine/SceneRendering.h"
+#include "Engine/Animation.h"
 #include "Engine/Fire.h"
 
 #include "Core/Jobs/JobSystem.h"
@@ -156,7 +157,8 @@ ZX_REFLECT_STRUCT_END()
 using namespace ecs;
 using namespace scene;
 
-Entity InstantiatePrefab(World& world, const asset::PrefabAsset& prefab, const Transform& rootTransform, Entity parent)
+Entity InstantiatePrefab(World& world, const asset::PrefabAsset& prefab, const Transform& rootTransform, Entity parent,
+                         const asset::AssetManager* assets)
 {
     const Entity root = CreateNode(world, prefab.name.View(), rootTransform, parent);
     Array<Entity> created;
@@ -168,14 +170,28 @@ Entity InstantiatePrefab(World& world, const asset::PrefabAsset& prefab, const T
             MeshRenderer mr;
             mr.mesh = node.mesh;
             mr.materials = node.materials;
+            mr.collision = !node.skeleton.IsValid(); // an animated mesh is no static obstacle
             world.Add(e, move(mr));
+        }
+        if (node.skeleton.IsValid()) {
+            Animator a;
+            a.skeleton = node.skeleton;
+            a.skinToNode = Transform::FromMatrix(node.skinToNode);
+            a.clips = node.animations;
+            if (!a.clips.Empty())
+                a.clip = a.clips[0];
+            if (assets)
+                for (const asset::AssetId& clip : a.clips)
+                    if (assets->GetName(clip).View().EqualsIgnoreCase("Idle"))
+                        a.clip = clip;
+            world.Add(e, move(a));
         }
         created.PushBack(e);
     }
     return root;
 }
 
-void GatherRenderInstances(World& world, Array<render::RenderInstance>& out)
+void GatherRenderInstances(World& world, Array<render::RenderInstance>& out, const AnimationSystem* animation)
 {
     // Plain mesh renderers (almost all of them): visible ones counted per chunk, then the chunks fill their ranges in
     // parallel. Flammable ones (few) follow, serially.
@@ -189,7 +205,7 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out)
     };
     Array<ChunkRef> chunks;
     u32 total = 0;
-    world.Query<const WorldTransform, const MeshRenderer>().Without<Flammable>().EachChunk([&](auto& v) {
+    world.Query<const WorldTransform, const MeshRenderer>().Without<Flammable>().Without<Animator>().EachChunk([&](auto& v) {
         ChunkRef c{v.entities, v.template Column<0>(), v.template Column<1>(), v.count, total};
         for (u32 i = 0; i < v.count; ++i)
             total += c.renderers[i].visible && c.renderers[i].mesh.IsValid() ? 1u : 0u;
@@ -218,7 +234,19 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out)
         jobs::ParallelFor(u32(chunks.Size()), 1, fill);
     else
         fill(0, u32(chunks.Size()));
-    world.Query<const WorldTransform, const MeshRenderer, const Flammable>().Each([&](Entity e, const WorldTransform& wt, const MeshRenderer& mr, const Flammable& f) {
+    // Skinned meshes (few): their pose this frame.
+    world.Query<const WorldTransform, const MeshRenderer, const Animator>().Each([&](Entity e, const WorldTransform& wt, const MeshRenderer& mr, const Animator&) {
+        if (!mr.visible || !mr.mesh.IsValid())
+            return;
+        render::RenderInstance& inst = out.AddDefaulted();
+        inst.id = e.Pack();
+        inst.world = wt.matrix;
+        inst.mesh = mr.mesh;
+        inst.materials = mr.materials.View();
+        if (animation)
+            inst.skinMatrices = animation->Palette(e);
+    });
+    world.Query<const WorldTransform, const MeshRenderer, const Flammable>().Without<Animator>().Each([&](Entity e, const WorldTransform& wt, const MeshRenderer& mr, const Flammable& f) {
         if (!mr.visible || !mr.mesh.IsValid())
             return;
         render::RenderInstance& inst = out.AddDefaulted();
