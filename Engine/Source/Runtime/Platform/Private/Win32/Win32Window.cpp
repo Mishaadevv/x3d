@@ -396,6 +396,13 @@ public:
             return msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP ? TRUE : 0;
         }
         case WM_CAPTURECHANGED:
+            // Capture taken away while buttons were held: their release would never arrive - release them now.
+            if (m_buttonsDown > 0)
+                for (MouseButton b : {MouseButton::Left, MouseButton::Right, MouseButton::Middle}) {
+                    WindowEvent e{WindowEventType::MouseUp};
+                    e.button = b;
+                    Push(move(e));
+                }
             m_buttonsDown = 0;
             return 0;
         case WM_MOUSEMOVE: {
@@ -675,6 +682,19 @@ void UpdateInput(Window& window, InputState& input, Array<WindowEvent>& events)
             break;
         }
     }
+    // A button the window believes held but the system says is up (a release message got lost): release it, or
+    // nothing could be clicked any more. GetAsyncKeyState reports physical buttons: honor swapped buttons.
+    const bool swapped = ::GetSystemMetrics(SM_SWAPBUTTON) != 0;
+    const struct
+    {
+        MouseButton button;
+        int vk;
+    } buttons[] = {{MouseButton::Left, swapped ? VK_RBUTTON : VK_LBUTTON},
+                   {MouseButton::Right, swapped ? VK_LBUTTON : VK_RBUTTON},
+                   {MouseButton::Middle, VK_MBUTTON}};
+    for (const auto& b : buttons)
+        if (input.IsMouseDown(b.button) && !input.WasMousePressed(b.button) && !(::GetAsyncKeyState(b.vk) & 0x8000))
+            input.SetMouseButton(b.button, false);
     input.AddMouseDelta(static_cast<Win32Window&>(window).TakeRawDelta());
     PollGamepads(input);
 }

@@ -3436,6 +3436,10 @@ bool Editor::Frame()
     if (client != swapChain->GetSize())
         swapChain->Resize(client.x, client.y);
 
+    // Fly mode ends with the right mouse button (also when the viewport is hidden: it blocks all UI input).
+    if (flying && !input.IsMouseDown(MouseButton::Right))
+        flying = false;
+
     // --- UI ---
     ui::FrameInput fi;
     fi.displaySize = Vec2(f32(client.x), f32(client.y));
