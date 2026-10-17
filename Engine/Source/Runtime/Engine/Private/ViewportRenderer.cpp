@@ -32,9 +32,10 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
         s.scene.shadows.cascades = 4;
         s.scene.shadows.resolution = 2048;
         s.scene.shadows.distance = 120.0f;
-        s.scene.shadows.filter = 2;
+        s.scene.shadows.filter = 3; // PCSS
     }
     s.scene.ao.halfResolution = lite;
+    s.scene.contactShadows.steps = lite ? 6u : 10u;
     s.scene.ao.slices = lite ? 2 : 3;
     s.scene.ao.steps = lite ? 4 : 6;
     s.taa.catmullRom = !lite;
@@ -252,6 +253,8 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         ids.ResizeUninitialized(count);
         worlds.ResizeUninitialized(count);
         std::atomic<u32> mismatches{0};
+        std::atomic<u32> movedCount{0};
+        m_movedIndices.ResizeUninitialized(count);
         auto pair = [&](u32 begin, u32 end) {
             u32 missed = 0;
             for (u32 i = begin; i < end; ++i) {
@@ -259,8 +262,10 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
                 ids[i] = inst.id;
                 worlds[i] = inst.world;
                 if (i < prevCount && prevIds[i] == inst.id) {
-                    if (MemCompare(&prevWorlds[i], &inst.world, sizeof(Mat4)) != 0)
+                    if (MemCompare(&prevWorlds[i], &inst.world, sizeof(Mat4)) != 0) {
                         inst.prevWorld = &prevWorlds[i];
+                        m_movedIndices[movedCount.fetch_add(1, std::memory_order_relaxed)] = i;
+                    }
                 } else {
                     ++missed;
                 }
@@ -281,10 +286,14 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
                 render::RenderInstance& inst = m_instances[i];
                 if (i < prevCount && prevIds[i] == inst.id)
                     continue;
-                if (const u32* j = prevIndex.Find(inst.id); j && MemCompare(&prevWorlds[*j], &inst.world, sizeof(Mat4)) != 0)
+                if (const u32* j = prevIndex.Find(inst.id); j && MemCompare(&prevWorlds[*j], &inst.world, sizeof(Mat4)) != 0) {
                     inst.prevWorld = &prevWorlds[*j];
+                    m_movedIndices[movedCount.fetch_add(1, std::memory_order_relaxed)] = i;
+                }
             }
         }
+        m_movedIndices.Resize(movedCount.load());
+        m_scene.SetMovedInstances(m_movedIndices.View());
     }
     m_scene.SetMotionMatrices(m_viewProjNoJitter, m_hasPrevView && !camera.cut ? m_prevViewProjNoJitter : m_viewProjNoJitter);
     m_prevViewProjNoJitter = m_viewProjNoJitter;

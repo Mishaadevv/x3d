@@ -35,7 +35,7 @@ struct ViewData
     float shadowTexel;          // 1 / resolution
     float normalBias;           // in texels
     uint cascadeCount;          // 0 = shadows off
-    uint shadowFilter;          // 0 hard, 1 four taps, 2 nine taps
+    uint shadowFilter;          // 0 hard, 1 four taps, 2 nine taps, 3 PCSS
     float cascadeBlend;
     // Clustered point/spot lights (pre-exposed).
     uint lightBuffer;
@@ -75,6 +75,12 @@ struct ViewData
     uint visibleLists;
     uint slotCount;
     uint listCapacity;
+    // Sun shadow softness (PCSS) and contact shadows.
+    float4 cascadeDepthRange; // meters per unit of shadow depth
+    float sunSourceTan;       // tan of the sun's angular radius
+    float pcssMaxTexels;
+    uint contactShadows;      // R8 (1 = lit) at render size, or invalid
+    float shadowPad;
 };
 ZX_VIEW_CONSTANTS(ViewData, g_View);
 
@@ -271,14 +277,49 @@ float SampleShadowTap(Texture2D<float4> map, float2 uv, float depth)
     return map.SampleCmpLevelZero(g_ShadowSampler, uv, depth);
 }
 
+float2 VogelDisk(uint i, uint count, float phi)
+{
+    const float r = sqrt((i + 0.5) / count);
+    const float theta = i * 2.39996323 + phi;
+    return r * float2(cos(theta), sin(theta));
+}
+
+/// Percentage-closer soft shadows: the average blocker depth gives the blocker-receiver distance, the sun's angular
+/// size turns it into the penumbra radius (contact-hardening: sharp at the contact, soft further away).
+float SampleCascadePCSS(uint cascade, Texture2D<float4> map, float3 uvz, float noise)
+{
+    const float texelWorld = g_View.cascadeTexelWorld[cascade];
+    const float phi = noise * 6.2831853;
+    // Search region: the penumbra of a blocker 8 m above the receiver.
+    const float searchTexels = clamp(g_View.sunSourceTan * 8.0 / texelWorld, 1.0, g_View.pcssMaxTexels);
+    float blockerSum = 0.0, blockers = 0.0;
+    [unroll] for (uint i = 0; i < 8; ++i) {
+        const float z = map.SampleLevel(g_PointClamp, uvz.xy + VogelDisk(i, 8, phi) * searchTexels * g_View.shadowTexel, 0).r;
+        if (z > uvz.z) { // reversed-Z: nearer to the sun
+            blockerSum += z;
+            blockers += 1.0;
+        }
+    }
+    if (blockers == 0.0)
+        return 1.0;
+    const float distance = (blockerSum / blockers - uvz.z) * g_View.cascadeDepthRange[cascade];
+    const float radiusTexels = clamp(g_View.sunSourceTan * distance / texelWorld, 0.75, g_View.pcssMaxTexels);
+    float sum = 0.0;
+    [unroll] for (uint j = 0; j < 12; ++j)
+        sum += SampleShadowTap(map, uvz.xy + VogelDisk(j, 12, phi + 1.3) * radiusTexels * g_View.shadowTexel, uvz.z);
+    return sum / 12.0;
+}
+
 /// PCF in one cascade. Each hardware compare tap already filters 2x2 texels.
-float SampleCascade(uint cascade, float3 worldPos, float3 N)
+float SampleCascade(uint cascade, float3 worldPos, float3 N, float noise)
 {
     const float3 offsetPos = worldPos + N * (g_View.normalBias * g_View.cascadeTexelWorld[cascade]);
     const float4 p = mul(g_View.shadowMatrices[cascade], float4(offsetPos, 1.0));
     const float3 uvz = p.xyz / p.w;
     Texture2D<float4> map = GetTexture2D(g_View.shadowMaps[cascade]);
     const float2 t = g_View.shadowTexel;
+    if (g_View.shadowFilter == 3)
+        return SampleCascadePCSS(cascade, map, uvz, noise);
     if (g_View.shadowFilter == 0)
         return SampleShadowTap(map, uvz.xy, uvz.z);
     if (g_View.shadowFilter == 1) {
@@ -295,8 +336,10 @@ float SampleCascade(uint cascade, float3 worldPos, float3 N)
 }
 
 /// Sun visibility (1 = lit). Picks the cascade by view depth and cross-fades near the cascade's far end.
-float SunShadow(float3 worldPos, float3 N, out uint cascade)
+/// pixel: screen position (rotates the PCSS sample pattern per pixel and frame; TAA resolves it).
+float SunShadow(float3 worldPos, float3 N, float2 pixel, out uint cascade)
 {
+    const float noise = frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))) + frac(g_View.time * 37.0) * 0.618034);
     cascade = 4;
     if (g_View.cascadeCount == 0)
         return 1.0;
@@ -308,12 +351,12 @@ float SunShadow(float3 worldPos, float3 N, out uint cascade)
         }
     if (cascade >= g_View.cascadeCount)
         return 1.0;
-    float shadow = SampleCascade(cascade, worldPos, N);
+    float shadow = SampleCascade(cascade, worldPos, N, noise);
     const float start = cascade == 0 ? 0.0 : g_View.cascadeSplits[cascade - 1];
     const float fade = (g_View.cascadeSplits[cascade] - viewDepth) / max((g_View.cascadeSplits[cascade] - start) * g_View.cascadeBlend, 1e-4);
     if (fade < 1.0) {
         // Blend into the next cascade, or fade out shadows at the end of the shadow distance.
-        const float next = cascade + 1 < g_View.cascadeCount ? SampleCascade(cascade + 1, worldPos, N) : 1.0;
+        const float next = cascade + 1 < g_View.cascadeCount ? SampleCascade(cascade + 1, worldPos, N, noise) : 1.0;
         shadow = lerp(next, shadow, saturate(fade));
     }
     return shadow;
@@ -654,7 +697,9 @@ float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
     normalRoughness = float4(EncodeOct(N), s.roughness, 1.0);
 
     uint cascade;
-    float shadow = SunShadow(i.worldPos, N, cascade);
+    float shadow = SunShadow(i.worldPos, N, i.position.xy, cascade);
+    if (g_View.contactShadows != ZX_INVALID_INDEX) // small-scale occlusion the cascades miss
+        shadow *= GetTexture2D(g_View.contactShadows).Load(int3(i.position.xy, 0)).r;
     if (g_View.cloudShadow != ZX_INVALID_INDEX) // clouds passing over the sun
         shadow *= GetTexture2D(g_View.cloudShadow).SampleLevel(g_LinearClamp, (i.worldPos.xz - g_View.cloudShadowOrigin) * g_View.cloudShadowInvExtent, 0).r;
     switch (g_View.debugMode) {

@@ -182,7 +182,8 @@ private:
     // points into last frame's matrices).
     Array<u64> m_motionIds[2];
     Array<Mat4> m_motionWorlds[2];
-    u32 m_motionCurrent = 0;                 // instance id -> last frame's world (object motion)
+    u32 m_motionCurrent = 0;
+    Array<u32> m_movedIndices; // this frame's instances whose world matrix changed (shadow cache)                 // instance id -> last frame's world (object motion)
     Mat4 m_prevViewProjNoJitter = Mat4::Identity();
     bool m_hasPrevView = false;
     Array<render::LightDesc> m_lights;

@@ -35,6 +35,8 @@ CVar<f32> CVarDynResMin("r.DynamicResolution.MinPercentage", 50.0f, "Lowest rend
 CVar<bool> CVarSSR("r.SSR", false, "Screen-space reflections (on by default in the Full profile)");
 CVar<bool> CVarGpuDriven("r.GPUDriven", true, "GPU culling + ExecuteIndirect for opaque geometry (CPU draw lists when off)");
 CVar<bool> CVarOcclusion("r.OcclusionCulling", true, "Two-phase HiZ occlusion culling (GPU-driven path)");
+CVar<i32> CVarShadowFilter("r.ShadowFilter", 1, "Sun shadow filter: 0 hard, 1 4 taps, 2 9 taps, 3 PCSS (soft, contact-hardening)");
+CVar<bool> CVarContactShadows("r.ContactShadows", true, "Screen-space contact shadows of the sun");
 CVar<bool> CVarProbes("r.ReflectionProbes", true, "Reflection probes and the sky reflection cube");
 CVar<f32> CVarExposure("r.ExposureCompensation", 1.0f, "Exposure compensation in EV (+ = brighter)");
 CVar<i32> CVarViewMode("r.ViewMode", 0, "0 lit, 1 base color, 2 normals, 3 roughness/metallic, 4 LODs, 5 cascades, 6 clusters, 7 AO");
@@ -109,6 +111,9 @@ ConCommand CmdStatScene("stat.scene", "Prints viewport and scene statistics", []
     ZX_LOG_INFO(LogCmd, "  Viewport {}x{} (render {}x{}), {} entities", ed->viewportSize.x, ed->viewportSize.y,
                 ed->viewport->RenderSize().x, ed->viewport->RenderSize().y, ed->world.EntityCount());
     ZX_LOG_INFO(LogCmd, "  Draws {} (+{} shadow), {:.0f}k triangles", st.draws, st.shadowDraws, f64(st.triangles) / 1000.0);
+    if (st.gpuDriven)
+        ZX_LOG_INFO(LogCmd, "  GPU-driven: {} cull items, {} groups, {} indirect calls", st.gpuItems, st.gpuGroups, st.indirectCalls);
+    ZX_LOG_INFO(LogCmd, "  Sun cascades re-rendered this frame: {}", st.cascadesUpdated);
     ZX_LOG_INFO(LogCmd, "  GPU assets: {} meshes ({:.1f} MB), {} textures ({:.1f} MB), {} materials", ra.meshes,
                 f64(ra.meshBytes) / (1024.0 * 1024.0), ra.textures, f64(ra.textureBytes) / (1024.0 * 1024.0), ra.materials);
 });
@@ -615,6 +620,8 @@ void RegisterEditorConsole(Editor& ed)
     Bind<bool>(CVarSSR, s.reflections.ssr, [](bool v) { Ed()->viewport->Settings().reflections.ssr = v; });
     Bind<bool>(CVarGpuDriven, s.scene.gpuDriven, [](bool v) { Ed()->viewport->Settings().scene.gpuDriven = v; });
     Bind<bool>(CVarOcclusion, s.scene.occlusionCulling, [](bool v) { Ed()->viewport->Settings().scene.occlusionCulling = v; });
+    Bind<i32>(CVarShadowFilter, i32(s.scene.shadows.filter), [](i32 v) { Ed()->viewport->Settings().scene.shadows.filter = u32(Clamp(v, 0, 3)); });
+    Bind<bool>(CVarContactShadows, s.scene.contactShadows.enabled, [](bool v) { Ed()->viewport->Settings().scene.contactShadows.enabled = v; });
     Bind<bool>(CVarProbes, s.reflections.probes, [](bool v) {
         Ed()->viewport->Settings().reflections.probes = v;
         Ed()->viewport->Settings().reflections.sky = v;
@@ -633,7 +640,7 @@ void UnregisterEditorConsole()
     for (CVarBase* c : {static_cast<CVarBase*>(&CVarScreenPercentage), static_cast<CVarBase*>(&CVarTAA), static_cast<CVarBase*>(&CVarAO),
                         static_cast<CVarBase*>(&CVarShadows), static_cast<CVarBase*>(&CVarSky), static_cast<CVarBase*>(&CVarBloom), static_cast<CVarBase*>(&CVarSSR), static_cast<CVarBase*>(&CVarTSR),
                         static_cast<CVarBase*>(&CVarDynRes), static_cast<CVarBase*>(&CVarDynResTarget), static_cast<CVarBase*>(&CVarDynResMin), static_cast<CVarBase*>(&CVarProbes),
-                        static_cast<CVarBase*>(&CVarGpuDriven), static_cast<CVarBase*>(&CVarOcclusion), static_cast<CVarBase*>(&CVarUISounds),
+                        static_cast<CVarBase*>(&CVarGpuDriven), static_cast<CVarBase*>(&CVarShadowFilter), static_cast<CVarBase*>(&CVarContactShadows), static_cast<CVarBase*>(&CVarOcclusion), static_cast<CVarBase*>(&CVarUISounds),
                         static_cast<CVarBase*>(&CVarExposure), static_cast<CVarBase*>(&CVarViewMode),
                         static_cast<CVarBase*>(&CVarForceLod), static_cast<CVarBase*>(&CVarCameraSpeed),
                         static_cast<CVarBase*>(&CVarShowGrid)})

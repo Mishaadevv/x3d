@@ -118,6 +118,10 @@ g_View.visibleLists when g_Draw.drawId is valid (RHI DrawIndexedIndirect, Indire
 occlusionCulling (r.GPUDriven, r.OcclusionCulling); capture views turn occlusion off. Benchmark:
 `-exec="wait 60;stress.instances 100000;wait 200;stat.cpu;stat.gpu"` (RenderInstance::prevWorld points into
 ViewportRenderer's motion history; the 100k frame is memory-bandwidth bound - avoid extra passes over instances).
+Sun shadows: ShadowSettings::filter 3 = PCSS (SampleCascadePCSS in ForwardPBR, cascadeDepthRange / sunSourceTan),
+ContactShadowSettings + Shaders/Lighting/ContactShadows.hlsl (R8 after the pre-pass, multiplies the sun shadow);
+cascade cache invalidation by moved casters (SceneRenderer::SetMovedInstances from ViewportRenderer's pairing).
+Cvars r.ShadowFilter, r.ContactShadows; stat.scene prints cascades re-rendered this frame.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

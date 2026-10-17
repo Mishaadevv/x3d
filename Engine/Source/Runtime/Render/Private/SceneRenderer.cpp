@@ -115,6 +115,7 @@ SceneRenderer::~SceneRenderer()
     m_device.Destroy(m_clusterPipeline);
     m_device.Destroy(m_velocityPipeline);
     m_device.Destroy(m_gtaoPipeline);
+    m_device.Destroy(m_contactPipeline);
     m_device.Destroy(m_aoBlurPipeline);
     for (Buffer* b : m_cullItems)
         m_device.Destroy(b);
@@ -229,6 +230,22 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
         ad.computeShader = &m_aoBlurCS;
         ad.debugName = "GTAO.Blur";
         m_aoBlurPipeline = m_device.CreateComputePipeline(ad);
+    }
+    {
+        ShaderCompileDesc ad;
+        ad.path = "/Shaders/Lighting/ContactShadows.hlsl";
+        ad.entryPoint = "ContactShadowsCS";
+        ad.stage = ShaderStage::Compute;
+        Result<ShaderBytecode> r = ShaderCompiler::Compile(ad);
+        if (!r) {
+            ZX_LOG_ERROR(LogSceneRenderer, "{}", r.GetError().message);
+            return false;
+        }
+        m_contactCS = move(*r);
+        ComputePipelineDesc pd;
+        pd.computeShader = &m_contactCS;
+        pd.debugName = "ContactShadows";
+        m_contactPipeline = m_device.CreateComputePipeline(pd);
     }
     ComputePipelineDesc cpd;
     cpd.computeShader = &m_clusterCS;
@@ -464,13 +481,32 @@ void SceneRenderer::SetupCascades(const RenderView& view, const SceneLighting& l
         prevSplit = split;
     }
 
-    // Decide which cascades to re-render: invalid ones and those whose slice left the cached bounds.
-    // At most maxUpdatesPerFrame per frame (the nearest first); the rest keep last frame's map.
+    // Decide which cascades to re-render: invalid ones, those whose slice left the cached bounds (at most
+    // maxUpdatesPerFrame per frame, the nearest first) and those a moved caster touches (always: a stale shadow is
+    // wrong, not just blurry). The rest keep last frame's map.
+    auto touchedByMovedCaster = [&](const Cascade& k) {
+        for (const Sphere& s : m_movedCasters) {
+            const Vec3 d = s.center - k.center;
+            const f32 along = Dot(d, lightDir); // the map spans [-(radius + back), radius] along the light
+            const f32 reach = k.radius * 1.4143f + s.radius; // square map: its corners
+            if (along > k.radius + s.radius || along < -(k.radius + backDistance) - s.radius)
+                continue;
+            if (LengthSq(d - lightDir * along) <= reach * reach)
+                return true;
+        }
+        return false;
+    };
     u32 updates = 0;
     for (u32 c = 0; c < count; ++c) {
         Cascade& k = m_cascades[c];
         const bool inside = k.valid && Length(desired[c].center - k.center) + desired[c].radius <= k.radius;
-        k.update = !inside && (updates < Max(1u, ss.maxUpdatesPerFrame) || !k.valid);
+        const bool dirty = k.valid && touchedByMovedCaster(k);
+        if (dirty && inside) { // same bounds, new content
+            k.update = true;
+            ++updates;
+            continue;
+        }
+        k.update = (!inside && (updates < Max(1u, ss.maxUpdatesPerFrame) || !k.valid)) || dirty;
         if (!k.update)
             continue;
         ++updates;
@@ -494,12 +530,15 @@ void SceneRenderer::SetupCascades(const RenderView& view, const SceneLighting& l
     for (u32 c = 0; c < count; ++c) {
         m_viewConstants.shadowMatrices[c] = toUv * m_cascades[c].viewProj;
         m_viewConstants.cascadeTexelWorld[c] = 2.0f * m_cascades[c].radius / res;
+        m_viewConstants.cascadeDepthRange[c] = 2.0f * m_cascades[c].radius + backDistance; // OrthographicReversedZ range
         m_viewConstants.shadowMaps[c] = m_cascades[c].map ? m_cascades[c].map->GetSrvIndex() : InvalidDescriptor;
     }
     m_viewConstants.cameraForward = forward;
     m_viewConstants.shadowTexel = 1.0f / res;
     m_viewConstants.normalBias = ss.normalBias;
     m_viewConstants.shadowFilter = ss.filter;
+    m_viewConstants.sunSourceTan = Tan(ss.sourceAngle * 0.5f * Pi / 180.0f);
+    m_viewConstants.pcssMaxTexels = Max(ss.maxPenumbraTexels, 1.0f);
     m_viewConstants.cascadeBlend = ss.cascadeBlend;
 }
 
@@ -694,6 +733,19 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
             InvalidateShadows();
         }
     }
+    m_movedCasters.Clear();
+    for (u32 i : m_movedInstances) {
+        if (i >= instances.Size() || !instances[i].castShadows)
+            continue;
+        const RenderInstance& inst = instances[i];
+        const GpuMesh* mesh = m_assets.GetMesh(inst.mesh);
+        if (!mesh)
+            continue;
+        m_movedCasters.PushBack(Sphere{inst.world.TransformPoint(mesh->sphere.center), mesh->sphere.radius * MaxScale(inst.world)});
+        if (inst.prevWorld) // its old shadow must go too
+            m_movedCasters.PushBack(Sphere{inst.prevWorld->TransformPoint(mesh->sphere.center), mesh->sphere.radius * MaxScale(*inst.prevWorld)});
+    }
+    m_movedInstances.Clear();
     SetupCascades(view, lighting);
     Frustum cascadeFrustums[MaxCascades];
     u32 cascadeMask = 0; // cascades re-rendered this frame
@@ -899,6 +951,21 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
         m_aoParams.sliceCount = Max(1u, ao.slices);
         m_aoParams.stepCount = Max(1u, ao.steps);
         m_aoParams.frame = u32(m_frame);
+    }
+    {
+        const ContactShadowSettings& cs = settings.contactShadows;
+        m_contactParams = {};
+        m_contactParams.size = Vec2(f32(view.width), f32(view.height));
+        m_contactParams.invSize = Vec2(1.0f / f32(view.width), 1.0f / f32(view.height));
+        m_contactParams.tanHalfY = Tan(view.fovY * 0.5f);
+        m_contactParams.tanHalfX = m_contactParams.tanHalfY * f32(view.width) / f32(Max(view.height, 1u));
+        m_contactParams.nearZ = view.nearPlane;
+        m_contactParams.rayLength = cs.length;
+        m_contactParams.stepCount = Clamp(cs.steps, 1u, 64u);
+        m_contactParams.thickness = cs.thickness;
+        m_contactParams.frame = u32(m_frame);
+        const Vec4 toSun = view.view * Vec4(-Normalize(lighting.sunDirection), 0.0f);
+        m_contactParams.toSunView = Normalize(toSun.XYZ());
     }
 
     m_viewConstants.viewProj = view.viewProj;
@@ -1160,6 +1227,33 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
             });
     }
 
+    // Contact shadows of the sun (render resolution, jittered; TAA resolves the noise).
+    RGTexture contactTexture;
+    const bool hasContact = prepass && m_settings.contactShadows.enabled && m_contactPipeline && m_viewConstants.lightIntensity > 0.0f;
+    if (hasContact) {
+        TextureDesc cd;
+        cd.width = m_renderSize.x;
+        cd.height = m_renderSize.y;
+        cd.format = Format::R8_UNORM;
+        cd.usage = TextureUsage::ShaderResource | TextureUsage::UnorderedAccess;
+        cd.debugName = "ContactShadows";
+        contactTexture = graph.CreateTexture(cd);
+        graph.AddPass(
+            "ContactShadows", PassType::Compute,
+            [depth, contactTexture](PassBuilder& b) {
+                b.ReadTexture(depth);
+                b.WriteTexture(contactTexture);
+            },
+            [this, depth, contactTexture](PassContext& ctx) {
+                ContactParams p = m_contactParams;
+                p.depth = ctx.Texture(depth)->GetSrvIndex();
+                p.output = ctx.Texture(contactTexture)->GetUavIndex();
+                ctx.cmd.SetPipeline(m_contactPipeline);
+                ctx.cmd.SetPushConstants(p);
+                ctx.cmd.Dispatch((m_renderSize.x + 7) / 8, (m_renderSize.y + 7) / 8);
+            });
+    }
+
     // Light clustering (compute).
     const RGBuffer clusters = graph.ImportBuffer(m_clusterBuffer, ResourceState::ShaderResource);
     const bool hasLights = m_viewConstants.lightCount > 0;
@@ -1194,17 +1288,20 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
     // Forward passes: view constants in b2, sky irradiance SH (GPU-written) bound directly as the b1 constant buffer.
     Buffer* skySH = m_skyIrradianceBuffer;
     const RGBuffer skySHHandle = skySH ? graph.ImportBuffer(skySH, ResourceState::ConstantBuffer) : RGBuffer();
-    auto bindView = [this, skySH, aoTexture, hasAO](PassContext& ctx) {
+    auto bindView = [this, skySH, aoTexture, hasAO, contactTexture, hasContact](PassContext& ctx) {
         m_viewConstants.aoTexture = hasAO ? ctx.Texture(aoTexture)->GetSrvIndex() : InvalidDescriptor;
+        m_viewConstants.contactShadows = hasContact ? ctx.Texture(contactTexture)->GetSrvIndex() : InvalidDescriptor;
         ctx.cmd.SetConstants(1, &m_viewConstants, sizeof(m_viewConstants));
         if (skySH)
             ctx.cmd.SetConstantBuffer(0, skySH->GetGpuAddress());
     };
     const bool readLocal = m_localAtlas && hasLocalShadows;
     auto readShadows = [shadowMaps, cascadeCount, clusters, hasLights, skySHHandle, skySH, aoTexture, hasAO, localAtlas,
-                        readLocal](PassBuilder& b) {
+                        readLocal, contactTexture, hasContact](PassBuilder& b) {
         if (hasAO)
             b.ReadTexture(aoTexture);
+        if (hasContact)
+            b.ReadTexture(contactTexture);
         if (readLocal)
             b.ReadTexture(localAtlas);
         for (u32 c = 0; c < cascadeCount; ++c)

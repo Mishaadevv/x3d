@@ -129,7 +129,9 @@ struct ShadowSettings
     f32 depthBias = -1.0f;   // rasterizer bias (reversed-Z: negative pushes depth away from the light)
     f32 slopeBias = -2.0f;
     f32 normalBias = 1.5f;   // receiver offset along the normal, in shadow texels
-    u32 filter = 1;          // 0 = hard, 1 = 4 taps (2x2 bilinear PCF), 2 = 9 taps
+    u32 filter = 1;          // 0 = hard, 1 = 4 taps (2x2 bilinear PCF), 2 = 9 taps, 3 = PCSS (contact-hardening)
+    f32 sourceAngle = 1.5f;  // PCSS: apparent sun diameter in degrees (the real sun: 0.53; larger = softer far shadows)
+    f32 maxPenumbraTexels = 16.0f; // PCSS: filter radius cap
     u32 lodBias = 1;         // shadow casters use this many coarser LODs than the main view
     f32 cascadeBlend = 0.1f; // fraction of each cascade cross-faded into the next
     // Local (point/spot) shadows: fixed-size tiles in a persistent atlas; a point light uses 6 tiles.
@@ -156,6 +158,15 @@ struct AOSettings
     f32 maxRadiusPixels = 48.0f;
 };
 
+/// Screen-space contact shadows for the sun: a short ray march through the depth buffer (needs the depth pre-pass).
+struct ContactShadowSettings
+{
+    bool enabled = true;
+    f32 length = 0.3f;     // meters near the camera (grows with distance up to 2x)
+    u32 steps = 8;
+    f32 thickness = 0.03f; // assumed depth of the occluders, meters per meter of view distance
+};
+
 struct SceneRenderSettings
 {
     bool depthPrepass = true;
@@ -175,6 +186,7 @@ struct SceneRenderSettings
     bool occlusionCulling = true;
     ShadowSettings shadows;
     AOSettings ao;
+    ContactShadowSettings contactShadows;
 };
 
 class SceneRenderer
@@ -220,6 +232,13 @@ public:
     const LightingInputs& GetLightingInputs() const { return m_lightingInputs; }
 
     /// Camera matrices without jitter (this frame and last) for the velocity of moving objects.
+    /// Indices (into the next Prepare's instances) of the instances whose world matrix changed since last frame.
+    /// Cached sun cascades they touch (at the old or the new place) are re-rendered. Not called = nothing moves.
+    void SetMovedInstances(Span<const u32> indices) 
+    {
+        m_movedInstances.Clear();
+        m_movedInstances.Append(indices);
+    }
     void SetMotionMatrices(const Mat4& viewProjNoJitter, const Mat4& prevViewProjNoJitter)
     {
         m_viewProjNoJitter = viewProjNoJitter;
@@ -426,9 +445,16 @@ private:
         u32 visibleLists;
         u32 slotCount;
         u32 listCapacity;
+        // Sun shadow softness (PCSS) and contact shadows.
+        Vec4 cascadeDepthRange; // meters per unit of shadow depth, per cascade
+        f32 sunSourceTan;       // tan of the sun's angular radius
+        f32 pcssMaxTexels;
+        u32 contactShadows;     // R8 render-size texture (1 = lit) or invalid
+        f32 shadowPad;
     } m_viewConstants = {};
     // HLSL constant buffer packing: a matrix starts on a 16-byte boundary.
     static_assert(offsetof(ViewConstants, ssrViewProj) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
+    static_assert(offsetof(ViewConstants, cascadeDepthRange) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
     // Local shadow atlas state.
     struct LocalSlot
     {
@@ -479,6 +505,23 @@ private:
         u32 sliceCount;
         u32 stepCount;
     } m_aoParams = {};
+    struct ContactParams // ContactShadows.hlsl
+    {
+        u32 depth;
+        u32 output;
+        u32 frame;
+        u32 stepCount;
+        Vec2 size;
+        Vec2 invSize;
+        Vec3 toSunView;
+        f32 rayLength;
+        f32 tanHalfX;
+        f32 tanHalfY;
+        f32 nearZ;
+        f32 thickness;
+    } m_contactParams = {};
+    rhi::ShaderBytecode m_contactCS;
+    rhi::Pipeline* m_contactPipeline = nullptr;
     rhi::ShaderBytecode m_gtaoCS, m_aoBlurCS;
     rhi::Pipeline* m_gtaoPipeline = nullptr;
     rhi::Pipeline* m_aoBlurPipeline = nullptr;
@@ -517,6 +560,8 @@ private:
     u32 m_shadowResolution = 0;
     Vec3 m_shadowLightDir;
     u64 m_shadowContentKey = 0;
+    Array<u32> m_movedInstances;
+    Array<Sphere> m_movedCasters; // bounds of moved shadow casters, this and last frame's place
     u64 m_frame = 0;
     u32 m_samplers[5] = {rhi::InvalidDescriptor, rhi::InvalidDescriptor, rhi::InvalidDescriptor, rhi::InvalidDescriptor,
                          rhi::InvalidDescriptor}; // anisotropy 1, 2, 4, 8, 16
