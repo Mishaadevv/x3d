@@ -37,6 +37,7 @@ CVar<bool> CVarGpuDriven("r.GPUDriven", true, "GPU culling + ExecuteIndirect for
 CVar<bool> CVarOcclusion("r.OcclusionCulling", true, "Two-phase HiZ occlusion culling (GPU-driven path)");
 CVar<i32> CVarShadowFilter("r.ShadowFilter", 1, "Sun shadow filter: 0 hard, 1 4 taps, 2 9 taps, 3 PCSS (soft, contact-hardening)");
 CVar<bool> CVarContactShadows("r.ContactShadows", true, "Screen-space contact shadows of the sun");
+CVar<i32> CVarRendererPath("r.Renderer.Path", 0, "Opaque rendering path: 0 forward+ (clustered), 1 deferred (G-buffer + lighting pass)");
 CVar<bool> CVarProbes("r.ReflectionProbes", true, "Reflection probes and the sky reflection cube");
 CVar<f32> CVarExposure("r.ExposureCompensation", 1.0f, "Exposure compensation in EV (+ = brighter)");
 CVar<i32> CVarViewMode("r.ViewMode", 0, "0 lit, 1 base color, 2 normals, 3 roughness/metallic, 4 LODs, 5 cascades, 6 clusters, 7 AO");
@@ -659,6 +660,7 @@ void RegisterEditorConsole(Editor& ed)
     Bind<bool>(CVarOcclusion, s.scene.occlusionCulling, [](bool v) { Ed()->viewport->Settings().scene.occlusionCulling = v; });
     Bind<i32>(CVarShadowFilter, i32(s.scene.shadows.filter), [](i32 v) { Ed()->viewport->Settings().scene.shadows.filter = u32(Clamp(v, 0, 3)); });
     Bind<bool>(CVarContactShadows, s.scene.contactShadows.enabled, [](bool v) { Ed()->viewport->Settings().scene.contactShadows.enabled = v; });
+    Bind<i32>(CVarRendererPath, s.scene.deferred ? 1 : 0, [](i32 v) { Ed()->viewport->Settings().scene.deferred = v == 1; });
     Bind<bool>(CVarProbes, s.reflections.probes, [](bool v) {
         Ed()->viewport->Settings().reflections.probes = v;
         Ed()->viewport->Settings().reflections.sky = v;
@@ -677,7 +679,7 @@ void UnregisterEditorConsole()
     for (CVarBase* c : {static_cast<CVarBase*>(&CVarScreenPercentage), static_cast<CVarBase*>(&CVarTAA), static_cast<CVarBase*>(&CVarAO),
                         static_cast<CVarBase*>(&CVarShadows), static_cast<CVarBase*>(&CVarSky), static_cast<CVarBase*>(&CVarBloom), static_cast<CVarBase*>(&CVarSSR), static_cast<CVarBase*>(&CVarTSR),
                         static_cast<CVarBase*>(&CVarDynRes), static_cast<CVarBase*>(&CVarDynResTarget), static_cast<CVarBase*>(&CVarDynResMin), static_cast<CVarBase*>(&CVarProbes),
-                        static_cast<CVarBase*>(&CVarGpuDriven), static_cast<CVarBase*>(&CVarShadowFilter), static_cast<CVarBase*>(&CVarContactShadows), static_cast<CVarBase*>(&CVarOcclusion), static_cast<CVarBase*>(&CVarUISounds),
+                        static_cast<CVarBase*>(&CVarGpuDriven), static_cast<CVarBase*>(&CVarRendererPath), static_cast<CVarBase*>(&CVarShadowFilter), static_cast<CVarBase*>(&CVarContactShadows), static_cast<CVarBase*>(&CVarOcclusion), static_cast<CVarBase*>(&CVarUISounds),
                         static_cast<CVarBase*>(&CVarExposure), static_cast<CVarBase*>(&CVarViewMode),
                         static_cast<CVarBase*>(&CVarForceLod), static_cast<CVarBase*>(&CVarCameraSpeed),
                         static_cast<CVarBase*>(&CVarShowGrid)})

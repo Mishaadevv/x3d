@@ -128,6 +128,10 @@ GPU particles: ParticleEmitter::gpuSimulation -> ParticleSystem keeps a persiste
 the GpuParticle render buffer with RHI DrawIndirect. Console stress.particles N; prefab Effects/P_SparkShower.
 RHI D3D12: a UAV->UAV transition request emits a UAV barrier (consecutive passes writing one resource).
 GPU timing: average several `stat.gpu` samples (scratchpad gpuavg.sh); the exit-time "GPU ..." lines are one frame.
+Deferred path: SceneRenderSettings::deferred (r.Renderer.Path, Full profile default): VariantGBuffer pipelines
+(PSGBuffer, SetGBufferFormats; graph materials compile gbuffer / gbufferAlphaTest), passes GBuffer + DeferredLighting
+(DeferredVS/PS in ForwardPBR.hlsl: depth -> world via ViewData::invViewProj). Forward and deferred share
+EvaluateSurface / LightSurface; the regression compares their images (TAA off).
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

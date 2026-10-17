@@ -29,6 +29,8 @@ public:
         rhi::ShaderBytecode depthAlphaTest;
         rhi::ShaderBytecode mainNormals; // + normal/roughness target (screen-space reflections)
         rhi::ShaderBytecode mainAlphaTestNormals;
+        rhi::ShaderBytecode gbuffer; // deferred G-buffer pass (PSGBuffer)
+        rhi::ShaderBytecode gbufferAlphaTest;
     };
 
     MaterialShaderCache() = default;

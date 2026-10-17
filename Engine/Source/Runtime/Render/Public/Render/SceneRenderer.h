@@ -180,6 +180,9 @@ struct SceneRenderSettings
     u32 maxAnisotropy = 16;
     /// The opaque pass also writes normal + roughness (R10G10B10A2) for screen-space reflections.
     bool normalOutput = false;
+    /// Deferred path (needs the depth pre-pass): opaque surfaces into a G-buffer, then one lighting pass per pixel.
+    /// Debug views use the forward path. Translucent surfaces are always forward.
+    bool deferred = false;
     /// GPU-driven opaque / masked geometry: culling, LOD selection and draw lists on the GPU (DrawIndexedIndirect).
     bool gpuDriven = true;
     /// Two-phase HiZ occlusion culling (GPU-driven only); off for one-off views such as probe captures.
@@ -267,6 +270,7 @@ public:
         u32 lodHistogram[8] = {};
         // GPU-driven path (draws / triangles above count only the CPU-drawn parts then).
         bool gpuDriven = false;
+        bool deferred = false;
         u32 gpuItems = 0;      // (instance, section) items culled on the GPU
         u32 gpuGroups = 0;     // mesh section + material combinations
         u32 indirectCalls = 0; // DrawIndexedIndirect calls (per pass)
@@ -304,10 +308,12 @@ private:
         VariantShadow,      // shadow caster (biased, two-sided)
         VariantMainMRT,        // VariantMain + normal/roughness target
         VariantMainNoWriteMRT, // VariantMainNoWrite + normal/roughness target
+        VariantGBuffer,        // deferred: emission + three G-buffer targets, after the pre-pass
         VariantCount
     };
 
     rhi::Pipeline* GetPipeline(u32 kind, PipelineVariant variant, u32 shader = 0);
+    void SetGBufferFormats(rhi::GraphicsPipelineDesc& pd) const;
     // --- GPU-driven path (SceneRendererGpu.cpp) ---
     static constexpr u32 GpuViewCount = 2 + MaxCascades; // main phase 1, main phase 2, cascades
     static constexpr u32 MaxGpuLods = 4;
@@ -362,6 +368,8 @@ private:
     rhi::Format m_colorFormat = rhi::Format::Unknown;
     rhi::Format m_depthFormat = rhi::Format::Unknown;
     rhi::ShaderBytecode m_vs, m_vsDepth, m_vsDepthAlpha, m_ps, m_psAlpha, m_psDepthAlpha, m_psNormals, m_psAlphaNormals;
+    rhi::ShaderBytecode m_psGBuffer, m_psGBufferAlpha, m_deferredVS, m_deferredPS;
+    rhi::Pipeline* m_deferredPipeline = nullptr; // lighting of the G-buffer (fullscreen, additive)
     rhi::Pipeline* m_pipelines[KindCount][VariantCount] = {};
     HashMap<u64, rhi::Pipeline*> m_graphPipelines; // (shader, kind, variant) -> pipeline
     f32 m_time = 0.0f;
@@ -451,10 +459,14 @@ private:
         f32 pcssMaxTexels;
         u32 contactShadows;     // R8 render-size texture (1 = lit) or invalid
         f32 shadowPad;
+        // Deferred lighting.
+        Mat4 invViewProj;
+        u32 gbufferA, gbufferB, gbufferC, sceneDepth;
     } m_viewConstants = {};
     // HLSL constant buffer packing: a matrix starts on a 16-byte boundary.
     static_assert(offsetof(ViewConstants, ssrViewProj) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
     static_assert(offsetof(ViewConstants, cascadeDepthRange) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
+    static_assert(offsetof(ViewConstants, invViewProj) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
     // Local shadow atlas state.
     struct LocalSlot
     {

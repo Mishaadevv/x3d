@@ -44,8 +44,10 @@ void MaterialShaderCache::Compile(Entry& e)
         return true;
     };
     const bool ok = e.alphaTested ? compile("PSMain", true, false, e.shaders.mainAlphaTest) && compile("PSDepth", true, true, e.shaders.depthAlphaTest) &&
-                                        compile("PSMain", true, false, e.shaders.mainAlphaTestNormals, true)
-                                  : compile("PSMain", false, false, e.shaders.main) && compile("PSMain", false, false, e.shaders.mainNormals, true);
+                                        compile("PSMain", true, false, e.shaders.mainAlphaTestNormals, true) &&
+                                        compile("PSGBuffer", true, false, e.shaders.gbufferAlphaTest)
+                                  : compile("PSMain", false, false, e.shaders.main) && compile("PSMain", false, false, e.shaders.mainNormals, true) &&
+                                        compile("PSGBuffer", false, false, e.shaders.gbuffer);
     e.compileMs = sw.ElapsedMilliseconds();
     if (ok)
         ZX_LOG_INFO(LogMaterialShaders, "Material shader {:016x} compiled in {:.0f} ms", e.hash, e.compileMs);

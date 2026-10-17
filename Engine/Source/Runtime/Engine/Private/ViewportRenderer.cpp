@@ -36,6 +36,7 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     }
     s.scene.ao.halfResolution = lite;
     s.scene.contactShadows.steps = lite ? 6u : 10u;
+    s.scene.deferred = !lite; // Medium+ tiers: G-buffer + one lighting pass (TZ 6.4.5)
     s.scene.ao.slices = lite ? 2 : 3;
     s.scene.ao.steps = lite ? 4 : 6;
     s.taa.catmullRom = !lite;
@@ -338,6 +339,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         captureLighting.ssrTexture = InvalidDescriptor;
         SceneRenderSettings cs = m_settings.scene;
         cs.normalOutput = false;
+        cs.deferred = false;   // small one-off faces: forward is cheaper
         cs.ao.enabled = false;
         cs.debugMode = 0;
         cs.lodBias = 0.5f;

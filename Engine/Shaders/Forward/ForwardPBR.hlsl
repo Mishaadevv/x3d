@@ -81,6 +81,12 @@ struct ViewData
     float pcssMaxTexels;
     uint contactShadows;      // R8 (1 = lit) at render size, or invalid
     float shadowPad;
+    // Deferred path: the lighting pass reconstructs positions from depth and reads the G-buffer.
+    float4x4 invViewProj;
+    uint gbufferA;   // base color (sRGB) + material AO
+    uint gbufferB;   // octahedral normal + roughness, a: 1 lit, 2/3 unlit (>= 0.5: an opaque surface for SSR)
+    uint gbufferC;   // subsurface color + metallic
+    uint sceneDepth;
 };
 ZX_VIEW_CONSTANTS(ViewData, g_View);
 
@@ -631,10 +637,20 @@ float3 LodColor(uint lod)
     return colors[min(lod, 4u)];
 }
 
-// Second target (bound when screen-space reflections are on): octahedral normal, roughness, a = 1 (opaque surface).
-float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
+float3 DecodeOct(float2 e)
 {
-    const Material m = LoadMaterial(i.drawInfo.y);
+    e = e * 2.0 - 1.0;
+    float3 n = float3(e, 1.0 - abs(e.x) - abs(e.y));
+    if (n.z < 0.0)
+        n.xy = (1.0 - abs(n.yx)) * float2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    return normalize(n);
+}
+
+/// The material's surface at this pixel (textures / graph, normal map, burn, decals). Shared by the forward and the
+/// G-buffer passes.
+SurfaceData EvaluateSurface(VSOutput i, bool frontFace, out Material m)
+{
+    m = LoadMaterial(i.drawInfo.y);
     SurfaceData s;
     s.subsurface = 0.0;
     float3 N = normalize(i.normal);
@@ -694,57 +710,63 @@ float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
     ApplyBurn(s, i.worldPos, i.drawInfo.x);
     ApplyDecals(s, N, i.worldPos, geometricNormal);
     s.normal = N;
-    normalRoughness = float4(EncodeOct(N), s.roughness, 1.0);
+    return s;
+}
 
+/// Everything that lights a surface: sun (cascades, contact and cloud shadows), sky and specular environment with AO,
+/// clustered lights, emission; debug views. Shared by the forward pass and the deferred lighting pass.
+float4 LightSurface(SurfaceData s, float3 worldPos, float4 svPosition, bool unlit, uint lod)
+{
+    const float3 N = s.normal;
     uint cascade;
-    float shadow = SunShadow(i.worldPos, N, i.position.xy, cascade);
+    float shadow = SunShadow(worldPos, N, svPosition.xy, cascade);
     if (g_View.contactShadows != ZX_INVALID_INDEX) // small-scale occlusion the cascades miss
-        shadow *= GetTexture2D(g_View.contactShadows).Load(int3(i.position.xy, 0)).r;
+        shadow *= GetTexture2D(g_View.contactShadows).Load(int3(svPosition.xy, 0)).r;
     if (g_View.cloudShadow != ZX_INVALID_INDEX) // clouds passing over the sun
-        shadow *= GetTexture2D(g_View.cloudShadow).SampleLevel(g_LinearClamp, (i.worldPos.xz - g_View.cloudShadowOrigin) * g_View.cloudShadowInvExtent, 0).r;
+        shadow *= GetTexture2D(g_View.cloudShadow).SampleLevel(g_LinearClamp, (worldPos.xz - g_View.cloudShadowOrigin) * g_View.cloudShadowInvExtent, 0).r;
     switch (g_View.debugMode) {
     case 1: return float4(s.baseColor, 1);
     case 2: return float4(N * 0.5 + 0.5, 1);
     case 3: return float4(s.roughness, s.metallic, 0, 1);
-    case 4: return float4(LodColor(i.drawInfo.z) * (0.3 + 0.7 * saturate(dot(N, -g_View.lightDirection) * 0.5 + 0.5)), 1);
+    case 4: return float4(LodColor(lod) * (0.3 + 0.7 * saturate(dot(N, -g_View.lightDirection) * 0.5 + 0.5)), 1);
     case 5: return float4(CascadeColor(cascade) * (0.25 + 0.75 * shadow), 1);
     case 8: { // fraction of the local lights' energy that passes their shadow maps
-        const float viewDepth = dot(i.worldPos - g_View.cameraPosition, g_View.cameraForward);
+        const float viewDepth = dot(worldPos - g_View.cameraPosition, g_View.cameraForward);
         const uint slice = (uint)clamp(log(max(viewDepth, 1e-3)) * g_View.clusterDepthScale + g_View.clusterDepthBias, 0.0, ZX_CLUSTER_GRID_Z - 1.0);
-        const uint2 tile = min(uint2(i.position.xy * g_View.clusterTileScale), uint2(ZX_CLUSTER_GRID_X - 1, ZX_CLUSTER_GRID_Y - 1));
+        const uint2 tile = min(uint2(svPosition.xy * g_View.clusterTileScale), uint2(ZX_CLUSTER_GRID_X - 1, ZX_CLUSTER_GRID_Y - 1));
         const uint base = ClusterIndex(uint3(tile, slice)) * (ZX_MAX_LIGHTS_PER_CLUSTER + 1) * 4;
         ByteAddressBuffer clusters = GetBuffer(g_View.clusterBuffer);
         float lit = 0, total = 1e-6;
         const uint n = g_View.lightCount ? clusters.Load(base) : 0;
         for (uint k = 0; k < n; ++k) {
             const PunctualLight l = LoadLight(GetBuffer(g_View.lightBuffer), clusters.Load(base + 4 + k * 4));
-            const float3 toL = l.position - i.worldPos;
+            const float3 toL = l.position - worldPos;
             const float a = DistanceAttenuation(dot(toL, toL), l.range) * saturate(dot(N, normalize(toL)));
             total += a;
-            lit += a * LocalShadow(l, i.worldPos, N);
+            lit += a * LocalShadow(l, worldPos, N);
         }
         return float4((lit / total).xxx, 1);
     }
     case 7: {
         const float a = g_View.aoTexture != ZX_INVALID_INDEX
-                            ? GetTexture2D(g_View.aoTexture).SampleLevel(g_LinearClamp, i.position.xy * g_View.invRenderSize, 0).r
+                            ? GetTexture2D(g_View.aoTexture).SampleLevel(g_LinearClamp, svPosition.xy * g_View.invRenderSize, 0).r
                             : 1.0;
         return float4(a.xxx, 1);
     }
     case 6: {
         uint count;
-        const float viewDepth = dot(i.worldPos - g_View.cameraPosition, g_View.cameraForward);
-        EvaluateClusteredLights(s, i.worldPos, normalize(g_View.cameraPosition - i.worldPos), i.position, viewDepth, count);
+        const float viewDepth = dot(worldPos - g_View.cameraPosition, g_View.cameraForward);
+        EvaluateClusteredLights(s, worldPos, normalize(g_View.cameraPosition - worldPos), svPosition, viewDepth, count);
         const float h = saturate(count / 16.0);
         return float4(h, 1.0 - abs(h * 2.0 - 1.0), 1.0 - h, 1) * (count > 0 ? 1.0 : 0.15);
     }
     default: break;
     }
 
-    if (m.flags & MATERIAL_UNLIT)
+    if (unlit)
         return float4(s.baseColor + s.emissive, s.alpha);
 
-    const float3 V = normalize(g_View.cameraPosition - i.worldPos);
+    const float3 V = normalize(g_View.cameraPosition - worldPos);
     float3 color = EvaluateDirectLight(s, V, -g_View.lightDirection, g_View.lightColor * (g_View.lightIntensity * shadow));
     // Ambient: sky irradiance (SH9) + specular image-based lighting.
     const float3 irradiance = SkyIrradiance(N);
@@ -752,20 +774,86 @@ float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
     const float3 f0 = lerp(0.04, s.baseColor, s.metallic);
     // Specular ambient: probes / sky cube / SSR along the reflection (bent towards the normal with roughness).
     const float3 R = normalize(lerp(reflect(-V, N), N, s.roughness * s.roughness));
-    const float3 specAmbient = EnvBRDFApprox(f0, s.roughness, NoV) * SpecularEnvironment(i.worldPos, R, s.roughness);
+    const float3 specAmbient = EnvBRDFApprox(f0, s.roughness, NoV) * SpecularEnvironment(worldPos, R, s.roughness);
     // Ambient occlusion: material AO combined with GTAO; multi-bounce for diffuse (Jimenez), specular occlusion (Lagarde).
     float ao = s.occlusion;
     if (g_View.aoTexture != ZX_INVALID_INDEX)
-        ao = min(ao, GetTexture2D(g_View.aoTexture).SampleLevel(g_LinearClamp, i.position.xy * g_View.invRenderSize, 0).r);
+        ao = min(ao, GetTexture2D(g_View.aoTexture).SampleLevel(g_LinearClamp, svPosition.xy * g_View.invRenderSize, 0).r);
     const float3 a = 2.0404 * s.baseColor - 0.3324, b = -4.7951 * s.baseColor + 0.6417, c = 2.7552 * s.baseColor + 0.6903;
     const float3 diffuseAO = max(ao.xxx, ((ao * a + b) * ao + c) * ao);
     const float specAO = saturate(pow(NoV + ao, exp2(-16.0 * s.roughness - 1.0)) - 1.0 + ao);
     color += irradiance * s.baseColor * (1.0 - s.metallic) * diffuseAO + specAmbient * specAO;
-    const float viewDepth = dot(i.worldPos - g_View.cameraPosition, g_View.cameraForward);
+    const float viewDepth = dot(worldPos - g_View.cameraPosition, g_View.cameraForward);
     uint clusterLights;
-    color += EvaluateClusteredLights(s, i.worldPos, V, i.position, viewDepth, clusterLights);
+    color += EvaluateClusteredLights(s, worldPos, V, svPosition, viewDepth, clusterLights);
     color += s.emissive;
     return float4(color, s.alpha);
+}
+
+// Second target (bound when screen-space reflections are on): octahedral normal, roughness, a = 1 (opaque surface).
+float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
+{
+    Material m;
+    const SurfaceData s = EvaluateSurface(i, frontFace, m);
+    normalRoughness = float4(EncodeOct(s.normal), s.roughness, 1.0);
+    return LightSurface(s, i.worldPos, i.position, (m.flags & MATERIAL_UNLIT) != 0, i.drawInfo.z);
+}
+
+// --- Deferred path ---------------------------------------------------------------------------------------------------
+// G-buffer pass (after the depth pre-pass): emission (and unlit materials) straight into the scene color, the surface
+// into three targets. The lighting pass then runs LightSurface once per pixel.
+struct GBufferOutput
+{
+    float4 color : SV_Target0;           // emissive / unlit color (HDR)
+    float4 baseColorAO : SV_Target1;     // R8G8B8A8_SRGB
+    float4 normalRoughness : SV_Target2; // R10G10B10A2 (the screen-space reflections read it too); a = 2/3: unlit
+    float4 material : SV_Target3;        // R8G8B8A8: subsurface color, metallic
+};
+
+GBufferOutput PSGBuffer(VSOutput i, bool frontFace : SV_IsFrontFace)
+{
+    Material m;
+    const SurfaceData s = EvaluateSurface(i, frontFace, m);
+    const bool unlit = (m.flags & MATERIAL_UNLIT) != 0;
+    GBufferOutput o;
+    o.color = float4(unlit ? s.baseColor + s.emissive : s.emissive, 1.0);
+    o.baseColorAO = float4(saturate(s.baseColor), s.occlusion);
+    o.normalRoughness = float4(EncodeOct(s.normal), s.roughness, unlit ? 2.0 / 3.0 : 1.0);
+    o.material = float4(saturate(s.subsurface), s.metallic);
+    return o;
+}
+
+float4 DeferredVS(uint vertexId : SV_VertexID) : SV_Position
+{
+    const float2 uv = float2((vertexId << 1) & 2, vertexId & 2);
+    return float4(uv * float2(2, -2) + float2(-1, 1), 0.0, 1.0);
+}
+
+/// Lighting of the G-buffer, added to the scene color (emission is already there).
+float4 DeferredPS(float4 position : SV_Position) : SV_Target0
+{
+    const int3 p = int3(position.xy, 0);
+    const float depth = GetTexture2D(g_View.sceneDepth).Load(p).r;
+    if (depth <= 0.0)
+        discard; // sky
+    const float4 b = GetTexture2D(g_View.gbufferB).Load(p);
+    if (b.a < 0.83)
+        discard; // unlit: written by the G-buffer pass
+    const float4 a = GetTexture2D(g_View.gbufferA).Load(p);
+    const float4 c = GetTexture2D(g_View.gbufferC).Load(p);
+    const float2 uv = position.xy * g_View.invRenderSize;
+    const float4 h = mul(g_View.invViewProj, float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0));
+    const float3 worldPos = h.xyz / h.w;
+    SurfaceData s;
+    s.baseColor = a.rgb;
+    s.occlusion = a.a;
+    s.normal = DecodeOct(b.xy);
+    s.roughness = b.z;
+    s.metallic = c.a;
+    s.subsurface = c.rgb;
+    s.emissive = 0.0;
+    s.alpha = 1.0;
+    return float4(LightSurface(s, worldPos, position, false, 0).rgb, 0.0);
 }
 
 // ZX_NORMAL_OUTPUT: the opaque pass with screen-space reflections also writes normal + roughness (second target).

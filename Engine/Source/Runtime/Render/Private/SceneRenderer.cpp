@@ -111,6 +111,7 @@ SceneRenderer::~SceneRenderer()
         m_device.Destroy(b);
     m_device.Destroy(m_localAtlas);
     m_device.Destroy(m_clearTilePipeline);
+    m_device.Destroy(m_deferredPipeline);
     m_device.Destroy(m_clusterBuffer);
     m_device.Destroy(m_clusterPipeline);
     m_device.Destroy(m_velocityPipeline);
@@ -166,6 +167,10 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
         {&m_psDepthAlpha, "PSDepth", ShaderStage::Pixel, Span<const ShaderDefine>(depthAlpha)},
         {&m_psNormals, "PSMain", ShaderStage::Pixel, Span<const ShaderDefine>(normals)},
         {&m_psAlphaNormals, "PSMain", ShaderStage::Pixel, Span<const ShaderDefine>(alphaNormals)},
+        {&m_psGBuffer, "PSGBuffer", ShaderStage::Pixel, {}},
+        {&m_psGBufferAlpha, "PSGBuffer", ShaderStage::Pixel, Span<const ShaderDefine>(alpha)},
+        {&m_deferredVS, "DeferredVS", ShaderStage::Vertex, {}},
+        {&m_deferredPS, "DeferredPS", ShaderStage::Pixel, {}},
     };
     for (const Job& j : jobs) {
         Result<ShaderBytecode> r = Compile(j.entry, j.stage, j.defines);
@@ -187,6 +192,27 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
             return false;
         }
         *j.out = move(*r);
+    }
+    {
+        // Deferred lighting: fullscreen, added over the emission the G-buffer pass wrote (scene alpha kept).
+        GraphicsPipelineDesc dp;
+        dp.vertexShader = &m_deferredVS;
+        dp.pixelShader = &m_deferredPS;
+        dp.rasterizer.cullMode = CullMode::None;
+        dp.depthStencil.depthTest = false;
+        dp.depthStencil.depthWrite = false;
+        dp.colorFormats[0] = m_colorFormat;
+        dp.colorCount = 1;
+        BlendTarget add;
+        add.enable = true;
+        add.srcColor = BlendFactor::One;
+        add.dstColor = BlendFactor::One;
+        add.srcAlpha = BlendFactor::Zero;
+        add.dstAlpha = BlendFactor::One;
+        add.writeMask = 0x7;
+        dp.blend[0] = add;
+        dp.debugName = "DeferredLighting";
+        m_deferredPipeline = m_device.CreateGraphicsPipeline(dp);
     }
     {
         GraphicsPipelineDesc vp;
@@ -287,6 +313,15 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
     return m_instanceBuffers[0] && m_clusterPipeline && m_clusterBuffer;
 }
 
+void SceneRenderer::SetGBufferFormats(GraphicsPipelineDesc& pd) const
+{
+    pd.colorFormats[0] = m_colorFormat;              // emission / unlit
+    pd.colorFormats[1] = Format::R8G8B8A8_SRGB;      // base color + material AO
+    pd.colorFormats[2] = Format::R10G10B10A2_UNORM;  // normal + roughness (also read by SSR)
+    pd.colorFormats[3] = Format::R8G8B8A8_UNORM;     // subsurface + metallic
+    pd.colorCount = 4;
+}
+
 Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shader)
 {
     const bool masked = kind == Masked || kind == MaskedTwoSided;
@@ -311,7 +346,7 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
             GraphicsPipelineDesc pd;
             pd.rasterizer.cullMode = twoSided ? CullMode::None : CullMode::Back;
             pd.depthFormat = m_depthFormat;
-            pd.depthStencil.depthWrite = variant != VariantMainNoWrite && variant != VariantMainNoWriteMRT && !translucent;
+            pd.depthStencil.depthWrite = variant != VariantMainNoWrite && variant != VariantMainNoWriteMRT && variant != VariantGBuffer && !translucent;
             if (variant == VariantShadow) {
                 pd.rasterizer.cullMode = CullMode::None;
                 pd.rasterizer.depthBias = i32(m_settings.shadows.depthBias);
@@ -321,6 +356,10 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
                 pd.vertexShader = &m_vsDepthAlpha;
                 pd.pixelShader = &shaders->depthAlphaTest;
                 pd.colorCount = 0;
+            } else if (variant == VariantGBuffer) {
+                pd.vertexShader = &m_vs;
+                pd.pixelShader = masked ? &shaders->gbufferAlphaTest : &shaders->gbuffer;
+                SetGBufferFormats(pd);
             } else {
                 pd.vertexShader = &m_vs;
                 const bool mrt = variant == VariantMainMRT || variant == VariantMainNoWriteMRT;
@@ -352,7 +391,7 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
     GraphicsPipelineDesc pd;
     pd.rasterizer.cullMode = twoSided ? CullMode::None : CullMode::Back;
     pd.depthFormat = m_depthFormat;
-    pd.depthStencil.depthWrite = variant != VariantMainNoWrite && variant != VariantMainNoWriteMRT && !translucent;
+    pd.depthStencil.depthWrite = variant != VariantMainNoWrite && variant != VariantMainNoWriteMRT && variant != VariantGBuffer && !translucent;
     if (variant == VariantShadow) {
         // Thin and open geometry is common in levels: render both faces into the shadow map, biased.
         pd.rasterizer.cullMode = CullMode::None;
@@ -365,6 +404,10 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
         pd.vertexShader = masked ? &m_vsDepthAlpha : &m_vsDepth;
         pd.pixelShader = masked ? &m_psDepthAlpha : nullptr;
         pd.colorCount = 0;
+    } else if (variant == VariantGBuffer) {
+        pd.vertexShader = &m_vs;
+        pd.pixelShader = masked ? &m_psGBufferAlpha : &m_psGBuffer;
+        SetGBufferFormats(pd);
     } else {
         pd.vertexShader = &m_vs;
         const bool mrt = variant == VariantMainMRT || variant == VariantMainNoWriteMRT;
@@ -376,7 +419,7 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
             pd.blend[0] = BlendTarget::AlphaBlend();
     }
     static const char* kinds[KindCount] = {"Opaque", "Opaque2S", "Masked", "Masked2S", "Translucent", "Translucent2S"};
-    static const char* variants[VariantCount] = {"Depth", "Main", "MainNoWrite", "Shadow", "MainMRT", "MainNoWriteMRT"};
+    static const char* variants[VariantCount] = {"Depth", "Main", "MainNoWrite", "Shadow", "MainMRT", "MainNoWriteMRT", "GBuffer"};
     const String name = String::Format("Forward.{}.{}", kinds[kind], variants[variant]);
     pd.debugName = name.View();
     p = m_device.CreateGraphicsPipeline(pd);
@@ -969,6 +1012,7 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
     }
 
     m_viewConstants.viewProj = view.viewProj;
+    m_viewConstants.invViewProj = Inverse(view.viewProj);
     m_viewConstants.cameraPosition = view.position;
     m_viewConstants.lightDirection = Normalize(lighting.sunDirection);
     m_viewConstants.lightIntensity = lighting.sunIlluminance * exposure;
@@ -1313,7 +1357,9 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
     };
     // Normal + roughness for screen-space reflections (cleared: a = 0 marks "no opaque surface").
     RGTexture normals;
-    const bool mrt = m_settings.normalOutput;
+    const bool deferred = m_settings.deferred && prepass && m_settings.debugMode == 0 && m_deferredPipeline;
+    m_stats.deferred = deferred;
+    const bool mrt = m_settings.normalOutput || deferred; // the deferred G-buffer's B target is that texture
     if (mrt) {
         TextureDesc nd;
         nd.width = m_renderSize.x;
@@ -1323,29 +1369,89 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
         nd.debugName = "NormalRoughness";
         normals = graph.CreateTexture(nd);
     }
-    graph.AddPass(
-        "ForwardOpaque", PassType::Graphics,
-        [color, depth, prepass, clearColor, readShadows, mrt, normals, readIndirect](PassBuilder& b) {
-            b.RenderTarget(color, LoadOp::Clear, clearColor);
-            if (mrt)
+    RGTexture gbufferA, gbufferC;
+    if (deferred) {
+        TextureDesc gd;
+        gd.width = m_renderSize.x;
+        gd.height = m_renderSize.y;
+        gd.usage = TextureUsage::RenderTarget | TextureUsage::ShaderResource;
+        gd.format = Format::R8G8B8A8_SRGB;
+        gd.debugName = "GBufferA";
+        gbufferA = graph.CreateTexture(gd);
+        gd.format = Format::R8G8B8A8_UNORM;
+        gd.debugName = "GBufferC";
+        gbufferC = graph.CreateTexture(gd);
+        graph.AddPass(
+            "GBuffer", PassType::Graphics,
+            [color, depth, clearColor, normals, gbufferA, gbufferC, readIndirect, readShadows](PassBuilder& b) {
+                b.RenderTarget(color, LoadOp::Clear, clearColor);
+                b.RenderTarget(gbufferA, LoadOp::Clear, LinearColor(0, 0, 0, 0));
                 b.RenderTarget(normals, LoadOp::Clear, LinearColor(0, 0, 0, 0));
-            b.DepthStencil(depth, prepass ? LoadOp::Load : LoadOp::Clear, 0.0f);
-            readShadows(b);
-            readIndirect(b);
-        },
-        [this, prepass, bindView, mrt, gpu, occlusion](PassContext& ctx) {
-            bindView(ctx);
-            const PipelineVariant variant = prepass ? (mrt ? VariantMainNoWriteMRT : VariantMainNoWrite) : (mrt ? VariantMainMRT : VariantMain);
-            if (gpu) {
-                DrawIndirect(ctx.cmd, 0, variant);
-                if (occlusion)
-                    DrawIndirect(ctx.cmd, 1, variant);
-                return;
-            }
-            Pipeline* bound = nullptr;
-            for (const DrawItem& d : m_opaque)
-                Draw(ctx.cmd, d, variant, bound);
-        });
+                b.RenderTarget(gbufferC, LoadOp::Clear, LinearColor(0, 0, 0, 0));
+                b.DepthStencil(depth, LoadOp::Load, 0.0f);
+                readIndirect(b);
+                readShadows(b); // bindView binds them (the G-buffer shader ignores them)
+            },
+            [this, bindView, gpu, occlusion](PassContext& ctx) {
+                bindView(ctx);
+                if (gpu) {
+                    DrawIndirect(ctx.cmd, 0, VariantGBuffer);
+                    if (occlusion)
+                        DrawIndirect(ctx.cmd, 1, VariantGBuffer);
+                    return;
+                }
+                Pipeline* bound = nullptr;
+                for (const DrawItem& d : m_opaque)
+                    Draw(ctx.cmd, d, VariantGBuffer, bound);
+            });
+        const UVec2 size = m_renderSize;
+        graph.AddPass(
+            "DeferredLighting", PassType::Graphics,
+            [color, depth, normals, gbufferA, gbufferC, readShadows](PassBuilder& b) {
+                b.RenderTarget(color, LoadOp::Load);
+                b.ReadTexture(depth);
+                b.ReadTexture(gbufferA);
+                b.ReadTexture(normals);
+                b.ReadTexture(gbufferC);
+                readShadows(b);
+            },
+            [this, bindView, depth, normals, gbufferA, gbufferC, size](PassContext& ctx) {
+                m_viewConstants.gbufferA = ctx.Texture(gbufferA)->GetSrvIndex();
+                m_viewConstants.gbufferB = ctx.Texture(normals)->GetSrvIndex();
+                m_viewConstants.gbufferC = ctx.Texture(gbufferC)->GetSrvIndex();
+                m_viewConstants.sceneDepth = ctx.Texture(depth)->GetSrvIndex();
+                bindView(ctx);
+                ctx.cmd.SetViewport(Viewport{0, 0, f32(size.x), f32(size.y), 0, 1});
+                ctx.cmd.SetScissor(0, 0, size.x, size.y);
+                ctx.cmd.SetPipeline(m_deferredPipeline);
+                ctx.cmd.Draw(3);
+            });
+    }
+    if (!deferred) {
+        graph.AddPass(
+            "ForwardOpaque", PassType::Graphics,
+            [color, depth, prepass, clearColor, readShadows, mrt, normals, readIndirect](PassBuilder& b) {
+                b.RenderTarget(color, LoadOp::Clear, clearColor);
+                if (mrt)
+                    b.RenderTarget(normals, LoadOp::Clear, LinearColor(0, 0, 0, 0));
+                b.DepthStencil(depth, prepass ? LoadOp::Load : LoadOp::Clear, 0.0f);
+                readShadows(b);
+                readIndirect(b);
+            },
+            [this, prepass, bindView, mrt, gpu, occlusion](PassContext& ctx) {
+                bindView(ctx);
+                const PipelineVariant variant = prepass ? (mrt ? VariantMainNoWriteMRT : VariantMainNoWrite) : (mrt ? VariantMainMRT : VariantMain);
+                if (gpu) {
+                    DrawIndirect(ctx.cmd, 0, variant);
+                    if (occlusion)
+                        DrawIndirect(ctx.cmd, 1, variant);
+                    return;
+                }
+                Pipeline* bound = nullptr;
+                for (const DrawItem& d : m_opaque)
+                    Draw(ctx.cmd, d, variant, bound);
+            });
+    }
     // Velocity of the objects that moved (motion blur, TAA); everything else keeps the "use the camera" sentinel.
     m_velocityTexture = RGTexture();
     if (m_motion && !m_velocityDraws.Empty() && m_velocityPipeline) {
