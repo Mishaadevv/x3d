@@ -505,6 +505,8 @@ void DrawShell(Editor& ed)
         DrawOutputLogPanel(ed);
     DrawStatsPanel(ed);
     DrawMaterialEditorPanel(ed);
+    DrawAnimationViewer(ed);
+    DrawAnimGraphEditor(ed);
     DrawToolPanel(ed);
     DrawFeaturesPanel(ed);
     DrawAudioMixerPanel(ed);

@@ -181,6 +181,19 @@ ConCommand CmdStressParticles("stress.particles",
                                    ZX_LOG_INFO(LogCmd, "GPU spark fountain: {:.0f} particles/s", pe.rate);
                                });
 
+ConCommand CmdAnimViewer("anim.viewer", "Opens a model in the Animation Viewer: anim.viewer <path of a .glb / .gltf>", [](Span<const StringView> args) {
+    if (Ed() && !args.Empty())
+        OpenAnimationViewer(*Ed(), args[0]);
+});
+
+ConCommand CmdAnimGraph("anim.graph", "Opens a .zanimgraph in the AnimGraph Editor: anim.graph <path> (Content-relative or absolute)",
+                        [](Span<const StringView> args) {
+                            if (!Ed() || args.Empty())
+                                return;
+                            const String path = Path::IsAbsolute(args[0]) ? String(args[0]) : Path::Join(Ed()->contentRoot, args[0]);
+                            OpenAnimGraphEditor(*Ed(), path);
+                        });
+
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
     if (Ed())
         Ed()->Undo();

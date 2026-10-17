@@ -147,6 +147,9 @@ WriteStarterContent; the Third Person template puts SK_Human under the player (E
 IK / events: asset::anim::SolveTwoBoneIK / RotateGlobal / GlobalRotation; AnimationSystem::ApplyIK (foot IK through
 AnimationSystem::raycast set by the host = physics, ignoring the character entity; look-at via SetLookAt), Events()
 -> ScriptSystem::DispatchAnimEvents (TickGame start: onAnimEvent on the entity and its ancestors).
+Animation editors: ZXEditor/AnimationEditor.cpp (AnimationPreview = own world + AnimationSystem + ViewportRenderer;
+Animation Viewer; AnimGraph Editor with canvas, ParamsPanel / StatePanel / TransitionPanel, SaveGraph ->
+AnimationSystem::ReloadGraph). Console anim.viewer <model>, anim.graph <graph>.
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

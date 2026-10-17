@@ -29,6 +29,7 @@
 #include "Engine/ViewportRenderer.h"
 #include "EditorActions.h"
 #include "EditorTools.h"
+#include "AnimationEditor.h"
 #include "MaterialEditor.h"
 #include "ScriptEditor.h"
 #include "Platform/Window.h"
@@ -279,6 +280,8 @@ public:
     Array<PendingImport> pendingImports;
     PanelState panels;
     MaterialEditorState materialEditor;
+    AnimationViewerState animViewer;
+    AnimGraphEditorState animGraphEditor;
     ToolState tools;          // Brush / Measure (EditorTools.cpp)
     bool showFeatures = false; // Window > Features
     ScriptEditorState scriptEditor;

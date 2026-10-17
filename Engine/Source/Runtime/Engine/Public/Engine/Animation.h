@@ -73,6 +73,10 @@ public:
     void SetParam(ecs::Entity e, StringView name, f32 value);
     void SetTrigger(ecs::Entity e, StringView name) { SetParam(e, name, 1.0f); }
     f32 GetParam(ecs::Entity e, StringView name) const;
+    /// Seconds into the current clip (clip mode; the Animation Viewer scrubs with it).
+    void SetTime(ecs::Entity e, f32 seconds);
+    /// Re-reads a graph file (after editing it): animators using it restart in its entry state.
+    void ReloadGraph(StringView path);
     /// Turns the head towards `target` (world) with `weight` 0..1 (0 = look ahead again); smoothed.
     void SetLookAt(ecs::Entity e, Vec3 target, f32 weight);
     /// Events of the last Tick (cleared by the next one).

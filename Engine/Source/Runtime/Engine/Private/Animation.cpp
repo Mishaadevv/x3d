@@ -426,6 +426,21 @@ void AnimationSystem::ApplyIK(ecs::World& world, ecs::Entity e, const Animator& 
     }
 }
 
+void AnimationSystem::SetTime(ecs::Entity e, f32 seconds)
+{
+    State& s = *m_states.Insert(e.Pack(), State{}).first;
+    s.time = Max(seconds, 0.0f);
+    s.fade = 1.0f;
+}
+
+void AnimationSystem::ReloadGraph(StringView path)
+{
+    m_graphs.RemoveIf([&](const String& key, const GraphFile&) { return key.View().EqualsIgnoreCase(path); });
+    for (auto& [key, s] : m_states)
+        if (s.graphPath.View().EqualsIgnoreCase(path))
+            s.graphState = -1;
+}
+
 void AnimationSystem::SetLookAt(ecs::Entity e, Vec3 target, f32 weight)
 {
     State& s = *m_states.Insert(e.Pack(), State{}).first;

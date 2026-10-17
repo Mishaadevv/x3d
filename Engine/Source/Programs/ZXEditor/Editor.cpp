@@ -3391,6 +3391,7 @@ void Editor::RenderFrame()
         thumbnails->Update(graph, sampled);
     if (mode == EditorMode::Editing)
         RenderMaterialPreview(*this, graph, sampled);
+        RenderAnimationPreview(*this, graph, sampled);
     uiRenderer->Prepare(*cmd, fonts, ui->GetDrawLists());
     uiRenderer->AddPass(graph, backBuffer, size, sampled.View());
     graph.Execute(*cmd);
@@ -3465,6 +3466,7 @@ void Editor::Shutdown()
     pool->Clear();
     UnregisterEditorConsole();
     materialEditor.preview.Reset();
+    animViewer.preview.Reset();
     debugDraw.Reset();
     thumbnails.Reset();
     materials.Reset();

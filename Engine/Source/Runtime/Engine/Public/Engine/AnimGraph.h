@@ -50,6 +50,7 @@ struct AnimGraph
         f32 speed = 1.0f;
         bool loop = true;
         Array<Event> events;
+        f32 x = 0.0f, y = 0.0f; // position in the graph editor
     };
     enum class Op : u8
     {
@@ -78,6 +79,7 @@ struct AnimGraph
     Array<State> states;
     Array<Transition> transitions;
     i32 entry = 0;
+    f32 anyX = -240.0f, anyY = 0.0f; // the "Any State" node in the graph editor
 
     i32 FindState(StringView name) const;
     i32 FindParam(StringView name) const;

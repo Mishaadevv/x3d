@@ -1,4 +1,5 @@
 #include "Engine/AnimGraph.h"
+#include "Core/Math/Math.h"
 #include "Core/Serialization/Json.h"
 
 namespace zx {
@@ -60,6 +61,10 @@ bool ParseAnimGraph(StringView json, AnimGraph& out, String* error)
         for (const JsonValue& ev : s.Get("events").Elements())
             state.events.PushBack(AnimGraph::Event{String(ev.Get("name").AsString()), Clamp(ev.Get("time").AsFloat(), 0.0f, 1.0f)});
         state.speed = s.Get("speed").AsFloat(1.0f);
+        if (s.Get("pos").Size() == 2) {
+            state.x = s.Get("pos")[0].AsFloat();
+            state.y = s.Get("pos")[1].AsFloat();
+        }
         state.loop = s.Get("loop").AsBool(true);
         if (state.name.Empty())
             return fail("a state has no name");
@@ -69,6 +74,10 @@ bool ParseAnimGraph(StringView json, AnimGraph& out, String* error)
     if (out.states.Empty())
         return fail("the graph has no states");
     out.entry = Max(out.FindState(root.Get("entry").AsString()), 0);
+    if (root.Get("anyPos").Size() == 2) {
+        out.anyX = root.Get("anyPos")[0].AsFloat();
+        out.anyY = root.Get("anyPos")[1].AsFloat();
+    }
     for (const JsonValue& t : root.Get("transitions").Elements()) {
         AnimGraph::Transition& tr = out.transitions.AddDefaulted();
         const StringView from = t.Get("from").AsString("*");
@@ -143,9 +152,17 @@ String WriteAnimGraph(const AnimGraph& g)
             o.Set("speed", JsonValue(f64(s.speed)));
         if (!s.loop)
             o.Set("loop", JsonValue(false));
+        JsonValue pos = JsonValue::MakeArray();
+        pos.PushBack(JsonValue(f64(Round(s.x))));
+        pos.PushBack(JsonValue(f64(Round(s.y))));
+        o.Set("pos", move(pos));
         states.PushBack(move(o));
     }
     root.Set("states", move(states));
+    JsonValue anyPos = JsonValue::MakeArray();
+    anyPos.PushBack(JsonValue(f64(Round(g.anyX))));
+    anyPos.PushBack(JsonValue(f64(Round(g.anyY))));
+    root.Set("anyPos", move(anyPos));
     JsonValue transitions = JsonValue::MakeArray();
     for (const AnimGraph::Transition& t : g.transitions) {
         JsonValue o = JsonValue::MakeObject();
@@ -184,6 +201,8 @@ AnimGraph MakeLocomotionGraph()
     air.clip = "Jump";
     air.loop = false;
     air.speed = 1.2f;
+    locomotion.x = 0.0f;
+    air.x = 320.0f;
     g.states = {locomotion, air};
     g.entry = 0;
     AnimGraph::Transition up;

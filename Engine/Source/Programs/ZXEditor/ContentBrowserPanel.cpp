@@ -40,6 +40,8 @@ FileKind KindOf(const FileItem& item)
         return {ZX_ICON_PALETTE, Color(0xE0, 0x78, 0xC8), "Material"};
     if (ext.EqualsIgnoreCase(".zmati"))
         return {ZX_ICON_PALETTE, Color(0xB8, 0x8C, 0xF0), "Material Instance"};
+    if (ext.EqualsIgnoreCase(".zanimgraph"))
+        return {ZX_ICON_WORKFLOW, Color(0x6C, 0xC8, 0x6A), "Anim Graph"};
     if (ext.EqualsIgnoreCase(".zprefab"))
         return {ZX_ICON_PACKAGE, Color(0x5A, 0xC8, 0xF0), "Prefab"};
     if (ext.EqualsIgnoreCase(".zs"))
@@ -221,6 +223,8 @@ void DrawContentBrowserPanel(Editor& ed)
                     ed.RequestSceneAction(SceneAction::Open, item.path);
                 else if (Path::HasExtension(item.path, ".zs"))
                     OpenScriptEditor(ed, item.path);
+                else if (Path::HasExtension(item.path, ".zanimgraph"))
+                    OpenAnimGraphEditor(ed, item.path);
                 else if ((Path::HasExtension(item.path, ".wav") || Path::HasExtension(item.path, ".ogg")) && ed.audio)
                     ed.audio->TogglePreview(item.path);
                 else if (Path::HasExtension(item.path, ".zmat") || Path::HasExtension(item.path, ".zmati")) {
@@ -255,6 +259,10 @@ void DrawContentBrowserPanel(Editor& ed)
                 b.browserSelected = item.path;
                 ui::TextDisabled(item.name);
                 ui::Separator();
+                if (IsModel(item.path) && ui::MenuItem(ZX_ICON_CLAPPERBOARD "  Open in Animation Viewer"))
+                    OpenAnimationViewer(ed, item.path);
+                if (Path::HasExtension(item.path, ".zanimgraph") && ui::MenuItem(ZX_ICON_PENCIL "  Edit"))
+                    OpenAnimGraphEditor(ed, item.path);
                 const bool material = Path::HasExtension(item.path, ".zmat");
                 if ((material || Path::HasExtension(item.path, ".zmati")) && ui::MenuItem(ZX_ICON_PENCIL "  Edit")) {
                     MaterialLibrary::Material* m = ed.materials ? ed.materials->FindByPath(item.path) : nullptr;
@@ -333,6 +341,10 @@ void DrawContentBrowserPanel(Editor& ed)
                     path = Path::Join(b.browserCurrent, String::Format("NewScript{}.zs", n));
                 if (CreateScriptFile(path))
                     OpenScriptEditor(ed, path);
+                Refresh(ed, true);
+            }
+            if (ui::MenuItem(ZX_ICON_WORKFLOW "  New Anim Graph")) {
+                CreateAnimGraph(ed, b.browserCurrent);
                 Refresh(ed, true);
             }
             if (ui::MenuItem(ZX_ICON_FOLDER_PLUS "  New Folder")) {
