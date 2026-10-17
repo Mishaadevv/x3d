@@ -695,8 +695,12 @@ void GetPrefabOverrides(ecs::World& world, ecs::Entity e, PrefabLibrary& library
             continue;
         }
         const JsonValue d = DiffObjects(CanonicalComponent(m.first, m.second), CanonicalComponent(m.first, *b));
-        for (const JsonMember& f : d.Members())
+        for (const JsonMember& f : d.Members()) {
+            // Where the instance stands is its placement, not an override (as in Unity / UE).
+            if (e == root && m.first == "Transform" && (f.first == "position" || f.first == "rotation"))
+                continue;
             out.PushBack(String::Format("{}.{}", m.first, f.first));
+        }
     }
 }
 

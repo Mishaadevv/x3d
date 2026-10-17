@@ -11,6 +11,7 @@
 #include "Core/Threading/Thread.h"
 #include "Core/Time/Time.h"
 #include "Engine/BuiltinAssets.h"
+#include "Engine/Prefab.h"
 #include "Core/String/Parse.h"
 #include "Core/String/Path.h"
 #include "Core/HAL/PlatformFile.h"
@@ -45,7 +46,7 @@ CVar<i32> CVarViewMode("r.ViewMode", 0, "0 lit, 1 base color, 2 normals, 3 rough
 CVar<i32> CVarForceLod("r.ForceLOD", -1, "Force a mesh LOD (-1 = automatic)");
 CVar<f32> CVarCameraSpeed("editor.CameraSpeed", 4.0f, "Viewport fly speed (m/s)");
 CVar<bool> CVarShowGrid("editor.ShowGrid", true, "Viewport grid");
-CVar<bool> CVarUISounds("editor.UISounds", true, "Editor feedback sounds (Play / Stop, builds, packaging)");
+CVar<bool> CVarUISounds("editor.UISounds", false, "Editor feedback sounds (Play / Stop, builds, packaging); off by default");
 
 Editor* Ed()
 {
@@ -519,6 +520,31 @@ ConCommand CmdPrefabPlace("prefab.place", "Places a prefab in front of the camer
 ConCommand CmdPrefabApply("prefab.apply", "Applies the selected instance's overrides to its prefab", [](Span<const StringView>) {
     if (Ed())
         Ed()->ApplyPrefab(Ed()->selected);
+});
+
+ConCommand CmdPrefabOverrides("prefab.overrides", "Lists prefab overrides (Component.field) of the selection, or of every prefab entity: prefab.overrides [all]",
+                               [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || !ed->prefabs)
+        return;
+    Array<ecs::Entity> targets;
+    if (!args.Empty() && args[0].EqualsIgnoreCase("all"))
+        ed->world.Query<const scene::EntityName>().Each([&](ecs::Entity e, const scene::EntityName&) {
+            if (FindPrefabInstanceRoot(ed->world, e))
+                targets.PushBack(e);
+        });
+    else if (ed->world.IsAlive(ed->selected))
+        targets.PushBack(ed->selected);
+    for (ecs::Entity e : targets) {
+        Array<String> overrides;
+        GetPrefabOverrides(ed->world, e, *ed->prefabs, overrides);
+        if (overrides.Empty() && targets.Size() > 1)
+            continue;
+        const scene::EntityName* n = ed->world.Get<const scene::EntityName>(e);
+        ZX_LOG_INFO(LogCmd, "{}: {} override(s)", n ? n->value.View() : StringView("?"), overrides.Size());
+        for (const String& o : overrides)
+            ZX_LOG_INFO(LogCmd, "  {}", o);
+    }
 });
 
 ConCommand CmdPrefabRevert("prefab.revert", "Reverts the selected instance to its prefab", [](Span<const StringView>) {

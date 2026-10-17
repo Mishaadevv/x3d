@@ -745,22 +745,32 @@ void DrawDetailsPanel(Editor& ed)
         const Rect bar(p, Vec2(p.x + ui::GetContentRegionAvail().x, p.y + h));
         ui::GetWindowDrawList().AddRect(bar, WithAlpha(Color(0x3B, 0x8C, 0xF5), 0.12f), ui::CornerRadii(4.0f * s), 1.0f,
                                         WithAlpha(Color(0x3B, 0x8C, 0xF5), 0.45f));
-        ui::SetCursorPos(p + Vec2(Round(8.0f * s), Round(5.0f * s)));
-        ui::AlignTextToFramePadding();
-        ui::PushTextColor(Color(0x6C, 0xB4, 0xF5));
-        ui::Text(String::Format(ZX_ICON_PACKAGE "  {}", pi ? Path::Stem(pi->prefab) : StringView("Prefab")));
-        ui::PopTextColor();
-        ui::ItemTooltip(pi ? pi->prefab.View() : StringView());
-        ui::SameLine();
-        ui::TextDisabled(overrides.Empty() ? String("no overrides") : String::Format("{} override{}", overrides.Size(), overrides.Size() == 1 ? "" : "s"));
+        // Name and override count on the left (cut to fit), Revert / Apply on the right (inactive with no overrides).
         const f32 bw = 64.0f;
-        ui::SameLine(Max(0.0f, (bar.Width() / s) - bw * 2.0f - 22.0f));
+        const f32 buttonsX = bar.max.x - Round((bw * 2.0f + 4.0f + 8.0f) * s);
+        const ui::FontHandle font = ctx.Fonts().FindFont("Inter");
+        const f32 fontSize = ctx.GetStyle().fontSize * s;
+        const String prefabName = String::Format(ZX_ICON_PACKAGE "  {}", pi ? Path::Stem(pi->prefab) : StringView("Prefab"));
+        const String count = overrides.Empty() ? String("no overrides") : String::Format("{} override{}", overrides.Size(), overrides.Size() == 1 ? "" : "s");
+        const Rect textRect(Vec2(bar.min.x + Round(8.0f * s), bar.min.y), Vec2(buttonsX - Round(6.0f * s), bar.max.y));
+        const f32 nameW = Min(ctx.Fonts().MeasureWidth(font, fontSize, prefabName) + Round(10.0f * s), textRect.Width());
+        DrawList& dl = ui::GetWindowDrawList();
+        dl.AddTextInRect(font, fontSize, Rect(textRect.min, Vec2(textRect.min.x + nameW, textRect.max.y)), Color(0x6C, 0xB4, 0xF5), prefabName);
+        if (textRect.Width() - nameW > 30.0f * s)
+            dl.AddTextInRect(font, fontSize, Rect(Vec2(textRect.min.x + nameW, textRect.min.y), textRect.max),
+                             overrides.Empty() ? ctx.GetStyle().colors.textDisabled : ctx.GetStyle().colors.text, count);
+        ui::SetCursorPos(textRect.min);
+        ui::InvisibleButton("##prefab_name", textRect.Size() / s);
+        ui::ItemTooltip(pi ? pi->prefab.View() : StringView());
+        ui::SetCursorPos(Vec2(buttonsX, p.y + Round(5.0f * s)));
+        ui::BeginDisabled(overrides.Empty());
         if (ui::Button("Revert##prefab", Vec2(bw, 0.0f)))
             ed.RevertPrefab(e);
         ui::ItemTooltip("Discard this instance's overrides");
         ui::SameLine(0.0f, 4.0f);
         if (ui::Button("Apply##prefab", Vec2(bw, 0.0f), ui::ButtonVariant::Primary))
             ed.ApplyPrefab(e);
+        ui::EndDisabled();
         ui::ItemTooltip("Write this instance's changes into the prefab (updates every instance)");
         ui::SetCursorPos(Vec2(p.x, bar.max.y));
         ui::Spacing();

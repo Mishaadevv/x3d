@@ -118,6 +118,15 @@ ZX_TEST(Prefab, InstancesOverridesAndRoundTrip)
     ZX_EXPECT(w.IsAlive(Child(w, b2, "Switch")));
     ZX_EXPECT(!w.IsAlive(Child(w, b2, "Base")));
     ZX_EXPECT(w.IsAlive(Child(w, b2, "Shade")));
+    // After Apply the applied instance has nothing left to apply; where an instance stands (root position / rotation)
+    // is never an override.
+    const Entity a2 = FindEntityByGuid(w, sourceGuid);
+    GetPrefabOverrides(w, Child(w, a2, "Bulb"), library, overrides);
+    ZX_EXPECT(overrides.Empty());
+    w.Get<Transform>(a2)->position = Vec3(10, 2, -4);
+    w.Get<Transform>(a2)->rotation = Quat::FromAxisAngle(Vec3(0, 1, 0), 1.0f);
+    GetPrefabOverrides(w, a2, library, overrides);
+    ZX_EXPECT(overrides.Empty());
 
     // Revert drops B's overrides (only the placement stays).
     const Entity b3 = RefreshPrefabInstance(w, b2, library, true);
