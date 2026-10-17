@@ -31,6 +31,7 @@ class PhysicsSystem;
 class FireSystem;
 class ParticleSystem;
 class AnimationSystem;
+struct AnimEvent;
 struct PhysicsEvent;
 
 /// Runs a .zs file on the entity. `properties` holds the values of the script's `prop` fields that differ from the
@@ -90,6 +91,8 @@ public:
     FireSystem* fire = nullptr;
     /// Calls collisionEnter / collisionExit / triggerEnter / triggerExit on the scripts of both entities of each event.
     void DispatchPhysicsEvents(ecs::World& world, Span<const PhysicsEvent> events);
+    /// Calls onAnimEvent(name) on the scripts of each event's entity and its ancestors (the player above its mesh).
+    void DispatchAnimEvents(ecs::World& world, Span<const AnimEvent> events);
 
     /// log()/print() output and errors (file:line: message).
     Function<void(StringView message, bool isError)> onLog;

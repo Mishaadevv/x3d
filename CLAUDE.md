@@ -144,6 +144,9 @@ AnimGraph: Engine/AnimGraph.h (.zanimgraph JSON: ParseAnimGraph / WriteAnimGraph
 AnimationSystem (Animator::graph, contentRoot set by the host, SetParam / SetTrigger / CurrentState, CharacterState of
 the entity or an ancestor -> Speed / VerticalSpeed / Grounded). Starter Characters/Locomotion.zanimgraph is written by
 WriteStarterContent; the Third Person template puts SK_Human under the player (Editor::AddAnimatedCharacter).
+IK / events: asset::anim::SolveTwoBoneIK / RotateGlobal / GlobalRotation; AnimationSystem::ApplyIK (foot IK through
+AnimationSystem::raycast set by the host = physics, ignoring the character entity; look-at via SetLookAt), Events()
+-> ScriptSystem::DispatchAnimEvents (TickGame start: onAnimEvent on the entity and its ancestors).
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

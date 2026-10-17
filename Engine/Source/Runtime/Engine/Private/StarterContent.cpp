@@ -499,6 +499,15 @@ script ThirdPersonController {
     var stepDistance = 0.0
     var wasGrounded = true
     var fallSpeed = 0.0
+    var animSteps = false // an animated model reports its footsteps (onAnimEvent) instead of the stride
+
+    // Footsteps of the animated model: when a foot touches the ground.
+    fn onAnimEvent(name) {
+        if name == "Footstep" and footsteps != "" {
+            animSteps = true
+            audio.playAt(footsteps + surface(), entity.worldPosition, 0.45)
+        }
+    }
 
     fn update(dt) {
         let move = input.move
@@ -533,7 +542,7 @@ script ThirdPersonController {
                     audio.playAt(footsteps + surface(), entity.worldPosition, 0.5 + impact * 0.4)
                     if impact > 0.1 { audio.playAt("StarterContent/Sounds/Impacts/Impact_Soft", entity.worldPosition, impact) }
                     stepDistance = 0
-                } elif stepDistance > stride {
+                } elif stepDistance > stride and not animSteps {
                     stepDistance = 0
                     audio.playAt(footsteps + surface(), entity.worldPosition, 0.45)
                 }

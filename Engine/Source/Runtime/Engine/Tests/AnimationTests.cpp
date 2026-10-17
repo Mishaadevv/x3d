@@ -204,3 +204,140 @@ ZX_TEST(AnimationSystem, LocomotionGraphFollowsTheCharacter)
         anim.Tick(ch.world, 1.0f / 60.0f, true);
     ZX_EXPECT(anim.CurrentState(ch.skinned) == "Locomotion");
 }
+
+namespace {
+
+/// World position of a bone from the palette (palette = skinToNode * model * inverseBind).
+Vec3 BoneWorld(AnimatedCharacter& ch, AnimationSystem& anim, StringView bone)
+{
+    const Animator* a = ch.world.Get<Animator>(ch.skinned);
+    const asset::Skeleton* sk = ch.assets->GetSkeleton(a->skeleton);
+    const i32 b = sk ? sk->FindBone(bone) : -1;
+    const Span<const Mat4> palette = anim.Palette(ch.skinned);
+    if (b < 0 || palette.Size() <= usize(b))
+        return Vec3();
+    const Mat4 node = palette[usize(b)] * Inverse(sk->inverseBind[usize(b)]);
+    return ch.world.Get<scene::WorldTransform>(ch.skinned)->matrix.TransformPoint(node.GetTranslation());
+}
+
+ecs::Entity RootOf(ecs::World& world, ecs::Entity e)
+{
+    while (const scene::Parent* p = world.Get<scene::Parent>(e))
+        e = p->entity;
+    return e;
+}
+
+} // namespace
+
+ZX_TEST(AnimationSystem, FootIKFollowsTheGround)
+{
+    AnimatedCharacter ch;
+    ZX_REQUIRE(bool(ch.skinned));
+    ch.world.Get<Animator>(ch.skinned)->playing = false; // a still pose: only the IK moves the feet
+    const ecs::Entity root = RootOf(ch.world, ch.skinned);
+    CharacterState st;
+    st.grounded = true;
+    ch.world.Add(root, st);
+    AnimationSystem anim(*ch.assets);
+    // Flat ground first: reference foot heights.
+    f32 groundLeft = 0.0f, groundRight = 0.0f;
+    f32 leftX = 0.0f;
+    anim.raycast = [&](Vec3 from, Vec3, ecs::Entity ignore, Vec3& point, Vec3& normal) {
+        ZX_EXPECT(ignore == root); // the character itself is skipped
+        point = Vec3(from.x, (from.x - leftX) * (from.x - leftX) < 1e-6f ? groundLeft : groundRight, from.z);
+        normal = Vec3(0, 1, 0);
+        return true;
+    };
+    ch.Warm(anim, true);
+    auto settle = [&] {
+        for (u32 i = 0; i < 90; ++i)
+            anim.Tick(ch.world, 1.0f / 60.0f, true);
+    };
+    settle();
+    const Vec3 left0 = BoneWorld(ch, anim, "LeftFoot"), right0 = BoneWorld(ch, anim, "RightFoot");
+    ZX_REQUIRE(LengthSq(left0 - right0) > 1e-4f);
+    leftX = left0.x;
+    // A 0.2 m step under the left foot: it rises, the right one stays.
+    groundLeft = 0.2f;
+    settle();
+    const Vec3 left1 = BoneWorld(ch, anim, "LeftFoot"), right1 = BoneWorld(ch, anim, "RightFoot");
+    ZX_EXPECT_NEAR(left1.y - left0.y, 0.2f, 0.03f);
+    ZX_EXPECT_NEAR(right1.y, right0.y, 0.03f);
+    // A 0.2 m dip under the right foot instead: the hips drop, the right foot reaches down, the left stays.
+    groundLeft = 0.0f;
+    groundRight = -0.2f;
+    settle();
+    const Vec3 left2 = BoneWorld(ch, anim, "LeftFoot"), right2 = BoneWorld(ch, anim, "RightFoot");
+    ZX_EXPECT_NEAR(right2.y - right0.y, -0.2f, 0.03f);
+    ZX_EXPECT_NEAR(left2.y, left0.y, 0.03f);
+    ZX_EXPECT_LT(BoneWorld(ch, anim, "Hips").y, BoneWorld(ch, anim, "LeftFoot").y + 10.0f); // finite
+    // In the air (or without a controller) the feet go back to the animation.
+    ch.world.Get<CharacterState>(root)->grounded = false;
+    settle();
+    ZX_EXPECT_NEAR(BoneWorld(ch, anim, "RightFoot").y, right0.y, 0.03f);
+}
+
+ZX_TEST(AnimationSystem, WalkingReportsFootsteps)
+{
+    AnimatedCharacter ch;
+    ZX_REQUIRE(bool(ch.skinned));
+    AnimationSystem anim(*ch.assets);
+    ZX_REQUIRE(anim.Play(ch.world, ch.skinned, "Walk"));
+    const ecs::Entity root = RootOf(ch.world, ch.skinned);
+    CharacterState st;
+    st.grounded = true;
+    st.velocity = Vec3(0.0f, 0.0f, 2.0f);
+    ch.world.Add(root, st);
+    ch.Warm(anim, true);
+    u32 steps = 0;
+    for (u32 i = 0; i < 180; ++i) { // 3 s of a 1 s walk cycle: about six steps
+        anim.Tick(ch.world, 1.0f / 60.0f, true);
+        for (const AnimEvent& ev : anim.Events())
+            steps += ev.name == "Footstep" ? 1u : 0u;
+    }
+    ZX_EXPECT_GE(steps, 4u);
+    ZX_EXPECT_LE(steps, 8u);
+    // Standing still: no footsteps.
+    ch.world.Get<CharacterState>(root)->velocity = Vec3(0.0f);
+    steps = 0;
+    for (u32 i = 0; i < 120; ++i) {
+        anim.Tick(ch.world, 1.0f / 60.0f, true);
+        steps += u32(anim.Events().Size());
+    }
+    ZX_EXPECT_EQ(steps, 0u);
+}
+
+ZX_TEST(AnimationSystem, LookAtTurnsTheHead)
+{
+    AnimatedCharacter ch;
+    ZX_REQUIRE(bool(ch.skinned));
+    ch.world.Get<Animator>(ch.skinned)->playing = false;
+    AnimationSystem anim(*ch.assets);
+    ch.Warm(anim, true);
+    const asset::Skeleton* sk = ch.assets->GetSkeleton(ch.world.Get<Animator>(ch.skinned)->skeleton);
+    ZX_REQUIRE(sk != nullptr);
+    const usize head = usize(sk->FindBone("Head"));
+    auto headMatrix = [&] { return anim.Palette(ch.skinned)[head] * Inverse(sk->inverseBind[head]); };
+    for (u32 i = 0; i < 10; ++i)
+        anim.Tick(ch.world, 1.0f / 60.0f, true);
+    const Mat4 ahead = headMatrix();
+    // A target to the side (+X, at head height): after the smoothing the head has turned.
+    const Vec3 headWorld = ch.world.Get<scene::WorldTransform>(ch.skinned)->matrix.TransformPoint(ahead.GetTranslation());
+    anim.SetLookAt(ch.skinned, headWorld + Vec3(3.0f, 0.0f, 1.0f), 1.0f);
+    for (u32 i = 0; i < 90; ++i)
+        anim.Tick(ch.world, 1.0f / 60.0f, true);
+    const Mat4 turned = headMatrix();
+    f32 change = 0.0f;
+    for (u32 c = 0; c < 3; ++c)
+        change = Max(change, Length(SafeNormalize(turned.columns[c].XYZ(), Vec3(1, 0, 0)) - SafeNormalize(ahead.columns[c].XYZ(), Vec3(1, 0, 0))));
+    ZX_EXPECT_GT(change, 0.3f); // turned by tens of degrees
+    // Weight 0: back to the animation.
+    anim.SetLookAt(ch.skinned, Vec3(), 0.0f);
+    for (u32 i = 0; i < 120; ++i)
+        anim.Tick(ch.world, 1.0f / 60.0f, true);
+    const Mat4 back = headMatrix();
+    f32 rest = 0.0f;
+    for (u32 c = 0; c < 3; ++c)
+        rest = Max(rest, Length(SafeNormalize(back.columns[c].XYZ(), Vec3(1, 0, 0)) - SafeNormalize(ahead.columns[c].XYZ(), Vec3(1, 0, 0))));
+    ZX_EXPECT_LT(rest, 0.05f);
+}

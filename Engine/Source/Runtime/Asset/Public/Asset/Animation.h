@@ -68,6 +68,14 @@ void BlendPoses(Span<const Transform> a, Span<const Transform> b, f32 t, Span<Tr
 void LocalToModel(const Skeleton& skeleton, Span<const Transform> local, Span<Mat4> out);
 /// Skinning matrices: model[b] * inverseBind[b], optionally pre-multiplied by `skinToMesh`.
 void SkinningMatrices(const Skeleton& skeleton, Span<const Mat4> model, const Mat4& skinToMesh, Span<Mat4> out);
+/// Rotation of `bone` in skeleton space (local rotations chained to the root; bone scale ignored).
+Quat GlobalRotation(const Skeleton& skeleton, Span<const Transform> local, u32 bone);
+/// Two-bone IK (upper a -> lower b -> end c, e.g. hip -> knee -> foot): rotates a and b so that c reaches `target`
+/// (skeleton space; clamped to the chain's reach). The bend keeps its current plane; `bendHint` (skeleton space)
+/// orients a fully straight chain. Only the local rotations of a and b change.
+void SolveTwoBoneIK(const Skeleton& skeleton, Span<Transform> local, u32 a, u32 b, u32 c, Vec3 target, Vec3 bendHint);
+/// Applies `rotation` (skeleton space) on top of `bone`'s current global rotation.
+void RotateGlobal(const Skeleton& skeleton, Span<Transform> local, u32 bone, const Quat& rotation);
 /// Packs four bone indices (each <= 255) and weights (normalized and quantized to unorm8 summing to 255).
 void PackSkin(const u32 joints[4], const f32 weights[4], u32& packedJoints, u32& packedWeights);
 

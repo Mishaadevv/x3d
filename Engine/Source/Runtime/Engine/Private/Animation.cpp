@@ -1,5 +1,6 @@
 #include "Engine/Animation.h"
 #include "Core/FileSystem/FileSystem.h"
+#include <cmath>
 #include "Core/Log/Log.h"
 #include "Core/Profiler/Profiler.h"
 #include "Core/String/Path.h"
@@ -21,6 +22,12 @@ ZX_REFLECT_STRUCT_BEGIN(Animator)
     ZX_FIELD(blendTime, Meta::Range(0, 2), Meta::Units("s"), Meta::Tooltip("Cross-fade when the clip changes"))
     ZX_FIELD(skeleton, Meta::AssetType("Skeleton"), Meta::ReadOnly())
     ZX_FIELD(clips, Meta::AssetType("Animation"), Meta::ReadOnly(), Meta::Tooltip("Clips imported with the model"))
+    ZX_FIELD(footIK, Meta::Category("Inverse Kinematics"), Meta::Tooltip("Feet follow slopes and steps while playing (grounded Character Controller)"))
+    ZX_FIELD(footReach, Meta::Range(0, 2), Meta::Units("m"), Meta::Tooltip("How far the feet may move up / down"))
+    ZX_FIELD(leftFoot, Meta::Tooltip("Foot bone; its parent and grandparent are the knee and the hip"))
+    ZX_FIELD(rightFoot)
+    ZX_FIELD(headBone, Meta::Tooltip("Turned towards entity.lookAt targets"))
+    ZX_FIELD(footstepEvents, Meta::Tooltip("Scripts get onAnimEvent(\"Footstep\") when a foot touches down while moving"))
     ZX_FIELD(skinToNode, Meta::Hidden())
 ZX_REFLECT_STRUCT_END()
 
@@ -130,7 +137,8 @@ f32 AnimationSystem::EvaluateState(const AnimGraph& g, i32 stateIndex, f32 phase
     return Max(c0->duration + (c1->duration - c0->duration) * w, 1e-3f);
 }
 
-void AnimationSystem::TickGraph(const AnimGraph& g, const Animator& a, const asset::Skeleton& skeleton, State& s, f32 dt, bool animate)
+void AnimationSystem::TickGraph(const AnimGraph& g, const Animator& a, const asset::Skeleton& skeleton, State& s, f32 dt, bool animate,
+                                ecs::Entity e)
 {
     const u32 bones = skeleton.BoneCount();
     if (s.graphState < 0 || s.graphState >= i32(g.states.Size())) {
@@ -179,8 +187,13 @@ void AnimationSystem::TickGraph(const AnimGraph& g, const Animator& a, const ass
     // Pose of the current state, advanced by its (blended) length; the previous one keeps playing while fading out.
     const AnimGraph::State& cur = g.states[usize(s.graphState)];
     const f32 length = EvaluateState(g, s.graphState, s.phase, a, skeleton, s, s.pose.View());
+    const f32 before = s.phase;
     s.phase += dt * a.speed * cur.speed / length;
+    const bool wrapped = cur.loop && s.phase >= 1.0f;
     s.phase = cur.loop ? s.phase - Floor(s.phase) : Min(s.phase, 1.0f);
+    for (const AnimGraph::Event& ev : cur.events) // authored events the phase passed this tick
+        if (wrapped ? (ev.time > before || ev.time <= s.phase) : (ev.time > before && ev.time <= s.phase))
+            m_events.PushBack(AnimEvent{e, ev.name});
     if (s.fade < 1.0f && s.fromState >= 0) {
         s.fromPose.Resize(bones);
         const AnimGraph::State& from = g.states[usize(s.fromState)];
@@ -204,6 +217,7 @@ void AnimationSystem::Tick(ecs::World& world, f32 dt, bool playing)
         Clear();
         m_wasPlaying = playing;
     }
+    m_events.Clear();
     for (auto& [key, s] : m_states)
         s.alive = false;
     world.Query<const Animator>().Each([&](ecs::Entity e, const Animator& a) {
@@ -238,7 +252,7 @@ void AnimationSystem::Tick(ecs::World& world, f32 dt, bool playing)
                 air = ch->grounded ? 0.0f : air + dt;
                 s.params.InsertOrAssign("grounded", (ch->grounded || (air < 0.15f && ch->velocity.y < 1.0f)) ? 1.0f : 0.0f);
             }
-            TickGraph(graph->graph, a, *skeleton, s, dt, animate);
+            TickGraph(graph->graph, a, *skeleton, s, dt, animate, e);
         } else {
             // Single clip; changing it cross-fades from where the old one was.
             if (a.clip != s.clip) {
@@ -282,10 +296,142 @@ void AnimationSystem::Tick(ecs::World& world, f32 dt, bool playing)
                     asset::anim::BlendPoses(s.fromPose.View(), s.pose.View(), Smooth(s.fade), s.pose.View());
                 }
         }
+        if (animate)
+            ApplyIK(world, e, a, *skeleton, s, dt, playing);
         asset::anim::LocalToModel(*skeleton, s.pose.View(), s.model.View());
         asset::anim::SkinningMatrices(*skeleton, s.model.View(), a.skinToNode.ToMatrix(), s.palette.View());
     });
     m_states.RemoveIf([](u64, const State& s) { return !s.alive; });
+}
+
+void AnimationSystem::ApplyIK(ecs::World& world, ecs::Entity e, const Animator& a, const asset::Skeleton& skeleton, State& s, f32 dt,
+                              bool playing)
+{
+    using namespace asset::anim;
+    const scene::WorldTransform* wt = world.Get<const scene::WorldTransform>(e);
+    if (!wt)
+        return;
+    // Rig bones (once per skeleton).
+    if (s.rigSkeleton != a.skeleton) {
+        s.rigSkeleton = a.skeleton;
+        for (u32 side = 0; side < 2; ++side) {
+            s.foot[side] = skeleton.FindBone(side == 0 ? a.leftFoot.View() : a.rightFoot.View());
+            s.knee[side] = s.foot[side] >= 0 ? skeleton.parents[u32(s.foot[side])] : -1;
+            s.hip[side] = s.knee[side] >= 0 ? skeleton.parents[u32(s.knee[side])] : -1;
+            if (s.hip[side] < 0)
+                s.foot[side] = -1;
+        }
+        s.head = skeleton.FindBone(a.headBone.View());
+        s.pelvis = -1;
+        for (u32 b = 0; b < skeleton.BoneCount() && s.pelvis < 0; ++b)
+            if (skeleton.parents[b] < 0)
+                s.pelvis = i32(b);
+    }
+    const Mat4 skelToWorld = wt->matrix * a.skinToNode.ToMatrix();
+    const Mat4 worldToSkel = Inverse(skelToWorld);
+    const Vec3 upWorld(0, 1, 0);
+    const Vec3 upSkel = SafeNormalize(worldToSkel.TransformVector(upWorld), Vec3(0, 1, 0));
+    const f32 rate = 1.0f - std::exp(-dt * 14.0f); // smoothing towards the targets
+
+    // --- Foot IK and footsteps -------------------------------------------------------------------------------------
+    ecs::Entity owner; // the entity with the Character Controller (the ground query ignores it)
+    const CharacterState* ch = nullptr;
+    for (ecs::Entity x = e; world.IsAlive(x) && !ch;) {
+        ch = world.Get<const CharacterState>(x);
+        if (ch)
+            owner = x;
+        const scene::Parent* p = world.Get<const scene::Parent>(x);
+        if (!p)
+            break;
+        x = p->entity;
+    }
+    const bool legs = s.foot[0] >= 0 && s.foot[1] >= 0 && s.pelvis >= 0;
+    const bool footActive = legs && a.footIK && playing && raycast && ch && ch->grounded;
+    s.footIKWeight += ((footActive ? 1.0f : 0.0f) - s.footIKWeight) * rate;
+    if (legs && (s.footIKWeight > 1e-3f || (a.footstepEvents && ch))) {
+        s.model.Resize(skeleton.BoneCount());
+        LocalToModel(skeleton, s.pose.View(), s.model.View());
+        const Vec3 rootWorld = wt->matrix.GetTranslation(); // the character's feet
+        Vec3 footWorld[2];
+        for (u32 side = 0; side < 2; ++side)
+            footWorld[side] = skelToWorld.TransformPoint(s.model[u32(s.foot[side])].GetTranslation());
+        // Footsteps: a foot that comes down near the ground while the character moves.
+        if (a.footstepEvents && ch && ch->grounded) {
+            const f32 speed = Length(Vec3(ch->velocity.x, 0.0f, ch->velocity.z));
+            for (u32 side = 0; side < 2; ++side) {
+                const f32 height = footWorld[side].y - rootWorld.y;
+                const bool down = height < 0.12f;
+                if (down && !s.footDown[side] && speed > 0.5f)
+                    m_events.PushBack(AnimEvent{e, String("Footstep")});
+                s.footDown[side] = down ? true : (height > 0.18f ? false : s.footDown[side]);
+            }
+        }
+        if (s.footIKWeight > 1e-3f) {
+            // Ground under each foot relative to the character's feet (flat ground = 0).
+            for (u32 side = 0; side < 2; ++side) {
+                f32 offset = 0.0f;
+                Vec3 normal = upWorld;
+                if (footActive) {
+                    const Vec3 from(footWorld[side].x, rootWorld.y + a.footReach, footWorld[side].z);
+                    const Vec3 to(footWorld[side].x, rootWorld.y - a.footReach, footWorld[side].z);
+                    Vec3 point, n;
+                    if (raycast(from, to, owner, point, n) && n.y > 0.5f) {
+                        offset = Clamp(point.y - rootWorld.y, -a.footReach, a.footReach);
+                        normal = n;
+                    }
+                }
+                s.footOffset[side] += (offset - s.footOffset[side]) * rate;
+                s.footNormal[side] = SafeNormalize(Lerp(s.footNormal[side], normal, rate), upWorld);
+            }
+            // Hips drop so the lower foot can reach down; the other leg bends.
+            const f32 pelvisTarget = Min(Min(s.footOffset[0], s.footOffset[1]), 0.0f);
+            s.pelvisOffset += (pelvisTarget - s.pelvisOffset) * rate;
+            const f32 w = s.footIKWeight;
+            s.pose[u32(s.pelvis)].position += worldToSkel.TransformVector(upWorld * (s.pelvisOffset * w));
+            LocalToModel(skeleton, s.pose.View(), s.model.View());
+            const Vec3 bendHint = SafeNormalize(worldToSkel.TransformVector(wt->matrix.TransformVector(Vec3(0, 0, 1))), Vec3(0, 0, 1));
+            for (u32 side = 0; side < 2; ++side) {
+                const Vec3 current = skelToWorld.TransformPoint(s.model[u32(s.foot[side])].GetTranslation());
+                const Vec3 targetWorld = current + upWorld * ((s.footOffset[side] - s.pelvisOffset) * w);
+                SolveTwoBoneIK(skeleton, s.pose.View(), u32(s.hip[side]), u32(s.knee[side]), u32(s.foot[side]),
+                               worldToSkel.TransformPoint(targetWorld), bendHint);
+                // Sole on the slope.
+                const Vec3 n = SafeNormalize(worldToSkel.TransformVector(s.footNormal[side]), upSkel);
+                RotateGlobal(skeleton, s.pose.View(), u32(s.foot[side]), Slerp(Quat::Identity(), Quat::FromTo(upSkel, n), w));
+            }
+        }
+    }
+
+    // --- Look-at ----------------------------------------------------------------------------------------------------
+    s.lookWeight += (s.lookTargetWeight - s.lookWeight) * (1.0f - std::exp(-dt * 6.0f));
+    if (s.head >= 0 && s.lookWeight > 1e-3f) {
+        s.model.Resize(skeleton.BoneCount());
+        LocalToModel(skeleton, s.pose.View(), s.model.View());
+        const Vec3 headPos = s.model[u32(s.head)].GetTranslation();
+        const Vec3 toTarget = SafeNormalize(worldToSkel.TransformPoint(s.lookTarget) - headPos, Vec3(0, 0, 1));
+        // The face looks where the body faces, turned by how the animation moved the head away from its bind pose.
+        Array<Transform> bind;
+        bind.Resize(skeleton.BoneCount());
+        for (u32 b = 0; b < skeleton.BoneCount(); ++b)
+            bind[b] = skeleton.bindPose[b];
+        const Quat animated = GlobalRotation(skeleton, s.pose.View(), u32(s.head)) * Inverse(GlobalRotation(skeleton, bind.View(), u32(s.head)));
+        const Vec3 bodyForward = SafeNormalize(worldToSkel.TransformVector(wt->matrix.TransformVector(Vec3(0, 0, 1))), Vec3(0, 0, 1));
+        const Vec3 facing = SafeNormalize(animated * bodyForward, bodyForward);
+        // At most 70 degrees from where the head faces.
+        const f32 limit = DegToRad(70.0f);
+        const f32 angle = std::acos(Clamp(Dot(facing, toTarget), -1.0f, 1.0f));
+        const Quat full = Quat::FromTo(facing, toTarget);
+        const Quat turn = angle > limit ? Slerp(Quat::Identity(), full, limit / angle) : full;
+        RotateGlobal(skeleton, s.pose.View(), u32(s.head), Slerp(Quat::Identity(), turn, s.lookWeight));
+    }
+}
+
+void AnimationSystem::SetLookAt(ecs::Entity e, Vec3 target, f32 weight)
+{
+    State& s = *m_states.Insert(e.Pack(), State{}).first;
+    s.alive = true;
+    s.lookTarget = target;
+    s.lookTargetWeight = Clamp(weight, 0.0f, 1.0f);
 }
 
 Span<const Mat4> AnimationSystem::Palette(ecs::Entity e) const

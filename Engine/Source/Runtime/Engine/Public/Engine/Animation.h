@@ -33,7 +33,22 @@ struct Animator
     bool previewInEditor = true; // animate while editing (off: bind pose until Play)
     f32 speed = 1.0f;
     f32 blendTime = 0.25f;       // cross-fade when the clip changes (seconds)
-    Transform skinToNode;        // skeleton space -> this entity (set on import)
+    // Foot IK (while playing, grounded Character Controller): the feet follow slopes and steps, the hips drop for the
+    // lower foot, the soles align with the ground.
+    bool footIK = true;
+    f32 footReach = 0.45f;        // meters the feet may move up / down
+    String leftFoot = "LeftFoot";  // foot bones; their parent and grandparent are the knee and hip
+    String rightFoot = "RightFoot";
+    String headBone = "Head";      // turned by look-at (entity.lookAt)
+    bool footstepEvents = true;   // "Footstep" events when a foot touches down while moving (scripts: onAnimEvent)
+    Transform skinToNode;         // skeleton space -> this entity (set on import)
+};
+
+/// An animation event this frame: authored on a graph state, or "Footstep" from foot contact.
+struct AnimEvent
+{
+    ecs::Entity entity; // the Animator's entity
+    String name;
 };
 
 ZX_DECLARE_TYPE(Animator);
@@ -58,6 +73,13 @@ public:
     void SetParam(ecs::Entity e, StringView name, f32 value);
     void SetTrigger(ecs::Entity e, StringView name) { SetParam(e, name, 1.0f); }
     f32 GetParam(ecs::Entity e, StringView name) const;
+    /// Turns the head towards `target` (world) with `weight` 0..1 (0 = look ahead again); smoothed.
+    void SetLookAt(ecs::Entity e, Vec3 target, f32 weight);
+    /// Events of the last Tick (cleared by the next one).
+    Span<const AnimEvent> Events() const { return m_events.View(); }
+    /// Ground query for foot IK: hit point / normal between `from` and `to`, ignoring the character itself (`ignore`:
+    /// the entity with the Character Controller). Set by the host (physics); none = no foot IK.
+    Function<bool(Vec3 from, Vec3 to, ecs::Entity ignore, Vec3& point, Vec3& normal), 48> raycast;
     /// Name of the graph state the entity is in ("Locomotion"), empty without a graph.
     String CurrentState(ecs::Entity e) const;
     /// Name of a clip asset ("Run"), empty while unknown.
@@ -93,6 +115,17 @@ private:
         i32 fromState = -1;
         f32 fromPhase = 0.0f;
         HashMap<String, f32> params; // by lower-case name, set before / between ticks
+        // IK.
+        asset::AssetId rigSkeleton; // bones below resolved for this skeleton
+        i32 foot[2] = {-1, -1}, knee[2] = {-1, -1}, hip[2] = {-1, -1};
+        i32 head = -1, pelvis = -1;
+        f32 footOffset[2] = {0.0f, 0.0f}; // smoothed ground height under each foot (m, from the character's feet)
+        Vec3 footNormal[2] = {Vec3(0, 1, 0), Vec3(0, 1, 0)};
+        f32 pelvisOffset = 0.0f;
+        f32 footIKWeight = 0.0f;
+        Vec3 lookTarget;
+        f32 lookWeight = 0.0f, lookTargetWeight = 0.0f;
+        bool footDown[2] = {true, true};
         Array<Transform> pose, fromPose, scratch;
         Array<Mat4> model, palette;
         bool alive = false;
@@ -103,7 +136,9 @@ private:
     f32 EvaluateState(const AnimGraph& g, i32 stateIndex, f32 phase, const Animator& a, const asset::Skeleton& skeleton, State& s,
                       Span<Transform> out);
     f32 ParamValue(const State& s, const AnimGraph& g, StringView name) const;
-    void TickGraph(const AnimGraph& g, const Animator& a, const asset::Skeleton& skeleton, State& s, f32 dt, bool animate);
+    void TickGraph(const AnimGraph& g, const Animator& a, const asset::Skeleton& skeleton, State& s, f32 dt, bool animate, ecs::Entity e);
+    void ApplyIK(ecs::World& world, ecs::Entity e, const Animator& a, const asset::Skeleton& skeleton, State& s, f32 dt, bool playing);
+    Array<AnimEvent> m_events;
 
     asset::AssetManager& m_assets;
     HashMap<u64, State> m_states; // entity -> state

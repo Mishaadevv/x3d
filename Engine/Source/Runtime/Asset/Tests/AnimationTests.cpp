@@ -177,3 +177,28 @@ ZX_TEST(Animation, CookedSkeletonClipAndSkinnedMeshRoundTrip)
             ZX_EXPECT_EQ(back.boneCount, cooked.boneCount);
         }
 }
+
+ZX_TEST(Animation, TwoBoneIKReachesTheTarget)
+{
+    // Hip at the origin, knee 0.5 m down (slightly forward: a bent knee), foot 0.5 m below the knee.
+    Skeleton sk;
+    sk.boneNames = {String("Hip"), String("Knee"), String("Foot")};
+    sk.parents = {-1, 0, 1};
+    sk.bindPose = {Transform(), Transform(Vec3(0, -0.5f, 0.05f)), Transform(Vec3(0, -0.5f, -0.05f))};
+    sk.inverseBind = {Mat4::Identity(), Mat4::Identity(), Mat4::Identity()};
+    for (const Vec3 target : {Vec3(0.1f, -0.8f, 0.1f), Vec3(0.0f, -0.6f, 0.3f), Vec3(-0.2f, -0.7f, 0.0f)}) {
+        Transform pose[3] = {sk.bindPose[0], sk.bindPose[1], sk.bindPose[2]};
+        anim::SolveTwoBoneIK(sk, Span<Transform>(pose, 3), 0, 1, 2, target, Vec3(1, 0, 0));
+        Mat4 model[3];
+        anim::LocalToModel(sk, Span<const Transform>(pose, 3), Span<Mat4>(model, 3));
+        ZX_EXPECT_LT(Length(model[2].GetTranslation() - target), 2e-3f);
+        // Bone lengths are kept (only rotations change).
+        ZX_EXPECT_NEAR(Length(model[1].GetTranslation() - model[0].GetTranslation()), Length(sk.bindPose[1].position), 1e-4f);
+    }
+    // Out of reach: the chain points straight at the target.
+    Transform pose[3] = {sk.bindPose[0], sk.bindPose[1], sk.bindPose[2]};
+    anim::SolveTwoBoneIK(sk, Span<Transform>(pose, 3), 0, 1, 2, Vec3(0, -5, 0), Vec3(1, 0, 0));
+    Mat4 model[3];
+    anim::LocalToModel(sk, Span<const Transform>(pose, 3), Span<Mat4>(model, 3));
+    ZX_EXPECT_LT(model[2].GetTranslation().y, -0.99f);
+}

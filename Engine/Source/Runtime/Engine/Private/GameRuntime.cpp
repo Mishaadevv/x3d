@@ -1,4 +1,5 @@
 #include "Engine/GameRuntime.h"
+#include "Engine/Animation.h"
 #include "Engine/Fire.h"
 #include "Engine/GameModule.h"
 #include "Engine/Gameplay.h"
@@ -67,6 +68,8 @@ void TickGame(ecs::World& world, GameSystems& s, f32 dt, const InputState* input
         s.scripts->physics = physicsRunning ? s.physics : nullptr;
         s.scripts->particles = s.particles;
         s.scripts->animation = s.animation;
+        if (s.animation) // last frame's footsteps and authored events
+            s.scripts->DispatchAnimEvents(world, s.animation->Events());
         s.scripts->fire = s.Enabled("fire") ? s.fire : nullptr;
         s.scripts->Tick(world, dt, input);
     }

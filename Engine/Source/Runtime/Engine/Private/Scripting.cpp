@@ -433,7 +433,7 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             }
             return true;
         }
-        if (m == "animParam" || m == "animTrigger" || m == "playAnim" || m == "animState") {
+        if (m == "animParam" || m == "animTrigger" || m == "playAnim" || m == "animState" || m == "lookAt") {
             // Animator on this entity or its first descendant that has one (the mesh under a player):
             // animParam(name, value) sets a graph parameter, animTrigger(name) fires a trigger, playAnim(clip) plays
             // a clip by name (no graph), animState() returns the graph state's name.
@@ -453,6 +453,14 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             }
             if (!target)
                 return v.Fail("No Animator on this entity or its children");
+            if (m == "lookAt") {
+                // lookAt(point [, weight]): the head turns towards a world point; lookAt(nil) looks ahead again.
+                if (a.Empty() || a.Size() > 2 || (a[0].Type() != ValueType::Vec3 && !a[0].IsNil()) || (a.Size() == 2 && !a[1].IsNumber()))
+                    return v.Fail("entity.lookAt(point: vec3 [, weight]) / entity.lookAt(nil)");
+                if (sys.animation)
+                    sys.animation->SetLookAt(target, a[0].IsNil() ? Vec3() : a[0].AsVec3(), a[0].IsNil() ? 0.0f : (a.Size() == 2 ? f32(a[1].AsNumber()) : 1.0f));
+                return true;
+            }
             if (m == "animState") {
                 const String state = sys.animation ? sys.animation->CurrentState(target) : String();
                 out = Value(state.View());
@@ -1185,6 +1193,31 @@ void ScriptSystem::DispatchPhysicsEvents(ecs::World& world, Span<const PhysicsEv
                     rs->failed = true;
                 }
             }
+        }
+    }
+}
+
+void ScriptSystem::DispatchAnimEvents(ecs::World& world, Span<const AnimEvent> events)
+{
+    if (!m_running || events.Empty())
+        return;
+    context.world = &world;
+    for (const AnimEvent& ev : events) {
+        const Value args[1] = {Value(ev.name.View())};
+        for (ecs::Entity x = ev.entity; world.IsAlive(x);) {
+            for (UniquePtr<RunningScript>& rs : m_instances) {
+                if (rs->failed || !rs->started || rs->entity != x || !rs->instance->HasFunction("onAnimEvent"))
+                    continue;
+                RebindGlobals(*rs);
+                if (!rs->instance->Call("onAnimEvent", Span<const Value>(args, 1))) {
+                    Report(m_vm->LastError(), true);
+                    rs->failed = true;
+                }
+            }
+            const scene::Parent* p = world.Get<const scene::Parent>(x);
+            if (!p)
+                break;
+            x = p->entity;
         }
     }
 }

@@ -1,5 +1,7 @@
 #include "Asset/Animation.h"
 
+#include <cmath>
+
 namespace zx::asset {
 
 i32 Skeleton::FindBone(StringView bone) const
@@ -103,6 +105,49 @@ void SkinningMatrices(const Skeleton& skeleton, Span<const Mat4> model, const Ma
     const u32 bones = Min(Min(skeleton.BoneCount(), u32(model.Size())), u32(out.Size()));
     for (u32 b = 0; b < bones; ++b)
         out[b] = skinToMesh * model[b] * skeleton.inverseBind[b];
+}
+
+Quat GlobalRotation(const Skeleton& skeleton, Span<const Transform> local, u32 bone)
+{
+    Quat q = local[bone].rotation;
+    for (i32 p = skeleton.parents[bone]; p >= 0; p = skeleton.parents[u32(p)])
+        q = local[u32(p)].rotation * q;
+    return q;
+}
+
+void RotateGlobal(const Skeleton& skeleton, Span<Transform> local, u32 bone, const Quat& rotation)
+{
+    const i32 parent = skeleton.parents[bone];
+    const Quat parentGlobal = parent >= 0 ? GlobalRotation(skeleton, local, u32(parent)) : Quat::Identity();
+    const Quat global = parentGlobal * local[bone].rotation;
+    local[bone].rotation = Normalize(Inverse(parentGlobal) * (rotation * global));
+}
+
+void SolveTwoBoneIK(const Skeleton& skeleton, Span<Transform> local, u32 a, u32 b, u32 c, Vec3 target, Vec3 bendHint)
+{
+    // 1) Bend the middle joint until end and root are as far apart as the target (law of cosines; the distance depends
+    //    on that angle alone). 2) Swing the whole chain from the root onto the target.
+    Array<Mat4> model;
+    model.Resize(skeleton.BoneCount());
+    LocalToModel(skeleton, local, model.View());
+    const Vec3 pa = model[a].GetTranslation(), pb = model[b].GetTranslation(), pc = model[c].GetTranslation();
+    const f32 lab = Length(pb - pa), lcb = Length(pb - pc);
+    if (lab < 1e-6f || lcb < 1e-6f)
+        return;
+    const f32 eps = 1e-4f * (lab + lcb);
+    const f32 lat = Clamp(Length(target - pa), Abs(lab - lcb) + eps, lab + lcb - eps);
+    auto angle = [](Vec3 x, Vec3 y) { return std::acos(Clamp(Dot(SafeNormalize(x, Vec3(1, 0, 0)), SafeNormalize(y, Vec3(1, 0, 0))), -1.0f, 1.0f)); };
+    const f32 bend0 = angle(pa - pb, pc - pb);
+    const f32 bend1 = std::acos(Clamp((lab * lab + lcb * lcb - lat * lat) / (2.0f * lab * lcb), -1.0f, 1.0f));
+    Vec3 axis = Cross(pa - pb, pc - pb);
+    if (LengthSq(axis) < 1e-12f)
+        axis = Cross(pa - pb, bendHint);
+    axis = SafeNormalize(axis, Vec3(1, 0, 0));
+    // Rotating c about the joint by +delta around `axis` (a x c sense) opens the angle.
+    RotateGlobal(skeleton, local, b, Quat::FromAxisAngle(axis, bend1 - bend0));
+    LocalToModel(skeleton, local, model.View());
+    const Vec3 reached = model[c].GetTranslation();
+    RotateGlobal(skeleton, local, a, Quat::FromTo(SafeNormalize(reached - pa, Vec3(0, -1, 0)), SafeNormalize(target - pa, Vec3(0, -1, 0))));
 }
 
 void PackSkin(const u32 joints[4], const f32 weights[4], u32& packedJoints, u32& packedWeights)

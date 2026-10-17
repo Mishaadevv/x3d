@@ -238,6 +238,16 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     m_scripts.Reset(new ScriptSystem());
     m_scripts->SetContentRoot("/Game");
     m_animation->contentRoot = "/Game";
+    m_animation->raycast = [this](Vec3 from, Vec3 to, ecs::Entity ignore, Vec3& point, Vec3& normal) {
+        const Vec3 d = to - from;
+        const f32 dist = Length(d);
+        PhysicsHit hit;
+        if (dist < 1e-3f || !m_physics.IsRunning() || !m_physics.Raycast(from, d / dist, dist, hit, ~0u, ignore))
+            return false;
+        point = hit.point;
+        normal = hit.normal;
+        return true;
+    };
     m_scripts->audio = m_audio.Get();
     m_scripts->materialName = [this](asset::AssetId id) {
         const MaterialLibrary::Material* m = m_materials ? m_materials->Find(id) : nullptr;

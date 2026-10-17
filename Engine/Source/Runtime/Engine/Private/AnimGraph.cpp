@@ -57,6 +57,8 @@ bool ParseAnimGraph(StringView json, AnimGraph& out, String* error)
         for (usize i = 1; i < state.blend.Size(); ++i)
             if (state.blend[i].value < state.blend[i - 1].value)
                 return fail(String::Format("state '{}': blend samples must be sorted by value", state.name));
+        for (const JsonValue& ev : s.Get("events").Elements())
+            state.events.PushBack(AnimGraph::Event{String(ev.Get("name").AsString()), Clamp(ev.Get("time").AsFloat(), 0.0f, 1.0f)});
         state.speed = s.Get("speed").AsFloat(1.0f);
         state.loop = s.Get("loop").AsBool(true);
         if (state.name.Empty())
@@ -126,6 +128,16 @@ String WriteAnimGraph(const AnimGraph& g)
                 blend.PushBack(move(bo));
             }
             o.Set("blend", move(blend));
+        }
+        if (!s.events.Empty()) {
+            JsonValue events = JsonValue::MakeArray();
+            for (const AnimGraph::Event& ev : s.events) {
+                JsonValue eo = JsonValue::MakeObject();
+                eo.Set("name", JsonValue(ev.name));
+                eo.Set("time", JsonValue(f64(ev.time)));
+                events.PushBack(move(eo));
+            }
+            o.Set("events", move(events));
         }
         if (s.speed != 1.0f)
             o.Set("speed", JsonValue(f64(s.speed)));

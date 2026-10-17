@@ -241,6 +241,16 @@ bool Editor::Initialize()
     scripts.Reset(new ScriptSystem());
     scripts->SetContentRoot(contentRoot);
     animation->contentRoot = contentRoot; // Animator graphs (.zanimgraph)
+    animation->raycast = [this](Vec3 from, Vec3 to, ecs::Entity ignore, Vec3& point, Vec3& normal) {
+        const Vec3 d = to - from;
+        const f32 dist = Length(d);
+        PhysicsHit hit;
+        if (dist < 1e-3f || !physics.IsRunning() || !physics.Raycast(from, d / dist, dist, hit, ~0u, ignore))
+            return false;
+        point = hit.point;
+        normal = hit.normal;
+        return true;
+    };
     scripts->audio = audio.Get();
     scripts->materialName = [this](asset::AssetId id) {
         const MaterialLibrary::Material* m = materials ? materials->Find(id) : nullptr;

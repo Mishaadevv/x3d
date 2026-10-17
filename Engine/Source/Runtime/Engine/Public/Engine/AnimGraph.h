@@ -36,6 +36,11 @@ struct AnimGraph
         String clip;
         f32 value = 0.0f; // parameter value at which this clip plays alone
     };
+    struct Event // fired when the state's normalized time passes `time` (scripts: onAnimEvent(name))
+    {
+        String name;
+        f32 time = 0.0f;
+    };
     struct State
     {
         String name;
@@ -44,6 +49,7 @@ struct AnimGraph
         Array<BlendSample> blend; // sorted by value
         f32 speed = 1.0f;
         bool loop = true;
+        Array<Event> events;
     };
     enum class Op : u8
     {
