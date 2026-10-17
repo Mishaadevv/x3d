@@ -512,3 +512,32 @@ ZX_TEST(UI, DockingLayoutAndPersistence)
     ZX_EXPECT(DockSpaceHasLayout("Main"));
     ZX_EXPECT(!LoadDockLayout("node 1 2 3"));
 }
+
+ZX_TEST(UI, DockedWindowsTakeTheMouse)
+{
+    // Docked windows (and their dock host) sit at negative window orders; with no modal open they must still be
+    // hovered and clicked (a -1 "no modal" default once made every docked panel of the editor unclickable).
+    Harness h;
+    ZX_REQUIRE(h.ok);
+    u32 clicks = 0;
+    Rect button;
+    auto ui = [&] {
+        const ID root = DockSpace("Main", Rect(Vec2(0.0f, 0.0f), Vec2(1000.0f, 600.0f)));
+        if (!DockSpaceHasLayout("Main"))
+            DockWindow("Panel", root);
+        Begin("Panel");
+        if (Button("Press"))
+            ++clicks;
+        button = GetItemRect();
+        End();
+    };
+    h.Frame(ui);
+    h.Frame(ui);
+    h.Move(button.Center());
+    h.Frame(ui);
+    h.Down();
+    h.Frame(ui);
+    h.Up();
+    h.Frame(ui);
+    ZX_EXPECT_EQ(clicks, 1u);
+}

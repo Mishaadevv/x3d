@@ -517,7 +517,9 @@ void Context::Impl::UpdateHoveredRoot()
     hoveredRoot = nullptr;
     // Topmost window (by order) containing the mouse, among windows alive last frame.
     WindowState* best = nullptr;
-    i32 modalOrder = -1;
+    // Windows below an open modal can't be hovered. No modal: nothing is excluded (docked windows and the dock host
+    // have negative orders - a -1 default made every docked panel unclickable).
+    i32 modalOrder = I32Min;
     for (WindowState* w : windowOrder)
         if (w->isModal && w->lastFrameActive + 1 >= frame)
             modalOrder = Max(modalOrder, w->order);
