@@ -106,6 +106,20 @@ enum class BufferUsage : u32
 };
 ZX_ENUM_FLAGS(BufferUsage)
 
+/// One draw of DrawIndexedIndirect: a draw id written to push constant dword IndirectDrawIdConstant, then the
+/// arguments of DrawIndexed.
+struct IndirectDrawArgs
+{
+    u32 drawId = 0;
+    u32 indexCount = 0;
+    u32 instanceCount = 0;
+    u32 firstIndex = 0;
+    i32 vertexOffset = 0;
+    u32 firstInstance = 0;
+};
+static_assert(sizeof(IndirectDrawArgs) == 24);
+inline constexpr u32 IndirectDrawIdConstant = 4; // dword of the push constants (b0) that receives drawId
+
 enum class TextureUsage : u32
 {
     None = 0,

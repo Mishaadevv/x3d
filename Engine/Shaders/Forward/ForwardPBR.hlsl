@@ -70,6 +70,11 @@ struct ViewData
     uint cloudShadow;        // fraction of sunlight the clouds let through (top-down map) or invalid
     float cloudShadowInvExtent;
     float2 cloudShadowOrigin;
+    // GPU-driven draws (GpuCull.hlsl): per-slot data and the visible instance lists of every view region.
+    uint drawSlots;
+    uint visibleLists;
+    uint slotCount;
+    uint listCapacity;
 };
 ZX_VIEW_CONSTANTS(ViewData, g_View);
 
@@ -86,6 +91,7 @@ struct DrawData
     uint materialIndex;
     uint vertexBuffer;
     uint lod;
+    uint drawId; // != invalid: an indirect draw (rhi::IndirectDrawIdConstant) - the fields above come from its slot
 };
 ZX_PUSH_CONSTANTS(DrawData, g_Draw);
 
@@ -166,6 +172,7 @@ struct VSOutput
     float4 position : SV_Position;
 #if !defined(DEPTH_ONLY) || defined(ALPHA_TEST)
     float2 uv : TEXCOORD0;
+    nointerpolation uint3 drawInfo : DRAWINFO; // instance, material, lod
 #endif
 #ifndef DEPTH_ONLY
     float3 worldPos : TEXCOORD1;
@@ -175,15 +182,26 @@ struct VSOutput
 #endif
 };
 
-VSOutput VSMain(uint vertexId : SV_VertexID)
+VSOutput VSMain(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
 {
-    const MeshVertex v = LoadMeshVertex(GetBuffer(g_Draw.vertexBuffer), vertexId);
-    const Instance inst = LoadInstance(g_Draw.instanceIndex);
+    uint instanceIndex = g_Draw.instanceIndex, material = g_Draw.materialIndex, vertexBuffer = g_Draw.vertexBuffer, lod = g_Draw.lod;
+    if (g_Draw.drawId != ZX_INVALID_INDEX) {
+        // Indirect: the draw's slot (one LOD of a mesh section + material) and this instance's entry in its list.
+        const uint slot = g_Draw.drawId % g_View.slotCount, view = g_Draw.drawId / g_View.slotCount;
+        const uint4 s = GetBuffer(g_View.drawSlots).Load4(slot * 32); // listOffset, material, vertexBuffer, lod
+        instanceIndex = GetBuffer(g_View.visibleLists).Load((view * g_View.listCapacity + s.x + instanceId) * 4);
+        material = s.y;
+        vertexBuffer = s.z;
+        lod = s.w;
+    }
+    const MeshVertex v = LoadMeshVertex(GetBuffer(vertexBuffer), vertexId);
+    const Instance inst = LoadInstance(instanceIndex);
     const float4 world = mul(inst.world, float4(v.position, 1.0));
     VSOutput o;
     o.position = mul(g_View.viewProj, world);
 #if !defined(DEPTH_ONLY) || defined(ALPHA_TEST)
     o.uv = v.uv0;
+    o.drawInfo = uint3(instanceIndex, material, lod);
 #endif
 #ifndef DEPTH_ONLY
     o.worldPos = world.xyz;
@@ -236,7 +254,7 @@ MaterialInputs GraphInputs(Material m, float2 uv)
 void PSDepth(VSOutput i)
 {
 #ifdef ALPHA_TEST
-    const Material m = LoadMaterial(g_Draw.materialIndex);
+    const Material m = LoadMaterial(i.drawInfo.y);
 #ifdef ZX_GRAPH_MATERIAL
     clip(EvaluateGraphMaterial(GraphInputs(m, i.uv)).opacityMask - m.alphaCutoff);
 #else
@@ -449,10 +467,10 @@ float BurnNoise(float3 p)
 /// Fire (Flammable objects): charred inside the burn sphere with a ragged edge and soot ahead of it, the edge glowing
 /// where the flames are, embers glowing through cracks in the char. Instance row 7 = burn sphere, normal rows' w =
 /// charring, glow, embers.
-void ApplyBurn(inout SurfaceData s, float3 worldPos)
+void ApplyBurn(inout SurfaceData s, float3 worldPos, uint instanceIndex)
 {
     ByteAddressBuffer b = GetBuffer(g_View.instanceBuffer);
-    const uint o = g_Draw.instanceIndex * INSTANCE_STRIDE;
+    const uint o = instanceIndex * INSTANCE_STRIDE;
     const float4 burn = asfloat(b.Load4(o + 112));
     if (burn.w <= 0.0)
         return;
@@ -573,7 +591,7 @@ float3 LodColor(uint lod)
 // Second target (bound when screen-space reflections are on): octahedral normal, roughness, a = 1 (opaque surface).
 float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
 {
-    const Material m = LoadMaterial(g_Draw.materialIndex);
+    const Material m = LoadMaterial(i.drawInfo.y);
     SurfaceData s;
     s.subsurface = 0.0;
     float3 N = normalize(i.normal);
@@ -630,7 +648,7 @@ float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
         N = normalize(tn.x * T + tn.y * B + tn.z * N);
     }
 #endif
-    ApplyBurn(s, i.worldPos);
+    ApplyBurn(s, i.worldPos, i.drawInfo.x);
     ApplyDecals(s, N, i.worldPos, geometricNormal);
     s.normal = N;
     normalRoughness = float4(EncodeOct(N), s.roughness, 1.0);
@@ -643,7 +661,7 @@ float4 ShadePixel(VSOutput i, bool frontFace, inout float4 normalRoughness)
     case 1: return float4(s.baseColor, 1);
     case 2: return float4(N * 0.5 + 0.5, 1);
     case 3: return float4(s.roughness, s.metallic, 0, 1);
-    case 4: return float4(LodColor(g_Draw.lod) * (0.3 + 0.7 * saturate(dot(N, -g_View.lightDirection) * 0.5 + 0.5)), 1);
+    case 4: return float4(LodColor(i.drawInfo.z) * (0.3 + 0.7 * saturate(dot(N, -g_View.lightDirection) * 0.5 + 0.5)), 1);
     case 5: return float4(CascadeColor(cascade) * (0.25 + 0.75 * shadow), 1);
     case 8: { // fraction of the local lights' energy that passes their shadow maps
         const float viewDepth = dot(i.worldPos - g_View.cameraPosition, g_View.cameraForward);

@@ -5,6 +5,12 @@
 #include "Editor.h"
 #include "EditorActions.h"
 #include "Core/Console/Console.h"
+#include "Core/Containers/Algorithm.h"
+#include "Core/Math/Random.h"
+#include "Core/Profiler/Profiler.h"
+#include "Core/Threading/Thread.h"
+#include "Core/Time/Time.h"
+#include "Engine/BuiltinAssets.h"
 #include "Core/String/Parse.h"
 #include "Core/String/Path.h"
 
@@ -27,6 +33,8 @@ CVar<bool> CVarDynRes("r.DynamicResolution", false, "Render scale follows the GP
 CVar<f32> CVarDynResTarget("r.DynamicResolution.TargetMs", 16.6f, "Dynamic resolution target GPU frame time (ms)");
 CVar<f32> CVarDynResMin("r.DynamicResolution.MinPercentage", 50.0f, "Lowest render scale of dynamic resolution (percent)");
 CVar<bool> CVarSSR("r.SSR", false, "Screen-space reflections (on by default in the Full profile)");
+CVar<bool> CVarGpuDriven("r.GPUDriven", true, "GPU culling + ExecuteIndirect for opaque geometry (CPU draw lists when off)");
+CVar<bool> CVarOcclusion("r.OcclusionCulling", true, "Two-phase HiZ occlusion culling (GPU-driven path)");
 CVar<bool> CVarProbes("r.ReflectionProbes", true, "Reflection probes and the sky reflection cube");
 CVar<f32> CVarExposure("r.ExposureCompensation", 1.0f, "Exposure compensation in EV (+ = brighter)");
 CVar<i32> CVarViewMode("r.ViewMode", 0, "0 lit, 1 base color, 2 normals, 3 roughness/metallic, 4 LODs, 5 cascades, 6 clusters, 7 AO");
@@ -73,6 +81,25 @@ ConCommand CmdStatGpu("stat.gpu", "Prints the GPU time of every render pass of t
         ZX_LOG_INFO(LogCmd, "  {:<22} {:.3f} ms", t.name, t.milliseconds);
 });
 
+ConCommand CmdStatCpu("stat.cpu", "Prints the CPU time of the main thread's profiler zones in the last frame (largest first)",
+                      [](Span<const StringView>) {
+                          const u64 frame = profiler::CurrentFrame() - 1;
+                          Array<profiler::Zone> zones;
+                          if (!profiler::GetFrameZones(frame, zones))
+                              return;
+                          const u32 main = Thread::CurrentId();
+                          HashMap<const char*, f64> sums;
+                          for (const profiler::Zone& z : zones)
+                              if (z.threadId == main)
+                                  *sums.Insert(z.name, 0.0).first += Clock::TicksToMilliseconds(z.endTicks - z.startTicks);
+                          Array<Pair<const char*, f64>> sorted;
+                          for (const auto& kv : sums)
+                              sorted.PushBack({kv.first, kv.second});
+                          Sort(sorted, [](const auto& a, const auto& b) { return a.second > b.second; });
+                          for (usize i = 0; i < Min<usize>(sorted.Size(), 20); ++i)
+                              ZX_LOG_INFO(LogCmd, "  CPU {:<28} {:7.2f} ms", sorted[i].first, sorted[i].second);
+                      });
+
 ConCommand CmdStatScene("stat.scene", "Prints viewport and scene statistics", [](Span<const StringView>) {
     Editor* ed = Ed();
     if (!ed)
@@ -85,6 +112,31 @@ ConCommand CmdStatScene("stat.scene", "Prints viewport and scene statistics", []
     ZX_LOG_INFO(LogCmd, "  GPU assets: {} meshes ({:.1f} MB), {} textures ({:.1f} MB), {} materials", ra.meshes,
                 f64(ra.meshBytes) / (1024.0 * 1024.0), ra.textures, f64(ra.textureBytes) / (1024.0 * 1024.0), ra.materials);
 });
+
+ConCommand CmdStressInstances("stress.instances",
+                               "Spawns N small built-in shapes in a grid around the camera (renderer stress test, outside undo): stress.instances 100000",
+                               [](Span<const StringView> args) {
+                                   Editor* ed = Ed();
+                                   if (!ed)
+                                       return;
+                                   const u32 n = args.Empty() ? 10000u : u32(Clamp<i64>(ParseInt(args[0]).ValueOr(10000), 1, 1000000));
+                                   const u32 side = u32(Ceil(Sqrt(f32(n))));
+                                   const f32 spacing = 0.9f;
+                                   const Vec3 origin = ed->camera.position + Vec3(-f32(side) * spacing * 0.5f, -1.0f, 2.0f);
+                                   Random rng(7);
+                                   const BuiltinShape shapes[3] = {BuiltinShape::Cube, BuiltinShape::Sphere, BuiltinShape::Cylinder};
+                                   for (u32 i = 0; i < n; ++i) {
+                                       Transform t(origin + Vec3(f32(i % side) * spacing, rng.Range(0.0f, 0.4f), f32(i / side) * spacing),
+                                                   Quat::FromEulerDegrees(Vec3(0.0f, rng.Range(0.0f, 360.0f), 0.0f)), Vec3(0.35f));
+                                       const ecs::Entity e = scene::CreateNode(ed->world, StringView(), t);
+                                       MeshRenderer mr;
+                                       mr.mesh = builtin::Mesh(shapes[i % 3]);
+                                       mr.collision = false;
+                                       ed->world.Add(e, mr);
+                                   }
+                                   scene::UpdateWorldTransforms(ed->world);
+                                   ZX_LOG_INFO(LogCmd, "Spawned {} instances", n);
+                               });
 
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
     if (Ed())
@@ -561,6 +613,8 @@ void RegisterEditorConsole(Editor& ed)
     Bind<f32>(CVarDynResMin, s.dynamicResolution.minScale * 100.0f,
               [](f32 v) { Ed()->viewport->Settings().dynamicResolution.minScale = Clamp(v, 25.0f, 100.0f) / 100.0f; });
     Bind<bool>(CVarSSR, s.reflections.ssr, [](bool v) { Ed()->viewport->Settings().reflections.ssr = v; });
+    Bind<bool>(CVarGpuDriven, s.scene.gpuDriven, [](bool v) { Ed()->viewport->Settings().scene.gpuDriven = v; });
+    Bind<bool>(CVarOcclusion, s.scene.occlusionCulling, [](bool v) { Ed()->viewport->Settings().scene.occlusionCulling = v; });
     Bind<bool>(CVarProbes, s.reflections.probes, [](bool v) {
         Ed()->viewport->Settings().reflections.probes = v;
         Ed()->viewport->Settings().reflections.sky = v;
@@ -579,6 +633,7 @@ void UnregisterEditorConsole()
     for (CVarBase* c : {static_cast<CVarBase*>(&CVarScreenPercentage), static_cast<CVarBase*>(&CVarTAA), static_cast<CVarBase*>(&CVarAO),
                         static_cast<CVarBase*>(&CVarShadows), static_cast<CVarBase*>(&CVarSky), static_cast<CVarBase*>(&CVarBloom), static_cast<CVarBase*>(&CVarSSR), static_cast<CVarBase*>(&CVarTSR),
                         static_cast<CVarBase*>(&CVarDynRes), static_cast<CVarBase*>(&CVarDynResTarget), static_cast<CVarBase*>(&CVarDynResMin), static_cast<CVarBase*>(&CVarProbes),
+                        static_cast<CVarBase*>(&CVarGpuDriven), static_cast<CVarBase*>(&CVarOcclusion), static_cast<CVarBase*>(&CVarUISounds),
                         static_cast<CVarBase*>(&CVarExposure), static_cast<CVarBase*>(&CVarViewMode),
                         static_cast<CVarBase*>(&CVarForceLod), static_cast<CVarBase*>(&CVarCameraSpeed),
                         static_cast<CVarBase*>(&CVarShowGrid)})

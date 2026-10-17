@@ -112,6 +112,12 @@ Sound pass: Engine/Surfaces.h (SurfaceOf: Terrain -> Grass, Water, else first ma
 hook set by the editor / ZXGame), scripts character.surface / hit.surface; ImpactSound::rollSound loops driven by
 TouchStay events + AudioSystem::velocityOf (set in BeginGame); AddAtmosphere adds the Ambience (Birds_Loop); editor
 PlayUISound (StarterContent/Sounds/UI, cvar editor.UISounds). Sounds come from Tools/import_starter_sounds.py <dl dir>.
+GPU-driven (M12): Render/Private/SceneRendererGpu.cpp (PrepareGpu: instance rows + cull items / group / slot tables,
+AddCullPass, AddHiZPass, DrawIndirect) + Shaders/Forward/GpuCull.hlsl; ForwardPBR VSMain reads the instance from
+g_View.visibleLists when g_Draw.drawId is valid (RHI DrawIndexedIndirect, IndirectDrawArgs). Settings gpuDriven /
+occlusionCulling (r.GPUDriven, r.OcclusionCulling); capture views turn occlusion off. Benchmark:
+`-exec="wait 60;stress.instances 100000;wait 200;stat.cpu;stat.gpu"` (RenderInstance::prevWorld points into
+ViewportRenderer's motion history; the 100k frame is memory-bandwidth bound - avoid extra passes over instances).
 Progress window: EditorProgress.cpp (modal "Hold On" while waitForAssets/pendingImports, background panel otherwise;
 AssetManager jobsStarted/jobsFinished/CurrentWork). -screenshotnow captures at the autotest frame while loading.
 -materialtest's 1 s structural-edit limit can flake in Debug when the machine is busy (rerun before suspecting code).

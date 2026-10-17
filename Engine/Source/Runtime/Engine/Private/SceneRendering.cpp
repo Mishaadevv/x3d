@@ -1,6 +1,7 @@
 #include "Engine/SceneRendering.h"
 #include "Engine/Fire.h"
 
+#include "Core/Jobs/JobSystem.h"
 #include "Core/Reflection/Reflection.h"
 
 namespace zx {
@@ -176,7 +177,48 @@ Entity InstantiatePrefab(World& world, const asset::PrefabAsset& prefab, const T
 
 void GatherRenderInstances(World& world, Array<render::RenderInstance>& out)
 {
-    world.Query<const WorldTransform, const MeshRenderer>().Each([&](Entity e, const WorldTransform& wt, const MeshRenderer& mr) {
+    // Plain mesh renderers (almost all of them): visible ones counted per chunk, then the chunks fill their ranges in
+    // parallel. Flammable ones (few) follow, serially.
+    struct ChunkRef
+    {
+        const Entity* entities;
+        const WorldTransform* transforms;
+        const MeshRenderer* renderers;
+        u32 count;
+        u32 first;
+    };
+    Array<ChunkRef> chunks;
+    u32 total = 0;
+    world.Query<const WorldTransform, const MeshRenderer>().Without<Flammable>().EachChunk([&](auto& v) {
+        ChunkRef c{v.entities, v.template Column<0>(), v.template Column<1>(), v.count, total};
+        for (u32 i = 0; i < v.count; ++i)
+            total += c.renderers[i].visible && c.renderers[i].mesh.IsValid() ? 1u : 0u;
+        chunks.PushBack(c);
+    });
+    const usize base = out.Size();
+    out.ResizeUninitialized(base + total); // every element is written below
+    auto fill = [&](u32 begin, u32 end) {
+        for (u32 k = begin; k < end; ++k) {
+            const ChunkRef& c = chunks[k];
+            usize at = base + c.first;
+            for (u32 i = 0; i < c.count; ++i) {
+                const MeshRenderer& mr = c.renderers[i];
+                if (!mr.visible || !mr.mesh.IsValid())
+                    continue;
+                render::RenderInstance inst;
+                inst.world = c.transforms[i].matrix;
+                inst.id = c.entities[i].Pack();
+                inst.mesh = mr.mesh;
+                inst.materials = mr.materials.View();
+                MemCopy(&out[at++], &inst, sizeof(inst));
+            }
+        }
+    };
+    if (jobs::IsInitialized() && total > 4096)
+        jobs::ParallelFor(u32(chunks.Size()), 1, fill);
+    else
+        fill(0, u32(chunks.Size()));
+    world.Query<const WorldTransform, const MeshRenderer, const Flammable>().Each([&](Entity e, const WorldTransform& wt, const MeshRenderer& mr, const Flammable& f) {
         if (!mr.visible || !mr.mesh.IsValid())
             return;
         render::RenderInstance& inst = out.AddDefaulted();
@@ -184,12 +226,12 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out)
         inst.world = wt.matrix;
         inst.mesh = mr.mesh;
         inst.materials = mr.materials.View();
-        if (const Flammable* f = world.Get<const Flammable>(e); f && f->charRadius > 0.0f) {
-            inst.burnOrigin = wt.matrix.TransformPointAffine(f->burnOrigin);
-            inst.burnRadius = f->charRadius;
-            inst.charring = f->charring;
-            inst.burnGlow = f->glow;
-            inst.embers = f->embers;
+        if (f.charRadius > 0.0f) {
+            inst.burnOrigin = wt.matrix.TransformPointAffine(f.burnOrigin);
+            inst.burnRadius = f.charRadius;
+            inst.charring = f.charring;
+            inst.burnGlow = f.glow;
+            inst.embers = f.embers;
         }
     });
 }
@@ -233,12 +275,22 @@ u64 HashBytes(u64 h, const void* data, usize size)
 
 u64 SceneContentKey(Span<const render::RenderInstance> instances, Span<const render::LightDesc> lights)
 {
+    // Word-wise (64-bit) mixing: this runs over every instance each frame.
     u64 h = 0xCBF29CE484222325ull;
+    auto words = [&h](const void* data, usize size) {
+        const u8* p = static_cast<const u8*>(data);
+        for (usize o = 0; o + 8 <= size; o += 8) {
+            u64 w;
+            MemCopy(&w, p + o, 8);
+            h = (h ^ w) * 0x9E3779B97F4A7C15ull;
+            h ^= h >> 29;
+        }
+    };
     for (const render::RenderInstance& i : instances) {
-        h = HashBytes(h, &i.world, sizeof(i.world));
-        h = HashBytes(h, &i.mesh, sizeof(i.mesh));
+        words(&i.world, sizeof(i.world));
+        words(&i.mesh, sizeof(i.mesh));
         for (const asset::AssetId& m : i.materials)
-            h = HashBytes(h, &m, sizeof(m));
+            words(&m, sizeof(m));
     }
     for (const render::LightDesc& l : lights) {
         h = HashBytes(h, &l.position, sizeof(l.position));

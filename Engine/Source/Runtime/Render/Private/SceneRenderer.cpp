@@ -70,6 +70,7 @@ struct DrawPush
     u32 materialIndex;
     u32 vertexBuffer;
     u32 lod;
+    u32 drawId = InvalidIndex; // direct draw (indirect ones get theirs from DrawIndexedIndirect)
 };
 
 Result<ShaderBytecode> Compile(StringView entry, ShaderStage stage, Span<const ShaderDefine> defines)
@@ -115,6 +116,21 @@ SceneRenderer::~SceneRenderer()
     m_device.Destroy(m_velocityPipeline);
     m_device.Destroy(m_gtaoPipeline);
     m_device.Destroy(m_aoBlurPipeline);
+    for (Buffer* b : m_cullItems)
+        m_device.Destroy(b);
+    for (Buffer* b : m_cullGroups)
+        m_device.Destroy(b);
+    for (Buffer* b : m_cullSlots)
+        m_device.Destroy(b);
+    m_device.Destroy(m_indirectArgs);
+    m_device.Destroy(m_visibleLists);
+    m_device.Destroy(m_candidates);
+    for (auto& set : m_hiz)
+        for (Texture* t : set)
+            m_device.Destroy(t);
+    m_device.Destroy(m_cullInitPipeline);
+    m_device.Destroy(m_cullPipeline);
+    m_device.Destroy(m_hizPipeline);
 }
 
 void SceneRenderer::InvalidateShadows()
@@ -248,6 +264,8 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
                                                  MemoryType::Upload, 0, "LocalShadowFaces"});
     }
     m_shadersOk = true;
+    if (!InitGpuDriven())
+        ZX_LOG_WARN(LogSceneRenderer, "GPU-driven rendering unavailable: CPU culling and draws");
     EnsureInstanceCapacity(1024);
     return m_instanceBuffers[0] && m_clusterPipeline && m_clusterBuffer;
 }
@@ -621,9 +639,11 @@ void SceneRenderer::PrepareLocalShadows(Span<const LightDesc> lights, const Rend
     for (LocalUpdate& u : m_localUpdates) {
         const Frustum fr = Frustum::FromMatrix(u.viewProj);
         const Vec3 lightPos = m_localSlots[u.slot].position;
-        for (const InstanceRef& inst : m_casters) {
-            for (const asset::CookedMeshSection& section : inst.mesh->sections) {
-                const Sphere sp{inst.world.TransformPoint(section.bounds.Center()), Length(section.bounds.Extents()) * inst.scale};
+        for (const InstanceRef& caster : m_casters) {
+            const RenderInstance& inst = *caster.instance;
+            const f32 scale = MaxScale(inst.world);
+            for (const asset::CookedMeshSection& section : caster.mesh->sections) {
+                const Sphere sp{inst.world.TransformPoint(section.bounds.Center()), Length(section.bounds.Extents()) * scale};
                 if (!fr.Intersects(sp))
                     continue;
                 const AssetId materialId = section.materialSlot < inst.materials.Size() ? inst.materials[section.materialSlot] : AssetId();
@@ -636,10 +656,10 @@ void SceneRenderer::PrepareLocalShadows(Span<const LightDesc> lights, const Rend
                 const f32 dist = Max(Length(sp.center - lightPos) - sp.radius, 0.1f);
                 const f32 texel = dist * 2.0f / f32(m_localTileSize);
                 u32 lod = Min(m_settings.shadows.lodBias, section.lodCount - 1);
-                while (lod + 1 < section.lodCount && inst.mesh->SectionLodAt(section, lod + 1).error * inst.scale <= texel * 1.5f)
+                while (lod + 1 < section.lodCount && caster.mesh->SectionLodAt(section, lod + 1).error * scale <= texel * 1.5f)
                     ++lod;
-                const asset::CookedSectionLod& range = inst.mesh->SectionLodAt(section, lod);
-                u.draws.PushBack(DrawItem{u64(masked) << 56 | material, inst.index, material, inst.mesh, range.indexOffset,
+                const asset::CookedSectionLod& range = caster.mesh->SectionLodAt(section, lod);
+                u.draws.PushBack(DrawItem{u64(masked) << 56 | material, caster.index, material, caster.mesh, range.indexOffset,
                                           range.indexCount, u8(masked ? Masked : Opaque), u8(lod), info.shader});
             }
         }
@@ -685,127 +705,129 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
 
     const Frustum frustum = Frustum::FromMatrix(view.viewProj);
     const f32 invTanHalfFov = 1.0f / Tan(view.fovY * 0.5f);
-    u32 instanceCount = 0;
-    for (const RenderInstance& inst : instances) {
-        const GpuMesh* mesh = m_assets.GetMesh(inst.mesh);
-        if (!mesh) {
-            ++m_stats.notResident;
-            continue;
-        }
-        const f32 scale = MaxScale(inst.world);
-        const Sphere worldSphere{inst.world.TransformPoint(mesh->sphere.center), mesh->sphere.radius * scale};
+    m_gpuFrame = settings.gpuDriven && settings.depthPrepass && m_cullPipeline && m_cullInitPipeline && m_hizPipeline;
+    if (m_gpuFrame) {
+        PrepareGpu(instances, view, frustum, invTanHalfFov, instanceData);
+    } else {
+        u32 instanceCount = 0;
+        for (const RenderInstance& inst : instances) {
+            const GpuMesh* mesh = m_assets.GetMesh(inst.mesh);
+            if (!mesh) {
+                ++m_stats.notResident;
+                continue;
+            }
+            const f32 scale = MaxScale(inst.world);
+            const Sphere worldSphere{inst.world.TransformPoint(mesh->sphere.center), mesh->sphere.radius * scale};
 
-        // Instance row: world matrix rows + normal matrix rows (inverse transpose of the upper 3x3).
-        const u32 index = instanceCount++;
-        const Mat4 rows = Transpose(inst.world);
-        const Mat4 inverse = Inverse(inst.world);
-        u8* dst = instanceData + usize(index) * InstanceStride;
-        MemCopy(dst, &rows, 64);
-        // w of those rows: burn charring, glow, embers; then the burn sphere (world origin, radius).
-        const f32 burnParams[3] = {inst.charring, inst.burnGlow, inst.embers};
-        for (u32 r = 0; r < 3; ++r) {
-            // Row r of the inverse-transpose = column r of the inverse.
-            const Vec4 col(inverse.columns[r].XYZ(), burnParams[r]);
-            MemCopy(dst + 64 + r * 16, &col, 16);
-        }
-        const Vec4 burn(inst.burnOrigin, inst.burnRadius);
-        MemCopy(dst + 112, &burn, 16);
-        // Last frame's world rows (velocity of moving objects).
-        const Mat4 prevRows = Transpose(inst.hasPrevWorld ? inst.prevWorld : inst.world);
-        MemCopy(dst + 128, &prevRows, 64);
-        bool moved = false;
-        if (inst.hasPrevWorld)
-            for (u32 c = 0; c < 4 && !moved; ++c)
-                moved = LengthSq(inst.world.columns[c] - inst.prevWorld.columns[c]) > 1e-10f;
-        if (inst.castShadows)
-            m_casters.PushBack(InstanceRef{index, mesh, inst.world, scale, inst.materials});
+            // Instance row: world matrix rows + normal matrix rows (inverse transpose of the upper 3x3).
+            const u32 index = instanceCount++;
+            const Mat4 rows = Transpose(inst.world);
+            const Mat4 inverse = Inverse(inst.world);
+            u8* dst = instanceData + usize(index) * InstanceStride;
+            MemCopy(dst, &rows, 64);
+            // w of those rows: burn charring, glow, embers; then the burn sphere (world origin, radius).
+            const f32 burnParams[3] = {inst.charring, inst.burnGlow, inst.embers};
+            for (u32 r = 0; r < 3; ++r) {
+                // Row r of the inverse-transpose = column r of the inverse.
+                const Vec4 col(inverse.columns[r].XYZ(), burnParams[r]);
+                MemCopy(dst + 64 + r * 16, &col, 16);
+            }
+            const Vec4 burn(inst.burnOrigin, inst.burnRadius);
+            MemCopy(dst + 112, &burn, 16);
+            // Last frame's world rows (velocity of moving objects).
+            const Mat4 prevRows = Transpose(inst.prevWorld ? *inst.prevWorld : inst.world);
+            MemCopy(dst + 128, &prevRows, 64);
+            const bool moved = inst.prevWorld != nullptr;
+            if (inst.castShadows)
+                m_casters.PushBack(InstanceRef{index, mesh, &inst});
 
-        const bool inView = frustum.Intersects(worldSphere);
-        bool inShadow = false;
-        for (u32 c = 0; c < m_cascadeCount && inst.castShadows; ++c)
-            inShadow |= (cascadeMask & (1u << c)) && cascadeFrustums[c].Intersects(worldSphere);
-        if (!inView && !inShadow) {
-            ++m_stats.culled;
-            continue;
-        }
-
-        // Sections are spatial chunks: cull and pick a LOD for each one.
-        const bool wholeMeshVisible = inView && frustum.ContainsSphere(worldSphere);
-        for (const asset::CookedMeshSection& section : mesh->sections) {
-            const Sphere s{inst.world.TransformPoint(section.bounds.Center()), Length(section.bounds.Extents()) * scale};
-            const bool sectionInView = inView && (wholeMeshVisible || mesh->sections.Size() == 1 || frustum.Intersects(s));
-            u32 shadowMask = 0;
+            const bool inView = frustum.Intersects(worldSphere);
+            bool inShadow = false;
             for (u32 c = 0; c < m_cascadeCount && inst.castShadows; ++c)
-                if ((cascadeMask & (1u << c)) && cascadeFrustums[c].Intersects(s))
-                    shadowMask |= 1u << c;
-            if (!sectionInView && !shadowMask) {
-                ++m_stats.culledSections;
+                inShadow |= (cascadeMask & (1u << c)) && cascadeFrustums[c].Intersects(worldSphere);
+            if (!inView && !inShadow) {
+                ++m_stats.culled;
                 continue;
             }
-            const f32 distance = Length(s.center - view.position);
-            // Screen size: projected bounding-sphere radius as a fraction of the view height.
-            const f32 screenSize = s.radius * invTanHalfFov / Max(distance - s.radius, 1e-3f);
-            u32 lod = 0;
-            if (settings.forcedLod >= 0) {
-                lod = Min(u32(settings.forcedLod), section.lodCount - 1);
-            } else {
-                for (u32 l = 1; l < section.lodCount; ++l)
-                    if (screenSize < mesh->SectionLodAt(section, l).screenSize * settings.lodBias)
-                        lod = l;
-            }
-            const AssetId materialId = section.materialSlot < inst.materials.Size() ? inst.materials[section.materialSlot] : AssetId();
-            const u32 material = m_assets.GetMaterialIndex(materialId);
-            const MaterialInfo& info = m_assets.GetMaterialInfo(material);
-            const bool masked = info.blend == MaterialBlend::Masked;
-            const u32 depthBits = u32(Min(distance, 65535.0f) * 16.0f) & 0xFFFFF; // 20 bits
 
-            if (shadowMask && info.blend != MaterialBlend::Translucent) {
-                for (u32 c = 0; c < m_cascadeCount; ++c) {
-                    if (!(shadowMask & (1u << c)))
-                        continue;
-                    // Casters smaller than ~2 shadow texels contribute nothing visible.
-                    const f32 texel = m_viewConstants.cascadeTexelWorld[c];
-                    if (s.radius < texel)
-                        continue;
-                    // LOD by shadow-map resolution: the coarsest level whose error stays under ~1.5 texels,
-                    // but never finer than the main view's LOD + lodBias.
-                    u32 shadowLod = Min(lod + settings.shadows.lodBias, section.lodCount - 1);
-                    while (shadowLod + 1 < section.lodCount &&
-                           mesh->SectionLodAt(section, shadowLod + 1).error * scale <= texel * 1.5f)
-                        ++shadowLod;
-                    const asset::CookedSectionLod& range = mesh->SectionLodAt(section, shadowLod);
-                    m_shadowDraws[c].PushBack(DrawItem{u64(masked) << 56 | material, index, material, mesh, range.indexOffset,
-                                                       range.indexCount, u8(masked ? Masked : Opaque), u8(shadowLod), info.shader});
-                    ++m_stats.shadowDraws;
-                    m_stats.shadowTriangles += range.indexCount / 3;
+            // Sections are spatial chunks: cull and pick a LOD for each one.
+            const bool wholeMeshVisible = inView && frustum.ContainsSphere(worldSphere);
+            for (const asset::CookedMeshSection& section : mesh->sections) {
+                const Sphere s{inst.world.TransformPoint(section.bounds.Center()), Length(section.bounds.Extents()) * scale};
+                const bool sectionInView = inView && (wholeMeshVisible || mesh->sections.Size() == 1 || frustum.Intersects(s));
+                u32 shadowMask = 0;
+                for (u32 c = 0; c < m_cascadeCount && inst.castShadows; ++c)
+                    if ((cascadeMask & (1u << c)) && cascadeFrustums[c].Intersects(s))
+                        shadowMask |= 1u << c;
+                if (!sectionInView && !shadowMask) {
+                    ++m_stats.culledSections;
+                    continue;
                 }
+                const f32 distance = Length(s.center - view.position);
+                // Screen size: projected bounding-sphere radius as a fraction of the view height.
+                const f32 screenSize = s.radius * invTanHalfFov / Max(distance - s.radius, 1e-3f);
+                u32 lod = 0;
+                if (settings.forcedLod >= 0) {
+                    lod = Min(u32(settings.forcedLod), section.lodCount - 1);
+                } else {
+                    for (u32 l = 1; l < section.lodCount; ++l)
+                        if (screenSize < mesh->SectionLodAt(section, l).screenSize * settings.lodBias)
+                            lod = l;
+                }
+                const AssetId materialId = section.materialSlot < inst.materials.Size() ? inst.materials[section.materialSlot] : AssetId();
+                const u32 material = m_assets.GetMaterialIndex(materialId);
+                const MaterialInfo& info = m_assets.GetMaterialInfo(material);
+                const bool masked = info.blend == MaterialBlend::Masked;
+                const u32 depthBits = u32(Min(distance, 65535.0f) * 16.0f) & 0xFFFFF; // 20 bits
+
+                if (shadowMask && info.blend != MaterialBlend::Translucent) {
+                    for (u32 c = 0; c < m_cascadeCount; ++c) {
+                        if (!(shadowMask & (1u << c)))
+                            continue;
+                        // Casters smaller than ~2 shadow texels contribute nothing visible.
+                        const f32 texel = m_viewConstants.cascadeTexelWorld[c];
+                        if (s.radius < texel)
+                            continue;
+                        // LOD by shadow-map resolution: the coarsest level whose error stays under ~1.5 texels,
+                        // but never finer than the main view's LOD + lodBias.
+                        u32 shadowLod = Min(lod + settings.shadows.lodBias, section.lodCount - 1);
+                        while (shadowLod + 1 < section.lodCount &&
+                               mesh->SectionLodAt(section, shadowLod + 1).error * scale <= texel * 1.5f)
+                            ++shadowLod;
+                        const asset::CookedSectionLod& range = mesh->SectionLodAt(section, shadowLod);
+                        m_shadowDraws[c].PushBack(DrawItem{u64(masked) << 56 | material, index, material, mesh, range.indexOffset,
+                                                           range.indexCount, u8(masked ? Masked : Opaque), u8(shadowLod), info.shader});
+                        ++m_stats.shadowDraws;
+                        m_stats.shadowTriangles += range.indexCount / 3;
+                    }
+                }
+                if (!sectionInView)
+                    continue;
+                ++m_stats.lodHistogram[Min(lod, 7u)];
+                const asset::CookedSectionLod& range = mesh->SectionLodAt(section, lod);
+                DrawItem d;
+                d.instance = index;
+                d.material = material;
+                d.mesh = mesh;
+                d.indexOffset = range.indexOffset;
+                d.indexCount = range.indexCount;
+                d.lod = u8(lod);
+                d.shader = info.shader;
+                if (info.blend == MaterialBlend::Translucent) {
+                    d.pipeline = info.doubleSided ? TranslucentTwoSided : Translucent;
+                    d.sortKey = ~u64(depthBits); // back to front
+                    m_translucent.PushBack(d);
+                } else {
+                    d.pipeline = u8(masked ? (info.doubleSided ? MaskedTwoSided : Masked) : (info.doubleSided ? OpaqueTwoSided : Opaque));
+                    // Pipeline, then front to back, then material.
+                    d.sortKey = (u64(d.pipeline) << 56) | (u64(depthBits) << 24) | (material & 0xFFFFFF);
+                    m_opaque.PushBack(d);
+                    if (moved)
+                        m_velocityDraws.PushBack(d);
+                }
+                ++m_stats.draws;
+                m_stats.triangles += range.indexCount / 3;
             }
-            if (!sectionInView)
-                continue;
-            ++m_stats.lodHistogram[Min(lod, 7u)];
-            const asset::CookedSectionLod& range = mesh->SectionLodAt(section, lod);
-            DrawItem d;
-            d.instance = index;
-            d.material = material;
-            d.mesh = mesh;
-            d.indexOffset = range.indexOffset;
-            d.indexCount = range.indexCount;
-            d.lod = u8(lod);
-            d.shader = info.shader;
-            if (info.blend == MaterialBlend::Translucent) {
-                d.pipeline = info.doubleSided ? TranslucentTwoSided : Translucent;
-                d.sortKey = ~u64(depthBits); // back to front
-                m_translucent.PushBack(d);
-            } else {
-                d.pipeline = u8(masked ? (info.doubleSided ? MaskedTwoSided : Masked) : (info.doubleSided ? OpaqueTwoSided : Opaque));
-                // Pipeline, then front to back, then material.
-                d.sortKey = (u64(d.pipeline) << 56) | (u64(depthBits) << 24) | (material & 0xFFFFFF);
-                m_opaque.PushBack(d);
-                if (moved)
-                    m_velocityDraws.PushBack(d);
-            }
-            ++m_stats.draws;
-            m_stats.triangles += range.indexCount / 3;
         }
     }
     Sort(m_opaque, [](const DrawItem& a, const DrawItem& b) { return a.sortKey < b.sortKey; });
@@ -976,6 +998,31 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
 {
     if (!m_shadersOk)
         return;
+    // GPU-driven: culling of the main view (phase 1) and of the cascades that re-render, before anything draws.
+    const bool gpu = m_gpuFrame && m_slotCount > 0;
+    const bool occlusion = gpu && m_settings.occlusionCulling;
+    RGBuffer gpuArgs, gpuLists, gpuCandidates;
+    if (gpu) {
+        gpuArgs = graph.ImportBuffer(m_indirectArgs, ResourceState::IndirectArgument);
+        gpuLists = graph.ImportBuffer(m_visibleLists, ResourceState::ShaderResource);
+        gpuCandidates = graph.ImportBuffer(m_candidates, ResourceState::UnorderedAccess);
+        u32 viewMask = 3u;
+        for (u32 c = 0; c < m_cascadeCount; ++c)
+            if (m_cascades[c].update)
+                viewMask |= 1u << (2 + c);
+        AddCullInitPass(graph, gpuArgs, gpuCandidates, viewMask);
+        AddCullPass(graph, 0, occlusion && m_hizValid ? 1u : 0u, m_cullViewProj, gpuArgs, gpuLists, gpuCandidates, 0, 0.0f, 0);
+        for (u32 c = 0; c < m_cascadeCount; ++c)
+            if (m_cascades[c].update) // casters only (item flag 1), skipping ones under ~1 shadow texel
+                AddCullPass(graph, 2 + c, 0, m_cascades[c].viewProj, gpuArgs, gpuLists, gpuCandidates, 1u,
+                            m_viewConstants.cascadeTexelWorld[c], m_settings.shadows.lodBias);
+    }
+    auto readIndirect = [gpu, gpuArgs, gpuLists](PassBuilder& b) {
+        if (gpu) {
+            b.ReadBuffer(gpuArgs, ResourceState::IndirectArgument);
+            b.ReadBuffer(gpuLists);
+        }
+    };
     RGTexture shadowMaps[MaxCascades];
     for (u32 c = 0; c < m_cascadeCount; ++c) {
         shadowMaps[c] = graph.ImportTexture(m_cascades[c].map, ResourceState::ShaderResource);
@@ -984,14 +1031,19 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
         const RGTexture target = shadowMaps[c];
         graph.AddPass(
             Name(String::Format("SunShadow{}", c)).CStr(), PassType::Graphics,
-            [target](PassBuilder& b) {
+            [target, readIndirect](PassBuilder& b) {
                 b.DepthStencil(target, LoadOp::Clear, 0.0f);
                 b.SideEffects(); // persistent cache: written for later frames
+                readIndirect(b);
             },
-            [this, c](PassContext& ctx) {
+            [this, c, gpu](PassContext& ctx) {
                 ViewConstants cascadeView = m_viewConstants;
                 cascadeView.viewProj = m_cascades[c].viewProj;
                 ctx.cmd.SetConstants(1, &cascadeView, sizeof(cascadeView));
+                if (gpu) {
+                    DrawIndirect(ctx.cmd, 2 + c, VariantShadow);
+                    return;
+                }
                 Pipeline* bound = nullptr;
                 for (const DrawItem& d : m_shadowDraws[c])
                     Draw(ctx.cmd, d, VariantShadow, bound);
@@ -1030,12 +1082,36 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
     const bool prepass = m_settings.depthPrepass;
     if (prepass) {
         graph.AddPass(
-            "DepthPrepass", PassType::Graphics, [depth](PassBuilder& b) { b.DepthStencil(depth, LoadOp::Clear, 0.0f); },
-            [this](PassContext& ctx) {
+            "DepthPrepass", PassType::Graphics,
+            [depth, readIndirect](PassBuilder& b) {
+                b.DepthStencil(depth, LoadOp::Clear, 0.0f);
+                readIndirect(b);
+            },
+            [this, gpu](PassContext& ctx) {
                 ctx.cmd.SetConstants(1, &m_viewConstants, sizeof(m_viewConstants));
+                if (gpu) {
+                    DrawIndirect(ctx.cmd, 0, VariantDepth);
+                    return;
+                }
                 Pipeline* bound = nullptr;
                 for (const DrawItem& d : m_opaque)
                     Draw(ctx.cmd, d, VariantDepth, bound);
+            });
+    }
+    if (occlusion) {
+        // Phase 2: a min-depth pyramid of what phase 1 drew, then the items hidden behind the previous frame's depth
+        // are tested again against it - the ones that became visible are drawn now.
+        AddHiZPass(graph, depth);
+        AddCullPass(graph, 1, 2, m_cullViewProj, gpuArgs, gpuLists, gpuCandidates, 0, 0.0f, 0);
+        graph.AddPass(
+            "DepthPrepass2", PassType::Graphics,
+            [depth, readIndirect](PassBuilder& b) {
+                b.DepthStencil(depth, LoadOp::Load, 0.0f);
+                readIndirect(b);
+            },
+            [this](PassContext& ctx) {
+                ctx.cmd.SetConstants(1, &m_viewConstants, sizeof(m_viewConstants));
+                DrawIndirect(ctx.cmd, 1, VariantDepth);
             });
     }
     // GTAO from the pre-pass depth (normals reconstructed from depth), then a depth-aware blur.
@@ -1152,17 +1228,24 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
     }
     graph.AddPass(
         "ForwardOpaque", PassType::Graphics,
-        [color, depth, prepass, clearColor, readShadows, mrt, normals](PassBuilder& b) {
+        [color, depth, prepass, clearColor, readShadows, mrt, normals, readIndirect](PassBuilder& b) {
             b.RenderTarget(color, LoadOp::Clear, clearColor);
             if (mrt)
                 b.RenderTarget(normals, LoadOp::Clear, LinearColor(0, 0, 0, 0));
             b.DepthStencil(depth, prepass ? LoadOp::Load : LoadOp::Clear, 0.0f);
             readShadows(b);
+            readIndirect(b);
         },
-        [this, prepass, bindView, mrt](PassContext& ctx) {
+        [this, prepass, bindView, mrt, gpu, occlusion](PassContext& ctx) {
             bindView(ctx);
-            Pipeline* bound = nullptr;
             const PipelineVariant variant = prepass ? (mrt ? VariantMainNoWriteMRT : VariantMainNoWrite) : (mrt ? VariantMainMRT : VariantMain);
+            if (gpu) {
+                DrawIndirect(ctx.cmd, 0, variant);
+                if (occlusion)
+                    DrawIndirect(ctx.cmd, 1, variant);
+                return;
+            }
+            Pipeline* bound = nullptr;
             for (const DrawItem& d : m_opaque)
                 Draw(ctx.cmd, d, variant, bound);
         });
@@ -1201,6 +1284,13 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                     ctx.cmd.DrawIndexed(d.indexCount, 1, d.indexOffset, 0, 0);
                 }
             });
+    }
+    if (gpu) {
+        // The pyramid built this frame tests the next frame's phase 1.
+        m_hizViewProj = m_cullViewProj;
+        m_hizValid = occlusion;
+        if (occlusion)
+            m_hizCurrent ^= 1u;
     }
     if (afterOpaque)
         afterOpaque(graph, color, depth, normals);

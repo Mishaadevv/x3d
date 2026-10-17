@@ -64,8 +64,8 @@ RenderAssets::RenderAssets(Device& device, asset::AssetManager& assets) : m_devi
 RenderAssets::~RenderAssets()
 {
     for (auto& kv : m_meshes) {
-        m_device.Destroy(kv.second.mesh.vertexBuffer);
-        m_device.Destroy(kv.second.mesh.indexBuffer);
+        m_device.Destroy(kv.second->mesh.vertexBuffer);
+        m_device.Destroy(kv.second->mesh.indexBuffer);
     }
     for (auto& kv : m_textures)
         m_device.Destroy(kv.second.texture);
@@ -281,9 +281,10 @@ const GpuMesh* RenderAssets::GetMesh(AssetId id)
 {
     if (!id.IsValid())
         return nullptr;
-    MeshEntry* e = m_meshes.Find(id);
+    UniquePtr<MeshEntry>* found = m_meshes.Find(id);
+    MeshEntry* e = found ? found->Get() : nullptr;
     if (!e) {
-        e = &m_meshes.InsertOrAssign(id, MeshEntry{});
+        e = m_meshes.InsertOrAssign(id, MakeUnique<MeshEntry>()).Get();
         e->requested = true;
         m_assets.Load(id);
         m_pendingMeshes.PushBack(id);
@@ -293,9 +294,11 @@ const GpuMesh* RenderAssets::GetMesh(AssetId id)
 
 void RenderAssets::ReloadMesh(AssetId id)
 {
-    MeshEntry* e = m_meshes.Find(id);
-    if (!e)
+    UniquePtr<MeshEntry>* found = m_meshes.Find(id);
+    if (!found)
         return;
+    MeshEntry* e = found->Get();
+    ++m_meshGeneration; // cached GpuMesh pointers die here
     m_device.Destroy(e->mesh.vertexBuffer);
     m_device.Destroy(e->mesh.indexBuffer);
     m_meshes.Remove(id);
@@ -396,7 +399,7 @@ void RenderAssets::Update(CommandList& cmd)
             ++i;
     }
     for (usize i = 0; i < m_pendingMeshes.Size();) {
-        MeshEntry& e = *m_meshes.Find(m_pendingMeshes[i]);
+        MeshEntry& e = **m_meshes.Find(m_pendingMeshes[i]);
         if (TryUploadMesh(m_pendingMeshes[i], e, budget)) {
             m_assets.ReleaseCpuData(m_pendingMeshes[i]);
             m_pendingMeshes.RemoveAtSwap(i);
@@ -455,9 +458,9 @@ RenderAssets::Stats RenderAssets::GetStats() const
 {
     Stats s;
     for (const auto& kv : m_meshes)
-        if (kv.second.resident) {
+        if (kv.second->resident) {
             ++s.meshes;
-            s.meshBytes += kv.second.mesh.bytes;
+            s.meshBytes += kv.second->mesh.bytes;
         }
     for (const auto& kv : m_textures)
         if (kv.second.texture) {

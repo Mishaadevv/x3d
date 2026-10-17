@@ -365,6 +365,19 @@ bool D3D12Device::CreateRootSignature()
                                                    ZX_DX_PPV(m_rootSignature))))
         return false;
     SetDebugName(m_rootSignature.Get(), "Bindless Root Signature");
+    // GPU-driven draws: each indirect record sets the draw id root constant, then draws.
+    D3D12_INDIRECT_ARGUMENT_DESC args[2] = {};
+    args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    args[0].Constant.RootParameterIndex = 0;
+    args[0].Constant.DestOffsetIn32BitValues = IndirectDrawIdConstant;
+    args[0].Constant.Num32BitValuesToSet = 1;
+    args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+    D3D12_COMMAND_SIGNATURE_DESC cs = {};
+    cs.ByteStride = sizeof(IndirectDrawArgs);
+    cs.NumArgumentDescs = 2;
+    cs.pArgumentDescs = args;
+    if (!ZX_DX_CHECK(m_device->CreateCommandSignature(&cs, m_rootSignature.Get(), ZX_DX_PPV(m_drawIndirectSignature))))
+        return false;
     return true;
 }
 

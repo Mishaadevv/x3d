@@ -1,4 +1,5 @@
 #include "Scene/Hierarchy.h"
+#include "Core/Profiler/Profiler.h"
 #include "Core/Jobs/JobSystem.h"
 #include "Core/Reflection/Reflection.h"
 
@@ -135,10 +136,11 @@ Mat4 ComputeWorldMatrix(const World& world, Entity e)
 
 void UpdateWorldTransforms(World& world)
 {
+    ZX_PROFILE_SCOPE("UpdateWorldTransforms");
     Array<Entity> rootsWithChildren;
-    world.Query<WorldTransform>().Without<Parent>().Each([&](Entity e, WorldTransform& wt) {
-        wt.matrix = LocalMatrix(world, e);
-    });
+    world.Query<const Transform, WorldTransform>().Without<Parent>().ParallelEach(
+        [](const Transform& t, WorldTransform& wt) { wt.matrix = t.ToMatrix(); }, 4);
+    world.Query<WorldTransform>().Without<Parent>().Without<Transform>().Each([&](WorldTransform& wt) { wt.matrix = Mat4::Identity(); });
     world.Query<const Children>().Without<Parent>().Each([&](Entity e, const Children&) { rootsWithChildren.PushBack(e); });
     World::IterationScope scope(world);
     jobs::ParallelFor(u32(rootsWithChildren.Size()), 4, [&](u32 begin, u32 end) {

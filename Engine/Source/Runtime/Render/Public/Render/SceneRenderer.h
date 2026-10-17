@@ -18,6 +18,10 @@ namespace zx::render {
 struct RenderInstance
 {
     Mat4 world;
+    u64 id = 0; // stable identity (entity): pairs this frame's instance with last frame's
+    // Motion (per-object motion blur, TAA): last frame's world matrix when it differs from world (the instance moved).
+    // Null = did not move / did not exist. Must stay valid until AddPasses executes.
+    const Mat4* prevWorld = nullptr;
     AssetId mesh;
     /// Material per mesh slot (missing/invalid -> default material). Must stay valid until AddPasses executes.
     Span<const AssetId> materials;
@@ -28,10 +32,6 @@ struct RenderInstance
     f32 charring = 0.0f;   // 0..1 how black
     f32 burnGlow = 0.0f;   // 0..1 glowing edge of the flames
     f32 embers = 0.0f;     // 0..1 embers in the charred part
-    // Motion (per-object motion blur, TAA): last frame's world matrix when the instance existed then.
-    Mat4 prevWorld = Mat4::Identity();
-    bool hasPrevWorld = false;
-    u64 id = 0; // stable identity (entity): pairs this frame's instance with last frame's
 };
 
 struct RenderView
@@ -169,6 +169,10 @@ struct SceneRenderSettings
     u32 maxAnisotropy = 16;
     /// The opaque pass also writes normal + roughness (R10G10B10A2) for screen-space reflections.
     bool normalOutput = false;
+    /// GPU-driven opaque / masked geometry: culling, LOD selection and draw lists on the GPU (DrawIndexedIndirect).
+    bool gpuDriven = true;
+    /// Two-phase HiZ occlusion culling (GPU-driven only); off for one-off views such as probe captures.
+    bool occlusionCulling = true;
     ShadowSettings shadows;
     AOSettings ao;
 };
@@ -194,6 +198,8 @@ public:
                    Function<void(RenderGraph&, RGTexture color, RGTexture depth, RGTexture normals)> afterOpaque = nullptr);
     /// Forces all shadow cascades to re-render next frame (scene content changed).
     void InvalidateShadows();
+    /// The view jumped (camera cut): last frame's depth says nothing about this one.
+    void ResetOcclusion() { m_hizValid = false; }
 
     /// The lights and sun shadows of this frame for passes that light other things the same way (volumetric fog).
     /// Valid after AddPasses, within the same render graph.
@@ -240,6 +246,11 @@ public:
         u32 lights = 0; // after frustum culling
         u32 decals = 0; // after frustum culling
         u32 lodHistogram[8] = {};
+        // GPU-driven path (draws / triangles above count only the CPU-drawn parts then).
+        bool gpuDriven = false;
+        u32 gpuItems = 0;      // (instance, section) items culled on the GPU
+        u32 gpuGroups = 0;     // mesh section + material combinations
+        u32 indirectCalls = 0; // DrawIndexedIndirect calls (per pass)
     };
     const Stats& GetStats() const { return m_stats; }
 
@@ -278,6 +289,50 @@ private:
     };
 
     rhi::Pipeline* GetPipeline(u32 kind, PipelineVariant variant, u32 shader = 0);
+    // --- GPU-driven path (SceneRendererGpu.cpp) ---
+    static constexpr u32 GpuViewCount = 2 + MaxCascades; // main phase 1, main phase 2, cascades
+    static constexpr u32 MaxGpuLods = 4;
+    struct DrawGroup // one mesh section with one material
+    {
+        const GpuMesh* mesh = nullptr;
+        u32 section = 0;
+        AssetId materialId;
+        u32 material = 0;
+        u8 pipeline = Opaque;
+        u32 shader = 0;
+        u32 lodCount = 1;
+        bool translucent = false;
+        u32 count = 0;     // items this frame
+        u32 dense = 0;     // index in this frame's group table
+        u32 firstSlot = 0; // this frame
+        u32 listBase = 0;  // this frame
+        u64 lastFrame = 0;
+    };
+    struct DrawTemplate // a mesh with its material list: the group of each section
+    {
+        const GpuMesh* mesh = nullptr;
+        Array<AssetId> materials;
+        Array<u32> groups;
+        bool hasTranslucent = false;
+    };
+    struct Bucket // slots drawn by one DrawIndexedIndirect: same pipeline, shader and index buffer
+    {
+        u8 pipeline = Opaque;
+        u32 shader = 0;
+        const GpuMesh* mesh = nullptr;
+        u32 firstSlot = 0;
+        u32 slotCount = 0;
+    };
+    bool InitGpuDriven();
+    void PrepareGpu(Span<const RenderInstance> instances, const RenderView& view, const struct Frustum& frustum, f32 invTanHalfFov,
+                    u8* instanceData);
+    u32 TemplateFor(const GpuMesh* mesh, Span<const AssetId> materials);
+    void AddCullPass(RenderGraph& graph, u32 viewIndex, u32 mode, const Mat4& viewProj, RGBuffer args, RGBuffer lists, RGBuffer candidates,
+                     u32 requiredFlags, f32 minRadius, u32 lodOffset);
+    void DrawIndirect(rhi::CommandList& cmd, u32 viewIndex, PipelineVariant variant);
+    void AddCullInitPass(RenderGraph& graph, RGBuffer args, RGBuffer candidates, u32 viewMask);
+    void AddHiZPass(RenderGraph& graph, RGTexture depth);
+    void EnsureGpuBuffers();
     void Draw(rhi::CommandList& cmd, const DrawItem& d, PipelineVariant variant, rhi::Pipeline*& bound);
     void EnsureInstanceCapacity(u32 count);
     void SetupCascades(const RenderView& view, const SceneLighting& lighting);
@@ -366,6 +421,11 @@ private:
         u32 cloudShadow; // SRV or invalid
         f32 cloudShadowInvExtent;
         Vec2 cloudShadowOrigin;
+        // GPU-driven draws.
+        u32 drawSlots;
+        u32 visibleLists;
+        u32 slotCount;
+        u32 listCapacity;
     } m_viewConstants = {};
     // HLSL constant buffer packing: a matrix starts on a 16-byte boundary.
     static_assert(offsetof(ViewConstants, ssrViewProj) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
@@ -385,13 +445,11 @@ private:
         Mat4 viewProj;
         Array<DrawItem> draws;
     };
-    struct InstanceRef
+    struct InstanceRef // shadow caster (local lights); instance points into Prepare's instances
     {
         u32 index;
         const GpuMesh* mesh;
-        Mat4 world;
-        f32 scale;
-        Span<const AssetId> materials;
+        const RenderInstance* instance;
     };
     rhi::Texture* m_localAtlas = nullptr;
     u32 m_localAtlasSize = 0;
@@ -464,6 +522,47 @@ private:
                          rhi::InvalidDescriptor}; // anisotropy 1, 2, 4, 8, 16
     Stats m_stats;
     bool m_shadersOk = false;
+
+    // GPU-driven state.
+    bool m_gpuFrame = false; // this frame draws opaque / masked geometry indirectly
+    HashMap<u64, u32> m_templateIndex;
+    Array<DrawTemplate> m_templates;
+    HashMap<u64, u32> m_groupIndex;
+    Array<DrawGroup> m_groups;
+    Array<u32> m_activeGroups; // this frame, sorted by bucket
+    Array<Bucket> m_buckets;
+    u32 m_slotCount = 0, m_itemCount = 0, m_listCapacity = 0;
+    struct InstanceCache // last frame's resolution of the instance at the same index
+    {
+        AssetId mesh;
+        const GpuMesh* gpuMesh = nullptr;
+        const AssetId* materials = nullptr;
+        u32 materialCount = 0;
+        u32 templateIndex = 0;
+    };
+    Array<InstanceCache> m_instanceCache;
+    u64 m_instanceCacheGeneration = ~0ull; // RenderAssets::MeshGeneration the cache was built with
+    rhi::Buffer* m_cullItems[rhi::FramesInFlight] = {};  // per frame (upload): cull items, group table, slot table
+    rhi::Buffer* m_cullGroups[rhi::FramesInFlight] = {};
+    rhi::Buffer* m_cullSlots[rhi::FramesInFlight] = {};
+    u64 m_cullItemBytes = 0, m_cullGroupBytes = 0, m_cullSlotBytes = 0;
+    rhi::Buffer* m_indirectArgs = nullptr;  // GpuViewCount regions of IndirectDrawArgs
+    rhi::Buffer* m_visibleLists = nullptr;  // GpuViewCount regions of instance indices
+    rhi::Buffer* m_candidates = nullptr;    // phase 1 -> phase 2 items
+    u32 m_argsCapacity = 0, m_listsCapacity = 0, m_candidateCapacity = 0;
+    rhi::Texture* m_hiz[2][2] = {};         // [frame parity][even / odd mips]
+    UVec2 m_hizSize;
+    u32 m_hizMips = 0;
+    u32 m_hizCurrent = 0;
+    bool m_hizValid = false;
+    Mat4 m_hizViewProj = Mat4::Identity(); // the view m_hiz[!current] was built with
+    Mat4 m_cullViewProj = Mat4::Identity();
+    Vec3 m_cullCamera;
+    f32 m_cullInvTanHalfFov = 1.0f;
+    rhi::ShaderBytecode m_cullInitCS, m_cullCS, m_hizCS;
+    rhi::Pipeline* m_cullInitPipeline = nullptr;
+    rhi::Pipeline* m_cullPipeline = nullptr;
+    rhi::Pipeline* m_hizPipeline = nullptr;
 };
 
 } // namespace zx::render

@@ -80,8 +80,9 @@ public:
     /// material shaders) - reflection probes recapture on it.
     u64 ContentVersion() const { return m_contentVersion; }
 
-    /// Null until resident.
+    /// Null until resident. A resident mesh's address stays valid until ReloadMesh (MeshGeneration changes then).
     const GpuMesh* GetMesh(AssetId id);
+    u64 MeshGeneration() const { return m_meshGeneration; }
     /// Forgets a mesh (its GPU copy is freed once the GPU is done with it); the next GetMesh loads it again. For
     /// memory meshes that were replaced (generated terrain).
     void ReloadMesh(AssetId id);
@@ -161,7 +162,8 @@ private:
 
     rhi::Device& m_device;
     asset::AssetManager& m_assets;
-    HashMap<AssetId, MeshEntry> m_meshes;
+    HashMap<AssetId, UniquePtr<MeshEntry>> m_meshes; // stable addresses: GetMesh pointers survive later loads
+    u64 m_meshGeneration = 0;
     HashMap<AssetId, TextureEntry> m_textures;
     HashMap<AssetId, MaterialEntry> m_materials;
     Array<AssetId> m_pendingMeshes;

@@ -1,5 +1,6 @@
 #include "Engine/ViewportRenderer.h"
 #include "Engine/Particles.h"
+#include "Core/Jobs/JobSystem.h"
 #include "Core/Profiler/Profiler.h"
 #include "Engine/PostProcessVolume.h"
 
@@ -167,6 +168,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     if (camera.cut) {
         m_taa.Reset();
         m_volumetric.ResetHistory();
+        m_scene.ResetOcclusion();
     }
     ResolveHdriSky(world);
     // Height Fog component (without one: the default fog, volumetric).
@@ -229,17 +231,61 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     view.width = renderSize.x;
     view.height = renderSize.y;
 
-    m_instances.Clear();
-    GatherRenderInstances(world, m_instances);
-    // Object motion: pair each instance with its world matrix of last frame (none after a cut).
-    for (render::RenderInstance& inst : m_instances)
-        if (const Mat4* prev = m_prevWorlds.Find(inst.id); prev && !camera.cut) {
-            inst.prevWorld = *prev;
-            inst.hasPrevWorld = true;
+    {
+        ZX_PROFILE_SCOPE("GatherInstances");
+        m_instances.Clear();
+        GatherRenderInstances(world, m_instances);
+    }
+    {
+        // Object motion: pair each instance with its world matrix of last frame (none after a cut).
+        ZX_PROFILE_SCOPE("PairPrevWorlds");
+        // One pass over the instances (memory bound: 100k instances are ~15 MB): the gather order is stable, so the
+        // instance at the same index usually is the same entity. Mismatches (entities added / removed) are paired
+        // through an id -> index map of last frame afterwards.
+        const Array<u64>& prevIds = m_motionIds[m_motionCurrent];
+        const Array<Mat4>& prevWorlds = m_motionWorlds[m_motionCurrent];
+        m_motionCurrent ^= 1;
+        Array<u64>& ids = m_motionIds[m_motionCurrent];
+        Array<Mat4>& worlds = m_motionWorlds[m_motionCurrent];
+        const u32 count = u32(m_instances.Size());
+        const u32 prevCount = camera.cut ? 0u : u32(prevIds.Size());
+        ids.ResizeUninitialized(count);
+        worlds.ResizeUninitialized(count);
+        std::atomic<u32> mismatches{0};
+        auto pair = [&](u32 begin, u32 end) {
+            u32 missed = 0;
+            for (u32 i = begin; i < end; ++i) {
+                render::RenderInstance& inst = m_instances[i];
+                ids[i] = inst.id;
+                worlds[i] = inst.world;
+                if (i < prevCount && prevIds[i] == inst.id) {
+                    if (MemCompare(&prevWorlds[i], &inst.world, sizeof(Mat4)) != 0)
+                        inst.prevWorld = &prevWorlds[i];
+                } else {
+                    ++missed;
+                }
+            }
+            if (missed)
+                mismatches.fetch_add(missed, std::memory_order_relaxed);
+        };
+        if (jobs::IsInitialized() && count > 4096)
+            jobs::ParallelFor(count, 4096, pair);
+        else
+            pair(0, count);
+        if (mismatches.load() > 0 && prevCount > 0) {
+            HashMap<u64, u32> prevIndex;
+            prevIndex.Reserve(prevCount);
+            for (u32 k = 0; k < prevCount; ++k)
+                prevIndex.InsertOrAssign(prevIds[k], k);
+            for (u32 i = 0; i < count; ++i) {
+                render::RenderInstance& inst = m_instances[i];
+                if (i < prevCount && prevIds[i] == inst.id)
+                    continue;
+                if (const u32* j = prevIndex.Find(inst.id); j && MemCompare(&prevWorlds[*j], &inst.world, sizeof(Mat4)) != 0)
+                    inst.prevWorld = &prevWorlds[*j];
+            }
         }
-    m_prevWorlds.Clear();
-    for (const render::RenderInstance& inst : m_instances)
-        m_prevWorlds.InsertOrAssign(inst.id, inst.world);
+    }
     m_scene.SetMotionMatrices(m_viewProjNoJitter, m_hasPrevView && !camera.cut ? m_prevViewProjNoJitter : m_viewProjNoJitter);
     m_prevViewProjNoJitter = m_viewProjNoJitter;
     m_hasPrevView = true;
@@ -289,6 +335,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         cs.shadows.localEnabled = false;
         cs.shadows.cascades = Min(cs.shadows.cascades, 2u);
         cs.shadows.cache = false;
+        cs.occlusionCulling = false; // six unrelated face views: no previous depth to test against
         m_captureScene.SetTime(f32(std::fmod(m_time, 3600.0)));
         m_captureScene.Prepare(m_instances.View(), faceView, captureLighting, cs);
         TextureDesc fd;

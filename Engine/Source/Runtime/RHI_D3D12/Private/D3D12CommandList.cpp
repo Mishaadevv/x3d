@@ -213,6 +213,14 @@ void D3D12CommandList::DrawIndexed(u32 indexCount, u32 instanceCount, u32 firstI
     m_list->DrawIndexedInstanced(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
 }
 
+void D3D12CommandList::DrawIndexedIndirect(Buffer* args, u64 offset, u32 maxCount)
+{
+    if (!args || maxCount == 0)
+        return;
+    FlushBarriers();
+    m_list->ExecuteIndirect(m_device.DrawIndirectSignature(), maxCount, static_cast<D3D12Buffer*>(args)->resource.Get(), offset, nullptr, 0);
+}
+
 void D3D12CommandList::Dispatch(u32 x, u32 y, u32 z)
 {
     FlushBarriers();

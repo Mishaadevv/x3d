@@ -186,6 +186,9 @@ public:
     virtual void DrawIndexed(u32 indexCount, u32 instanceCount = 1, u32 firstIndex = 0, i32 vertexOffset = 0,
                              u32 firstInstance = 0) = 0;
     virtual void Dispatch(u32 groupsX, u32 groupsY = 1, u32 groupsZ = 1) = 0;
+    /// `maxCount` IndirectDrawArgs from `args` (IndirectArgument state) with the bound pipeline and index buffer;
+    /// each writes its drawId to push constant dword IndirectDrawIdConstant first (GPU-driven rendering).
+    virtual void DrawIndexedIndirect(Buffer* args, u64 offset, u32 maxCount) = 0;
 
     // --- Transfers ---
     /// Per-frame upload memory (aligned to 256 bytes).

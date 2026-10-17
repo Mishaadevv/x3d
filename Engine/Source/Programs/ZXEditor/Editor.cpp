@@ -3048,9 +3048,12 @@ bool Editor::Frame()
     fi.events = m_events.View();
     fi.hasFocus = window->IsFocused() || m_autotestFrames > 0;
     Stopwatch sw;
-    ui->BeginFrame(fi);
-    DrawShell(*this);
-    ui->EndFrame();
+    {
+        ZX_PROFILE_SCOPE("Editor.UI");
+        ui->BeginFrame(fi);
+        DrawShell(*this);
+        ui->EndFrame();
+    }
     m_timeUi += sw.ElapsedMilliseconds();
     // A drag/edit step ends once nothing is held any more.
     if (m_continuousEdit && !input.IsMouseDown(MouseButton::Left) && !ui->IsAnyItemActive()) {
@@ -3079,7 +3082,10 @@ bool Editor::Frame()
         audio->TickIdle(dt); // previews
     }
     // Terrains: (re)built when one appears or its shape changes.
-    terrains.Update(world, *assets, renderAssets.Get());
+    {
+        ZX_PROFILE_SCOPE("Terrains");
+        terrains.Update(world, *assets, renderAssets.Get());
+    }
     // Particles: emitters with Simulate In Editor run live while editing, all of them while playing (frozen when paused).
     if (FeatureEnabled("particles")) {
         scene::UpdateWorldTransforms(world);
@@ -3180,6 +3186,7 @@ bool Editor::Frame()
 
 void Editor::RenderFrame()
 {
+    ZX_PROFILE_SCOPE("Editor.RenderFrame");
     const UVec2 size = swapChain->GetSize();
     device->BeginFrame();
     CommandList* cmd = device->BeginCommandList();
