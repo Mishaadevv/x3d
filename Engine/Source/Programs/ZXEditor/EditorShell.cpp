@@ -161,6 +161,7 @@ void DrawMenus(Editor& ed)
         ActionMenuItem(ed, "tool.brush", ed.tools.active == EditorTool::Brush);
         ActionMenuItem(ed, "tool.measure", ed.tools.active == EditorTool::Measure);
         ActionMenuItem(ed, "tool.terrain", ed.tools.active == EditorTool::Terrain);
+        ActionMenuItem(ed, "tool.uiDesigner", ed.tools.active == EditorTool::UIDesigner);
         ActionMenuItem(ed, "edit.dropToGround");
         ui::Separator();
         ActionMenuItem(ed, "game.compile");
@@ -315,6 +316,9 @@ void DrawToolbar(Editor& ed, const Rect& r)
             SetActiveTool(ed, EditorTool::Terrain);
         ui::SameLine(0.0f, 2.0f);
     }
+    if (ToolButton(ZX_ICON_LAYOUT_DASHBOARD, "UI Designer: build HUDs and menus with the mouse (U)", ed.tools.active == EditorTool::UIDesigner))
+        SetActiveTool(ed, EditorTool::UIDesigner);
+    ui::SameLine(0.0f, 2.0f);
     if (ed.tool == TransformTool::Scale) {
         if (ToolButton(ZX_ICON_ARROW_RIGHT_FROM_LINE, "Scale from one side: the opposite side stays put (Alt while dragging: the other way)",
                        ed.prefs.scaleFromOneSide))

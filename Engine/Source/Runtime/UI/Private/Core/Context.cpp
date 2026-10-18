@@ -142,6 +142,7 @@ bool Context::IsAnyItemActive() const
 }
 
 CursorShape Context::GetCursorShape() const { return m_impl->cursorShape; }
+void Context::SetCursorShape(CursorShape shape) { m_impl->cursorShape = shape; }
 
 Span<const DrawList* const> Context::GetDrawLists() const { return m_impl->outputLists.View(); }
 

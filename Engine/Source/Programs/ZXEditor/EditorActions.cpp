@@ -262,6 +262,8 @@ void RegisterEditorActions(Editor& ed)
         [](Editor& e) { return e.FeatureEnabled("measure") && !e.IsPlaying(); });
     Add(ed, "tool.terrain", "Terrain Tool", "Tools", ZX_ICON_MOUNTAIN, "T", [](Editor& e) { SetActiveTool(e, EditorTool::Terrain); },
         [](Editor& e) { return e.FeatureEnabled("terrainTool") && !e.IsPlaying(); });
+    Add(ed, "tool.uiDesigner", "UI Designer", "Tools", ZX_ICON_LAYOUT_DASHBOARD, "U", [](Editor& e) { SetActiveTool(e, EditorTool::UIDesigner); },
+        [](Editor& e) { return !e.IsPlaying(); });
     Add(ed, "edit.dropToGround", "Drop to Ground", "Edit", ZX_ICON_ARROW_DOWN_TO_LINE, "End", [](Editor& e) { DropSelectedToGround(e); },
         [](Editor& e) { return e.world.IsAlive(e.selected) && !e.IsPlaying(); });
     Add(ed, "brush.smaller", "Brush Smaller", "Tools", ZX_ICON_MINUS, "[",

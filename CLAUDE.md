@@ -198,6 +198,12 @@ action view.gameUI), Interact only while the game shows the cursor (ui.cursor); 
 ZXGame: m_fonts + ui::Context (fonts) + UIRenderer pass; Packaging adds Engine/Content/Fonts as pak "Fonts".
 UI v2 (0.13.13): UICanvas::worldSpace (GameUISystem::SetCamera before Layout; onScreen / depth runtime), UIElement
 scroll / wrap, UIInputField (GameUISystem::TypeText, WantsKeyboard gates game input, UIEvent::Submit -> onUISubmit).
+UI Designer (0.13.20): EditorTool::UIDesigner (EditorUIDesigner.cpp: UIDesignerScreen preview rect used for
+gameUI.Layout in ViewportPanel, UpdateUIDesigner after gameUI.Draw - PickChain / PickTarget Figma-like picking,
+handles, reorder via scene::Children (all siblings recorded for undo), DrawUIDesignerPanel); Context::SetCursorShape.
+Real-mouse UI tests: the Win32 layer drops a held button that GetAsyncKeyState says is up, so PostMessage drags don't
+work - use scratchpad uidrag2.py (SetCursorPos + mouse_event, foreground window; tokens "a>b", "dbl:x,y",
+"key:ctrl+z"; coords = screenshot pixels; the 1600x900 window is clamped to 1600x938 on the 125 % laptop).
 Localization (0.13.19): Engine/Localization.h (Load scans <content>/StarterContent/Localization then Localization,
 *.zloc per language; Translate / Format, SetLanguage + preferenceFile, Poll hot reload, editing SetText / Save);
 UIText::key / UIInputField::placeholderKey resolved in GameUISystem::Layout (localization pointer); scripts tr() /

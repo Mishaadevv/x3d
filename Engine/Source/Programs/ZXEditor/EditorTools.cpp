@@ -627,6 +627,10 @@ void SetActiveTool(Editor& ed, EditorTool tool)
     ts.active = ts.active == tool ? EditorTool::None : tool;
     ts.painting = false;
     ts.rampDragging = false;
+    if (ts.uiDragging) {
+        ed.undo.End();
+        ts.uiDragging = false;
+    }
     ts.measureCount = 0;
     if (ts.active != EditorTool::None) {
         // A tab next to Details (not a window over the viewport), brought to front by DrawToolPanel.
@@ -639,7 +643,7 @@ bool UpdateViewportTool(Editor& ed, const Ray& mouseRay, bool hovered, const Fun
                         f32 scale)
 {
     ToolState& ts = ed.tools;
-    if (ts.active == EditorTool::None || ed.IsPlaying())
+    if (ts.active == EditorTool::None || ts.active == EditorTool::UIDesigner || ed.IsPlaying()) // the UI Designer runs over the game UI
         return false;
     // Where the mouse points: scene triangles, else the ground plane.
     ts.hovering = false;
@@ -871,6 +875,11 @@ void DrawToolPanel(Editor& ed)
     }
     if (!open)
         ts.active = EditorTool::None;
+    if (ts.active == EditorTool::UIDesigner) {
+        DrawUIDesignerPanel(ed);
+        ui::End();
+        return;
+    }
     if (ts.active == EditorTool::Terrain) {
         TerrainBrushSettings& b = ts.terrain;
         ui::Heading(ZX_ICON_MOUNTAIN "  Terrain");

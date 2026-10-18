@@ -24,6 +24,7 @@ enum class EditorTool : u8
     Brush,   // B
     Measure, // M
     Terrain, // T: sculpt / paint Terrain components
+    UIDesigner, // U: build game UI (UI Canvases) with the mouse
 };
 
 enum class TerrainBrushMode : u8
@@ -110,6 +111,19 @@ struct ToolState
     bool focusPanel = false;  // bring the Tool Settings tab to front once it exists
     Vec3 rampStart;           // Ramp: where the drag began (world)
     f32 rampStartHeight = 0.0f; // local
+    // UI Designer.
+    ecs::Entity uiHover;
+    ecs::Entity uiDragged;
+    bool uiDragging = false;
+    bool uiMoved = false;
+    i32 uiHandle = -1; // 0..7 resize handles, 8 = the body
+    i32 uiInsert = -1; // reorder: index among the laid-out siblings
+    Vec2 uiPressMouse;
+    Rect uiStartRect;
+    Vec2 uiStartOffset, uiStartSize;
+    u32 uiPreview = 0; // preview screen shape (0 = the viewport)
+    bool uiSnap = true;
+    f32 uiGrid = 4.0f; // UI units
     // Measure: up to two points.
     u32 measureCount = 0;
     Vec3 measureA, measureB;
@@ -126,6 +140,11 @@ bool UpdateViewportTool(Editor& ed, const Ray& mouseRay, bool hovered, const Fun
 void DrawToolOverlay(Editor& ed, render::DebugDraw& dd);
 /// Settings window of the active tool (Brush items and options, Measure readout).
 void DrawToolPanel(Editor& ed);
+/// UI Designer: the screen rect the game UI is laid out in (a preview shape inside the viewport, or the viewport).
+Rect UIDesignerScreen(Editor& ed, const Rect& viewport);
+/// UI Designer: picking, moving, resizing and its overlay (after the game UI is drawn). True = it used the mouse.
+bool UpdateUIDesigner(Editor& ed, const Rect& viewport, const Rect& screen, bool hovered, ui::DrawList& dl, f32 s);
+void DrawUIDesignerPanel(Editor& ed);
 /// Window > Features.
 void DrawFeaturesPanel(Editor& ed);
 /// One brush stroke at a point (one undo step): paints, or erases with `erase`. Returns the painted-instance count after.

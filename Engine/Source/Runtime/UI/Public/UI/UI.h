@@ -224,6 +224,8 @@ public:
     bool WantsKeyboard() const; // a text field or widget has keyboard focus
     bool IsAnyItemActive() const; // a widget is being dragged/held or a text field is being edited
     CursorShape GetCursorShape() const;
+    /// Overrides the mouse cursor for this frame (custom viewport tools).
+    void SetCursorShape(CursorShape shape);
 
     FontSystem& Fonts() { return m_fonts; }
     struct Impl;

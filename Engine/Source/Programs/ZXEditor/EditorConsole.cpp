@@ -646,7 +646,7 @@ ConCommand CmdFeatures("features", "Opens the Features window (engine features a
         ed->showFeatures = true;
 });
 
-ConCommand CmdTool("tool", "Activates an editor tool: tool <brush|measure|none>; tool drop = Drop to Ground", [](Span<const StringView> args) {
+ConCommand CmdTool("tool", "Activates an editor tool: tool <brush|measure|terrain|ui|none>; tool drop = Drop to Ground", [](Span<const StringView> args) {
     Editor* ed = Ed();
     if (!ed || args.Empty())
         return;
@@ -657,6 +657,7 @@ ConCommand CmdTool("tool", "Activates an editor tool: tool <brush|measure|none>;
     const EditorTool tool = args[0].EqualsIgnoreCase("brush")     ? EditorTool::Brush
                             : args[0].EqualsIgnoreCase("measure") ? EditorTool::Measure
                             : args[0].EqualsIgnoreCase("terrain") ? EditorTool::Terrain
+                            : args[0].EqualsIgnoreCase("ui")      ? EditorTool::UIDesigner
                                                                   : EditorTool::None;
     ed->tools.active = EditorTool::None;
     if (tool != EditorTool::None)

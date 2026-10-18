@@ -174,7 +174,7 @@ AABB LocalBounds(Editor& ed, ecs::Entity e)
 bool Gizmo(Editor& ed, const ViewProjector& vp, DrawList& dl, bool hoveredViewport, f32 s)
 {
     if (!ed.world.IsAlive(ed.selected) || ed.tool == TransformTool::Select || !ed.world.Has<Transform>(ed.selected) ||
-        ed.tools.active == EditorTool::Terrain) { // painting a terrain: no gizmo in the way
+        ed.tools.active == EditorTool::Terrain || ed.tools.active == EditorTool::UIDesigner) { // terrain / UI tools: no gizmo in the way
         g_gizmo.hot = g_gizmo.active = -1;
         return false;
     }
@@ -524,11 +524,13 @@ void DrawViewportPanel(Editor& ed)
     DrawList& dl = ui::GetWindowDrawList();
     dl.AddImage(ed.viewportTexture->GetSrvIndex(), r);
     // Game UI (UI Canvases) over the view: always over the game camera, as a preview while editing.
-    if (ed.showGameUI || ed.UsingGameCamera()) {
+    const bool designing = ed.tools.active == EditorTool::UIDesigner && !ed.IsPlaying();
+    const Rect uiScreen = UIDesignerScreen(ed, r); // the UI Designer can preview other screen shapes
+    if (ed.showGameUI || ed.UsingGameCamera() || designing) {
         // World-space canvases follow the camera of the last rendered frame.
         ed.gameUI.SetCamera(ed.viewport->ViewProjection(), ed.viewport->LastView().position);
         ed.gameUI.time += ed.dt;
-        ed.gameUI.Layout(ed.world, ed.fonts, r);
+        ed.gameUI.Layout(ed.world, ed.fonts, uiScreen);
         if (ed.UsingGameCamera() && ed.gameInputCaptured && ed.gameUI.cursorRequested) {
             const Vec2 mouse = ui::GetMousePos();
             ed.gameUI.Interact(ed.world, mouse, ed.input.IsMouseDown(MouseButton::Left), ed.input.WasMousePressed(MouseButton::Left),
@@ -597,8 +599,10 @@ void DrawViewportPanel(Editor& ed)
     if (!ed.CleanViewportShot())
         DrawLightIcons(ed, vp, dl, s);
     // Brush / Measure take the left mouse button while active; otherwise the gizmo and click-to-select work.
-    const bool toolBusy = UpdateViewportTool(ed, vp.MouseRay(ui::GetMousePos()), surfaceHovered && !ed.flying,
-                                             [&vp](Vec3 p, Vec2& out) { return vp.Project(p, out); }, dl, s);
+    bool toolBusy = UpdateViewportTool(ed, vp.MouseRay(ui::GetMousePos()), surfaceHovered && !ed.flying,
+                                       [&vp](Vec3 p, Vec2& out) { return vp.Project(p, out); }, dl, s);
+    if (designing && !ed.CleanViewportShot())
+        toolBusy = UpdateUIDesigner(ed, r, uiScreen, surfaceHovered && !ed.flying, dl, s) || toolBusy;
     const bool gizmoBusy = toolBusy || (!ed.CleanViewportShot() && Gizmo(ed, vp, dl, surfaceHovered && !ed.flying, s));
     dl.PopClipRect();
 
@@ -615,7 +619,7 @@ void DrawViewportPanel(Editor& ed)
     static Vec2 s_pressPos;
     if (surfaceHovered && ed.input.WasMousePressed(MouseButton::Left))
         s_pressPos = ui::GetMousePos();
-    if (surfaceHovered && ed.input.WasMouseReleased(MouseButton::Left) && !gizmoBusy &&
+    if (surfaceHovered && ed.input.WasMouseReleased(MouseButton::Left) && !gizmoBusy && !designing &&
         Distance(ui::GetMousePos(), s_pressPos) < 4.0f * s)
         ed.Select(Pick(ed, vp.MouseRay(ui::GetMousePos())));
 
