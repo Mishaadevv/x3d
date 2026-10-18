@@ -1,11 +1,13 @@
 #pragma once
 
-// Editor tools beyond the transform gizmo: Brush (paint models onto surfaces), Measure (distances), Drop to Ground,
+// Editor tools beyond the transform gizmo: Brush (paint models onto surfaces), Terrain (sculpt and paint terrains),
+// Measure (distances), Drop to Ground,
 // and the Features window (engine subsystems and tools switched on/off per project, stored in the .zproj).
 
 #include "Core/Containers/Function.h"
 #include "Core/Math/Math.h"
 #include "Core/Serialization/Json.h"
+#include "Scene/ECS/World.h"
 #include "UI/UI.h"
 
 namespace zx::render {
@@ -21,6 +23,29 @@ enum class EditorTool : u8
     None,    // transform gizmo
     Brush,   // B
     Measure, // M
+    Terrain, // T: sculpt / paint Terrain components
+};
+
+enum class TerrainBrushMode : u8
+{
+    Raise,
+    Lower,
+    Smooth,
+    Flatten, // towards the height where the stroke started
+    Noise,   // rough it up
+    PaintRock,
+    PaintDirt,
+    PaintSand,
+    ErasePaint, // back to the material's automatic grass / rock / snow
+    Count
+};
+
+struct TerrainBrushSettings
+{
+    TerrainBrushMode mode = TerrainBrushMode::Raise;
+    f32 radius = 8.0f;    // m
+    f32 strength = 0.5f;  // 0..1
+    f32 falloff = 0.85f;  // 0 = hard edge, 1 = soft all the way to the center
 };
 
 /// One model the brush can place: a snapshot of an entity hierarchy (root first) captured from the scene.
@@ -50,6 +75,7 @@ struct ToolState
 {
     EditorTool active = EditorTool::None;
     BrushSettings brush;
+    TerrainBrushSettings terrain;
     Array<BrushItem> items;
     bool painting = false;
     Vec3 lastDab;
@@ -57,6 +83,11 @@ struct ToolState
     Vec3 hoverPoint;
     Vec3 hoverNormal = Vec3::Up();
     u32 placedThisStroke = 0;
+    // Terrain tool: the terrain under the mouse and the stroke in progress.
+    ecs::Entity hoverTerrain;
+    ecs::Entity sculptTerrain;
+    bool sculpting = false;
+    f32 flattenHeight = 0.0f; // local height of the stroke's start
     // Measure: up to two points.
     u32 measureCount = 0;
     Vec3 measureA, measureB;
@@ -79,6 +110,8 @@ void DrawFeaturesPanel(Editor& ed);
 u32 BrushStrokeAt(Editor& ed, Vec3 point, Vec3 normal, bool erase);
 /// Adds the selected entity hierarchy as a brush model. Returns false without a valid selection.
 bool AddSelectedBrushItem(Editor& ed);
+/// One frame of a terrain stroke at world `point` (the editor's live terrain data; Commit writes the component).
+void TerrainDab(Editor& ed, ecs::Entity terrain, Vec3 point, f32 dt);
 /// Moves the selection down (or up) until its bounds rest on the surface below (undoable). End key.
 bool DropSelectedToGround(Editor& ed);
 

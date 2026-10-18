@@ -625,7 +625,7 @@ bool PhysicsSystem::CreateBody(ecs::World& world, Entity e, bool dynamic)
         AppendShapes(world, e, bodyPose, d.shapes, m_assets, &makeHull);
         if (const Terrain* terrain = world.Get<const Terrain>(e); terrain && terrain->collision) {
             Array<f32> heights;
-            GenerateTerrainHeights(*terrain, heights);
+            ComputeTerrainHeights(*terrain, heights);
             const Vec3 s = Abs(pose.scale);
             for (f32& h : heights)
                 h *= s.y;

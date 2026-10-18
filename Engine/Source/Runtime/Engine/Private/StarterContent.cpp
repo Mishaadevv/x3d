@@ -175,7 +175,7 @@ render::MaterialGraph MakeTerrainMaterial()
 {
     render::MaterialGraph g;
     g.guid = Guid::FromName(Guid(), "M_Terrain");
-    const u32 output = g.AddNode("Output", Vec2(1300, 0))->id;
+    const u32 output = g.AddNode("Output", Vec2(2050, 0))->id;
     auto value = [&](StringView type, StringView name, Vec4 v, Vec2 pos) {
         render::MaterialGraphNode* n = g.AddNode(type, pos);
         n->name = String(name);
@@ -229,7 +229,24 @@ render::MaterialGraph MakeTerrainMaterial()
                                 Vec2(1040, 300));
     const u32 snowClamped = node("Saturate", Vec2(1160, 300));
     g.Connect(snowAmount, 0, snowClamped, 0);
-    const u32 color = lerp(ground, value("Color", "Snow", Vec4(0.86f, 0.88f, 0.92f, 1), Vec2(1040, -160)), snowClamped, Vec2(1160, -200));
+    const u32 autoColor = lerp(ground, value("Color", "Snow", Vec4(0.86f, 0.88f, 0.92f, 1), Vec2(1040, -160)), snowClamped, Vec2(1160, -200));
+    // Painted layers (the editor's Terrain tool writes their weights into the vertex colors): rock, dirt, sand.
+    const u32 vertexColor = node("VertexColor", Vec2(1160, -700));
+    auto channel = [&](u32 c, Vec2 pos) { // weights are stored inverted (1 = unpainted)
+        render::MaterialGraphNode* m = g.AddNode("ComponentMask", pos);
+        m->value = Vec4(c == 0 ? 1.0f : 0.0f, c == 1 ? 1.0f : 0.0f, c == 2 ? 1.0f : 0.0f, 0.0f);
+        g.Connect(vertexColor, 0, m->id, 0);
+        const u32 inv = g.AddNode("OneMinus", pos + Vec2(100, 0))->id;
+        g.Connect(m->id, 0, inv, 0);
+        return inv;
+    };
+    const u32 dirt = lerp(value("Color", "Dirt Dark", Vec4(0.12f, 0.08f, 0.05f, 1), Vec2(1160, -900)),
+                          value("Color", "Dirt Light", Vec4(0.24f, 0.17f, 0.1f, 1), Vec2(1160, -820)), detail, Vec2(1360, -860));
+    const u32 sand = lerp(value("Color", "Sand Dark", Vec4(0.5f, 0.42f, 0.28f, 1), Vec2(1160, -1060)),
+                          value("Color", "Sand Light", Vec4(0.7f, 0.62f, 0.45f, 1), Vec2(1160, -980)), patches, Vec2(1360, -1020));
+    const u32 withRock = lerp(autoColor, rock, channel(0, Vec2(1360, -700)), Vec2(1560, -400));
+    const u32 withDirt = lerp(withRock, dirt, channel(1, Vec2(1360, -620)), Vec2(1700, -400));
+    const u32 color = lerp(withDirt, sand, channel(2, Vec2(1360, -540)), Vec2(1840, -400));
     g.Connect(color, 0, output, 0);
     // Rough everywhere, snow a bit smoother.
     g.Connect(lerp(value("Scalar", "Roughness", Vec4(0.92f, 0, 0, 0), Vec2(1040, 500)), value("Scalar", "Snow Roughness", Vec4(0.6f, 0, 0, 0), Vec2(1040, 580)),
@@ -1225,6 +1242,15 @@ u32 WriteSounds(const String& dir)
 }
 
 } // namespace
+
+u32 WriteTerrainMaterial(StringView contentDir)
+{
+    const String path = String::Format("{}/StarterContent/Materials/M_Terrain.zmat", contentDir);
+    if (platform::FileExists(path))
+        return 0;
+    platform::CreateDirectoryTree(Path::Parent(path));
+    return fs::WriteTextFile(path, ToJsonString(MakeTerrainMaterial().ToJson())) ? 1u : 0u;
+}
 
 u32 WriteStarterContent(StringView contentDir)
 {

@@ -81,6 +81,8 @@ void DrawMenus(Editor& ed)
         ui::Separator();
         ActionMenuItem(ed, "file.package");
         ui::Separator();
+        ActionMenuItem(ed, "file.settings");
+        ui::Separator();
         ActionMenuItem(ed, "file.exit");
         ui::EndMenu();
     }
@@ -157,6 +159,7 @@ void DrawMenus(Editor& ed)
     if (ui::BeginMenu("Tools")) {
         ActionMenuItem(ed, "tool.brush", ed.tools.active == EditorTool::Brush);
         ActionMenuItem(ed, "tool.measure", ed.tools.active == EditorTool::Measure);
+        ActionMenuItem(ed, "tool.terrain", ed.tools.active == EditorTool::Terrain);
         ActionMenuItem(ed, "edit.dropToGround");
         ui::Separator();
         ActionMenuItem(ed, "game.compile");
@@ -303,6 +306,17 @@ void DrawToolbar(Editor& ed, const Rect& r)
     if (ed.FeatureEnabled("measure")) {
         if (ToolButton(ZX_ICON_RULER, "Measure distances (M)", ed.tools.active == EditorTool::Measure))
             SetActiveTool(ed, EditorTool::Measure);
+        ui::SameLine(0.0f, 2.0f);
+    }
+    if (ed.FeatureEnabled("terrainTool")) {
+        if (ToolButton(ZX_ICON_MOUNTAIN, "Terrain: sculpt and paint terrains (T)", ed.tools.active == EditorTool::Terrain))
+            SetActiveTool(ed, EditorTool::Terrain);
+        ui::SameLine(0.0f, 2.0f);
+    }
+    if (ed.tool == TransformTool::Scale) {
+        if (ToolButton(ZX_ICON_ARROW_RIGHT_FROM_LINE, "Scale from one side: the opposite side stays put (Alt while dragging: the other way)",
+                       ed.prefs.scaleFromOneSide))
+            ed.prefs.scaleFromOneSide = !ed.prefs.scaleFromOneSide;
         ui::SameLine(0.0f, 2.0f);
     }
     if (ToolButton(ZX_ICON_ARROW_DOWN_TO_LINE, "Drop selection to the ground (End)", false))
@@ -584,6 +598,7 @@ void DrawShell(Editor& ed)
     DrawAnimGraphEditor(ed);
     DrawToolPanel(ed);
     DrawFeaturesPanel(ed);
+    DrawSettingsWindow(ed);
     DrawAudioMixerPanel(ed);
     DrawInputActionsPanel(ed);
     DrawPackagePanel(ed);

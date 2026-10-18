@@ -103,6 +103,11 @@ shapes up), PhysicsWorld::CreateHeightField/UpdateHeightField; tests HeightField
 GenerateTerrainHeights, TerrainSystem ticked by the editor: CookTerrainMesh -> AddMemoryMesh(TerrainMeshId(guid)) +
 RenderAssets::ReloadMesh, keeps the entity's MeshRenderer in sync); PhysicsSystem adds a HeightField; tests Terrain.*.
 M_Terrain in StarterContent.cpp (MakeTerrainMaterial). Console: create terrain.
+Terrain editing (0.13.14): Terrain::hills / sculpt / paint / dataId (base64 i16 2 cm offsets, RGB8 weights; Hidden);
+ComputeTerrainHeights (physics), TerrainSystem::BeginEdit / MarkDirty / Commit / HeightAt / Raycast; mesh vertex color =
+inverted paint weights (M_Terrain OneMinus). Editor EditorTool::Terrain + TerrainDab (EditorTools.cpp), console
+terrain.sculpt. File > Settings: EditorSettings.h/.cpp (reflected prefs, PropertyEditor onlyCategory), Editor::prefs;
+scale gizmo one-sided (prefs.scaleFromOneSide, LocalBounds in ViewportPanel.cpp).
 Solver islands: PhysicsWorld::Step builds SolverIsland lists (bodies / contacts / joints) and runs phase1 / kinematic
 integration / phase2 per substep, in parallel only when no island holds half the work (stats.parallelIslands); only
 active solver bodies are written (shared static / kinematic ones are read-only). Queries: ClosestPoint (1 mm probe

@@ -34,6 +34,7 @@ const FeatureInfo Features[] = {
     {"fire", "Fire", "Gameplay", "Flammable objects catch fire, spread it and burn out while playing"},
     {"brush", "Brush Tool", "Editor Tools", "Paint models onto surfaces (B)"},
     {"measure", "Measure Tool", "Editor Tools", "Measure distances in the viewport (M)"},
+    {"terrainTool", "Terrain Tool", "Editor Tools", "Sculpt and paint terrains (T)"},
 };
 
 /// The painted-instance root an entity belongs to (itself or an ancestor), or null.
@@ -213,6 +214,115 @@ String FormatMeters(f32 m) { return Abs(m) >= 1000.0f ? String::Format("{:.2f} k
 
 } // namespace
 
+void TerrainDab(Editor& ed, ecs::Entity terrain, Vec3 point, f32 dt)
+{
+    TerrainSystem::Data* d = ed.terrains.Find(ed.world, terrain);
+    if (!d || !d->editing || dt <= 0.0f)
+        return;
+    const ToolState& ts = ed.tools;
+    const TerrainBrushSettings& b = ts.terrain;
+    TerrainBrushMode mode = b.mode;
+    const KeyModifiers mods = ed.input.Modifiers();
+    if (HasAnyFlags(mods, KeyModifiers::Shift) && mode < TerrainBrushMode::PaintRock)
+        mode = TerrainBrushMode::Smooth;
+    else if (HasAnyFlags(mods, KeyModifiers::Control) && (mode == TerrainBrushMode::Raise || mode == TerrainBrushMode::Lower))
+        mode = mode == TerrainBrushMode::Raise ? TerrainBrushMode::Lower : TerrainBrushMode::Raise;
+    const Mat4 m = scene::ComputeWorldMatrix(ed.world, terrain);
+    const Vec3 local = InverseAffine(m).TransformPointAffine(point);
+    const u32 n = d->n;
+    const f32 sp = d->spacing, half = sp * f32(n - 1) * 0.5f;
+    const f32 radius = Max(b.radius, sp * 0.5f);
+    const i32 cx = i32(Round((local.x + half) / sp)), cz = i32(Round((local.z + half) / sp));
+    const i32 r = i32(radius / sp) + 1;
+    const i32 x0 = Max(cx - r, 0), x1 = Min(cx + r, i32(n) - 1), z0 = Max(cz - r, 0), z1 = Min(cz + r, i32(n) - 1);
+    if (x0 > x1 || z0 > z1)
+        return;
+    const f32 strength = Clamp(b.strength, 0.0f, 1.0f);
+    auto weight = [&](i32 x, i32 z) {
+        const f32 dx = -half + f32(x) * sp - local.x, dz = -half + f32(z) * sp - local.z;
+        const f32 t = Sqrt(dx * dx + dz * dz) / radius;
+        if (t >= 1.0f)
+            return 0.0f;
+        // Full strength inside (1 - falloff) of the radius, a cosine bell out to the edge.
+        const f32 inner = 1.0f - Clamp(b.falloff, 0.0f, 1.0f);
+        if (t <= inner)
+            return 1.0f;
+        return 0.5f + 0.5f * Cos(Pi * (t - inner) / Max(1.0f - inner, 1e-3f));
+    };
+    if (mode >= TerrainBrushMode::PaintRock) {
+        const i32 channel = mode == TerrainBrushMode::PaintRock ? 0 : mode == TerrainBrushMode::PaintDirt ? 1 : mode == TerrainBrushMode::PaintSand ? 2 : -1;
+        for (i32 z = z0; z <= z1; ++z)
+            for (i32 x = x0; x <= x1; ++x) {
+                const f32 k = Min(weight(x, z) * strength * dt * 6.0f, 1.0f);
+                if (k <= 0.0f)
+                    continue;
+                u8* px = d->paint.Data() + (usize(z) * n + usize(x)) * 3;
+                for (i32 c = 0; c < 3; ++c) {
+                    const f32 target = c == channel ? 255.0f : 0.0f;
+                    px[c] = u8(Clamp(Lerp(f32(px[c]), target, k) + (target > f32(px[c]) ? 0.5f : 0.0f), 0.0f, 255.0f));
+                }
+            }
+        ed.terrains.MarkDirty(*d);
+        return;
+    }
+    // Heights: the total (generated + sculpted) is edited, the offset stored.
+    const i32 w = x1 - x0 + 1, h = z1 - z0 + 1;
+    Array<f32> before;
+    before.Resize(usize(w + 2) * usize(h + 2));
+    auto total = [&](i32 x, i32 z) {
+        x = Clamp(x, 0, i32(n) - 1);
+        z = Clamp(z, 0, i32(n) - 1);
+        return d->Height(u32(x), u32(z));
+    };
+    for (i32 z = -1; z <= h; ++z)
+        for (i32 x = -1; x <= w; ++x)
+            before[usize(z + 1) * usize(w + 2) + usize(x + 1)] = total(x0 + x, z0 + z);
+    auto prev = [&](i32 x, i32 z) { return before[usize(z - z0 + 1) * usize(w + 2) + usize(x - x0 + 1)]; };
+    const f32 rate = strength * (1.0f + radius * 0.12f); // m/s at the center: bigger brushes move more ground
+    auto hash = [](i32 x, i32 z) {
+        u32 v = u32(x) * 0x8DA6B343u ^ u32(z) * 0xD8163841u;
+        v ^= v >> 13;
+        v *= 0x5BD1E995u;
+        v ^= v >> 15;
+        return f32(v & 0xFFFF) / 65535.0f;
+    };
+    for (i32 z = z0; z <= z1; ++z)
+        for (i32 x = x0; x <= x1; ++x) {
+            const f32 wgt = weight(x, z);
+            if (wgt <= 0.0f)
+                continue;
+            const f32 cur = prev(x, z);
+            f32 next = cur;
+            switch (mode) {
+            case TerrainBrushMode::Raise: next = cur + rate * wgt * dt; break;
+            case TerrainBrushMode::Lower: next = cur - rate * wgt * dt; break;
+            case TerrainBrushMode::Smooth: {
+                f32 sum = 0.0f;
+                for (i32 dz = -1; dz <= 1; ++dz)
+                    for (i32 dx = -1; dx <= 1; ++dx)
+                        sum += prev(x + dx, z + dz);
+                next = Lerp(cur, sum / 9.0f, Min(wgt * strength * dt * 25.0f, 1.0f));
+                break;
+            }
+            case TerrainBrushMode::Flatten: next = Lerp(cur, ts.flattenHeight, Min(wgt * strength * dt * 10.0f, 1.0f)); break;
+            case TerrainBrushMode::Noise: {
+                // Value noise at about a third of the brush size: lumps, not static.
+                const f32 cell = Max(radius / 3.0f, sp) / sp;
+                const f32 fx = f32(x) / cell, fz = f32(z) / cell;
+                const i32 ix = i32(Floor(fx)), iz = i32(Floor(fz));
+                const f32 tx = fx - f32(ix), tz = fz - f32(iz);
+                const f32 sx = tx * tx * (3.0f - 2.0f * tx), sz = tz * tz * (3.0f - 2.0f * tz);
+                const f32 v = Lerp(Lerp(hash(ix, iz), hash(ix + 1, iz), sx), Lerp(hash(ix, iz + 1), hash(ix + 1, iz + 1), sx), sz);
+                next = cur + (v - 0.5f) * 2.0f * rate * 0.6f * wgt * dt;
+                break;
+            }
+            default: break;
+            }
+            d->sculpt[usize(z) * n + usize(x)] += next - cur;
+        }
+    ed.terrains.MarkDirty(*d);
+}
+
 u32 BrushStrokeAt(Editor& ed, Vec3 point, Vec3 normal, bool erase)
 {
     ToolState& ts = ed.tools;
@@ -254,8 +364,14 @@ Span<const FeatureInfo> GetFeatures() { return Span<const FeatureInfo>(Features,
 void SetActiveTool(Editor& ed, EditorTool tool)
 {
     ToolState& ts = ed.tools;
-    if ((tool == EditorTool::Brush && !ed.FeatureEnabled("brush")) || (tool == EditorTool::Measure && !ed.FeatureEnabled("measure")))
+    if ((tool == EditorTool::Brush && !ed.FeatureEnabled("brush")) || (tool == EditorTool::Measure && !ed.FeatureEnabled("measure")) ||
+        (tool == EditorTool::Terrain && !ed.FeatureEnabled("terrainTool")))
         tool = EditorTool::None;
+    if (ts.sculpting) { // switching tools mid-stroke: keep what was done
+        ed.terrains.Commit(ed.world, ts.sculptTerrain);
+        ed.undo.End();
+        ts.sculpting = false;
+    }
     ts.active = ts.active == tool ? EditorTool::None : tool;
     ts.painting = false;
     ts.measureCount = 0;
@@ -287,6 +403,53 @@ bool UpdateViewportTool(Editor& ed, const Ray& mouseRay, bool hovered, const Fun
     const bool pressed = hovered && ed.input.WasMousePressed(MouseButton::Left);
     const bool held = ed.input.IsMouseDown(MouseButton::Left);
     const bool shift = HasAnyFlags(ed.input.Modifiers(), KeyModifiers::Shift);
+
+    if (ts.active == EditorTool::Terrain) {
+        // The terrain surface itself (live data: follows the sculpting before the mesh is rebuilt).
+        ts.hoverTerrain = {};
+        if (hovered) {
+            ecs::Entity t;
+            Vec3 p;
+            if (ed.terrains.Raycast(ed.world, mouseRay, 5000.0f, t, p)) {
+                ts.hovering = true;
+                ts.hoverPoint = p;
+                ts.hoverNormal = Vec3::Up();
+                ts.hoverTerrain = t;
+            } else {
+                ts.hovering = false;
+            }
+        }
+        if (pressed && ts.hoverTerrain) {
+            ts.sculptTerrain = ts.hoverTerrain;
+            ed.undo.Begin("Sculpt Terrain");
+            ed.undo.Record(ts.sculptTerrain);
+            if (TerrainSystem::Data* d = ed.terrains.BeginEdit(ed.world, ts.sculptTerrain)) {
+                ts.sculpting = true;
+                const Vec3 local = InverseAffine(scene::ComputeWorldMatrix(ed.world, ts.sculptTerrain)).TransformPointAffine(ts.hoverPoint);
+                ts.flattenHeight = local.y;
+                ZX_UNUSED(d);
+            } else {
+                ed.undo.Discard();
+            }
+        }
+        if (ts.sculpting && held && ts.hovering && ts.hoverTerrain == ts.sculptTerrain)
+            TerrainDab(ed, ts.sculptTerrain, ts.hoverPoint, Min(ed.dt, 0.05f));
+        if (ts.sculpting && !held) {
+            ts.sculpting = false;
+            ed.terrains.Commit(ed.world, ts.sculptTerrain);
+            ed.undo.End();
+        }
+        if (hovered && !ts.hoverTerrain && !ts.sculpting) {
+            bool any = false;
+            ed.world.Query<const Terrain>().Each([&](ecs::Entity, const Terrain&) { any = true; });
+            const Rect r = ui::GetWindowContentRect();
+            ui::Context& ctx = *ui::GetCurrentContext();
+            dl.AddTextInRect(ctx.Fonts().FindFont("Inter"), 12.5f * scale, Rect(Vec2(r.min.x, r.min.y + 44.0f * scale), Vec2(r.max.x, r.min.y + 64.0f * scale)),
+                             Color(240, 200, 120), any ? "Terrain: point at a terrain" : "Terrain: create one first (Tool Settings > Create Terrain)",
+                             ui::TextAlign::Center, false);
+        }
+        return hovered || ts.sculpting;
+    }
 
     if (ts.active == EditorTool::Brush) {
         if (pressed && ts.hovering) {
@@ -351,6 +514,26 @@ bool UpdateViewportTool(Editor& ed, const Ray& mouseRay, bool hovered, const Fun
 void DrawToolOverlay(Editor& ed, render::DebugDraw& dd)
 {
     const ToolState& ts = ed.tools;
+    if (ts.active == EditorTool::Terrain && ts.hovering && ts.hoverTerrain) {
+        // The brush circle draped over the surface, and the inner circle where the falloff starts.
+        const TerrainBrushSettings& b = ts.terrain;
+        const bool paint = b.mode >= TerrainBrushMode::PaintRock;
+        const Color c = paint ? Color(255, 190, 90) : b.mode == TerrainBrushMode::Lower ? Color(240, 110, 90) : Color(90, 200, 255);
+        for (f32 ring : {1.0f, Max(1.0f - b.falloff, 0.05f)}) {
+            Vec3 prev;
+            for (u32 k = 0; k <= 64; ++k) {
+                const f32 a = TwoPi * f32(k) / 64.0f;
+                Vec3 p = ts.hoverPoint + Vec3(Cos(a), 0.0f, Sin(a)) * (b.radius * ring);
+                f32 h;
+                if (ed.terrains.HeightAt(ed.world, ts.hoverTerrain, Vec2(p.x, p.z), h))
+                    p.y = h + 0.08f;
+                if (k > 0)
+                    dd.Line(prev, p, c, false);
+                prev = p;
+            }
+        }
+        dd.Line(ts.hoverPoint, ts.hoverPoint + Vec3(0.0f, Max(0.5f, b.radius * 0.25f), 0.0f), c, false);
+    }
     if (ts.active == EditorTool::Brush && ts.hovering) {
         const bool erase = HasAnyFlags(ed.input.Modifiers(), KeyModifiers::Shift);
         const Color c = erase ? Color(240, 90, 90) : Color(90, 200, 255);
@@ -393,6 +576,75 @@ void DrawToolPanel(Editor& ed)
     }
     if (!open)
         ts.active = EditorTool::None;
+    if (ts.active == EditorTool::Terrain) {
+        TerrainBrushSettings& b = ts.terrain;
+        ui::Heading(ZX_ICON_MOUNTAIN "  Terrain");
+        ui::PushTextColor(ui::GetCurrentContext()->GetStyle().colors.textDisabled);
+        ui::TextWrapped("Hold the left mouse button over a terrain. Ctrl swaps Raise / Lower, Shift smooths. [ and ] change the radius. "
+                        "Each stroke is one undo step.");
+        ui::PopTextColor();
+        bool anyTerrain = false;
+        ed.world.Query<const Terrain>().Each([&](ecs::Entity, const Terrain&) { anyTerrain = true; });
+        if (!anyTerrain) {
+            ui::Spacing();
+            if (ui::Button(ZX_ICON_PLUS "  Create Terrain", Vec2(-1.0f, 0.0f), ui::ButtonVariant::Primary))
+                ed.CreateTerrain();
+            ui::ItemTooltip("A 200 m terrain under the scene (switch Hills off in Details to start from flat ground)");
+        }
+        ui::Spacing();
+        ui::TextDisabled("SCULPT");
+        struct ModeInfo
+        {
+            TerrainBrushMode mode;
+            const char* icon;
+            const char* name;
+            const char* tip;
+        };
+        static const ModeInfo Modes[] = {
+            {TerrainBrushMode::Raise, ZX_ICON_ARROW_UP, "Raise", "Pull the ground up (Ctrl: lower)"},
+            {TerrainBrushMode::Lower, ZX_ICON_ARROW_DOWN, "Lower", "Push the ground down (Ctrl: raise)"},
+            {TerrainBrushMode::Smooth, ZX_ICON_WAVES, "Smooth", "Even out bumps (Shift with any mode)"},
+            {TerrainBrushMode::Flatten, ZX_ICON_EQUAL, "Flatten", "Towards the height where you clicked: plateaus, building pads, roads"},
+            {TerrainBrushMode::Noise, ZX_ICON_WAND_SPARKLES, "Noise", "Rough it up: rocky, natural ground"},
+            {TerrainBrushMode::PaintRock, ZX_ICON_MOUNTAIN, "Rock", "Paint rock"},
+            {TerrainBrushMode::PaintDirt, ZX_ICON_PAINT_BUCKET, "Dirt", "Paint dirt: paths, fields"},
+            {TerrainBrushMode::PaintSand, ZX_ICON_BLEND, "Sand", "Paint sand: beaches, deserts"},
+            {TerrainBrushMode::ErasePaint, ZX_ICON_ERASER, "Erase", "Remove painting: the material's own grass / rock / snow"},
+        };
+        const f32 w = (ui::GetContentRegionAvail().x / ui::GetCurrentContext()->GetScale() - 8.0f) / 3.0f;
+        for (u32 i = 0; i < ZX_ARRAY_COUNT(Modes); ++i) {
+            const u32 column = i < 5 ? i % 3 : (i - 5) % 3; // sculpt modes, then paint modes, three per row
+            if (i == 5) {
+                ui::Spacing();
+                ui::TextDisabled("PAINT");
+            } else if (column != 0) {
+                ui::SameLine(0.0f, 4.0f);
+            }
+            const bool on = b.mode == Modes[i].mode;
+            if (ui::Button(String::Format("{} {}##tm{}", Modes[i].icon, Modes[i].name, i), Vec2(w, 30.0f),
+                           on ? ui::ButtonVariant::Primary : ui::ButtonVariant::Default))
+                b.mode = Modes[i].mode;
+            ui::ItemTooltip(Modes[i].tip);
+        }
+        ui::Spacing();
+        ui::Separator();
+        auto row = [](StringView label, StringView tooltip) {
+            ui::AlignTextToFramePadding();
+            ui::TextColored(ui::GetCurrentContext()->GetStyle().colors.textDim, label);
+            if (!tooltip.Empty())
+                ui::ItemTooltip(tooltip);
+            ui::SameLine(Round(ui::GetContentRegionAvail().x / ui::GetCurrentContext()->GetScale() * 0.36f));
+            ui::SetNextItemWidth(-1.0f);
+        };
+        row("Radius", "Brush radius in meters ([ and ] keys)");
+        ui::SliderFloat("##tradius", &b.radius, 0.5f, 100.0f, "{:.1f} m");
+        row("Strength", "How fast it works");
+        ui::SliderFloat("##tstrength", &b.strength, 0.01f, 1.0f, "{:.2f}");
+        row("Falloff", "0 = hard edge, 1 = soft from the center out");
+        ui::SliderFloat("##tfalloff", &b.falloff, 0.0f, 1.0f, "{:.2f}");
+        ui::End();
+        return;
+    }
     if (ts.active == EditorTool::Measure) {
         ui::Heading(ZX_ICON_RULER "  Measure");
         ui::TextWrapped("Click two points in the viewport. Click again to start a new measurement.");

@@ -161,6 +161,15 @@ void DrawLightIcons(Editor& ed, const ViewProjector& vp, DrawList& dl, f32 s)
     });
 }
 
+/// Bounds of the entity's own mesh in its local space (unit box when it has none).
+AABB LocalBounds(Editor& ed, ecs::Entity e)
+{
+    if (const MeshRenderer* mr = ed.world.Get<const MeshRenderer>(e); mr && ed.renderAssets)
+        if (const render::GpuMesh* mesh = ed.renderAssets->GetMesh(mr->mesh); mesh && mesh->bounds.IsValid())
+            return mesh->bounds;
+    return AABB(Vec3(-0.5f), Vec3(0.5f));
+}
+
 /// Draws and drives the transform gizmo. Returns true if the gizmo owns the mouse this frame.
 bool Gizmo(Editor& ed, const ViewProjector& vp, DrawList& dl, bool hoveredViewport, f32 s)
 {
@@ -281,7 +290,7 @@ bool Gizmo(Editor& ed, const ViewProjector& vp, DrawList& dl, bool hoveredViewpo
                 if (Dot(axes[a], vp.cameraPos - g_gizmo.startWorld) > 0.0f)
                     angle = -angle;
                 if (ed.snapEnabled)
-                    angle = Round(angle / DegToRad(15.0f)) * DegToRad(15.0f);
+                    angle = Round(angle / DegToRad(Max(ed.prefs.rotateSnap, 0.1f))) * DegToRad(Max(ed.prefs.rotateSnap, 0.1f));
                 Vec3 pt, ps;
                 Quat parentRot;
                 Decompose(parent, pt, parentRot, ps);
@@ -293,14 +302,30 @@ bool Gizmo(Editor& ed, const ViewProjector& vp, DrawList& dl, bool hoveredViewpo
                     if (ClosestParamOnAxis(ray, g_gizmo.startWorld, axes[a], param)) {
                         f32 f = Max(1.0f + (param - g_gizmo.startParam) / Max(length, 1e-3f), 0.01f);
                         if (ed.snapEnabled)
-                            f = Max(Round(f / 0.1f) * 0.1f, 0.1f);
+                            f = Max(Round(f / Max(ed.prefs.scaleSnap, 0.001f)) * ed.prefs.scaleSnap, ed.prefs.scaleSnap);
                         t.scale[a] = g_gizmo.startLocal.scale[a] * f;
                     }
                 } else {
                     f32 f = Max(1.0f + (mouse.x - g_gizmo.startMouse.x) / (120.0f * s), 0.01f);
                     if (ed.snapEnabled)
-                        f = Max(Round(f / 0.1f) * 0.1f, 0.1f);
+                        f = Max(Round(f / Max(ed.prefs.scaleSnap, 0.001f)) * ed.prefs.scaleSnap, ed.prefs.scaleSnap);
                     t.scale = g_gizmo.startLocal.scale * f;
+                }
+                // From one side: the face opposite the dragged handle stays where it was (the center handle keeps the
+                // bottom); Alt does the other mode.
+                const bool oneSide = ed.prefs.scaleFromOneSide != ed.input.IsKeyDown(Key::LeftAlt);
+                if (oneSide) {
+                    const AABB b = LocalBounds(ed, ed.selected);
+                    Vec3 anchor = b.Center();
+                    if (a < 3)
+                        anchor[a] = b.min[a];
+                    else
+                        anchor.y = b.min.y;
+                    const Vec3 before = (parent * g_gizmo.startLocal.ToMatrix()).TransformPointAffine(anchor);
+                    Transform moved = t;
+                    moved.position = g_gizmo.startLocal.position;
+                    const Vec3 after = (parent * moved.ToMatrix()).TransformPointAffine(anchor);
+                    t.position = g_gizmo.startLocal.position + InverseAffine(parent).TransformVector(before - after);
                 }
             }
             *local = t;

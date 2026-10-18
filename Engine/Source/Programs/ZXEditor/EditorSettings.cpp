@@ -1,0 +1,257 @@
+#include "EditorSettings.h"
+#include "Editor.h"
+#include "Core/Console/Console.h"
+#include "Core/FileSystem/FileSystem.h"
+#include "Core/Reflection/ReflectionSerialization.h"
+#include "Core/Serialization/Json.h"
+#include "RHI/EngineProfile.h"
+
+namespace zx::editor {
+
+ZX_REFLECT_ENUM_BEGIN(AntiAliasing)
+    ZX_ENUM_VALUE(Temporal)
+    ZX_ENUM_VALUE(FXAA)
+    ZX_ENUM_VALUE(None)
+ZX_REFLECT_ENUM_END()
+
+ZX_REFLECT_ENUM_BEGIN(QualityLevel)
+    ZX_ENUM_VALUE(Default)
+    ZX_ENUM_VALUE(Low)
+    ZX_ENUM_VALUE(Medium)
+    ZX_ENUM_VALUE(High)
+    ZX_ENUM_VALUE(Ultra)
+ZX_REFLECT_ENUM_END()
+
+ZX_REFLECT_STRUCT_BEGIN(EditorSettings)
+    ZX_FIELD(uiScale, Meta::Category("Editor"), Meta::DisplayName("UI Scale"), Meta::Range(0.5, 3), Meta::Tooltip("Size of the editor interface (x the Windows display scale)"))
+    ZX_FIELD(uiSounds, Meta::DisplayName("UI Sounds"), Meta::Tooltip("Feedback sounds: Play / Stop, builds, packaging"))
+    ZX_FIELD(autosaveMinutes, Meta::Range(0, 60), Meta::Tooltip("Save the open scene every N minutes (0 = off)"))
+    ZX_FIELD(cameraSpeed, Meta::Category("Viewport"), Meta::Range(0.1, 500), Meta::Units("m/s"), Meta::Tooltip("Fly speed (the mouse wheel changes it while flying)"))
+    ZX_FIELD(mouseSensitivity, Meta::Range(0.1, 5), Meta::Tooltip("How fast the camera turns with the mouse"))
+    ZX_FIELD(fieldOfView, Meta::Range(20, 120), Meta::Units("deg"), Meta::Tooltip("Vertical field of view of the editor camera"))
+    ZX_FIELD(showGrid)
+    ZX_FIELD(snapEnabled, Meta::Tooltip("Move, rotate and scale in steps"))
+    ZX_FIELD(snapStep, Meta::Range(0.01, 100), Meta::Units("m"), Meta::EditCondition("snapEnabled"))
+    ZX_FIELD(rotateSnap, Meta::Range(1, 90), Meta::Units("deg"), Meta::EditCondition("snapEnabled"))
+    ZX_FIELD(scaleSnap, Meta::Range(0.01, 1), Meta::EditCondition("snapEnabled"))
+    ZX_FIELD(scaleFromOneSide, Meta::Tooltip("Dragging a scale handle stretches the object towards the handle; the opposite side "
+                                              "stays put (the center handle keeps the bottom on the ground). Off: scales around the pivot. "
+                                              "Alt while dragging does the other one."))
+    ZX_FIELD(renderScale, Meta::Category("Rendering (this computer)"), Meta::Range(0, 200), Meta::Units("%"),
+             Meta::Tooltip("Resolution of the 3D view (0 = the engine profile's: Lite 70 %, Full 100 %)"))
+    ZX_FIELD(antiAliasing, Meta::Tooltip("Temporal: smoothest. FXAA: sharper, cheaper. None: jagged edges"))
+    ZX_FIELD(shadowQuality, Meta::Tooltip("Resolution, reach and softness of the sun's shadows (Default = the engine profile's)"))
+    ZX_FIELD(ambientOcclusion, Meta::Tooltip("Contact darkening in corners and creases"))
+    ZX_FIELD(reflections, Meta::Tooltip("Screen-space reflections (where the profile renders them)"))
+    ZX_FIELD(volumetricFog, Meta::Tooltip("Light shafts and glowing fog around lights"))
+    ZX_FIELD(clouds, Meta::Tooltip("Volumetric clouds"))
+    ZX_FIELD(bloom, Meta::Tooltip("Glow around bright lights"))
+    ZX_FIELD(depthOfField)
+    ZX_FIELD(motionBlur, Meta::Tooltip("While playing"))
+    ZX_FIELD(vsync, Meta::Tooltip("Wait for the monitor's refresh: no tearing, at most its refresh rate"))
+    ZX_FIELD(masterVolume, Meta::Category("Audio"), Meta::Range(0, 1))
+    ZX_FIELD(musicVolume, Meta::Range(0, 1))
+    ZX_FIELD(effectsVolume, Meta::Range(0, 1))
+ZX_REFLECT_STRUCT_END()
+
+namespace {
+
+constexpr StringView SettingsFile = "/Saved/Config/EditorSettings.json";
+
+/// What the engine profile set before any user setting (captured on the first Apply).
+struct ProfileDefaults
+{
+    bool captured = false;
+    f32 renderScale = 1.0f;
+    render::ShadowSettings shadows;
+};
+ProfileDefaults g_defaults;
+
+i32 g_section = 0;
+f32 g_autosaveTimer = 0.0f;
+
+} // namespace
+
+void LoadEditorSettings(Editor& ed)
+{
+    String text;
+    JsonValue doc;
+    if (fs::ReadTextFile(SettingsFile, text) && ParseJson(text.View(), doc))
+        Reflection::FromJson(doc, ed.prefs);
+    // The settings mirror these editor fields (toolbar buttons change them too).
+    ed.camera.moveSpeed = ed.prefs.cameraSpeed;
+    ed.camera.fovY = DegToRad(Clamp(ed.prefs.fieldOfView, 20.0f, 120.0f));
+    ed.showGrid = ed.prefs.showGrid;
+    ed.snapEnabled = ed.prefs.snapEnabled;
+    ed.snapStep = ed.prefs.snapStep;
+    ed.uiSounds = ed.prefs.uiSounds;
+}
+
+void SaveEditorSettings(const Editor& ed) { fs::WriteTextFile(SettingsFile, ToJsonString(Reflection::ToJson(ed.prefs))); }
+
+void ApplyEditorSettings(Editor& ed)
+{
+    EditorSettings& s = ed.prefs;
+    // Fields the toolbar / viewport also change: the editor's values are the truth, the settings remember them.
+    const EditorSettings before = s;
+    s.cameraSpeed = ed.camera.moveSpeed;
+    s.showGrid = ed.showGrid;
+    s.snapEnabled = ed.snapEnabled;
+    s.snapStep = ed.snapStep;
+    s.uiSounds = ed.uiSounds;
+    if (Reflection::ToJson(before) != Reflection::ToJson(s))
+        SaveEditorSettings(ed);
+    ed.camera.lookSensitivity = 0.0025f * Clamp(s.mouseSensitivity, 0.1f, 5.0f);
+    ed.camera.fovY = DegToRad(Clamp(s.fieldOfView, 20.0f, 120.0f));
+
+    // Rendering of the editor viewport.
+    ViewportSettings& vs = ed.viewport->Settings();
+    if (!g_defaults.captured) {
+        g_defaults.captured = true;
+        g_defaults.renderScale = vs.renderScale;
+        g_defaults.shadows = vs.scene.shadows;
+    }
+    if (!vs.dynamicResolution.enabled)
+        vs.renderScale = s.renderScale > 0 ? Clamp(f32(s.renderScale) / 100.0f, 0.25f, 2.0f) : g_defaults.renderScale;
+    render::ShadowSettings& sh = vs.scene.shadows;
+    switch (s.shadowQuality) {
+    case QualityLevel::Default:
+        sh.cascades = g_defaults.shadows.cascades;
+        sh.resolution = g_defaults.shadows.resolution;
+        sh.distance = g_defaults.shadows.distance;
+        sh.filter = g_defaults.shadows.filter;
+        break;
+    case QualityLevel::Low: sh.cascades = 2, sh.resolution = 1024, sh.distance = 50.0f, sh.filter = 1; break;
+    case QualityLevel::Medium: sh.cascades = 3, sh.resolution = 1024, sh.distance = 80.0f, sh.filter = 2; break;
+    case QualityLevel::High: sh.cascades = 4, sh.resolution = 2048, sh.distance = 120.0f, sh.filter = 2; break;
+    case QualityLevel::Ultra: sh.cascades = 4, sh.resolution = 2048, sh.distance = 200.0f, sh.filter = 3; break;
+    }
+    vs.post.fxaa = s.antiAliasing != AntiAliasing::None;
+    ViewportFeatures& f = ed.viewport->features;
+    f.temporalAA &= s.antiAliasing == AntiAliasing::Temporal;
+    f.ambientOcclusion &= s.ambientOcclusion;
+    f.screenSpaceReflections &= s.reflections;
+    f.volumetricFog &= s.volumetricFog;
+    f.clouds &= s.clouds;
+    f.bloom &= s.bloom;
+    f.depthOfField &= s.depthOfField;
+    f.motionBlur &= s.motionBlur;
+    if (ed.swapChain && ed.swapChain->GetVSync() != s.vsync && !CommandLine::HasFlag("novsync"))
+        ed.swapChain->SetVSync(s.vsync);
+
+    // Audio.
+    if (ed.audioEngine) {
+        ed.audioEngine->SetBusVolume(audio::Bus::Master, Clamp(s.masterVolume, 0.0f, 1.0f));
+        ed.audioEngine->SetBusVolume(audio::Bus::Music, Clamp(s.musicVolume, 0.0f, 1.0f));
+        ed.audioEngine->SetBusVolume(audio::Bus::SFX, Clamp(s.effectsVolume, 0.0f, 1.0f));
+    }
+
+    // Autosave.
+    if (s.autosaveMinutes > 0 && !ed.IsPlaying() && !ed.scenePath.Empty() && ed.undo.IsDirty()) {
+        g_autosaveTimer += ed.dt;
+        if (g_autosaveTimer >= f32(s.autosaveMinutes) * 60.0f) {
+            g_autosaveTimer = 0.0f;
+            ed.SaveScene(false);
+        }
+    } else {
+        g_autosaveTimer = 0.0f;
+    }
+}
+
+void DrawSettingsWindow(Editor& ed)
+{
+    if (!ed.showSettings)
+        return;
+    ui::SetNextWindowSize(Vec2(760.0f, 620.0f), ui::Cond::FirstUse);
+    if (!ui::Begin(SettingsTitle, &ed.showSettings)) {
+        ui::End();
+        return;
+    }
+    struct Section
+    {
+        const char* icon;
+        const char* name;
+        const char* category; // reflection category shown in this section ("" = special)
+    };
+    static const Section Sections[] = {
+        {ZX_ICON_LAYOUT_DASHBOARD, "Editor", "Editor"},
+        {ZX_ICON_VIDEO, "Viewport", "Viewport"},
+        {ZX_ICON_MONITOR, "Rendering", "Rendering (this computer)"},
+        {ZX_ICON_VOLUME_2, "Audio", "Audio"},
+        {ZX_ICON_FOLDER_KANBAN, "Project", ""},
+    };
+    // Sidebar.
+    if (ui::BeginChild("##settings_nav", Vec2(170.0f, 0.0f), false)) {
+        for (i32 i = 0; i < i32(ZX_ARRAY_COUNT(Sections)); ++i)
+            if (ui::Selectable(String::Format("{}  {}", Sections[i].icon, Sections[i].name), g_section == i, Vec2(0.0f, 30.0f)))
+                g_section = i;
+    }
+    ui::EndChild();
+    ui::SameLine(0.0f, 12.0f);
+    if (ui::BeginChild("##settings_page", Vec2(0.0f, 0.0f), false)) {
+        const Section& sec = Sections[g_section];
+        ui::PushFont(ui::FontStyle::SemiBold, 18.0f);
+        ui::Text(sec.name);
+        ui::PopFont();
+        ui::Spacing();
+        if (sec.category[0] != '\0') {
+            // The fields of this category (the property editor draws every field: copy only this section's into a
+            // scratch object would lose the edit conditions, so draw all and skip the others' headers).
+            const TypeInfo& type = ZxTypeOf(static_cast<EditorSettings*>(nullptr));
+            const bool changed = PropertyEditor(type, &ed.prefs, "settings_", sec.category);
+            if (changed) {
+                // Values the editor owns follow the settings right away.
+                ed.camera.moveSpeed = ed.prefs.cameraSpeed;
+                ed.showGrid = ed.prefs.showGrid;
+                ed.snapEnabled = ed.prefs.snapEnabled;
+                ed.snapStep = ed.prefs.snapStep;
+                ed.uiSounds = ed.prefs.uiSounds;
+                SaveEditorSettings(ed);
+            }
+            if (g_section == 2) {
+                ui::Spacing();
+                ui::TextDisabled(String::Format("Engine profile: {} - the defaults these settings start from.", ed.lite ? "Lite" : "Full"));
+                if (ui::Button(ZX_ICON_GAUGE "  Change Engine Profile..."))
+                    ed.showProfileDialog = true;
+            }
+            if (g_section == 0 && ed.prefs.uiScale != 1.0f) {
+                ui::Spacing();
+                ui::TextDisabled("The interface scale applies right away.");
+            }
+        } else {
+            // Project settings (saved in the .zproj).
+            if (ed.project.descriptorPath.Empty()) {
+                ui::TextDisabled("No project open.");
+            } else {
+                ui::LabelText("Name", ed.project.descriptor.name);
+                ui::LabelText("Folder", ed.project.root);
+                ui::LabelText("Language", ed.project.descriptor.language);
+                ui::LabelText("Startup Scene", ed.project.descriptor.startupScene.Empty() ? String("(none)") : ed.project.descriptor.startupScene);
+                ui::Spacing();
+                ui::SeparatorText("Graphics");
+                static const char* const Eras[][2] = {{"modern", "Modern - everything the engine can do"},
+                                                      {"2017", "2017 - Battlefield 1, Horizon Zero Dawn"},
+                                                      {"2011", "2011 - Crysis 2, Battlefield 3, Skyrim"},
+                                                      {"2008", "2008 - Crysis, GTA IV, Fallout 3"}};
+                const GraphicsEra current = ParseGraphicsEra(ed.project.descriptor.graphicsEra.View());
+                for (const auto& era : Eras)
+                    if (ui::RadioButton(era[1], ParseGraphicsEra(era[0]) == current))
+                        ed.SetGraphicsEra(era[0]);
+                ui::Spacing();
+                ui::SeparatorText("Engine");
+                if (ui::Button(ZX_ICON_TOGGLE_RIGHT "  Features..."))
+                    ed.showFeatures = true;
+                ui::SameLine();
+                ui::TextDisabled("Switch engine features and editor tools on or off for this project.");
+                if (ui::Button(ZX_ICON_GAUGE "  Engine Profile..."))
+                    ed.showProfileDialog = true;
+                ui::SameLine();
+                ui::TextDisabled(ed.lite ? "Lite (this computer)" : "Full (this computer)");
+            }
+        }
+    }
+    ui::EndChild();
+    ui::End();
+}
+
+} // namespace zx::editor

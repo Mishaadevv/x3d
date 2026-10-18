@@ -632,7 +632,7 @@ bool IsInlineStruct(const TypeInfo& t)
 
 } // namespace
 
-bool PropertyEditor(const TypeInfo& type, void* object, StringView idPrefix)
+bool PropertyEditor(const TypeInfo& type, void* object, StringView idPrefix, StringView onlyCategory)
 {
     struct DepthScope
     {
@@ -647,9 +647,16 @@ bool PropertyEditor(const TypeInfo& type, void* object, StringView idPrefix)
                 continue;
             // Category: a section header when it changes.
             const StringView cat = f.meta.GetText(Meta::KeyCategory());
-            if (!cat.Empty() && cat != category)
-                ui::SeparatorText(cat);
-            category = cat;
+            if (!onlyCategory.Empty()) {
+                if (!cat.Empty())
+                    category = cat; // fields without a category belong to the last one
+                if (category != onlyCategory)
+                    continue;
+            } else {
+                if (!cat.Empty() && cat != category)
+                    ui::SeparatorText(cat);
+                category = cat;
+            }
             ui::PushID(f.name.View());
             // EditCondition: the named bool field is drawn as a checkbox in front; the value is editable when it's set.
             bool* condition = nullptr;

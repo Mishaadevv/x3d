@@ -1,6 +1,7 @@
 // Terrain: deterministic generation (seed, flat center, height range) and the physics height field built from it by
 // PhysicsSystem (bodies rest on the surface the renderer draws).
 
+#include "Core/HAL/PlatformFile.h"
 #include "Core/Testing/Test.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/Terrain.h"
@@ -109,4 +110,107 @@ ZX_TEST(Terrain, BodiesRestOnTheSurface)
     ZX_REQUIRE(p.World()->Raycast(Ray(Vec3(1.7f, 50, 2.9f), Vec3(0, -1, 0)), 100.0f, hit));
     ZX_EXPECT_NEAR(hit.point.y, SurfaceHeight(t, heights, 1.7f, 2.9f) - 2.0f, 1e-3f);
     p.End();
+}
+
+ZX_TEST(Terrain, SculptAndPaintRoundTrip)
+{
+    Terrain t;
+    t.hills = false; // flat: the heights are the sculpt
+    t.size = 64.0f;
+    t.resolution = 33;
+    const u32 n = TerrainSamples(t);
+    Array<f32> offsets;
+    offsets.Resize(usize(n) * n, 0.0f);
+    offsets[usize(16) * n + 16] = 7.25f;
+    offsets[usize(3) * n + 30] = -2.5f;
+    EncodeTerrainSculpt(t, offsets);
+    ZX_EXPECT(!t.sculpt.Empty());
+    Array<f32> heights;
+    ComputeTerrainHeights(t, heights);
+    ZX_EXPECT_NEAR(heights[usize(16) * n + 16], 7.25f, 0.011f); // 2 cm steps
+    ZX_EXPECT_NEAR(heights[usize(3) * n + 30], -2.5f, 0.011f);
+    ZX_EXPECT_NEAR(heights[0], 0.0f, 1e-6f);
+    // Painting.
+    Array<u8> rgb;
+    rgb.Resize(usize(n) * n * 3, 0);
+    rgb[(usize(5) * n + 5) * 3 + 1] = 200; // dirt
+    EncodeTerrainPaint(t, rgb);
+    Array<u8> back;
+    DecodeTerrainPaint(t, n, back);
+    ZX_REQUIRE(back.Size() == rgb.Size());
+    ZX_EXPECT_EQ(u32(back[(usize(5) * n + 5) * 3 + 1]), 200u);
+    // Nothing painted / sculpted: empty strings.
+    Array<u8> none;
+    none.Resize(rgb.Size(), 0);
+    EncodeTerrainPaint(t, none);
+    ZX_EXPECT(t.paint.Empty());
+    // Another resolution: the sculpt is resampled (a 1 m bump at the center stays at the center).
+    offsets.Clear();
+    offsets.Resize(usize(n) * n, 0.0f);
+    offsets[usize(16) * n + 16] = 4.0f;
+    EncodeTerrainSculpt(t, offsets);
+    t.resolution = 65;
+    Array<f32> fine;
+    DecodeTerrainSculpt(t, TerrainSamples(t), fine);
+    ZX_EXPECT_NEAR(fine[usize(32) * 65 + 32], 4.0f, 0.02f);
+    ZX_EXPECT_NEAR(fine[usize(33) * 65 + 32], 2.0f, 0.05f); // halfway to the neighbor
+}
+
+ZX_TEST(Terrain, EditingThroughTheSystem)
+{
+    ecs::World world;
+    scene::InstallHierarchyHooks(world);
+    asset::AssetManagerSettings settings;
+    settings.ddcDirectory = platform::GetTempDirectory() + "/zx_terrain_test";
+    settings.writeMetaFiles = false;
+    asset::AssetManager assets(settings);
+    const ecs::Entity e = scene::CreateNode(world, "Terrain", Transform(Vec3(10, 2, 0)));
+    Terrain t;
+    t.hills = false;
+    t.size = 40.0f;
+    t.resolution = 41; // 1 m cells
+    world.Add(e, t);
+    scene::UpdateWorldTransforms(world);
+    TerrainSystem terrains;
+    terrains.Update(world, assets, nullptr);
+    f32 h = -1.0f;
+    ZX_REQUIRE(terrains.HeightAt(world, e, Vec2(10, 0), h));
+    ZX_EXPECT_NEAR(h, 2.0f, 1e-4f);
+    ZX_EXPECT(!terrains.HeightAt(world, e, Vec2(40, 0), h)); // outside
+
+    // A tool raises a bump, commits it into the component.
+    TerrainSystem::Data* d = terrains.BeginEdit(world, e);
+    ZX_REQUIRE(d != nullptr);
+    d->sculpt[usize(20) * d->n + 20] = 5.0f;
+    d->paint[(usize(20) * d->n + 20) * 3] = 255;
+    terrains.MarkDirty(*d);
+    terrains.Commit(world, e);
+    const Terrain after = *world.Get<const Terrain>(e); // a copy: the component is replaced below
+    ZX_EXPECT(!after.sculpt.Empty() && !after.paint.Empty() && after.dataId != 0);
+    ZX_REQUIRE(terrains.HeightAt(world, e, Vec2(10, 0), h));
+    ZX_EXPECT_NEAR(h, 7.0f, 0.02f);
+    // A ray from above hits the bump; from the side it misses below the flat part.
+    ecs::Entity hitTerrain;
+    Vec3 hit;
+    ZX_REQUIRE(terrains.Raycast(world, Ray(Vec3(10, 50, 0), Vec3(0, -1, 0)), 100.0f, hitTerrain, hit));
+    ZX_EXPECT(hitTerrain == e);
+    ZX_EXPECT_NEAR(hit.y, 7.0f, 0.02f);
+    ZX_REQUIRE(terrains.Raycast(world, Ray(Vec3(0, 10, 0), Normalize(Vec3(1, -1, 0))), 100.0f, hitTerrain, hit));
+    ZX_EXPECT_NEAR(hit.y, 2.0f, 0.05f); // lands on the flat ground at x = 8
+
+    // Undo restores the old component data: the system re-reads it (no sculpt -> flat again).
+    Terrain restored = after;
+    restored.sculpt.Clear();
+    restored.paint.Clear();
+    restored.dataId = 0;
+    *world.Get<Terrain>(e) = restored;
+    terrains.Update(world, assets, nullptr);
+    ZX_REQUIRE(terrains.HeightAt(world, e, Vec2(10, 0), h));
+    ZX_EXPECT_NEAR(h, 2.0f, 1e-4f);
+
+    // The physics height field includes the sculpt.
+    *world.Get<Terrain>(e) = after;
+    Array<f32> heights;
+    ComputeTerrainHeights(after, heights);
+    ZX_EXPECT_NEAR(heights[usize(20) * 41 + 20], 5.0f, 0.02f);
 }

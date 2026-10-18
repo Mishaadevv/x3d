@@ -2,6 +2,9 @@
 #include "Asset/CookedAssets.h"
 #include "Asset/MeshData.h"
 #include "Core/Log/Log.h"
+#include "Core/Math/Random.h"
+#include "Core/String/Base64.h"
+#include "Scene/Hierarchy.h"
 #include "Core/Time/Time.h"
 #include <bit>
 #include "Engine/SceneRendering.h"
@@ -15,6 +18,7 @@ namespace zx {
 ZX_REFLECT_STRUCT_BEGIN(Terrain)
     ZX_FIELD(size, Meta::Range(4, 4000), Meta::Units("m"), Meta::Tooltip("Width of the square terrain, centered on the entity"))
     ZX_FIELD(resolution, Meta::Range(9, 1025), Meta::Tooltip("Height samples per side (more = finer detail, more triangles)"))
+    ZX_FIELD(hills, Meta::Tooltip("Generated hills under the sculpting; off = flat ground to sculpt from scratch (Terrain tool, T)"))
     ZX_FIELD(height, Meta::Range(0, 2000), Meta::Units("m"), Meta::Tooltip("From the lowest to the highest possible point"))
     ZX_FIELD(seed, Meta::Range(0, 100000), Meta::Tooltip("Another seed = another landscape"))
     ZX_FIELD(featureSize, Meta::Range(1, 5000), Meta::Units("m"), Meta::Tooltip("Width of the largest hills"))
@@ -24,6 +28,9 @@ ZX_REFLECT_STRUCT_BEGIN(Terrain)
     ZX_FIELD(flatCenter, Meta::Range(0, 2000), Meta::Units("m"), Meta::Tooltip("Radius of a flat area in the middle (0 = none)"))
     ZX_FIELD(material, Meta::AssetType("Material"), Meta::Tooltip("Surface material (M_Terrain in Starter Content: grass, rock on slopes, snow on peaks)"))
     ZX_FIELD(collision, Meta::Tooltip("Physics collision (a height field) and Character Controllers walk on it"))
+    ZX_FIELD(sculpt, Meta::Hidden())
+    ZX_FIELD(paint, Meta::Hidden())
+    ZX_FIELD(dataId, Meta::Hidden())
 ZX_REFLECT_STRUCT_END()
 
 namespace {
@@ -79,7 +86,7 @@ f32 Shape(const Terrain& t, f32 x, f32 z)
 
 /// The render mesh, cooked directly (a regular grid needs no cache optimization): square chunks of cells become
 /// sections with their own bounds, so the renderer culls what is off screen.
-asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h)
+asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h, const Array<u8>& paint)
 {
     const u32 n = TerrainSamples(t);
     const f32 s = TerrainSpacing(t), half = t.size * 0.5f;
@@ -99,6 +106,12 @@ asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h)
             v.tangent = Vec4(tangent, 1.0f);
             v.uv0 = Vec2(v.position.x, -v.position.z) * 0.25f; // a texture tile every 4 m
             v.uv1 = Vec2(f32(x) / f32(n - 1), 1.0f - f32(z) / f32(n - 1));
+            // Painted layer weights (rock, dirt, sand) for M_Terrain, stored inverted (unpainted = white: materials that
+            // multiply by the vertex color stay as they are); none without a material.
+            const usize pi = (usize(z) * n + x) * 3;
+            v.color = 0xFFFFFFFFu;
+            if (t.material.IsValid() && paint.Size() >= pi + 3)
+                v.color = u32(255 - paint[pi]) | (u32(255 - paint[pi + 1]) << 8) | (u32(255 - paint[pi + 2]) << 16) | 0xFF000000u;
             out.vertices[usize(z) * n + x] = asset::PackVertex(v);
             out.bounds.Expand(v.position);
         }
@@ -157,6 +170,10 @@ void GenerateTerrainHeights(const Terrain& t, Array<f32>& heights)
     for (u32 z = 0; z < n; ++z)
         for (u32 x = 0; x < n; ++x) {
             const f32 px = -half + f32(x) * s, pz = -half + f32(z) * s;
+            if (!t.hills) {
+                heights[usize(z) * n + x] = 0.0f;
+                continue;
+            }
             f32 v = Shape(t, px, pz);
             if (flat > 0.0f) {
                 const f32 r = Sqrt(px * px + pz * pz);
@@ -180,12 +197,129 @@ u64 TerrainShapeHash(const Terrain& t)
     mix(bits(t.roughness));
     mix(bits(t.ridges));
     mix(bits(t.flatCenter));
+    mix(t.hills ? 1u : 0u);
     return h;
 }
 
 asset::AssetId TerrainMeshId(const ecs::World& world, ecs::Entity e)
 {
     return Guid::FromName(TerrainNamespace, String::Format("{}", GetEntityGuid(world, e)).View());
+}
+
+namespace {
+
+/// Bilinear resample of an m x m grid of `channels` floats into n x n.
+template <typename T>
+void Resample(const Array<T>& src, u32 m, u32 channels, u32 n, Array<T>& dst)
+{
+    dst.Resize(usize(n) * n * channels);
+    for (u32 z = 0; z < n; ++z)
+        for (u32 x = 0; x < n; ++x) {
+            const f32 fx = f32(x) / f32(n - 1) * f32(m - 1), fz = f32(z) / f32(n - 1) * f32(m - 1);
+            const u32 x0 = Min(u32(fx), m - 1), z0 = Min(u32(fz), m - 1), x1 = Min(x0 + 1, m - 1), z1 = Min(z0 + 1, m - 1);
+            const f32 tx = fx - f32(x0), tz = fz - f32(z0);
+            for (u32 c = 0; c < channels; ++c) {
+                auto at = [&](u32 xx, u32 zz) { return f32(src[(usize(zz) * m + xx) * channels + c]); };
+                const f32 v = Lerp(Lerp(at(x0, z0), at(x1, z0), tx), Lerp(at(x0, z1), at(x1, z1), tx), tz);
+                dst[(usize(z) * n + x) * channels + c] = T(v);
+            }
+        }
+}
+
+u32 GridSide(usize count)
+{
+    const u32 m = u32(Sqrt(f32(count)) + 0.5f);
+    return usize(m) * m == count ? m : 0u;
+}
+
+constexpr f32 SculptStep = 0.02f; // m per i16 unit
+
+} // namespace
+
+void DecodeTerrainSculpt(const Terrain& t, u32 n, Array<f32>& offsets)
+{
+    offsets.Clear();
+    offsets.Resize(usize(n) * n, 0.0f);
+    Array<u8> bytes;
+    if (t.sculpt.Empty() || !Base64Decode(t.sculpt.View(), bytes) || bytes.Size() % 2)
+        return;
+    const u32 m = GridSide(bytes.Size() / 2);
+    if (m < 2)
+        return;
+    Array<f32> grid;
+    grid.Resize(usize(m) * m);
+    for (usize i = 0; i < grid.Size(); ++i)
+        grid[i] = f32(i16(u16(bytes[i * 2]) | (u16(bytes[i * 2 + 1]) << 8))) * SculptStep;
+    if (m == n)
+        offsets = move(grid);
+    else
+        Resample(grid, m, 1, n, offsets);
+}
+
+void DecodeTerrainPaint(const Terrain& t, u32 n, Array<u8>& rgb)
+{
+    rgb.Clear();
+    Array<u8> bytes;
+    if (t.paint.Empty() || !Base64Decode(t.paint.View(), bytes) || bytes.Size() % 3)
+        return;
+    const u32 m = GridSide(bytes.Size() / 3);
+    if (m < 2)
+        return;
+    if (m == n)
+        rgb = move(bytes);
+    else
+        Resample(bytes, m, 3, n, rgb);
+}
+
+void EncodeTerrainSculpt(Terrain& t, const Array<f32>& offsets)
+{
+    bool any = false;
+    Array<u8> bytes;
+    bytes.Resize(offsets.Size() * 2);
+    for (usize i = 0; i < offsets.Size(); ++i) {
+        const i32 q = i32(Clamp(Round(offsets[i] / SculptStep), -32767.0f, 32767.0f));
+        any |= q != 0;
+        bytes[i * 2] = u8(u16(i16(q)) & 0xFF);
+        bytes[i * 2 + 1] = u8(u16(i16(q)) >> 8);
+    }
+    t.sculpt = any ? Base64Encode(ByteSpan(bytes.Data(), bytes.Size())) : String();
+}
+
+void EncodeTerrainPaint(Terrain& t, const Array<u8>& rgb)
+{
+    bool any = false;
+    for (u8 v : rgb)
+        any |= v != 0;
+    t.paint = any ? Base64Encode(ByteSpan(rgb.Data(), rgb.Size())) : String();
+}
+
+void ComputeTerrainHeights(const Terrain& t, Array<f32>& heights)
+{
+    GenerateTerrainHeights(t, heights);
+    if (t.sculpt.Empty())
+        return;
+    Array<f32> offsets;
+    DecodeTerrainSculpt(t, TerrainSamples(t), offsets);
+    for (usize i = 0; i < heights.Size() && i < offsets.Size(); ++i)
+        heights[i] += offsets[i];
+}
+
+void TerrainSystem::Rebuild(ecs::World& world, ecs::Entity e, Data& d, asset::AssetManager& assets, render::RenderAssets* renderAssets)
+{
+    const Terrain& t = *world.Get<const Terrain>(e);
+    const f64 start = Clock::NowSeconds();
+    Array<f32> heights = d.base;
+    for (usize i = 0; i < heights.Size(); ++i)
+        heights[i] += d.sculpt[i];
+    asset::CookedMesh cooked = CookTerrainMesh(t, heights, d.paint);
+    assets.AddMemoryMesh(d.mesh, move(cooked));
+    if (renderAssets)
+        renderAssets->ReloadMesh(d.mesh);
+    d.time = Clock::NowSeconds();
+    d.dirty = false;
+    ++m_builds;
+    if (!d.editing)
+        ZX_LOG_INFO(LogTerrain, "Terrain: {} x {} samples built in {:.1f} ms", d.n, d.n, (Clock::NowSeconds() - start) * 1000.0);
 }
 
 void TerrainSystem::Update(ecs::World& world, asset::AssetManager& assets, render::RenderAssets* renderAssets)
@@ -195,24 +329,36 @@ void TerrainSystem::Update(ecs::World& world, asset::AssetManager& assets, rende
     for (ecs::Entity e : terrains) {
         EnsureEntityGuid(world, e);
         const asset::AssetId id = TerrainMeshId(world, e);
-        const Terrain t = *world.Get<const Terrain>(e);
+        const Terrain& t = *world.Get<const Terrain>(e);
         const u64 hash = TerrainShapeHash(t);
-        Built* built = m_built.Find(id);
+        Data* d = m_built.Find(id);
         const f64 now = Clock::NowSeconds();
-        // While a value is being dragged in Details, rebuild a few times per second (the last value always lands).
-        if (!built || (built->hash != hash && now - built->time > 0.12)) {
-            const f64 start = now;
-            Array<f32> heights;
-            GenerateTerrainHeights(t, heights);
-            asset::CookedMesh cooked = CookTerrainMesh(t, heights);
-            assets.AddMemoryMesh(id, move(cooked));
-            if (renderAssets)
-                renderAssets->ReloadMesh(id);
-            m_built.InsertOrAssign(id, Built{hash, id, Clock::NowSeconds()});
-            ++m_builds;
-            ZX_LOG_INFO(LogTerrain, "Terrain: {} x {} samples built in {:.1f} ms", TerrainSamples(t), TerrainSamples(t),
-                        (Clock::NowSeconds() - start) * 1000.0);
+        if (!d) {
+            m_built.InsertOrAssign(id, Data{});
+            d = m_built.Find(id);
+            d->mesh = id;
+            d->hash = ~hash; // build now
+            d->dataId = t.dataId - 1;
         }
+        // The generated shape: while a value is being dragged in Details, a few times per second (the last value lands).
+        if (d->hash != hash && (d->base.Empty() || now - d->time > 0.12)) {
+            d->hash = hash;
+            d->n = TerrainSamples(t);
+            d->spacing = TerrainSpacing(t);
+            GenerateTerrainHeights(t, d->base);
+            if (d->sculpt.Size() != d->base.Size())
+                d->dataId = t.dataId - 1; // resolution changed: resample what was sculpted
+            d->dirty = true;
+        }
+        // Sculpted / painted data from the component (scene load, undo, redo) unless a tool is editing it.
+        if (!d->editing && d->dataId != t.dataId) {
+            d->dataId = t.dataId;
+            DecodeTerrainSculpt(t, d->n, d->sculpt);
+            DecodeTerrainPaint(t, d->n, d->paint);
+            d->dirty = true;
+        }
+        if (d->dirty && (!d->editing || now - d->time > 0.06))
+            Rebuild(world, e, *d, assets, renderAssets);
         // The Mesh Renderer draws it (and makes picking, shadows and editor tools work as for any mesh).
         MeshRenderer* mr = world.Get<MeshRenderer>(e);
         if (!mr) {
@@ -231,6 +377,147 @@ void TerrainSystem::Update(ecs::World& world, asset::AssetManager& assets, rende
         if (mr->collision != t.collision)
             mr->collision = t.collision;
     }
+}
+
+TerrainSystem::Data* TerrainSystem::Find(ecs::World& world, ecs::Entity e)
+{
+    if (!world.IsAlive(e) || !world.Has<Terrain>(e))
+        return nullptr;
+    Data* d = m_built.Find(TerrainMeshId(world, e));
+    return d && !d->base.Empty() && d->sculpt.Size() == d->base.Size() ? d : nullptr;
+}
+
+TerrainSystem::Data* TerrainSystem::BeginEdit(ecs::World& world, ecs::Entity e)
+{
+    Data* d = Find(world, e);
+    if (!d)
+        return nullptr;
+    d->editing = true;
+    if (d->paint.Size() != d->base.Size() * 3)
+        d->paint.Resize(d->base.Size() * 3, 0);
+    return d;
+}
+
+void TerrainSystem::Commit(ecs::World& world, ecs::Entity e)
+{
+    Data* d = Find(world, e);
+    Terrain* t = world.IsAlive(e) ? world.Get<Terrain>(e) : nullptr;
+    if (!d || !t)
+        return;
+    EncodeTerrainSculpt(*t, d->sculpt);
+    EncodeTerrainPaint(*t, d->paint);
+    static Random rng(0x7e44a1u);
+    i32 id;
+    do {
+        id = i32(rng.NextU32() & 0x7FFFFFFF);
+    } while (id == 0 || id == t->dataId);
+    t->dataId = id;
+    d->dataId = id;
+    d->editing = false;
+    d->dirty = true;
+}
+
+bool TerrainSystem::HeightAt(ecs::World& world, ecs::Entity e, Vec2 worldXZ, f32& height)
+{
+    const Data* d = Find(world, e);
+    if (!d)
+        return false;
+    const Mat4 m = scene::ComputeWorldMatrix(world, e);
+    const Vec3 local = InverseAffine(m).TransformPointAffine(Vec3(worldXZ.x, 0.0f, worldXZ.y));
+    const f32 half = d->spacing * f32(d->n - 1) * 0.5f;
+    const f32 gx = (local.x + half) / d->spacing, gz = (local.z + half) / d->spacing;
+    if (gx < 0.0f || gz < 0.0f || gx > f32(d->n - 1) || gz > f32(d->n - 1))
+        return false;
+    const u32 x0 = Min(u32(gx), d->n - 2), z0 = Min(u32(gz), d->n - 2);
+    const f32 tx = gx - f32(x0), tz = gz - f32(z0);
+    const f32 h = Lerp(Lerp(d->Height(x0, z0), d->Height(x0 + 1, z0), tx), Lerp(d->Height(x0, z0 + 1), d->Height(x0 + 1, z0 + 1), tx), tz);
+    height = m.TransformPointAffine(Vec3(local.x, h, local.z)).y;
+    return true;
+}
+
+bool TerrainSystem::Raycast(ecs::World& world, const Ray& ray, f32 maxDistance, ecs::Entity& hitTerrain, Vec3& hitPoint)
+{
+    bool hit = false;
+    f32 best = maxDistance;
+    world.Query<const Terrain>().Each([&](ecs::Entity e, const Terrain&) {
+        const Data* d = Find(world, e);
+        if (!d)
+            return;
+        // In the terrain's space, clipped to its box (heights min..max), marching half a cell at a time.
+        const Mat4 m = scene::ComputeWorldMatrix(world, e);
+        const Mat4 inv = InverseAffine(m);
+        const Vec3 o = inv.TransformPointAffine(ray.origin);
+        const Vec3 far = inv.TransformPointAffine(ray.origin + ray.direction * best);
+        const f32 len = Length(far - o);
+        if (len <= 1e-6f)
+            return;
+        const Vec3 dir = (far - o) / len;
+        f32 lo = d->Height(0, 0), hi = lo;
+        for (usize i = 0; i < d->base.Size(); ++i) {
+            const f32 h = d->base[i] + d->sculpt[i];
+            lo = Min(lo, h);
+            hi = Max(hi, h);
+        }
+        const f32 half = d->spacing * f32(d->n - 1) * 0.5f;
+        const AABB box(Vec3(-half, lo - 0.01f, -half), Vec3(half, hi + 0.01f, half));
+        f32 t0 = 0.0f, t1 = len;
+        for (u32 a = 0; a < 3; ++a) {
+            if (Abs(dir[a]) < 1e-8f) {
+                if (o[a] < box.min[a] || o[a] > box.max[a])
+                    return;
+                continue;
+            }
+            f32 ta = (box.min[a] - o[a]) / dir[a], tb = (box.max[a] - o[a]) / dir[a];
+            if (ta > tb) {
+                const f32 tmp = ta;
+                ta = tb;
+                tb = tmp;
+            }
+            t0 = Max(t0, ta);
+            t1 = Min(t1, tb);
+        }
+        if (t0 > t1)
+            return;
+        auto height = [&](f32 x, f32 z) {
+            const f32 gx = Clamp((x + half) / d->spacing, 0.0f, f32(d->n - 1)), gz = Clamp((z + half) / d->spacing, 0.0f, f32(d->n - 1));
+            const u32 x0 = Min(u32(gx), d->n - 2), z0 = Min(u32(gz), d->n - 2);
+            const f32 tx = gx - f32(x0), tz = gz - f32(z0);
+            return Lerp(Lerp(d->Height(x0, z0), d->Height(x0 + 1, z0), tx), Lerp(d->Height(x0, z0 + 1), d->Height(x0 + 1, z0 + 1), tx), tz);
+        };
+        const f32 step = d->spacing * 0.5f;
+        f32 prevT = t0;
+        Vec3 p = o + dir * t0;
+        if (p.y < height(p.x, p.z))
+            return; // starts below the surface
+        for (f32 t = t0 + step;; t += step) {
+            const f32 tc = Min(t, t1);
+            p = o + dir * tc;
+            if (p.y < height(p.x, p.z)) {
+                f32 a = prevT, b = tc;
+                for (u32 k = 0; k < 14; ++k) {
+                    const f32 mid = (a + b) * 0.5f;
+                    const Vec3 q = o + dir * mid;
+                    if (q.y < height(q.x, q.z))
+                        b = mid;
+                    else
+                        a = mid;
+                }
+                const Vec3 wp = m.TransformPointAffine(o + dir * b);
+                const f32 dist = Length(wp - ray.origin);
+                if (dist < best) {
+                    best = dist;
+                    hitPoint = wp;
+                    hitTerrain = e;
+                    hit = true;
+                }
+                return;
+            }
+            if (tc >= t1)
+                return;
+            prevT = tc;
+        }
+    });
+    return hit;
 }
 
 } // namespace zx

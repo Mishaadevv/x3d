@@ -285,6 +285,7 @@ bool Editor::Initialize()
         return false;
     viewport->Settings().renderScale = 1.0f; // the viewport is smaller than the screen; keep it crisp
     RegisterEditorConsole(*this);
+    LoadEditorSettings(*this);
     thumbnails.Reset(new ThumbnailCache(*device, *assets, *renderAssets));
     if (!thumbnails->Init())
         ZX_LOG_WARN(LogEditor, "Thumbnail renderer unavailable");
@@ -1913,6 +1914,9 @@ void Editor::CreateTerrain()
     });
     t.flatCenter = Clamp(radius + 4.0f, t.flatCenter, 120.0f);
     t.size = Max(t.size, t.flatCenter * 5.0f);
+    // The terrain material (painting needs it): written into projects without Starter Content.
+    if (WriteTerrainMaterial(contentRoot) && materials)
+        materials->ScanContent();
     for (StringView name : {StringView("M_Terrain"), StringView("M_Grass")}) {
         const String path = String::Format("{}/StarterContent/Materials/{}.zmat", contentRoot, name);
         if (materials && platform::FileExists(path)) {
@@ -3605,7 +3609,7 @@ bool Editor::Frame()
         StringView v;
         return CommandLine::GetValue("uiscale", v) ? Clamp(f32(ParseDouble(v).ValueOr(1.0)), 0.5f, 3.0f) : 1.0f;
     }();
-    fi.dpiScale = window->GetDpiScale() * s_uiScale;
+    fi.dpiScale = window->GetDpiScale() * s_uiScale * Clamp(prefs.uiScale, 0.5f, 3.0f);
     fi.input = flying ? nullptr : &input;
     fi.events = m_events.View();
     fi.hasFocus = window->IsFocused() || m_autotestFrames > 0;
@@ -3785,6 +3789,7 @@ void Editor::RenderFrame()
         vf.volumetricFog = FeatureEnabled("volumetricFog");
         vf.clouds = FeatureEnabled("clouds");
         vf.fluids = FeatureEnabled("fluids");
+        ApplyEditorSettings(*this); // File > Settings: quality of this viewport, audio, autosave
         ViewportCamera cam{camera.ViewMatrix(), camera.position, camera.fovY, camera.nearPlane};
         if (UsingGameCamera()) {
             // Game view: the Camera entity's world position and orientation (+Z forward), scale ignored.

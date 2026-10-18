@@ -268,6 +268,50 @@ ConCommand CmdGraphicsEra("graphics.era", "The project's graphics generation: gr
                                    ed->SetGraphicsEra(args[0]);
                            });
 
+ConCommand CmdTerrainSculpt("terrain.sculpt",
+                             "Sculpts / paints the terrain at a point like a held Terrain tool stroke: terrain.sculpt "
+                             "<raise|lower|smooth|flatten|noise|rock|dirt|sand|erase> <x> <z> [seconds] [radius] [strength]",
+                             [](Span<const StringView> args) {
+                                 Editor* ed = Ed();
+                                 if (!ed || args.Size() < 3)
+                                     return;
+                                 static const char* const Names[] = {"raise", "lower", "smooth", "flatten", "noise", "rock", "dirt", "sand", "erase"};
+                                 i32 mode = -1;
+                                 for (u32 i = 0; i < ZX_ARRAY_COUNT(Names); ++i)
+                                     if (args[0].EqualsIgnoreCase(Names[i]))
+                                         mode = i32(i);
+                                 if (mode < 0) {
+                                     ZX_LOG_WARN(LogCmd, "terrain.sculpt: unknown mode '{}'", args[0]);
+                                     return;
+                                 }
+                                 const f32 x = ParseFloat(args[1]).ValueOr(0.0f), z = ParseFloat(args[2]).ValueOr(0.0f);
+                                 const f32 seconds = args.Size() > 3 ? ParseFloat(args[3]).ValueOr(1.0f) : 1.0f;
+                                 ToolState& ts = ed->tools;
+                                 const TerrainBrushSettings saved = ts.terrain;
+                                 ts.terrain.mode = TerrainBrushMode(mode);
+                                 if (args.Size() > 4)
+                                     ts.terrain.radius = ParseFloat(args[4]).ValueOr(ts.terrain.radius);
+                                 if (args.Size() > 5)
+                                     ts.terrain.strength = ParseFloat(args[5]).ValueOr(ts.terrain.strength);
+                                 ecs::Entity terrain;
+                                 Vec3 hit;
+                                 if (!ed->terrains.Raycast(ed->world, Ray(Vec3(x, 5000.0f, z), Vec3(0, -1, 0)), 10000.0f, terrain, hit)) {
+                                     ZX_LOG_WARN(LogCmd, "terrain.sculpt: no terrain at {} {}", x, z);
+                                     ts.terrain = saved;
+                                     return;
+                                 }
+                                 ed->undo.Begin("Sculpt Terrain");
+                                 ed->undo.Record(terrain);
+                                 if (ed->terrains.BeginEdit(ed->world, terrain)) {
+                                     ts.flattenHeight = InverseAffine(scene::ComputeWorldMatrix(ed->world, terrain)).TransformPointAffine(hit).y;
+                                     for (u32 i = 0; i < u32(seconds * 60.0f); ++i)
+                                         TerrainDab(*ed, terrain, hit, 1.0f / 60.0f);
+                                     ed->terrains.Commit(ed->world, terrain);
+                                 }
+                                 ed->undo.End();
+                                 ts.terrain = saved;
+                             });
+
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
     if (Ed())
         Ed()->Undo();
@@ -487,7 +531,10 @@ ConCommand CmdTool("tool", "Activates an editor tool: tool <brush|measure|none>;
         DropSelectedToGround(*ed);
         return;
     }
-    const EditorTool tool = args[0].EqualsIgnoreCase("brush") ? EditorTool::Brush : args[0].EqualsIgnoreCase("measure") ? EditorTool::Measure : EditorTool::None;
+    const EditorTool tool = args[0].EqualsIgnoreCase("brush")     ? EditorTool::Brush
+                            : args[0].EqualsIgnoreCase("measure") ? EditorTool::Measure
+                            : args[0].EqualsIgnoreCase("terrain") ? EditorTool::Terrain
+                                                                  : EditorTool::None;
     ed->tools.active = EditorTool::None;
     if (tool != EditorTool::None)
         SetActiveTool(*ed, tool);

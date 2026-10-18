@@ -74,6 +74,8 @@ Result<ProjectInfo> CreateProject(StringView parentDirectory, StringView name, c
 /// Writes the Starter Content into <contentDir>/StarterContent: materials (.zmat with editable parameters) and
 /// ready-to-use scripts. Returns the number of files written.
 u32 WriteStarterContent(StringView contentDir);
+/// Writes just StarterContent/Materials/M_Terrain.zmat (grass / rock / snow + painted layers) if missing.
+u32 WriteTerrainMaterial(StringView contentDir);
 /// Writes the character scripts of the First/Third Person templates into <contentDir>/Scripts
 /// (FirstPersonController, ThirdPersonController, ThirdPersonCamera). Returns the number of files written.
 u32 WriteGameplayScripts(StringView contentDir);

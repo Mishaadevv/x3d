@@ -1,7 +1,9 @@
 #pragma once
 
-// Terrain v0: a square height field centered on the entity, generated from fractal noise (rolling hills to ridged
-// mountains, optional flat area in the middle for building). TerrainSystem turns it into a mesh drawn through the
+// Terrain: a square height field centered on the entity: generated hills (fractal noise: rolling hills to ridged
+// mountains, optional flat area in the middle) or flat, plus what is sculpted on top with the editor's Terrain tool
+// (raise, lower, smooth, flatten, noise) and painted layers (rock, dirt, sand: vertex colors read by M_Terrain), both
+// stored in the component (scenes, undo, prefabs). TerrainSystem turns it into a mesh drawn through the
 // entity's Mesh Renderer (added and kept in sync automatically, so picking, shadows, outlines and editor tools work as
 // for any mesh); PhysicsSystem collides with it as a physics::HeightField.
 
@@ -20,6 +22,7 @@ struct Terrain
 {
     f32 size = 200.0f;      // meters (square)
     i32 resolution = 257;   // samples per side
+    bool hills = true;      // generated hills under the sculpting (off: flat ground to sculpt from scratch)
     f32 height = 30.0f;     // meters from the lowest to the highest possible point
     i32 seed = 1;
     f32 featureSize = 90.0f; // meters: width of the largest hills
@@ -29,6 +32,11 @@ struct Terrain
     f32 flatCenter = 20.0f;  // meters: radius of a flat area in the middle
     asset::AssetId material;
     bool collision = true;
+    // Sculpted / painted (the Terrain tool; hidden in Details): base64 of i16 height offsets (2 cm steps) and of RGB8
+    // layer weights (rock, dirt, sand) per sample; empty = none. A new random dataId marks every change.
+    String sculpt;
+    String paint;
+    i32 dataId = 0;
 };
 ZX_DECLARE_TYPE(Terrain);
 
@@ -37,6 +45,13 @@ u32 TerrainSamples(const Terrain& t);
 f32 TerrainSpacing(const Terrain& t);
 /// Heights in meters (row-major, row = +Z, column = +X; sample (0, 0) at local (-size/2, -size/2)).
 void GenerateTerrainHeights(const Terrain& t, Array<f32>& heights);
+/// Generated heights plus the sculpted offsets (what is rendered and collided with).
+void ComputeTerrainHeights(const Terrain& t, Array<f32>& heights);
+/// Decodes the sculpt offsets / paint weights for `n` x `n` samples (resampled when stored for another resolution).
+void DecodeTerrainSculpt(const Terrain& t, u32 n, Array<f32>& offsets);
+void DecodeTerrainPaint(const Terrain& t, u32 n, Array<u8>& rgb);
+void EncodeTerrainSculpt(Terrain& t, const Array<f32>& offsets);
+void EncodeTerrainPaint(Terrain& t, const Array<u8>& rgb);
 /// Hash of everything that changes the generated shape.
 u64 TerrainShapeHash(const Terrain& t);
 /// The id under which the terrain's mesh is registered (stable per entity guid).
@@ -51,14 +66,38 @@ public:
     void Clear() { m_built.Clear(); }
     u32 BuildCount() const { return m_builds; }
 
-private:
-    struct Built
+    /// Live terrain data for editing tools: generated heights, sculpted offsets, paint (n x n samples, row = +Z).
+    struct Data
     {
-        u64 hash = 0;
+        u32 n = 0;
+        f32 spacing = 1.0f;
+        Array<f32> base;
+        Array<f32> sculpt;
+        Array<u8> paint; // RGB per sample
+        u64 hash = 0;    // shape hash of `base`
+        i32 dataId = 0;  // component dataId `sculpt` / `paint` were decoded from
         asset::AssetId mesh;
-        f64 time = 0.0; // when it was built
+        f64 time = 0.0;  // when the mesh was built
+        bool editing = false;
+        bool dirty = false;
+        f32 Height(u32 x, u32 z) const { return base[usize(z) * n + x] + sculpt[usize(z) * n + x]; }
     };
-    HashMap<asset::AssetId, Built> m_built; // by mesh id
+    /// Starts editing a terrain (its data stays live until Commit; the component is not re-read meanwhile).
+    Data* BeginEdit(ecs::World& world, ecs::Entity e);
+    /// Data of a terrain (built by the last Update), or null.
+    Data* Find(ecs::World& world, ecs::Entity e);
+    /// The mesh needs rebuilding (rebuilt by Update, a few times per second while editing).
+    void MarkDirty(Data& d) { d.dirty = true; }
+    /// Writes the edited data into the component (new dataId) and ends editing.
+    void Commit(ecs::World& world, ecs::Entity e);
+    /// Surface height at world (x, z) over a terrain entity (false outside it).
+    bool HeightAt(ecs::World& world, ecs::Entity e, Vec2 worldXZ, f32& height);
+    /// Closest terrain hit along a ray (world space).
+    bool Raycast(ecs::World& world, const Ray& ray, f32 maxDistance, ecs::Entity& hitTerrain, Vec3& hitPoint);
+
+private:
+    void Rebuild(ecs::World& world, ecs::Entity e, Data& d, asset::AssetManager& assets, render::RenderAssets* renderAssets);
+    HashMap<asset::AssetId, Data> m_built; // by mesh id
     u32 m_builds = 0;
 };
 

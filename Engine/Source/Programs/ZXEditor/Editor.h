@@ -32,6 +32,7 @@
 #include "Engine/Scripting.h"
 #include "Engine/ViewportRenderer.h"
 #include "EditorActions.h"
+#include "EditorSettings.h"
 #include "EditorTools.h"
 #include "AnimationEditor.h"
 #include "MaterialEditor.h"
@@ -299,6 +300,8 @@ public:
     AnimGraphEditorState animGraphEditor;
     ToolState tools;          // Brush / Measure (EditorTools.cpp)
     bool showFeatures = false; // Window > Features
+    bool showSettings = false; // File > Settings
+    EditorSettings prefs;      // File > Settings (Saved/Config/EditorSettings.json)
     ScriptEditorState scriptEditor;
     Array<EditorAction> actions; // menus, shortcuts, palette (EditorActions.cpp)
     PaletteState palette;
@@ -585,7 +588,8 @@ void DrawOutputLogPanel(Editor& ed);
 void BuildDefaultLayout(ui::ID root);
 
 /// Inspector widgets for reflected data. Returns true if a value changed.
-bool PropertyEditor(const TypeInfo& type, void* object, StringView idPrefix = {});
+/// `onlyCategory`: draw just the fields of that Meta::Category (without its header).
+bool PropertyEditor(const TypeInfo& type, void* object, StringView idPrefix = {}, StringView onlyCategory = {});
 /// Audio (EditorAudio.cpp).
 void DrawAudioMixerPanel(Editor& ed);
 /// C++ game code (EditorGameCode.cpp).

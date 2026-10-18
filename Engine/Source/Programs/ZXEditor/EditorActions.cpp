@@ -227,6 +227,7 @@ void RegisterEditorActions(Editor& ed)
         [spawn](Editor& e) { e.CreatePostProcessVolume(spawn(e)); });
     Add(ed, "window.audioMixer", "Audio Mixer", "Window", ZX_ICON_SLIDERS_VERTICAL, "", [](Editor& e) { e.showMixer = !e.showMixer; });
     Add(ed, "file.package", "Package Project...", "File", ZX_ICON_PACKAGE, "", [](Editor& e) { e.showPackageWindow = true; });
+    Add(ed, "file.settings", "Settings...", "File", ZX_ICON_SETTINGS, "Ctrl+,", [](Editor& e) { e.showSettings = !e.showSettings; });
     Add(ed, "window.inputActions", "Input Actions", "Window", ZX_ICON_GAMEPAD_2, "", [](Editor& e) { e.showInputActions = !e.showInputActions; });
     // Game code
     auto hasProject = [](Editor& e) { return !e.project.descriptorPath.Empty(); };
@@ -257,12 +258,22 @@ void RegisterEditorActions(Editor& ed)
         [](Editor& e) { return e.FeatureEnabled("brush") && !e.IsPlaying(); });
     Add(ed, "tool.measure", "Measure Tool", "Tools", ZX_ICON_RULER, "M", [](Editor& e) { SetActiveTool(e, EditorTool::Measure); },
         [](Editor& e) { return e.FeatureEnabled("measure") && !e.IsPlaying(); });
+    Add(ed, "tool.terrain", "Terrain Tool", "Tools", ZX_ICON_MOUNTAIN, "T", [](Editor& e) { SetActiveTool(e, EditorTool::Terrain); },
+        [](Editor& e) { return e.FeatureEnabled("terrainTool") && !e.IsPlaying(); });
     Add(ed, "edit.dropToGround", "Drop to Ground", "Edit", ZX_ICON_ARROW_DOWN_TO_LINE, "End", [](Editor& e) { DropSelectedToGround(e); },
         [](Editor& e) { return e.world.IsAlive(e.selected) && !e.IsPlaying(); });
-    Add(ed, "brush.smaller", "Brush Smaller", "Tools", ZX_ICON_MINUS, "[", [](Editor& e) { e.tools.brush.radius = Max(0.25f, e.tools.brush.radius / 1.15f); },
-        [](Editor& e) { return e.tools.active == EditorTool::Brush; }, true);
-    Add(ed, "brush.bigger", "Brush Bigger", "Tools", ZX_ICON_PLUS, "]", [](Editor& e) { e.tools.brush.radius = Min(50.0f, e.tools.brush.radius * 1.15f); },
-        [](Editor& e) { return e.tools.active == EditorTool::Brush; }, true);
+    Add(ed, "brush.smaller", "Brush Smaller", "Tools", ZX_ICON_MINUS, "[",
+        [](Editor& e) {
+            e.tools.brush.radius = Max(0.25f, e.tools.brush.radius / 1.15f);
+            e.tools.terrain.radius = Max(0.5f, e.tools.terrain.radius / 1.15f);
+        },
+        [](Editor& e) { return e.tools.active == EditorTool::Brush || e.tools.active == EditorTool::Terrain; }, true);
+    Add(ed, "brush.bigger", "Brush Bigger", "Tools", ZX_ICON_PLUS, "]",
+        [](Editor& e) {
+            e.tools.brush.radius = Min(50.0f, e.tools.brush.radius * 1.15f);
+            e.tools.terrain.radius = Min(100.0f, e.tools.terrain.radius * 1.15f);
+        },
+        [](Editor& e) { return e.tools.active == EditorTool::Brush || e.tools.active == EditorTool::Terrain; }, true);
     Add(ed, "window.resetLayout", "Reset Layout", "Window", ZX_ICON_LAYOUT_DASHBOARD, "", [](Editor& e) { e.requestResetLayout = true; });
     Add(ed, "view.fullscreen", "Toggle Fullscreen", "View", ZX_ICON_MAXIMIZE, "F11", [](Editor& e) {
         e.window->SetMode(e.window->GetMode() == WindowMode::Windowed ? WindowMode::BorderlessFullscreen : WindowMode::Windowed);

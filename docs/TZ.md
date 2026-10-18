@@ -1268,6 +1268,7 @@ Vulkan-бэкенд, HDR-вывод, плагины редактора, ZScript 
   вьюпорта (редактор: превью, Show → Game UI) и кадра ZXGame (шрифты в Content.zpak); Create → UI; HUD и меню паузы в
   Vehicle Playground
 - [x] (0.13.13) ScrollView, InputField, перенос во флексе, world-space canvas (таблички над объектами)
+- [x] (0.13.14) Редактор: инструмент Terrain (лепка + раскраска слоями), окно File → Settings, масштабирование с одной стороны
 - [ ] Стили (`.zstyle`), анимации свойств, навигация геймпадом
 - [ ] Локализация (`.zloc`, `LOCTEXT`)
 - [ ] UI designer (WYSIWYG в вьюпорте)
