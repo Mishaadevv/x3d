@@ -202,6 +202,10 @@ ZGraph (0.13.21): Engine/ZGraph.h (.zgraph JSON: ParseGraph / WriteGraph; GraphN
 templates {pin} {@setting} {#id}; CompileGraph -> ZeqouScript source + lineNodes for errors; MakeExampleGraph).
 ScriptSystem::CheckForChanges compiles .zgraph through it (Script component takes .zs or .zgraph). Tests ZGraph.*
 (every library node must generate compilable script). Console graph.code / graph.new / script.attach.
+M14 acceptance (0.14.0): Engine/Private/ZGraphDemo.cpp (MakeCoinGraph / MakeGateGraph / MakeGameHUDGraph, a
+Builder helper) written by Editor::BuildCoinGame into the Third Person template (Content/Scripts/Graphs); scripts
+game.get/set/add (ScriptSystem::m_gameValues, GameValue) and entity.moveTo (m_moves, ticked in Tick); ZGraph actions
+with a target other than self are wrapped in `if target != nil`. Test ZGraph.ThirdPersonMiniGame.
 ZGraph debugging (0.13.23): CompileGraph(..., trace) emits __trace(node) per event / statement; ScriptSystem::
 traceGraphs (editor on, ZXGame off) + onGraphTrace(file, entity, node) via m_current (set in RebindGlobals);
 InstancesOf / ReadField for live values; editor ZGraphTrace / ZGraphAfterTick (breakpoint -> TogglePause after

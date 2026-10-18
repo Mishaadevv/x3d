@@ -37,6 +37,8 @@ const GraphNodeDef Library[] = {
      "fn triggerExit(other)", "Something left this entity's trigger collider"},
     {"event.collisionEnter", "On Collision", "Events", K::Event, {}, {ExecOut(), Out("other", T::Entity, "other"), Out("speed", T::Number, "speed")},
      {}, "fn collisionEnter(other, speed)", "This entity's collider hit something (speed in m/s)"},
+    {"event.uiBack", "On UI Back", "Events", K::Event, {}, {ExecOut(), Out("name", T::String, "name")}, {}, "fn onUIBack(name)",
+     "Escape / gamepad B in a menu (while the mouse cursor is shown)"},
     {"event.custom", "Custom Event", "Events", K::Event, {}, {ExecOut()}, {Setting("event", "MyEvent")}, "fn {@event}()",
      "Runs when a Call Event node calls it by name"},
 
@@ -71,6 +73,9 @@ const GraphNodeDef Library[] = {
      {ExecOut()}, {}, "{target}.rotation = {degrees}", "Angles in degrees"},
     {"action.setScale", "Set Scale", "Transform", K::Action, {ExecIn(), In("target", T::Entity, "self"), In("scale", T::Vec3, "1 1 1")}, {ExecOut()},
      {}, "{target}.scale = {scale}", ""},
+    {"action.moveTo", "Move To", "Transform", K::Action,
+     {ExecIn(), In("target", T::Entity, "self"), In("position", T::Vec3, "0 3 0"), In("seconds", T::Number, "1")}, {ExecOut()}, {},
+     "{target}.moveTo({position}, {seconds})", "Moves smoothly to a local position (doors, lifts, platforms)"},
     {"action.lookAt", "Look At", "Transform", K::Action, {ExecIn(), In("target", T::Entity, "self"), In("point", T::Vec3, "0 0 0")}, {ExecOut()},
      {}, "{target}.lookAt({point})", "Turns to face a point"},
     {"action.destroy", "Destroy", "Entity", K::Action, {ExecIn(), In("target", T::Entity, "self")}, {ExecOut()}, {}, "{target}.destroy()",
@@ -84,8 +89,14 @@ const GraphNodeDef Library[] = {
     {"action.uiAnimate", "UI Animate", "UI", K::Action,
      {ExecIn(), In("target", T::Entity, "self"), In("property", T::String, "opacity"), In("to", T::Number, "0"), In("seconds", T::Number, "0.3")},
      {ExecOut()}, {}, "{target}.uiAnimate({property}, {to}, {seconds})", "Smoothly changes opacity, scale, x, y, width, value ..."},
+    {"action.focus", "Focus Widget", "UI", K::Action, {ExecIn(), In("target", T::Entity, "self")}, {ExecOut()}, {}, "{target}.focus()",
+     "Gives a button the gamepad / keyboard focus (menus)"},
     {"action.showCursor", "Show Mouse Cursor", "UI", K::Action, {ExecIn(), In("show", T::Bool, "true")}, {ExecOut()}, {}, "ui.cursor = {show}",
      "Frees the mouse for menus"},
+    {"action.setGameValue", "Set Game Value", "Game", K::Action, {ExecIn(), In("key", T::String, "score"), In("value", T::Any, "0")}, {ExecOut()}, {},
+     "game.set({key}, {value})", "A value every script and graph sees (score, keys found ...)"},
+    {"action.addGameValue", "Add To Game Value", "Game", K::Action, {ExecIn(), In("key", T::String, "score"), In("amount", T::Number, "1")}, {ExecOut()},
+     {}, "game.add({key}, {amount})", "Adds to a shared number (coins collected ...)"},
     {"action.timeScale", "Set Time Scale", "Game", K::Action, {ExecIn(), In("scale", T::Number, "1")}, {ExecOut()}, {}, "time.scale = {scale}",
      "0 pauses the game, 0.5 = slow motion"},
     {"action.setLanguage", "Set Language", "UI", K::Action, {ExecIn(), In("code", T::String, "en")}, {ExecOut()}, {}, "lang.set({code})",
@@ -137,6 +148,8 @@ const GraphNodeDef Library[] = {
     {"pure.action", "Input Action", "Input", K::Pure, {In("action", T::String, "Jump")},
      {Out("down", T::Bool, "input.action({action})"), Out("pressed", T::Bool, "input.actionPressed({action})")}, {}, "",
      "Window > Input Actions"},
+    {"pure.gameValue", "Get Game Value", "Game", K::Pure, {In("key", T::String, "score")}, {Out("value", T::Number, "game.get({key})")}, {}, "",
+     "A shared value (0 until something sets it)"},
     {"pure.deltaTime", "Delta Time", "Game", K::Pure, {}, {Out("dt", T::Number, "time.dt")}, {}, "", "Seconds since the last frame"},
     {"pure.elapsed", "Time", "Game", K::Pure, {}, {Out("seconds", T::Number, "time.elapsed")}, {}, "", "Seconds since Play"},
     {"pure.random", "Random", "Math", K::Pure, {In("min", T::Number, "0"), In("max", T::Number, "1")}, {Out("value", T::Number, "random({min}, {max})")},
@@ -156,6 +169,8 @@ const GraphNodeDef Library[] = {
     {"pure.abs", "Abs", "Math", K::Pure, {In("value", T::Number, "0")}, {Out("result", T::Number, "abs({value})")}, {}, "", ""},
     {"pure.sin", "Sin", "Math", K::Pure, {In("radians", T::Number, "0")}, {Out("result", T::Number, "sin({radians})")}, {}, "", ""},
     {"pure.round", "Round", "Math", K::Pure, {In("value", T::Number, "0")}, {Out("result", T::Number, "round({value})")}, {}, "", ""},
+    {"pure.greaterEqual", "Greater Or Equal", "Compare", K::Pure, {In("a", T::Number, "0"), In("b", T::Number, "0")},
+     {Out("result", T::Bool, "({a} >= {b})")}, {}, "", "A >= B"},
     {"pure.greater", "Greater", "Compare", K::Pure, {In("a", T::Number, "0"), In("b", T::Number, "0")}, {Out("result", T::Bool, "({a} > {b})")}, {},
      "", "A > B"},
     {"pure.less", "Less", "Compare", K::Pure, {In("a", T::Number, "0"), In("b", T::Number, "0")}, {Out("result", T::Bool, "({a} < {b})")}, {}, "",
@@ -674,7 +689,16 @@ struct Codegen
         const String id = String::Format("{}", n.id);
         const StringView t = n.type.View();
         if (d->kind == K::Action) {
-            Emit(body, level, Expand(n, *d, d->code, 0), n.id);
+            // An action on another entity is skipped when it isn't there (nil), instead of stopping the graph.
+            const GraphPinDef* target = d->Input("target");
+            const String targetExpr = target ? Input(n, *d, *target, 0) : String();
+            if (target && targetExpr != "entity") {
+                Emit(body, level, String::Format("if {} != nil {{", targetExpr), n.id);
+                Emit(body, level + 1, Expand(n, *d, d->code, 0), n.id);
+                Emit(body, level, "}", n.id);
+            } else {
+                Emit(body, level, Expand(n, *d, d->code, 0), n.id);
+            }
             Chain(n, "then", body, level, stack);
         } else if (t == "flow.branch") {
             Emit(body, level, String::Format("if {} {{", Input(n, *d, *d->Input("condition"), 0)), n.id);

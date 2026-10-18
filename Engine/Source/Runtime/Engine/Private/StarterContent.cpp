@@ -702,6 +702,11 @@ menu.resume = Resume
 menu.repair = Repair
 menu.volume = Volume
 menu.language = Language: {0}
+menu.switchLanguage = Русский
+hud.coins = Coins
+hint.start = Collect the coins, then press E at the gate
+hint.need = Coins needed:
+hint.open = The gate opens!
 )zloc";
 const char* const StarterTextsRu = R"zloc(# Тексты шаблонов Starter Content на русском (ключ = текст; \n = новая строка, {0} = аргумент).
 @language: Русский
@@ -714,6 +719,11 @@ menu.resume = Продолжить
 menu.repair = Починить
 menu.volume = Громкость
 menu.language = Язык: {0}
+menu.switchLanguage = English
+hud.coins = Монеты
+hint.start = Собери монеты и нажми E у ворот
+hint.need = Нужно монет:
+hint.open = Ворота открываются!
 )zloc";
 
 /// Scripts of the Starter Content prefabs (vehicles and gameplay props).

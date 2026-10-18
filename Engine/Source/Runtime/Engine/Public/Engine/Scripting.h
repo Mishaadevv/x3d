@@ -111,6 +111,8 @@ public:
     /// Script graphs compile with __trace(node) calls, reported here (the editor's graph debugger).
     bool traceGraphs = false;
     Function<void(StringView file, ecs::Entity entity, u32 node)> onGraphTrace;
+    /// game.get / set / add: values shared by every script while playing (score, keys found...); cleared by Begin.
+    const script::Value* GameValue(StringView key) const { return m_gameValues.Find(key); }
     /// Entities running `file` (content-relative).
     void InstancesOf(StringView file, Array<ecs::Entity>& out) const;
     /// A field (var / prop) of the script `file` running on `entity`, as text. False if there's none.
@@ -140,6 +142,14 @@ private:
     f64 m_checkTimer = 0.0;
     bool m_running = false;
     RunningScript* m_current = nullptr; // the script being called (for __trace)
+    HashMap<String, script::Value> m_gameValues;
+    struct MoveTween
+    {
+        ecs::Entity entity;
+        Vec3 from, to;
+        f32 duration = 0.0f, elapsed = 0.0f;
+    };
+    Array<MoveTween> m_moves; // entity.moveTo
 
 public:
     // State the native bindings read (valid during Tick).

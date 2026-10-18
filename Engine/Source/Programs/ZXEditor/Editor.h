@@ -487,6 +487,9 @@ private:
     /// Starter Content prefabs (StarterAssets.cpp) for the categories chosen in the New Project page; returns the count.
     u32 WriteStarterPrefabs(const NewProjectOptions& options);
     void BuildCharacterLevel(bool thirdPerson);
+    /// The Third Person template's ZGraph mini game (coins, a gate, HUD + pause menu).
+    void BuildCoinGame(const Function<ecs::Entity(StringView, BuiltinShape, Vec3, Vec3, StringView, Quat, ecs::Entity)>& shape,
+                       const Function<ecs::Entity(StringView, Vec3, Vec3, StringView)>& block);
     void BuildWaterLevel();
     void BuildEraLevel(); // an empty outdoor level: atmosphere and a ground plane (the "Graphics 20xx" templates)
     void BuildPhysicsLevel();

@@ -1,4 +1,5 @@
 #include "Editor.h"
+#include "Engine/ZGraph.h"
 #include "Engine/PostProcessVolume.h"
 #include "Thumbnails.h"
 #include "Core/Console/Console.h"
@@ -697,12 +698,127 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
         world.Add(cam, Camera{});
         world.Add(cam, Script{String("Scripts/ThirdPersonCamera.zs"), String()});
         EnsureEntityGuid(world, cam);
+        BuildCoinGame(shape, block);
         camera.position = Vec3(3.0f, 2.6f, -11.0f);
         camera.LookAt(Vec3(0.0f, 1.2f, -2.0f));
     }
     environment.sunElevation = DegToRad(48.0f);
     environment.sunAzimuth = DegToRad(135.0f);
     AddAtmosphere(0.004f, 0.3f);
+}
+
+void Editor::BuildCoinGame(const Function<ecs::Entity(StringView, BuiltinShape, Vec3, Vec3, StringView, Quat, ecs::Entity)>& shape,
+                           const Function<ecs::Entity(StringView, Vec3, Vec3, StringView)>& block)
+{
+    // The ZGraph mini game (all logic in Content/Scripts/Graphs - open them to see the nodes): five coins around the
+    // arena, a vault in the south-east corner whose gate opens with E once they're collected, the HUD with a coin
+    // counter, hints and a pause menu (Tab).
+    const String graphs = contentRoot + "/Scripts/Graphs";
+    fs::WriteTextFile(graphs + "/Coin.zgraph", WriteGraph(MakeCoinGraph()));
+    fs::WriteTextFile(graphs + "/Gate.zgraph", WriteGraph(MakeGateGraph()));
+    fs::WriteTextFile(graphs + "/GameHUD.zgraph", WriteGraph(MakeGameHUDGraph()));
+
+    // Coins: a spinning parent (the graph) with a standing gold disc.
+    const Vec3 coinSpots[] = {{18.5f, 3.1f, -8.25f}, {0.0f, 2.7f, 20.0f}, {-6.0f, 0.7f, 2.0f}, {-11.0f, 0.7f, -8.0f}, {-20.0f, 0.7f, 18.0f}};
+    for (u32 i = 0; i < ZX_ARRAY_COUNT(coinSpots); ++i) {
+        const ecs::Entity coin = CreateEntity(String::Format("Coin {}", i + 1), Transform(coinSpots[i]));
+        world.Add(coin, Script{String("Scripts/Graphs/Coin.zgraph"), String()});
+        EnsureEntityGuid(world, coin);
+        const ecs::Entity disc = shape("Coin Disc", BuiltinShape::Cylinder, Vec3(), Vec3(0.55f, 0.08f, 0.55f), "M_Gold_Glow",
+                                       Quat::FromAxisAngle(Vec3(1, 0, 0), HalfPi), coin);
+        if (MeshRenderer* mr = world.Get<MeshRenderer>(disc))
+            mr->collision = false; // the player walks into it
+    }
+    // The vault: walls with a gap, the gate (kinematic: it pushes and blocks while it moves) and the treasure.
+    block("Vault Wall West", Vec3(14, 0, -24), Vec3(14.5f, 4, -14), "M_Proto_Light");
+    block("Vault Wall North A", Vec3(14, 0, -14.5f), Vec3(18, 4, -14), "M_Proto_Light");
+    block("Vault Wall North B", Vec3(20.5f, 0, -14.5f), Vec3(24, 4, -14), "M_Proto_Light");
+    block("Vault Lintel", Vec3(18, 3.2f, -14.5f), Vec3(20.5f, 4, -14), "M_Proto_Orange");
+    const ecs::Entity gate = shape("Gate", BuiltinShape::Cube, Vec3(19.25f, 1.6f, -14.25f), Vec3(2.5f, 3.2f, 0.35f), "M_Wood", Quat(), ecs::Entity());
+    RigidBody rb;
+    rb.type = RigidBodyType::Kinematic;
+    world.Add(gate, rb);
+    world.Add(gate, BoxCollider{});
+    world.Add(gate, Script{String("Scripts/Graphs/Gate.zgraph"), String()});
+    shape("Treasure", BuiltinShape::Cube, Vec3(19.25f, 0.5f, -20.0f), Vec3(1.4f, 1.0f, 0.9f), "M_Gold_Glow", Quat(), ecs::Entity());
+    {
+        const ecs::Entity light = CreateEntity("Treasure Light", Transform(Vec3(19.25f, 2.5f, -19.0f)));
+        PointLight pl;
+        pl.color = Vec3(1.0f, 0.75f, 0.35f);
+        pl.lumens = 1200.0f;
+        pl.range = 8.0f;
+        world.Add(light, pl);
+        EnsureEntityGuid(world, light);
+    }
+
+    // HUD (styled by StarterContent/UI/Game.zstyle, texts from StarterContent/Localization).
+    const ecs::Entity hud = CreateEntity("HUD", Transform());
+    UICanvas canvas;
+    canvas.style = "StarterContent/UI/Game.zstyle";
+    world.Add(hud, canvas);
+    UIElement rootEl;
+    rootEl.padding = Vec4(36.0f);
+    world.Add(hud, rootEl);
+    world.Add(hud, Script{String("Scripts/Graphs/GameHUD.zgraph"), String()});
+    EnsureEntityGuid(world, hud);
+    auto node = [&](StringView name, ecs::Entity parent, UIElement el) {
+        const ecs::Entity e = CreateEntity(name, Transform(), parent);
+        world.Add(e, el);
+        EnsureEntityGuid(world, e);
+        return e;
+    };
+    auto text = [&](StringView name, ecs::Entity parent, StringView value, StringView key, f32 size, UITextAlign align, UIElement el = {}) {
+        const ecs::Entity e = node(name, parent, el);
+        UIText t;
+        t.text = String(value);
+        t.key = String(key);
+        t.fontSize = size;
+        t.weight = UIFontWeight::SemiBold;
+        t.align = align;
+        world.Add(e, t);
+        return e;
+    };
+    UIElement counterBox;
+    counterBox.absolute = true;
+    counterBox.anchor = counterBox.pivot = Vec2(0.5f, 0.0f); // top center (clear of the editor's viewport toolbar)
+    counterBox.padding = Vec4(22.0f, 12.0f, 22.0f, 12.0f);
+    const ecs::Entity counter = node("Coin Counter", hud, counterBox);
+    world.Add(counter, UIPanel{});
+    text("Coins", counter, "Coins: 0", {}, 34.0f, UITextAlign::Left);
+    UIElement hintEl;
+    hintEl.absolute = true;
+    hintEl.anchor = hintEl.pivot = Vec2(0.5f, 1.0f);
+    hintEl.offset = Vec2(0.0f, -110.0f);
+    text("Hint", hud, "", {}, 30.0f, UITextAlign::Center, hintEl);
+    // Pause menu (Tab).
+    UIElement menuBox;
+    menuBox.absolute = true;
+    menuBox.size = Vec2(460.0f, 0.0f);
+    menuBox.padding = Vec4(36.0f);
+    menuBox.gap = 16.0f;
+    menuBox.visible = false;
+    menuBox.styleClass = "menu";
+    const ecs::Entity menu = node("Pause Menu", hud, menuBox);
+    world.Add(menu, UIPanel{});
+    UIAnimation pop;
+    pop.preset = UIAnimationPreset::PopIn;
+    pop.duration = 0.28f;
+    pop.easing = UIEasing::Back;
+    world.Add(menu, pop);
+    UIElement titleEl;
+    titleEl.styleClass = "title";
+    text("Title", menu, "Paused", "menu.paused", 54.0f, UITextAlign::Center, titleEl);
+    for (StringView label : {StringView("Resume"), StringView("Language")}) {
+        UIElement b;
+        b.size = Vec2(0.0f, 64.0f);
+        b.justify = UIJustify::Center;
+        b.align = UIAlign::Center;
+        if (label == "Resume")
+            b.styleClass = "primary";
+        const ecs::Entity button = node(label, menu, b);
+        world.Add(button, UIButton{});
+        text(String::Format("{} Label", label), button, label, label == "Resume" ? "menu.resume" : "menu.switchLanguage", 28.0f, UITextAlign::Center);
+    }
 }
 
 void Editor::AddSlime(const Transform& at, f32 speed)

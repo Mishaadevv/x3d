@@ -144,5 +144,10 @@ String DescribeGraphError(const Graph& graph, const GraphCompileResult& result, 
 
 /// A small example graph (Spinner): turns its entity, logs on Space - Starter Content and tests.
 Graph MakeExampleGraph();
+/// The Third Person template's mini game (Engine/Private/ZGraphDemo.cpp): coins, a gate that needs them, the HUD
+/// with a pause menu.
+Graph MakeCoinGraph();
+Graph MakeGateGraph();
+Graph MakeGameHUDGraph();
 
 } // namespace zx

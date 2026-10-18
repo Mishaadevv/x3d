@@ -480,6 +480,19 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             SystemOf(o).context.destroyQueue.PushBack(e);
             return true;
         }
+        if (m == "moveTo") {
+            // moveTo(position, seconds): a smooth move of the local position (doors, lifts, platforms).
+            if (a.Empty() || a[0].Type() != ValueType::Vec3 || (a.Size() > 1 && !a[1].IsNumber()))
+                return v.Fail("entity.moveTo(position: vec3, seconds)");
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            const Transform* t = sys.context.world && sys.context.world->IsAlive(e) ? sys.context.world->Get<const Transform>(e) : nullptr;
+            if (!t)
+                return v.Fail("The entity was destroyed");
+            sys.m_moves.RemoveIf([&](const MoveTween& mt) { return mt.entity == e; });
+            sys.m_moves.PushBack(MoveTween{e, t->position, a[0].AsVec3(), a.Size() > 1 ? Max(a[1].AsFloat(), 0.0f) : 1.0f, 0.0f});
+            return true;
+        }
         if (m == "uiAnimate" || m == "uiPlay" || m == "focus" || m == "addClass" || m == "removeClass" || m == "hasClass") {
             // Game UI: tweens, UI Animation, gamepad focus, style classes.
             ScriptSystem& sys = SystemOf(o);
@@ -1236,6 +1249,33 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
                      out = Value(localization ? localization->Format(a[0].AsString(), args.View()).View() : a[0].AsString());
                      return true;
                  }));
+    // game: values shared by all scripts and graphs while playing - game.get("coins"[, default]), game.set(key, value),
+    // game.add(key, amount) (numbers; returns the new value). Cleared when Play starts.
+    script::NativeType& gameType = vm.AddType("Game");
+    gameType.call = [](script::VM& v, script::NativeObject& o, StringView m, Span<const Value> a, Value& out) {
+        ScriptSystem& sys = SystemOf(o);
+        if (a.Empty() || a[0].Type() != ValueType::String)
+            return v.Fail(String::Format("game.{}(\"key\", ...)", m));
+        const String key(a[0].AsString());
+        if (m == "get") {
+            const Value* found = sys.m_gameValues.Find(key);
+            out = found ? *found : (a.Size() > 1 ? a[1] : Value(0.0));
+            return true;
+        }
+        if (m == "set") {
+            sys.m_gameValues.InsertOrAssign(key, a.Size() > 1 ? a[1] : Value());
+            return true;
+        }
+        if (m == "add") {
+            const Value* found = sys.m_gameValues.Find(key);
+            const f64 now = (found && found->IsNumber() ? found->AsFloat() : 0.0) + (a.Size() > 1 && a[1].IsNumber() ? a[1].AsFloat() : 1.0);
+            sys.m_gameValues.InsertOrAssign(key, Value(now));
+            out = Value(now);
+            return true;
+        }
+        return false;
+    };
+    vm.SetGlobal("game", script::MakeNative(gameType, this));
     script::NativeType& langType = vm.AddType("Language");
     langType.get = [](script::VM&, script::NativeObject& o, StringView m, Value& out) {
         if (m != "current")
@@ -1473,6 +1513,8 @@ void ScriptSystem::Begin(ecs::World& world)
 {
     End();
     m_running = true;
+    m_gameValues.Clear();
+    m_moves.Clear();
     context = Context{};
     context.world = &world;
     timeScale = 1.0f;
@@ -1549,6 +1591,22 @@ void ScriptSystem::Tick(ecs::World& world, f32 dt, const InputState* input)
     context.elapsed += f64(dt);
     ++context.frame;
     context.hits.Clear();
+    // entity.moveTo: smooth moves (ease in / out), before the scripts look at the positions.
+    for (usize i = 0; i < m_moves.Size();) {
+        MoveTween& m = m_moves[i];
+        Transform* t = world.IsAlive(m.entity) ? world.Get<Transform>(m.entity) : nullptr;
+        if (!t) {
+            m_moves.RemoveAt(i);
+            continue;
+        }
+        m.elapsed += dt;
+        const f32 k = m.duration > 0.0f ? SmoothStep(0.0f, 1.0f, Saturate(m.elapsed / m.duration)) : 1.0f;
+        t->position = Lerp(m.from, m.to, k);
+        if (k >= 1.0f)
+            m_moves.RemoveAt(i);
+        else
+            ++i;
+    }
     m_checkTimer += f64(dt);
     if (m_checkTimer > 0.5)
         CheckForChanges();
@@ -1676,6 +1734,8 @@ void ScriptSystem::DispatchAnimEvents(ecs::World& world, Span<const AnimEvent> e
 
 void ScriptSystem::End()
 {
+    m_gameValues.Clear();
+    m_moves.Clear();
     m_instances.Clear();
     m_current = nullptr;
     if (m_vm) {

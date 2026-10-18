@@ -8,6 +8,7 @@
 #include "Core/String/Path.h"
 #include "Core/Testing/Test.h"
 #include "Engine/Scripting.h"
+#include "Platform/Input.h"
 #include "Engine/ZGraph.h"
 #include "Scene/Hierarchy.h"
 #include "Script/ZeqouScript.h"
@@ -217,6 +218,58 @@ ZX_TEST(ZGraph, TracesNodesForTheDebugger)
     ZX_EXPECT(running.Size() == 1u && running[0] == e);
     String speed;
     ZX_EXPECT(scripts.ReadField(e, "Scripts/Spin.zgraph", "speed", speed) && speed == "90");
+    scripts.End();
+    platform::DeleteDirectoryTree(root);
+}
+
+ZX_TEST(ZGraph, ThirdPersonMiniGame)
+{
+    // The acceptance demo's graphs compile; a coin next to the player is collected, the gate opens with enough coins.
+    for (const Graph& g : {MakeCoinGraph(), MakeGateGraph(), MakeGameHUDGraph()}) {
+        GraphCompileResult r;
+        const bool ok = CompileGraph(g, r);
+        ZX_EXPECT(ok);
+        if (!ok)
+            ZX_LOG_ERROR(LogZGraphTest, "{}: {}", g.name, r.errors[0]);
+        ZX_EXPECT(r.warnings.Empty());
+        String error;
+        const bool compiles = CompilesAsScript(r.source, &error);
+        ZX_EXPECT(compiles);
+        if (!compiles)
+            ZX_LOG_ERROR(LogZGraphTest, "{}: {}", g.name, error);
+    }
+    const String root = Path::Join(Path::Normalize(platform::GetTempDirectory()), "zx_zgraph_demo");
+    platform::DeleteDirectoryTree(root);
+    ZX_REQUIRE(fs::WriteTextFile(root + "/Scripts/Coin.zgraph", WriteGraph(MakeCoinGraph())));
+    ZX_REQUIRE(fs::WriteTextFile(root + "/Scripts/Gate.zgraph", WriteGraph(MakeGateGraph())));
+    ecs::World world;
+    scene::InstallHierarchyHooks(world);
+    scene::CreateNode(world, "Player", Transform(Vec3(0, 0, 0)));
+    const ecs::Entity nearCoin = scene::CreateNode(world, "Coin 1", Transform(Vec3(0.5f, 0.7f, 0)));
+    world.Add(nearCoin, Script{String("Scripts/Coin.zgraph"), String()});
+    const ecs::Entity farCoin = scene::CreateNode(world, "Coin 2", Transform(Vec3(10, 0.7f, 0)));
+    world.Add(farCoin, Script{String("Scripts/Coin.zgraph"), String()});
+    const ecs::Entity gate = scene::CreateNode(world, "Gate", Transform(Vec3(0, 1.6f, 2)));
+    world.Add(gate, Script{String("Scripts/Gate.zgraph"), String("{\"coinsNeeded\": 1}")});
+    ScriptSystem scripts;
+    scripts.SetContentRoot(root);
+    scripts.Begin(world);
+    scripts.Tick(world, 0.016f, nullptr);
+    scripts.Tick(world, 0.016f, nullptr);
+    ZX_EXPECT(!world.IsAlive(nearCoin)); // collected
+    ZX_EXPECT(world.IsAlive(farCoin));
+    const script::Value* coins = scripts.GameValue("coins");
+    ZX_EXPECT(coins && coins->AsFloat() == 1.0f);
+    // E at the gate: it slides up 3.4 m over 1.6 s.
+    InputState input;
+    input.BeginFrame();
+    input.SetKey(Key::E, true);
+    scripts.Tick(world, 0.016f, &input);
+    input.BeginFrame();
+    input.SetKey(Key::E, false);
+    for (u32 i = 0; i < 120; ++i)
+        scripts.Tick(world, 0.02f, &input);
+    ZX_EXPECT(Abs(world.Get<const Transform>(gate)->position.y - 5.0f) < 0.01f);
     scripts.End();
     platform::DeleteDirectoryTree(root);
 }
