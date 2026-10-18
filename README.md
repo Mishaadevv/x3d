@@ -4,7 +4,7 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12, part o
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a workflow like Unity URP or Unreal Engine 5 that
 runs well on everyday hardware. The development machine is a laptop with Intel UHD 620 graphics.
 
-**Version 0.13.17 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
+**Version 0.14.0 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
 [download](https://github.com/Mishaadevv/x3d/releases/latest)
 
 > [!WARNING]
@@ -86,7 +86,14 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
 - **Game UI**: HUD and menus.
   - Buttons, sliders, toggles, progress bars, input fields, scroll views.
   - World-space panels.
+  - CSS-like `.zstyle` style sheets (states, classes, transitions), UI Animation presets and tweens.
+  - Gamepad / keyboard menu navigation.
+  - Localization (`.zloc` tables, switch the language while playing).
+  - **UI Designer**: build HUDs and menus with the mouse in the viewport.
 - **Scripting**:
+  - **ZGraph**: visual scripting with nodes (like Blueprints), compiled to the script VM.
+    - A node editor with variables.
+    - Live debugging: highlighted wires, breakpoints, variable values.
   - **ZeqouScript**, the engine's own language, with hot reload while playing ([reference](docs/ZeqouScript.md)).
   - **C++ game modules** with hot reload and a single-header Game SDK.
   - Input Actions for keyboard, mouse and gamepad.
@@ -114,6 +121,8 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
 | ![Terrain](docs/images/terrain.jpg) | ![Physics](docs/images/physics.jpg) |
 | **New Project** | **Installer** |
 | ![Project Browser](docs/images/project-browser.jpg) | ![Installer](docs/images/installer.jpg) |
+| **ZGraph: visual scripting, paused at a breakpoint** | **Third Person template: a mini game built with ZGraph** |
+| ![ZGraph](docs/images/zgraph.jpg) | ![Mini game](docs/images/mini-game.jpg) |
 | **Script Editor** | **HDRI Sky over Sponza** |
 | ![Script Editor](docs/images/script-editor.jpg) | ![HDRI Sky in Sponza](docs/images/hdri-sponza.jpg) |
 
