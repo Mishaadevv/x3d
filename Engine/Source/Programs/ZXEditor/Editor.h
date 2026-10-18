@@ -409,7 +409,7 @@ public:
     ecs::Entity CreateUIWidget(StringView kind);
     /// A directional Wind Zone blowing the way the camera looks (level).
     void CreateWindZone();
-    void CreateTerrain();                                      // 200 m procedural terrain under the scene
+    void CreateTerrain(bool flat = false);                     // 200 m terrain under the scene (flat: no hills, to sculpt from scratch)
     void DrawPhysicsDebug();
     void CreateHeightFog(f32 density = 0.0f);                  // replaces the scene's one; density 0 = default
     void CreateFogVolume(Vec3 position, ecs::Entity parent = {});

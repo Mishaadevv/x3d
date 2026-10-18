@@ -1893,7 +1893,7 @@ ecs::Entity Editor::CreateUIWidget(StringView kind)
     return e;
 }
 
-void Editor::CreateTerrain()
+void Editor::CreateTerrain(bool flat)
 {
     // Centered under the scene: the flat middle covers what is already there (meshes within 150 m) and sits just
     // below y = 0, so existing floors stay on top.
@@ -1914,6 +1914,8 @@ void Editor::CreateTerrain()
     });
     t.flatCenter = Clamp(radius + 4.0f, t.flatCenter, 120.0f);
     t.size = Max(t.size, t.flatCenter * 5.0f);
+    if (flat)
+        t.hills = false; // a blank sheet for the Terrain tool
     // The terrain material (painting needs it): written into projects without Starter Content.
     if (WriteTerrainMaterial(contentRoot) && materials)
         materials->ScanContent();
@@ -1928,10 +1930,11 @@ void Editor::CreateTerrain()
     Array<f32> heights;
     GenerateTerrainHeights(t, heights);
     const u32 n = TerrainSamples(t);
-    const ecs::Entity e = CreateEntity("Terrain", Transform(Vec3(0.0f, -heights[usize(n / 2) * n + n / 2] - 0.15f, 0.0f)));
+    const f32 center = flat ? 0.0f : heights[usize(n / 2) * n + n / 2];
+    const ecs::Entity e = CreateEntity(flat ? "Flat Terrain" : "Terrain", Transform(Vec3(0.0f, -center - (flat ? 0.02f : 0.15f), 0.0f)));
     world.Add(e, t);
     terrains.Update(world, *assets, renderAssets.Get());
-    CommitCreated(e, "Create Terrain");
+    CommitCreated(e, flat ? "Create Flat Terrain" : "Create Terrain");
 }
 
 void Editor::CreateHeightFog(f32 density)

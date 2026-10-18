@@ -34,8 +34,8 @@ struct Terrain
     f32 flatCenter = 20.0f;  // meters: radius of a flat area in the middle
     asset::AssetId material;
     bool collision = true;
-    // Sculpted / painted (the Terrain tool; hidden in Details): base64 of i16 height offsets (2 cm steps) and of RGB8
-    // layer weights (rock, dirt, sand) per sample; empty = none. A new random dataId marks every change.
+    // Sculpted / painted (the Terrain tool; hidden in Details): base64 of i16 height offsets (2 cm steps) and of RGBA8
+    // layer weights (rock, dirt, sand, grass) per sample; empty = none. A new random dataId marks every change.
     String sculpt;
     String paint;
     i32 dataId = 0;
@@ -75,7 +75,7 @@ public:
         f32 spacing = 1.0f;
         Array<f32> base;
         Array<f32> sculpt;
-        Array<u8> paint; // RGB per sample
+        Array<u8> paint; // RGBA per sample: rock, dirt, sand, grass
         u64 hash = 0;    // shape hash of `base`
         i32 dataId = 0;  // component dataId `sculpt` / `paint` were decoded from
         asset::AssetId mesh;

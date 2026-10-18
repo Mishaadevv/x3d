@@ -199,6 +199,7 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.reverbZone", "Create Reverb Zone", "Create", ZX_ICON_AUDIO_LINES, "", [spawn](Editor& e) { e.CreateReverbZone(spawn(e)); });
     Add(ed, "create.decal", "Create Decal", "Create", ZX_ICON_STAMP, "", [spawn](Editor& e) { e.CreateDecal(spawn(e)); });
     Add(ed, "create.terrain", "Create Terrain", "Create", ZX_ICON_MOUNTAIN, "", [](Editor& e) { e.CreateTerrain(); });
+    Add(ed, "create.terrainFlat", "Create Flat Terrain", "Create", ZX_ICON_SQUARE, "", [](Editor& e) { e.CreateTerrain(true); });
     Add(ed, "create.windZone", "Create Wind Zone", "Create", ZX_ICON_WIND, "", [](Editor& e) { e.CreateWindZone(); });
     Add(ed, "create.ui.canvas", "UI Canvas", "Create", ZX_ICON_MONITOR, "", [](Editor& e) { e.CreateUIWidget("canvas"); });
     Add(ed, "create.ui.panel", "UI Panel", "Create", ZX_ICON_RECTANGLE_HORIZONTAL, "", [](Editor& e) { e.CreateUIWidget("panel"); });

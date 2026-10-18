@@ -270,12 +270,14 @@ ConCommand CmdGraphicsEra("graphics.era", "The project's graphics generation: gr
 
 ConCommand CmdTerrainSculpt("terrain.sculpt",
                              "Sculpts / paints the terrain at a point like a held Terrain tool stroke: terrain.sculpt "
-                             "<raise|lower|smooth|flatten|noise|rock|dirt|sand|erase> <x> <z> [seconds] [radius] [strength]",
+                             "<raise|lower|smooth|flatten|setheight|noise|terrace|erode|grass|rock|dirt|sand|erase> <x> <z> [seconds] [radius] "
+                             "[strength] (setheight: target = the sixth argument)",
                              [](Span<const StringView> args) {
                                  Editor* ed = Ed();
                                  if (!ed || args.Size() < 3)
                                      return;
-                                 static const char* const Names[] = {"raise", "lower", "smooth", "flatten", "noise", "rock", "dirt", "sand", "erase"};
+                                 static const char* const Names[] = {"raise",  "lower", "smooth", "flatten", "setheight", "noise", "terrace",
+                                                                     "erode",  "ramp",  "grass",  "rock",    "dirt",      "sand",  "erase"};
                                  i32 mode = -1;
                                  for (u32 i = 0; i < ZX_ARRAY_COUNT(Names); ++i)
                                      if (args[0].EqualsIgnoreCase(Names[i]))
@@ -293,6 +295,8 @@ ConCommand CmdTerrainSculpt("terrain.sculpt",
                                      ts.terrain.radius = ParseFloat(args[4]).ValueOr(ts.terrain.radius);
                                  if (args.Size() > 5)
                                      ts.terrain.strength = ParseFloat(args[5]).ValueOr(ts.terrain.strength);
+                                 if (args.Size() > 6)
+                                     ts.terrain.targetHeight = ParseFloat(args[6]).ValueOr(ts.terrain.targetHeight);
                                  ecs::Entity terrain;
                                  Vec3 hit;
                                  if (!ed->terrains.Raycast(ed->world, Ray(Vec3(x, 5000.0f, z), Vec3(0, -1, 0)), 10000.0f, terrain, hit)) {
@@ -311,6 +315,76 @@ ConCommand CmdTerrainSculpt("terrain.sculpt",
                                  ed->undo.End();
                                  ts.terrain = saved;
                              });
+
+/// The scene's first terrain (or the selected one).
+ecs::Entity ConsoleTerrain(Editor& ed)
+{
+    if (ed.world.IsAlive(ed.selected) && ed.world.Has<Terrain>(ed.selected))
+        return ed.selected;
+    ecs::Entity found;
+    ed.world.Query<const Terrain>().Each([&](ecs::Entity e, const Terrain&) {
+        if (!found)
+            found = e;
+    });
+    return found;
+}
+
+ConCommand CmdTerrainRamp("terrain.ramp", "Ramp between two ground points as wide as the radius: terrain.ramp <x0> <z0> <x1> <z1> [radius]",
+                          [](Span<const StringView> args) {
+                              Editor* ed = Ed();
+                              if (!ed || args.Size() < 4)
+                                  return;
+                              const ecs::Entity t = ConsoleTerrain(*ed);
+                              Vec3 p[2];
+                              for (u32 i = 0; i < 2; ++i) {
+                                  const f32 x = ParseFloat(args[i * 2]).ValueOr(0.0f), z = ParseFloat(args[i * 2 + 1]).ValueOr(0.0f);
+                                  ecs::Entity hitTerrain;
+                                  if (!t || !ed->terrains.Raycast(ed->world, Ray(Vec3(x, 5000.0f, z), Vec3(0, -1, 0)), 10000.0f, hitTerrain, p[i])) {
+                                      ZX_LOG_WARN(LogCmd, "terrain.ramp: no terrain at {} {}", x, z);
+                                      return;
+                                  }
+                              }
+                              const f32 savedRadius = ed->tools.terrain.radius;
+                              if (args.Size() > 4)
+                                  ed->tools.terrain.radius = ParseFloat(args[4]).ValueOr(savedRadius);
+                              TerrainRamp(*ed, t, p[0], p[1]);
+                              ed->tools.terrain.radius = savedRadius;
+                          });
+
+ConCommand CmdTerrainOp("terrain.op", "Whole-terrain operation: terrain.op <flatten [height]|smooth|reset|clearpaint|slope|import <file> [range]|export <file>>",
+                        [](Span<const StringView> args) {
+                            Editor* ed = Ed();
+                            if (!ed || args.Empty())
+                                return;
+                            const ecs::Entity t = ConsoleTerrain(*ed);
+                            if (!t) {
+                                ZX_LOG_WARN(LogCmd, "terrain.op: no terrain in the scene");
+                                return;
+                            }
+                            const StringView op = args[0];
+                            if (op.EqualsIgnoreCase("flatten")) {
+                                const f32 saved = ed->tools.terrain.targetHeight;
+                                if (args.Size() > 1)
+                                    ed->tools.terrain.targetHeight = ParseFloat(args[1]).ValueOr(saved);
+                                TerrainOperation(*ed, t, TerrainOp::FlattenAll);
+                                ed->tools.terrain.targetHeight = saved;
+                            } else if (op.EqualsIgnoreCase("smooth"))
+                                TerrainOperation(*ed, t, TerrainOp::SmoothAll);
+                            else if (op.EqualsIgnoreCase("reset"))
+                                TerrainOperation(*ed, t, TerrainOp::ResetSculpt);
+                            else if (op.EqualsIgnoreCase("clearpaint"))
+                                TerrainOperation(*ed, t, TerrainOp::ClearPaint);
+                            else if (op.EqualsIgnoreCase("slope"))
+                                TerrainOperation(*ed, t, TerrainOp::PaintBySlope);
+                            else if (op.EqualsIgnoreCase("import") && args.Size() > 1) {
+                                if (!ImportTerrainHeightmap(*ed, t, args[1], args.Size() > 2 ? ParseFloat(args[2]).ValueOr(100.0f) : 100.0f))
+                                    ZX_LOG_WARN(LogCmd, "terrain.op: can't import '{}'", args[1]);
+                            } else if (op.EqualsIgnoreCase("export") && args.Size() > 1) {
+                                if (!ExportTerrainHeightmap(*ed, t, args[1]))
+                                    ZX_LOG_WARN(LogCmd, "terrain.op: can't export '{}'", args[1]);
+                            } else
+                                ZX_LOG_WARN(LogCmd, "terrain.op: unknown operation '{}'", op);
+                        });
 
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
     if (Ed())
@@ -564,7 +638,7 @@ ConCommand CmdCreate("create", "Creates an object in front of the camera: create
     else if (kind.EqualsIgnoreCase("decal"))
         ed->CreateDecal(at);
     else if (kind.EqualsIgnoreCase("terrain"))
-        ed->CreateTerrain();
+        ed->CreateTerrain(args.Size() > 1 && args[1].EqualsIgnoreCase("flat"));
     else if (kind.EqualsIgnoreCase("wind") || kind.EqualsIgnoreCase("windzone"))
         ed->CreateWindZone();
     else if (kind.StartsWith("ui."))

@@ -246,7 +246,11 @@ render::MaterialGraph MakeTerrainMaterial()
                           value("Color", "Sand Light", Vec4(0.7f, 0.62f, 0.45f, 1), Vec2(1160, -980)), patches, Vec2(1360, -1020));
     const u32 withRock = lerp(autoColor, rock, channel(0, Vec2(1360, -700)), Vec2(1560, -400));
     const u32 withDirt = lerp(withRock, dirt, channel(1, Vec2(1360, -620)), Vec2(1700, -400));
-    const u32 color = lerp(withDirt, sand, channel(2, Vec2(1360, -540)), Vec2(1840, -400));
+    const u32 withSand = lerp(withDirt, sand, channel(2, Vec2(1360, -540)), Vec2(1840, -400));
+    // Grass (alpha): forced on slopes and peaks too.
+    const u32 grassInv = g.AddNode("OneMinus", Vec2(1460, -460))->id;
+    g.Connect(vertexColor, 1, grassInv, 0);
+    const u32 color = lerp(withSand, grass, grassInv, Vec2(1960, -400));
     g.Connect(color, 0, output, 0);
     // Rough everywhere, snow a bit smoother.
     g.Connect(lerp(value("Scalar", "Roughness", Vec4(0.92f, 0, 0, 0), Vec2(1040, 500)), value("Scalar", "Snow Roughness", Vec4(0.6f, 0, 0, 0), Vec2(1040, 580)),

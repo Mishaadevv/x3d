@@ -101,10 +101,10 @@ asset::PackedVertex TerrainVertex(const Terrain& t, const Array<f32>& h, const A
     v.uv1 = Vec2(f32(x) / f32(n - 1), 1.0f - f32(z) / f32(n - 1));
     // Painted layer weights (rock, dirt, sand) for M_Terrain, stored inverted (unpainted = white: materials that
     // multiply by the vertex color stay as they are); none without a material.
-    const usize pi = (usize(z) * n + x) * 3;
+    const usize pi = (usize(z) * n + x) * 4;
     v.color = 0xFFFFFFFFu;
-    if (t.material.IsValid() && paint.Size() >= pi + 3)
-        v.color = u32(255 - paint[pi]) | (u32(255 - paint[pi + 1]) << 8) | (u32(255 - paint[pi + 2]) << 16) | 0xFF000000u;
+    if (t.material.IsValid() && paint.Size() >= pi + 4)
+        v.color = u32(255 - paint[pi]) | (u32(255 - paint[pi + 1]) << 8) | (u32(255 - paint[pi + 2]) << 16) | (u32(255 - paint[pi + 3]) << 24);
     return asset::PackVertex(v);
 }
 
@@ -288,15 +288,28 @@ void DecodeTerrainPaint(const Terrain& t, u32 n, Array<u8>& rgb)
 {
     rgb.Clear();
     Array<u8> bytes;
-    if (t.paint.Empty() || !Base64Decode(t.paint.View(), bytes) || bytes.Size() % 3)
+    if (t.paint.Empty() || !Base64Decode(t.paint.View(), bytes))
         return;
-    const u32 m = GridSide(bytes.Size() / 3);
+    // RGBA (rock, dirt, sand, grass); older scenes stored RGB (3 * m^2 is never 4 * k^2, so the sizes don't collide).
+    u32 channels = 4, m = bytes.Size() % 4 == 0 ? GridSide(bytes.Size() / 4) : 0u;
+    if (m < 2 && bytes.Size() % 3 == 0) {
+        channels = 3;
+        m = GridSide(bytes.Size() / 3);
+    }
     if (m < 2)
         return;
+    if (channels == 3) {
+        Array<u8> rgba;
+        rgba.Resize(usize(m) * m * 4, 0);
+        for (usize i = 0; i < usize(m) * m; ++i)
+            for (u32 c = 0; c < 3; ++c)
+                rgba[i * 4 + c] = bytes[i * 3 + c];
+        bytes = move(rgba);
+    }
     if (m == n)
         rgb = move(bytes);
     else
-        Resample(bytes, m, 3, n, rgb);
+        Resample(bytes, m, 4, n, rgb);
 }
 
 void EncodeTerrainSculpt(Terrain& t, const Array<f32>& offsets)
@@ -445,8 +458,8 @@ TerrainSystem::Data* TerrainSystem::BeginEdit(ecs::World& world, ecs::Entity e)
     if (!d)
         return nullptr;
     d->editing = true;
-    if (d->paint.Size() != d->base.Size() * 3)
-        d->paint.Resize(d->base.Size() * 3, 0);
+    if (d->paint.Size() != d->base.Size() * 4)
+        d->paint.Resize(d->base.Size() * 4, 0);
     return d;
 }
 

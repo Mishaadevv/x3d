@@ -2,6 +2,7 @@
 // PhysicsSystem (bodies rest on the surface the renderer draws).
 
 #include "Core/HAL/PlatformFile.h"
+#include "Core/String/Base64.h"
 #include "Core/Testing/Test.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/Terrain.h"
@@ -132,13 +133,28 @@ ZX_TEST(Terrain, SculptAndPaintRoundTrip)
     ZX_EXPECT_NEAR(heights[0], 0.0f, 1e-6f);
     // Painting.
     Array<u8> rgb;
-    rgb.Resize(usize(n) * n * 3, 0);
-    rgb[(usize(5) * n + 5) * 3 + 1] = 200; // dirt
+    rgb.Resize(usize(n) * n * 4, 0);
+    rgb[(usize(5) * n + 5) * 4 + 1] = 200; // dirt
+    rgb[(usize(6) * n + 5) * 4 + 3] = 150; // grass
     EncodeTerrainPaint(t, rgb);
     Array<u8> back;
     DecodeTerrainPaint(t, n, back);
     ZX_REQUIRE(back.Size() == rgb.Size());
-    ZX_EXPECT_EQ(u32(back[(usize(5) * n + 5) * 3 + 1]), 200u);
+    ZX_EXPECT_EQ(u32(back[(usize(5) * n + 5) * 4 + 1]), 200u);
+    ZX_EXPECT_EQ(u32(back[(usize(6) * n + 5) * 4 + 3]), 150u);
+    // Scenes from 0.13.14 stored RGB: read as RGBA with no grass.
+    {
+        Array<u8> legacy;
+        legacy.Resize(usize(n) * n * 3, 0);
+        legacy[(usize(5) * n + 5) * 3 + 2] = 99; // sand
+        Terrain old = t;
+        old.paint = Base64Encode(ByteSpan(legacy.Data(), legacy.Size()));
+        Array<u8> upgraded;
+        DecodeTerrainPaint(old, n, upgraded);
+        ZX_REQUIRE(upgraded.Size() == usize(n) * n * 4);
+        ZX_EXPECT_EQ(u32(upgraded[(usize(5) * n + 5) * 4 + 2]), 99u);
+        ZX_EXPECT_EQ(u32(upgraded[(usize(5) * n + 5) * 4 + 3]), 0u);
+    }
     // Nothing painted / sculpted: empty strings.
     Array<u8> none;
     none.Resize(rgb.Size(), 0);
@@ -182,7 +198,7 @@ ZX_TEST(Terrain, EditingThroughTheSystem)
     TerrainSystem::Data* d = terrains.BeginEdit(world, e);
     ZX_REQUIRE(d != nullptr);
     d->sculpt[usize(20) * d->n + 20] = 5.0f;
-    d->paint[(usize(20) * d->n + 20) * 3] = 255;
+    d->paint[(usize(20) * d->n + 20) * 4] = 255;
     terrains.MarkDirty(*d);
     terrains.Commit(world, e);
     const Terrain after = *world.Get<const Terrain>(e); // a copy: the component is replaced below

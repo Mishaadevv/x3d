@@ -131,6 +131,7 @@ void DrawMenus(Editor& ed)
         ui::Separator();
         ActionMenuItem(ed, "create.water");
         ActionMenuItem(ed, "create.terrain");
+        ActionMenuItem(ed, "create.terrainFlat");
         ActionMenuItem(ed, "create.windZone");
         if (ui::BeginMenu(ZX_ICON_MONITOR "  UI")) {
             for (StringView id : {StringView("create.ui.canvas"), StringView("create.ui.panel"), StringView("create.ui.text"), StringView("create.ui.button"),
