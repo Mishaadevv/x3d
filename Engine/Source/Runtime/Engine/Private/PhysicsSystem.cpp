@@ -849,6 +849,8 @@ void PhysicsSystem::Tick(ecs::World& world, f32 dt)
                 const Pose p = WorldPose(world, t.entity);
                 m_world->MoveKinematic(t.body, p.position, p.rotation, FixedStep);
             }
+        if (beforeStep)
+            beforeStep(FixedStep);
         m_world->Step(FixedStep);
         m_accumulator -= FixedStep;
         for (Tracked& t : m_tracked)

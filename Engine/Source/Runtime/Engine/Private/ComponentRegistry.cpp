@@ -4,6 +4,7 @@
 #include "Engine/SoftBody.h"
 #include "Engine/GameUI.h"
 #include "Engine/Wind.h"
+#include "Engine/WaterPhysics.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/Fire.h"
 #include "Engine/GameModule.h"
@@ -65,6 +66,7 @@ void RegisterEngineComponents()
     RegisterComponent<VolumetricClouds>("Volumetric Clouds", "\xEE\x88\x97");       // cloudy
     RegisterComponent<FluidVolume>("Fluid Volume", "\xEE\x83\x92");                  // flame
     RegisterComponent<Water>("Water", "\xEE\x82\xB5");                                // droplets
+    RegisterComponent<Buoyancy>("Buoyancy", "\xEE\x80\xBF");                          // anchor
     RegisterComponent<Terrain>("Terrain", "\xEE\x88\xB1");                            // mountain
     RegisterComponent<ParticleEmitter>("Particle Emitter", "\xEE\x90\x92");        // sparkles
     RegisterComponent<Animator>("Animator", "\xEE\x8D\x98");                         // bone

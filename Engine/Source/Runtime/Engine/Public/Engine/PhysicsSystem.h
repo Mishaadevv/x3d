@@ -10,6 +10,7 @@
 //   physics.Tick(world, dt);                      // fixed 60 Hz steps, poses written back (interpolated)
 //   physics.End();                                // Stop
 
+#include "Core/Containers/Function.h"
 #include "Engine/SceneRendering.h"
 #include "Physics/PhysicsWorld.h"
 
@@ -251,6 +252,9 @@ class PhysicsSystem
 {
 public:
     static constexpr f32 FixedStep = 1.0f / 60.0f;
+    /// Called before every fixed step (forces added there act on that step only - the solver clears them after each
+    /// step): wind drag, buoyancy. Set by TickGame around Tick.
+    Function<void(f32 step), 32> beforeStep;
 
     PhysicsSystem();
     ~PhysicsSystem();

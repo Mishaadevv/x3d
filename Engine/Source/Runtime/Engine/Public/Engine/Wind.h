@@ -58,6 +58,8 @@ struct WindClock
 
 /// Advances the wind's gusts (call once per frame, also while editing so previews move).
 void TickWind(ecs::World& world, f32 dt);
+/// The environment clock (seconds, game time: paused / slowed with the game): gusts, waves. Negative = never ticked.
+f64 EnvironmentTime(ecs::World& world);
 /// Wind of all zones at `position` (m/s).
 Vec3 WindAt(ecs::World& world, Vec3 position);
 /// Wind felt by `entity` at `position`: the zones scaled by its Wind Response (or the nearest ancestor's), or its own

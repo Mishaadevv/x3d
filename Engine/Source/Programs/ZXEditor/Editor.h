@@ -27,6 +27,7 @@
 #include "Engine/Materials.h"
 #include "Engine/Prefab.h"
 #include "Engine/Project.h"
+#include "Engine/WaterPhysics.h"
 #include "Engine/SceneUndo.h"
 #include "Engine/Scripting.h"
 #include "Engine/ViewportRenderer.h"
@@ -260,6 +261,7 @@ public:
     FireSystem fire;                      // Flammable objects (Play only)
     TerrainSystem terrains;               // builds Terrain meshes (edit and Play)
     SoftBodySystem softBodies;            // soft-body vehicles (meshes while editing, simulation in Play)
+    WaterSystem waterSystem;              // wave heights for gameplay, buoyancy, splashes
     GameUISystem gameUI;                  // UI Canvases: layout and drawing over the viewport, clicks while playing
     GameSystems GameSystemsForPlay();     // the systems Play drives (same loop as the packaged game)
     UniquePtr<GameModuleSystem> game;     // C++ game module of the open project (Source/<Name>), hot-reloaded

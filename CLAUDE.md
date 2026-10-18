@@ -184,6 +184,11 @@ Water v2 (0.13.7): Render/Water.h + Shaders/Water/Ocean.hlsl (Evolve / FFT / Ass
 + Shaders/Water/Water.hlsl (rings or grid in the VS, SSR, sun shadows via LightingInputs, baked caustic / foam
 textures); Water component presets (WaterPreset, ApplyWaterPreset / UpdateWaterPresets), console water.preset.
 Autotest ignores the real mouse/keyboard unless -autotestinput.
+Water gameplay (0.13.9): Render/OceanWaves.h (BuildOceanSpectrum shared with the GPU; OceanWaves = CPU FFT of the two
+long cascades), Engine/WaterPhysics.h (WaterSystem::Update / Sample / TickBuoyancy / TickSplashes, Buoyancy component;
+GameSystems::water; waves run on EnvironmentTime = the wind clock). PhysicsSystem::beforeStep runs per fixed step (TickGame
+sets it: wind drag + buoyancy). Underwater: WaterRenderer::AddUnderwaterPass after the fog passes (UnderwaterPS),
+ShadeFromBelow in WaterPS. Tests Water.* (spectrum, wave height, velocity, floating plank).
 Asset packs (0.13.8): Engine/Content/Packs/<Folder> (Pack.json, License.txt, Models/) built by
 `python Tools/import_asset_packs.py <dir with the Quaternius zips>` (Blender for the Survival .blend files);
 Engine/Project.h ListAssetPacks / CopyAssetPack, NewProjectOptions::assetPacks, -packs=all|A,B. Engine profile choice:

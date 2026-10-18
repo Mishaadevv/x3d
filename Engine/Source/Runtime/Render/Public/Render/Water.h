@@ -11,17 +11,23 @@
 //               shadowed sun, light through the crests, absorption, refraction, caustics and foam
 //               (Shaders/Water/Water.hlsl).
 //
+//   Underwater  when the camera is in (or right above) a body of water, a fullscreen pass after the surface fades the
+//               scene into the water's color with distance, with light shafts, caustics and the waterline on the lens;
+//               the surface seen from below shows Snell's window and total internal reflection.
+//
 //   water.AddPasses(graph, sceneColor, sceneDepth, view, surfaces, lighting, lightingInputs, sky, time, exposure);
 //
 // The scene color and depth are copied first (refraction, thickness, reflections), then the water draws over the scene
 // with depth writes, so fog, TAA and post-processing treat it like any opaque surface.
 
+#include "Core/Memory/Pointers.h"
 #include "Render/RenderGraph.h"
 #include "Render/SceneRenderer.h"
 
 namespace zx::render {
 
 class SkyRenderer;
+struct WaterParams; // shader constants (Water.cpp)
 
 /// One rectangular body of water (local XZ plane, centered on the transform; waves are in world space).
 struct WaterSurface
@@ -62,7 +68,13 @@ public:
     void AddPasses(RenderGraph& graph, RGTexture color, RGTexture depth, const RenderView& view, Span<const WaterSurface> surfaces,
                    const SceneLighting& lighting, const SceneRenderer::LightingInputs* inputs, const SkyRenderer* sky, f32 time, f32 exposure);
 
+    /// Under water: the scene fades into the water (call after the fog passes; does nothing when the camera is not
+    /// in or right above the water of the last AddPasses).
+    void AddUnderwaterPass(RenderGraph& graph, RGTexture color, RGTexture depth, const RenderView& view);
+
     u32 Resolution() const { return m_n; }
+    /// The last frame ran the underwater pass (the camera was in or right above a body of water).
+    bool CameraNearOrUnderWater() const { return m_cameraUnderwater; }
     static constexpr u32 MaxSimulations = 2;
     static constexpr u32 Cascades = 3;
 
@@ -81,12 +93,18 @@ private:
         bool used = false;
     };
     void Build(Simulation& sim, const WaterSurface& s, u64 key);
+    void FillSurface(WaterParams& p, const WaterSurface& s, const Simulation& sim) const;
     void Destroy(Simulation& sim);
 
     rhi::Device& m_device;
-    rhi::ShaderBytecode m_copyCS, m_vs, m_ps, m_evolveCS, m_fftCS, m_assembleCS, m_mipCS, m_bakeCS;
+    rhi::ShaderBytecode m_copyCS, m_vs, m_ps, m_evolveCS, m_fftCS, m_assembleCS, m_mipCS, m_bakeCS, m_underwaterVS, m_underwaterPS;
     rhi::Pipeline* m_copyPipeline = nullptr;
     rhi::Pipeline* m_pipeline = nullptr;
+    rhi::Pipeline* m_underwater = nullptr;
+    bool m_cameraUnderwater = false;
+    i32 m_underwaterSurface = -1;           // set by AddPasses for AddUnderwaterPass
+    UniquePtr<WaterParams> m_underwaterBase;
+    Array<RGTexture> m_underwaterInputs;
     rhi::Pipeline* m_evolve = nullptr;
     rhi::Pipeline* m_fft = nullptr;
     rhi::Pipeline* m_assemble = nullptr;

@@ -3,6 +3,7 @@
 #include "Engine/SoftBody.h"
 #include "Engine/GameUI.h"
 #include "Engine/Wind.h"
+#include "Engine/WaterPhysics.h"
 #include "Engine/Fire.h"
 #include "Engine/GameModule.h"
 #include "Engine/Gameplay.h"
@@ -49,6 +50,8 @@ void BeginGame(ecs::World& world, GameSystems& s)
         scene::UpdateWorldTransforms(world);
         s.physics->Begin(world, s.renderAssets);
     }
+    if (s.water)
+        s.water->Reset();
     if (s.fire) {
         s.fire->Clear();
         render::RenderAssets* assets = s.renderAssets;
@@ -110,15 +113,24 @@ void TickGame(ecs::World& world, GameSystems& s, f32 realDt, const InputState* i
         s.softBodies->Tick(world, dt, physicsRunning ? s.physics : nullptr);
         scene::UpdateWorldTransforms(world);
     }
-    // Wind on Rigid Bodies that have a Wind Response (aerodynamic drag towards the wind's speed).
-    if (physicsRunning && dt > 0.0f)
-        world.Query<const WindResponse, const RigidBody, const scene::WorldTransform>().Each(
-            [&](ecs::Entity e, const WindResponse& r, const RigidBody&, const scene::WorldTransform& wt) {
-                if (r.drag > 0.0f)
-                    s.physics->AddForce(e, WindDragForce(WindFor(world, e, wt.GetPosition()), s.physics->GetVelocity(e), r.drag));
-            });
+    if (s.water)
+        s.water->Update(world); // waves at the scene's clock (the same ones the renderer draws)
     if (physicsRunning) {
+        // Per fixed step: wind on Rigid Bodies with a Wind Response (aerodynamic drag towards the wind's speed) and
+        // buoyancy (forces only last one step).
+        s.physics->beforeStep = [&world, &s](f32 step) {
+            world.Query<const WindResponse, const RigidBody, const scene::WorldTransform>().Each(
+                [&](ecs::Entity e, const WindResponse& r, const RigidBody&, const scene::WorldTransform& wt) {
+                    if (r.drag > 0.0f)
+                        s.physics->AddForce(e, WindDragForce(WindFor(world, e, wt.GetPosition()), s.physics->GetVelocity(e), r.drag));
+                });
+            if (s.water)
+                s.water->TickBuoyancy(world, *s.physics, step);
+        };
         s.physics->Tick(world, dt);
+        s.physics->beforeStep = {};
+        if (s.water && s.particles && dt > 0.0f)
+            s.water->TickSplashes(world, *s.physics, *s.particles, dt);
         scene::UpdateWorldTransforms(world);
         // Collision / trigger callbacks of this frame's steps.
         if (s.scripts && s.Enabled("scripts"))
@@ -156,6 +168,8 @@ void EndGame(GameSystems& s)
         s.audio->End();
     if (s.physics)
         s.physics->End();
+    if (s.water)
+        s.water->Reset();
     if (s.fire)
         s.fire->Clear();
     if (s.softBodies)

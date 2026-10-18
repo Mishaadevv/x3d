@@ -29,6 +29,7 @@ class RenderAssets;
 
 class SoftBodySystem;
 class GameUISystem;
+class WaterSystem;
 
 struct GameSystems
 {
@@ -45,7 +46,8 @@ struct GameSystems
     Function<bool(StringView)> featureEnabled;
     AnimationSystem* animation = nullptr; // Animators (scripts set graph parameters / play clips)
     SoftBodySystem* softBodies = nullptr; // soft-body vehicles (simulated with the physics)
-    GameUISystem* gameUI = nullptr;       // UI events (clicks, changes) go to scripts; the host lays out and draws
+    GameUISystem* gameUI = nullptr;
+    WaterSystem* water = nullptr;         // wave heights, buoyancy, splashes       // UI events (clicks, changes) go to scripts; the host lays out and draws
 
     bool Enabled(StringView feature) const { return !featureEnabled || featureEnabled(feature); }
 };

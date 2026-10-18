@@ -1324,13 +1324,37 @@ void Editor::BuildWaterLevel()
         block(String::Format("Pier Post {}", i * 2 + 1), BuiltinShape::Cylinder, Vec3(-1.6f, -8, z), Vec3(-1.2f, 0.9f, z + 0.4f), "M_Wood");
         block(String::Format("Pier Post {}", i * 2 + 2), BuiltinShape::Cylinder, Vec3(1.2f, -8, z), Vec3(1.6f, 0.9f, z + 0.4f), "M_Wood");
     }
-    // A small boat tied at the end of the pier.
+    // A small boat at the end of the pier, rocking on the waves (Buoyancy), and driftwood: crates and barrels.
     {
         const ecs::Entity boat = CreateEntity("Boat", Transform(Vec3(3.6f, 0.15f, 30.0f), Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(8.0f))));
         EnsureEntityGuid(world, boat);
-        shape("Hull", BuiltinShape::Sphere, Vec3(0, 0, 0), Vec3(1.8f, 0.9f, 5.0f), "M_Plastic_White", {}, boat);
-        shape("Deck", BuiltinShape::Cube, Vec3(0, 0.38f, 0), Vec3(1.4f, 0.06f, 3.6f), "M_Wood", {}, boat);
-        shape("Bench", BuiltinShape::Cube, Vec3(0, 0.6f, -0.6f), Vec3(1.3f, 0.08f, 0.4f), "M_Wood", {}, boat);
+        for (const ecs::Entity part : {shape("Hull", BuiltinShape::Sphere, Vec3(0, 0, 0), Vec3(1.8f, 0.9f, 5.0f), "M_Plastic_White", {}, boat),
+                                       shape("Deck", BuiltinShape::Cube, Vec3(0, 0.38f, 0), Vec3(1.4f, 0.06f, 3.6f), "M_Wood", {}, boat),
+                                       shape("Bench", BuiltinShape::Cube, Vec3(0, 0.6f, -0.6f), Vec3(1.3f, 0.08f, 0.4f), "M_Wood", {}, boat)})
+            world.Get<MeshRenderer>(part)->collision = false; // the boat's box collider stands for its parts
+        RigidBody rb;
+        rb.mass = 180.0f;
+        world.Add(boat, rb);
+        world.Add(boat, BoxCollider{Vec3(0, 0.05f, 0), Vec3(1.6f, 0.75f, 4.4f)});
+        Buoyancy b;
+        b.density = 250.0f; // hollow: floats high
+        world.Add(boat, b);
+        auto floater = [&](StringView label, BuiltinShape sh, Vec3 at, Vec3 size, StringView mat, f32 density, Vec3 euler) {
+            const ecs::Entity e = shape(label, sh, at, size, mat, Quat::FromEulerDegrees(euler));
+            world.Add(e, RigidBody{});
+            if (sh == BuiltinShape::Cylinder)
+                world.Add(e, CylinderCollider{});
+            else
+                world.Add(e, BoxCollider{});
+            Buoyancy fb;
+            fb.density = density;
+            world.Add(e, fb);
+        };
+        floater("Crate 1", BuiltinShape::Cube, Vec3(-4.0f, 0.6f, 24.0f), Vec3(0.9f), "M_Wood", 450.0f, Vec3(0, 20, 0));
+        floater("Crate 2", BuiltinShape::Cube, Vec3(-6.5f, 0.6f, 31.0f), Vec3(0.7f), "M_Wood", 550.0f, Vec3(10, 65, 5));
+        floater("Barrel 1", BuiltinShape::Cylinder, Vec3(6.5f, 0.6f, 25.0f), Vec3(0.7f, 1.0f, 0.7f), "M_Wood", 400.0f, Vec3(90, 30, 0));
+        floater("Barrel 2", BuiltinShape::Cylinder, Vec3(-3.0f, 0.6f, 36.0f), Vec3(0.7f, 1.0f, 0.7f), "M_Plastic_White", 300.0f, Vec3(0, 0, 0));
+        floater("Log", BuiltinShape::Cylinder, Vec3(8.0f, 0.6f, 35.0f), Vec3(0.45f, 3.5f, 0.45f), "M_Wood", 650.0f, Vec3(90, 70, 0));
     }
     // Hut on the meadow: walls, a door and a two-slab roof.
     {
@@ -2469,6 +2493,7 @@ GameSystems Editor::GameSystemsForPlay()
     s.animation = animation.Get();
     s.softBodies = &softBodies;
     s.gameUI = &gameUI;
+    s.water = &waterSystem;
     s.renderAssets = renderAssets.Get();
     s.inputActions = &inputActions;
     s.inputActionState = &inputActionState;

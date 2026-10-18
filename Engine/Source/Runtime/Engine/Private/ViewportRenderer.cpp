@@ -1,4 +1,6 @@
 #include "Engine/ViewportRenderer.h"
+#include "Engine/WaterPhysics.h"
+#include "Engine/Wind.h"
 #include "Engine/Particles.h"
 #include "Core/Jobs/JobSystem.h"
 #include "Core/Profiler/Profiler.h"
@@ -391,9 +393,10 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     m_waterSurfaces.Clear();
     if (features.water)
         GatherWater(world, m_waterSurfaces);
+    // Waves run on the environment clock (game time) so floating objects ride the same waves (Engine/WaterPhysics.h).
+    const f64 waterClock = EnvironmentTime(world);
     m_water.AddPasses(graph, sceneColor, sceneDepth, view, m_waterSurfaces.View(), m_lighting, &m_scene.GetLightingInputs(),
-                      m_settings.useSky ? &m_sky : nullptr,
-                      f32(std::fmod(m_time, 3600.0)), exposure);
+                      m_settings.useSky ? &m_sky : nullptr, WaterTime(waterClock >= 0.0 ? waterClock : m_time), exposure);
     if (m_settings.useSky)
         m_sky.AddFogPass(graph, sceneColor, sceneDepth, m_lighting, m_settings.sky);
     // Volumetric fog over the near part (the analytic fog above started where it ends).
@@ -417,6 +420,8 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         GatherFluidVolumes(world, m_fluidVolumes, env.playing);
     m_fluids.AddPasses(graph, sceneColor, sceneDepth, view, m_viewProjNoJitter, m_lighting, m_fluidVolumes.View(), exposure, deltaTime,
                        f32(std::fmod(m_time, 3600.0)));
+    // Under water the water's own fog (over the atmosphere's).
+    m_water.AddUnderwaterPass(graph, sceneColor, sceneDepth, view);
     // Particles over the fogged scene (they don't write depth, so the fog couldn't place them).
     m_particleList.Clear();
     if (features.particles && m_particleSource) {

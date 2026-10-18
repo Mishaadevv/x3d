@@ -1,6 +1,7 @@
 #include "Render/Water.h"
 #include <cmath>
 #include "Core/Log/Log.h"
+#include "Render/OceanWaves.h"
 #include "Render/Sky.h"
 #include "RHI/ShaderCompiler.h"
 
@@ -9,10 +10,6 @@ namespace zx::render {
 using namespace rhi;
 
 ZX_DEFINE_LOG_CATEGORY_STATIC(LogWater, Info);
-
-namespace {
-
-constexpr f32 Gravity = 9.81f;
 
 struct WaterParams
 {
@@ -64,8 +61,12 @@ struct WaterParams
     u32 ssrSteps;
     u32 causticTexture;
     u32 foamTexture;
-    Vec3 pad;
+    f32 uvOffset;
+    f32 surfaceY;
+    f32 waveBound;
 };
+
+namespace {
 
 struct CopyParams
 {
@@ -79,53 +80,6 @@ struct OceanParams
     u32 size;
 };
 
-// --- Spectrum ----------------------------------------------------------------------------------------------------------
-
-/// JONSWAP frequency spectrum S(omega) for wind `u` (m/s) over `fetch` (m).
-f32 Jonswap(f32 omega, f32 u, f32 fetch, f32& peak)
-{
-    const f32 g = Gravity;
-    peak = 22.0f * std::pow(g * g / (u * fetch), 1.0f / 3.0f);
-    const f32 alpha = 0.076f * std::pow(u * u / (fetch * g), 0.22f);
-    const f32 sigma = omega <= peak ? 0.07f : 0.09f;
-    const f32 r = std::exp(-(omega - peak) * (omega - peak) / (2.0f * sigma * sigma * peak * peak));
-    return alpha * g * g / std::pow(omega, 5.0f) * std::exp(-1.25f * std::pow(peak / omega, 4.0f)) * std::pow(3.3f, r);
-}
-
-/// Peak wavelength of the sea state (m).
-f32 PeakWavelength(f32 u, f32 fetch)
-{
-    f32 peak = 1.0f;
-    Jonswap(1.0f, u, fetch, peak);
-    return 2.0f * Pi * Gravity / (peak * peak);
-}
-
-/// Directional spreading around the wind (normalized over -pi..pi): mostly downwind, a little across.
-f32 Spreading(f32 theta)
-{
-    const f32 c = std::cos(theta);
-    return c > 0.0f ? (8.0f / (3.0f * Pi)) * c * c * c * c * 0.92f + 0.08f / (2.0f * Pi) : 0.08f / (2.0f * Pi);
-}
-
-/// Standard normal sample from a hash of (a, b, c) (Box-Muller).
-Vec2 Gaussian(u32 a, u32 b, u32 c)
-{
-    auto hash = [](u32 x) {
-        x ^= x >> 16;
-        x *= 0x7FEB352Du;
-        x ^= x >> 15;
-        x *= 0x846CA68Bu;
-        x ^= x >> 16;
-        return x;
-    };
-    const u32 h1 = hash(a * 73856093u ^ hash(b * 19349663u ^ hash(c * 83492791u + 1u)));
-    const u32 h2 = hash(h1 + 0x9E3779B9u);
-    const f32 u1 = Max((f32(h1 >> 8) + 0.5f) / 16777216.0f, 1e-7f);
-    const f32 u2 = (f32(h2 >> 8) + 0.5f) / 16777216.0f;
-    const f32 r = std::sqrt(-2.0f * std::log(u1));
-    return Vec2(r * std::cos(2.0f * Pi * u2), r * std::sin(2.0f * Pi * u2));
-}
-
 } // namespace
 
 u64 WaterSpectrumKey(const WaterSurface& s)
@@ -135,13 +89,13 @@ u64 WaterSpectrumKey(const WaterSurface& s)
            (q(s.windDirection, 0.02f) << 48);
 }
 
-WaterRenderer::WaterRenderer(Device& device) : m_device(device) {}
+WaterRenderer::WaterRenderer(Device& device) : m_device(device), m_underwaterBase(new WaterParams()) {}
 
 WaterRenderer::~WaterRenderer()
 {
     for (Simulation& s : m_sims)
         Destroy(s);
-    for (Pipeline* p : {m_copyPipeline, m_pipeline, m_evolve, m_fft, m_assemble, m_mip, m_bake})
+    for (Pipeline* p : {m_copyPipeline, m_pipeline, m_underwater, m_evolve, m_fft, m_assemble, m_mip, m_bake})
         m_device.Destroy(p);
     m_device.Destroy(m_causticTexture);
     m_device.Destroy(m_foamTexture);
@@ -184,6 +138,8 @@ bool WaterRenderer::Init(Format colorFormat, Format depthFormat, bool lite)
         {&m_assembleCS, "/Shaders/Water/Ocean.hlsl", "AssembleCS", ShaderStage::Compute},
         {&m_mipCS, "/Shaders/Water/Ocean.hlsl", "MipCS", ShaderStage::Compute},
         {&m_bakeCS, "/Shaders/Water/Water.hlsl", "BakePatternsCS", ShaderStage::Compute},
+        {&m_underwaterVS, "/Shaders/Water/Water.hlsl", "UnderwaterVS", ShaderStage::Vertex},
+        {&m_underwaterPS, "/Shaders/Water/Water.hlsl", "UnderwaterPS", ShaderStage::Pixel},
     };
     for (const Job& j : jobs) {
         ShaderCompileDesc d;
@@ -228,52 +184,30 @@ bool WaterRenderer::Init(Format colorFormat, Format depthFormat, bool lite)
     pd.colorCount = 1;
     pd.debugName = "Water";
     m_pipeline = m_device.CreateGraphicsPipeline(pd);
-    return m_copyPipeline && m_pipeline && m_evolve && m_fft && m_assemble && m_mip && m_bake && m_causticTexture && m_foamTexture;
+    GraphicsPipelineDesc ud;
+    ud.vertexShader = &m_underwaterVS;
+    ud.pixelShader = &m_underwaterPS;
+    ud.rasterizer.cullMode = CullMode::None;
+    ud.depthStencil.depthTest = false;
+    ud.depthStencil.depthWrite = false;
+    ud.colorFormats[0] = colorFormat;
+    ud.colorCount = 1;
+    ud.debugName = "Underwater";
+    m_underwater = m_device.CreateGraphicsPipeline(ud);
+    return m_copyPipeline && m_pipeline && m_underwater && m_evolve && m_fft && m_assemble && m_mip && m_bake && m_causticTexture && m_foamTexture;
 }
 
 void WaterRenderer::Build(Simulation& sim, const WaterSurface& s, u64 key)
 {
     Destroy(sim);
     sim.key = key;
-    sim.choppiness = Clamp(s.choppiness, 0.0f, 2.0f);
-    const f32 u = Clamp(s.windSpeed, 0.5f, 40.0f);
-    const f32 fetch = Clamp(s.fetch, 0.005f, 2000.0f) * 1000.0f;
-    // Cascade sizes from the peak wavelength: the swell, waves ~6x shorter, ripples ~6x shorter still.
-    const f32 peak = PeakWavelength(u, fetch);
-    sim.patchSize[0] = Clamp(peak * 3.5f, 4.0f, 2500.0f);
-    sim.patchSize[1] = sim.patchSize[0] / 6.3f;
-    sim.patchSize[2] = sim.patchSize[1] / 6.1f;
+    OceanSpectrum spectrum;
+    BuildOceanSpectrum(s, m_n, spectrum);
+    sim.choppiness = spectrum.choppiness;
     const u32 n = m_n;
-    const Vec2 wind(std::sin(s.windDirection), std::cos(s.windDirection));
-    Array<Vec4> data;
-    data.Resize(usize(n) * n);
     for (u32 c = 0; c < Cascades; ++c) {
-        const f32 dk = 2.0f * Pi / sim.patchSize[c];
-        // Each cascade keeps its own band of wavelengths (no wave counted twice).
-        const f32 kMin = c == 0 ? 0.0f : 2.0f * Pi / sim.patchSize[c] * 6.0f;
-        const f32 kMax = c + 1 < Cascades ? 2.0f * Pi / sim.patchSize[c + 1] * 6.0f : 1e9f;
-        auto h0 = [&](i32 x, i32 y) {
-            const Vec2 k = Vec2(f32(x - i32(n) / 2), f32(y - i32(n) / 2)) * dk;
-            const f32 kLen = Length(k);
-            if (kLen < 1e-5f || kLen < kMin || kLen >= kMax)
-                return Vec2(0.0f);
-            const f32 omega = std::sqrt(Gravity * kLen);
-            f32 p;
-            const f32 sOmega = Jonswap(omega, u, fetch, p);
-            const f32 theta = std::atan2(k.y * wind.x - k.x * wind.y, Dot(k, wind) / 1.0f);
-            const f32 dOmegaDk = Gravity / (2.0f * omega);
-            // Damp the tiniest waves (they only alias) and convert S(omega, theta) -> S(k).
-            const f32 tiny = std::exp(-kLen * kLen * 0.0004f);
-            const f32 sK = sOmega * Spreading(theta) * dOmegaDk / kLen * tiny;
-            const Vec2 xi = Gaussian(u32(x & 0xFFFF), u32(y & 0xFFFF), c + u32(key & 0xFF) * 7u);
-            return xi * std::sqrt(Max(sK, 0.0f) * dk * dk * 0.5f);
-        };
-        for (u32 y = 0; y < n; ++y)
-            for (u32 x = 0; x < n; ++x) {
-                const Vec2 a = h0(i32(x), i32(y));
-                const Vec2 b = h0(i32((n - x) % n), i32((n - y) % n)); // h0(-k)
-                data[usize(y) * n + x] = Vec4(a.x, a.y, b.x, -b.y);  // conj
-            }
+        sim.patchSize[c] = spectrum.patchSize[c];
+        const Array<Vec4>& data = spectrum.h0[c];
         sim.h0[c] = m_device.CreateBuffer(BufferDesc{data.SizeBytes(), BufferUsage::ShaderResource, MemoryType::GpuOnly, 16, "Ocean.H0"},
                                           data.Data());
         TextureDesc td;
@@ -292,8 +226,39 @@ void WaterRenderer::Build(Simulation& sim, const WaterSurface& s, u64 key)
         sim.derivatives[c] = m_device.CreateTexture(td);
     }
     sim.lastTime = -1.0f;
-    ZX_LOG_INFO(LogWater, "Ocean spectrum: wind {:.1f} m/s, fetch {:.2f} km, peak wavelength {:.2f} m, cascades {:.1f} / {:.1f} / {:.2f} m", u,
-                fetch / 1000.0f, peak, sim.patchSize[0], sim.patchSize[1], sim.patchSize[2]);
+    ZX_LOG_INFO(LogWater, "Ocean spectrum: wind {:.1f} m/s, fetch {:.2f} km, peak wavelength {:.2f} m, cascades {:.1f} / {:.1f} / {:.2f} m",
+                s.windSpeed, s.fetch, spectrum.peakWavelength, sim.patchSize[0], sim.patchSize[1], sim.patchSize[2]);
+}
+
+void WaterRenderer::FillSurface(WaterParams& p, const WaterSurface& s, const Simulation& sim) const
+{
+    p.world = s.world;
+    p.worldToLocal = Inverse(s.world);
+    p.size = Vec2(Max(s.size.x, 0.1f), Max(s.size.y, 0.1f));
+    p.amplitude = Max(s.waveAmount, 0.0f);
+    for (u32 c = 0; c < Cascades; ++c) {
+        p.cascadeSizes[c] = sim.patchSize[c];
+        p.displacement[c] = sim.displacement[c]->GetSrvIndex();
+        p.derivatives[c] = sim.derivatives[c]->GetSrvIndex();
+    }
+    p.shallowColor = s.shallowColor;
+    p.deepColor = s.deepColor;
+    p.scatterColor = s.scatterColor;
+    p.clarity = s.clarity;
+    p.refraction = s.refraction;
+    p.foam = s.foam;
+    p.shoreFoam = s.shoreFoam;
+    p.roughness = Clamp(s.roughness, 0.01f, 1.0f);
+    p.caustics = Max(s.caustics, 0.0f);
+    p.ssr = s.reflections ? 1u : 0u;
+    p.ssrSteps = m_lite ? 14u : 24u;
+    p.causticTexture = m_causticTexture->GetSrvIndex();
+    p.foamTexture = m_foamTexture->GetSrvIndex();
+    p.edgeFade = Min(3.0f, Min(p.size.x, p.size.y) * 0.1f);
+    p.uvOffset = 0.5f / f32(m_n);
+    p.surfaceY = s.world.GetTranslation().y;
+    // Waves rarely rise above ~1/7 of the peak wavelength (they break); the swell cascade is 3.5 peak wavelengths.
+    p.waveBound = p.amplitude * sim.patchSize[0] / 3.5f / 7.0f * 1.5f + 0.3f;
 }
 
 void WaterRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture depth, const RenderView& view, Span<const WaterSurface> surfaces,
@@ -508,34 +473,11 @@ void WaterRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 const WaterSurface& s = m_surfaces[si];
                 const Simulation& sim = m_sims[m_surfaceSim[si]];
                 WaterParams p = base;
-                p.world = s.world;
-                p.worldToLocal = Inverse(s.world);
-                p.size = Vec2(Max(s.size.x, 0.1f), Max(s.size.y, 0.1f));
-                p.amplitude = Max(s.waveAmount, 0.0f);
-                for (u32 c = 0; c < Cascades; ++c) {
-                    p.cascadeSizes[c] = sim.patchSize[c];
-                    p.displacement[c] = sim.displacement[c]->GetSrvIndex();
-                    p.derivatives[c] = sim.derivatives[c]->GetSrvIndex();
-                }
-                p.shallowColor = s.shallowColor;
-                p.deepColor = s.deepColor;
-                p.scatterColor = s.scatterColor;
-                p.clarity = s.clarity;
-                p.refraction = s.refraction;
-                p.foam = s.foam;
-                p.shoreFoam = s.shoreFoam;
-                p.roughness = Clamp(s.roughness, 0.01f, 1.0f);
-                p.caustics = Max(s.caustics, 0.0f);
-                p.ssr = s.reflections ? 1u : 0u;
-                p.ssrSteps = m_lite ? 14u : 24u;
-                p.causticTexture = m_causticTexture->GetSrvIndex();
-                p.foamTexture = m_foamTexture->GetSrvIndex();
-                p.edgeFade = Min(3.0f, Min(p.size.x, p.size.y) * 0.1f);
+                FillSurface(p, s, sim);
                 p.sceneColor = ctx.Texture(colorCopy)->GetSrvIndex();
                 p.sceneDepth = ctx.Texture(depthCopy)->GetSrvIndex();
                 if (skyView.IsValid())
                     p.skyView = ctx.Texture(skyView)->GetSrvIndex();
-                // Mesh: rings around the camera for large water (dense near, coarse far), a grid for small.
                 const Vec3 camLocal = p.worldToLocal.TransformPoint(view.position);
                 const Vec2 half = p.size * 0.5f;
                 const bool rings = Max(p.size.x, p.size.y) > 80.0f;
@@ -564,6 +506,81 @@ void WaterRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 ctx.cmd.SetConstants(0, &p, sizeof(p));
                 ctx.cmd.Draw(vertices);
             }
+        });
+
+    // Under water: the first surface whose volume holds the camera (or whose waves could reach the lens). The pass
+    // itself runs later (AddUnderwaterPass), after the atmosphere's fog: under water the water's own fog replaces it.
+    m_underwaterSurface = -1;
+    for (usize si = 0; si < m_surfaces.Size() && m_underwaterSurface < 0; ++si) {
+        const WaterSurface& s = m_surfaces[si];
+        WaterParams p = {};
+        FillSurface(p, s, m_sims[m_surfaceSim[si]]);
+        const Vec3 local = p.worldToLocal.TransformPoint(view.position);
+        const bool inside = Abs(local.x) < p.size.x * 0.5f + 1.0f && Abs(local.z) < p.size.y * 0.5f + 1.0f;
+        if (inside && local.y < p.waveBound + view.nearPlane * 4.0f && local.y > -400.0f)
+            m_underwaterSurface = i32(si);
+    }
+    m_cameraUnderwater = m_underwaterSurface >= 0;
+    if (m_cameraUnderwater) {
+        *m_underwaterBase = base;
+        m_underwaterInputs = simTextures;
+        m_underwaterInputs.Append(shadowTextures.View());
+        m_underwaterInputs.PushBack(causticRG);
+    }
+}
+
+void WaterRenderer::AddUnderwaterPass(RenderGraph& graph, RGTexture color, RGTexture depth, const RenderView& view)
+{
+    if (m_underwaterSurface < 0 || !m_underwater)
+        return;
+    const i32 underwater = m_underwaterSurface;
+    m_underwaterSurface = -1;
+    const UVec2 size(view.width, view.height);
+    TextureDesc cd;
+    cd.width = view.width;
+    cd.height = view.height;
+    cd.usage = TextureUsage::ShaderResource | TextureUsage::UnorderedAccess;
+    cd.format = Format::R16G16B16A16_FLOAT;
+    cd.debugName = "UnderwaterColor";
+    const RGTexture colorCopy2 = graph.CreateTexture(cd);
+    cd.format = Format::R32_FLOAT;
+    cd.debugName = "UnderwaterDepth";
+    const RGTexture depthCopy2 = graph.CreateTexture(cd);
+    graph.AddPass(
+        "UnderwaterCopy", PassType::Compute,
+        [=](PassBuilder& b) {
+            b.ReadTexture(color);
+            b.ReadTexture(depth);
+            b.WriteTexture(colorCopy2);
+            b.WriteTexture(depthCopy2);
+        },
+        [=, this](PassContext& ctx) {
+            CopyParams p{ctx.Texture(color)->GetSrvIndex(), ctx.Texture(depth)->GetSrvIndex(), ctx.Texture(colorCopy2)->GetUavIndex(),
+                         ctx.Texture(depthCopy2)->GetUavIndex(), size.x, size.y};
+            ctx.cmd.SetPipeline(m_copyPipeline);
+            ctx.cmd.SetPushConstants(p);
+            ctx.cmd.Dispatch((size.x + 7) / 8, (size.y + 7) / 8);
+        });
+    const Array<RGTexture> inputs = m_underwaterInputs;
+    graph.AddPass(
+        "Underwater", PassType::Graphics,
+        [=](PassBuilder& b) {
+            b.ReadTexture(colorCopy2);
+            b.ReadTexture(depthCopy2);
+            for (RGTexture t : inputs)
+                b.ReadTexture(t);
+            b.RenderTarget(color, LoadOp::DontCare);
+        },
+        [=, this](PassContext& ctx) {
+            WaterParams p = *m_underwaterBase;
+            FillSurface(p, m_surfaces[usize(underwater)], m_sims[m_surfaceSim[usize(underwater)]]);
+            p.sceneColor = ctx.Texture(colorCopy2)->GetSrvIndex();
+            p.sceneDepth = ctx.Texture(depthCopy2)->GetSrvIndex();
+            ctx.cmd.SetViewport(Viewport{0, 0, f32(size.x), f32(size.y), 0, 1});
+            ctx.cmd.SetScissor(0, 0, size.x, size.y);
+            ctx.cmd.SetPipeline(m_underwater);
+            ctx.cmd.SetConstants(0, &p, sizeof(p));
+            ctx.cmd.Draw(3);
         });
 }
 

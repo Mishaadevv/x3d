@@ -138,7 +138,9 @@ struct WaterParams
     uint ssrSteps;
     uint causticTexture;
     uint foamTexture;
-    float3 pad;
+    float uvOffset;       // half a texel: grid node j of a cascade sits at x = j * size / n (as on the CPU)
+    float surfaceY;       // underwater pass: height of the surface at rest (world)
+    float waveBound;      // underwater pass: max height of the waves above the rest height
 };
 ZX_PASS_CONSTANTS(WaterParams, g_Water);
 
@@ -155,7 +157,7 @@ float3 SampleDisplacement(float2 xz, float lod)
     float3 d = 0;
     [unroll] for (uint c = 0; c < 4; ++c)
         if (c < g_Water.cascadeCount)
-            d += GetTexture2D(g_Water.displacement[c]).SampleLevel(g_LinearWrap, xz / g_Water.cascadeSizes[c], lod).xyz;
+            d += GetTexture2D(g_Water.displacement[c]).SampleLevel(g_LinearWrap, xz / g_Water.cascadeSizes[c] + g_Water.uvOffset, lod).xyz;
     return d * g_Water.amplitude;
 }
 
@@ -305,6 +307,50 @@ float4 TraceReflection(float3 origin, float3 dir, float distance)
 
 // --- Shading ---------------------------------------------------------------------------------------------------------
 
+/// Light in the water at `depthBelow` meters under the surface: sunlight and skylight fade, red first.
+float3 UnderwaterLight(float depthBelow, float shadow)
+{
+    const float3 fade = exp(-max(depthBelow, 0.0) / max(g_Water.clarity, 0.05) * float3(1.2, 0.45, 0.25));
+    const float sunUp = saturate(g_Water.dirToSun.y);
+    return (g_Water.ambient + g_Water.sunRadiance * sunUp * shadow / ATM_PI) * fade;
+}
+
+float3 UnderwaterBodyColor(float depthBelow, float shadow)
+{
+    const float3 body = lerp(g_Water.shallowColor, g_Water.deepColor, saturate(depthBelow / max(g_Water.clarity * 3.0, 0.1)));
+    return body * UnderwaterLight(depthBelow, shadow) * 0.28;
+}
+
+/// Direction of the sunlight under the water (bent down by refraction).
+float3 SunDirUnderwater() { return normalize(refract(-g_Water.dirToSun, float3(0, 1, 0), 1.0 / 1.33)); }
+
+/// The surface seen from under the water: inside Snell's window (48.6 degrees around the normal) the world above shows
+/// through, refracted; outside it the surface mirrors the water below (total internal reflection).
+float3 ShadeFromBelow(VSOut i, float3 n, float3 v)
+{
+    const float cosI = saturate(dot(n, v));                // angle in the water
+    const float sinT2 = (1.0 - cosI * cosI) * 1.33 * 1.33; // Snell, water -> air
+    float transmit = 0.0;
+    if (sinT2 < 1.0) {
+        const float cosT = sqrt(1.0 - sinT2);
+        const float rs = (1.33 * cosI - cosT) / (1.33 * cosI + cosT);
+        const float rp = (cosI - 1.33 * cosT) / (cosI + 1.33 * cosT);
+        transmit = (1.0 - 0.5 * (rs * rs + rp * rp)) * smoothstep(1.0, 0.85, sinT2); // the rim is soft (waves blur it)
+    }
+    const float2 uv = i.position.xy * g_Water.invRenderSize;
+    const float3 above = GetTexture2D(g_Water.sceneColor).SampleLevel(g_LinearClamp, uv - n.xz * 0.06 * transmit, 0).rgb;
+    const float shadow = SunShadow(i.worldPos, LinearDepth(i.position.z));
+    const float3 mirror = UnderwaterBodyColor(1.0, shadow);
+    // The sun's disc through the window.
+    const float sunSpot = pow(saturate(dot(-v, -SunDirUnderwater())), 400.0) * 6.0 * transmit;
+    float3 color = lerp(mirror, above, transmit) + g_Water.sunRadiance * sunSpot * shadow / ATM_PI;
+    // Whitecaps from below: darker blotches letting less light through.
+    float whitecaps = 0.0;
+    [unroll] for (uint c = 0; c < 2; ++c)
+        whitecaps += GetTexture2D(g_Water.displacement[c]).Sample(g_LinearWrap, i.baseXZ / g_Water.cascadeSizes[c] + g_Water.uvOffset).w;
+    return color * (1.0 - saturate(whitecaps * g_Water.foam) * 0.5);
+}
+
 float4 WaterPS(VSOut i) : SV_Target0
 {
     const float3 toCamera = g_Water.cameraPosition - i.worldPos;
@@ -321,7 +367,7 @@ float4 WaterPS(VSOut i) : SV_Target0
     [unroll] for (uint c = 0; c < 4; ++c) {
         if (c >= g_Water.cascadeCount)
             continue;
-        const float2 uv = i.baseXZ / g_Water.cascadeSizes[c];
+        const float2 uv = i.baseXZ / g_Water.cascadeSizes[c] + g_Water.uvOffset;
         const float weight = saturate(1.0 - distance / (g_Water.cascadeSizes[c] * 12.0)) * 0.85 + 0.15 * (c == 0 ? 1.0 : 0.0);
         [branch] if (weight <= 0.0)
             continue; // too small to see from here
@@ -339,6 +385,8 @@ float4 WaterPS(VSOut i) : SV_Target0
     if (!front)
         n = -n;
     const float nDotV = saturate(dot(n, v));
+    [branch] if (!front)
+        return float4(min(ShadeFromBelow(i, n, v), 60000.0), 1.0);
 
     // Scene behind: refraction and the thickness of water along the view ray.
     const float2 uv = i.position.xy * g_Water.invRenderSize;
@@ -415,5 +463,99 @@ float4 WaterPS(VSOut i) : SV_Target0
     }
     const float3 foamLight = 0.9 * (g_Water.ambient * 1.1 + g_Water.sunRadiance * saturate(dot(n, l) * 0.6 + 0.4) * shadow / ATM_PI);
     color = lerp(color, foamLight, foamAmount);
+    return float4(min(color, 60000.0), 1.0);
+}
+
+// --- Underwater (fullscreen, after the water) ------------------------------------------------------------------------
+// The camera is in or just above the water: below the surface (decided per pixel at the near plane, so a half-submerged
+// camera shows the waterline) the scene fades into the water's color with distance, red first; light shafts and caustics
+// play through it, the image wobbles slightly.
+
+struct FullscreenOut
+{
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+};
+
+FullscreenOut UnderwaterVS(uint vertexId : SV_VertexID)
+{
+    FullscreenOut o;
+    o.uv = float2((vertexId << 1) & 2, vertexId & 2);
+    o.position = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
+    return o;
+}
+
+float3 Unproject(float2 uv, float depth)
+{
+    const float4 p = mul(g_Water.invViewProj, float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0));
+    return p.xyz / max(p.w, 1e-7);
+}
+
+/// Height of the (displaced) surface over world `xz`, approximately; -1e9 outside the water.
+float SurfaceHeight(float2 xz)
+{
+    const float3 local = mul(g_Water.worldToLocal, float4(xz.x, g_Water.surfaceY, xz.y, 1.0)).xyz;
+    const float2 toEdge = g_Water.size * 0.5 - abs(local.xz);
+    if (any(toEdge < 0.0))
+        return -1e9;
+    const float fade = g_Water.edgeFade > 0.0 ? saturate(min(toEdge.x, toEdge.y) / g_Water.edgeFade) : 1.0;
+    float3 d = SampleDisplacement(xz, 0.0) * fade;
+    d = SampleDisplacement(xz - d.xz, 0.0) * fade; // one step back towards the point that moved here
+    return g_Water.surfaceY + d.y;
+}
+
+float4 UnderwaterPS(FullscreenOut i) : SV_Target0
+{
+    const float t = g_Water.time;
+    const float2 uv = i.uv;
+    const float3 nearPos = Unproject(uv, 1.0); // reversed-Z: 1 = near plane
+    const float under = nearPos.y - SurfaceHeight(nearPos.xz); // < 0: this pixel starts under water
+    Texture2D<float4> sceneColor = GetTexture2D(g_Water.sceneColor);
+    if (under > 0.004)
+        return float4(sceneColor.SampleLevel(g_PointClamp, uv, 0).rgb, 1.0);
+
+    // Wobble.
+    const float2 wobble = float2(sin(uv.y * 40.0 + t * 2.1), cos(uv.x * 33.0 + t * 1.7)) * 0.0018;
+    const float2 suv = clamp(uv + wobble, 0.0, 1.0);
+    const float rawDepth = GetTexture2D(g_Water.sceneDepth).SampleLevel(g_PointClamp, suv, 0).r;
+    const float3 farPos = rawDepth > 0.0 ? Unproject(suv, rawDepth) : nearPos + normalize(nearPos - g_Water.cameraPosition) * 2000.0;
+    const float3 ray = farPos - g_Water.cameraPosition;
+    const float dist = length(ray);
+    const float3 dir = ray / max(dist, 1e-4);
+    float3 scene = sceneColor.SampleLevel(g_LinearClamp, suv, 0).rgb;
+
+    const float camDepth = max(g_Water.surfaceY - g_Water.cameraPosition.y, 0.0);
+    const float shadow = SunShadow(g_Water.cameraPosition, 0.0);
+    const float sunUp = saturate(g_Water.dirToSun.y);
+    // Caustics on what the camera sees under water.
+    const float pointDepth = g_Water.surfaceY - farPos.y;
+    [branch] if (rawDepth > 0.0 && pointDepth > 0.05 && g_Water.caustics > 0.0) {
+        const float2 cp = farPos.xz + g_Water.dirToSun.xz / max(g_Water.dirToSun.y, 0.2) * pointDepth;
+        const float c = Caustics(cp, t) * saturate(pointDepth * 2.0) * exp(-pointDepth / max(g_Water.clarity * 1.5, 0.1));
+        scene *= 1.0 + c * g_Water.caustics * sunUp * SunShadow(farPos, dist);
+    }
+
+    // Absorption along the view ray and the light the water scatters back.
+    const float3 transmittance = exp(-dist / max(g_Water.clarity, 0.05) * float3(0.9, 0.32, 0.2));
+    const float3 inscatter = UnderwaterBodyColor(camDepth + max(-dir.y, 0.0) * min(dist, 30.0) * 0.5, shadow);
+    float3 color = scene * transmittance + inscatter * (1.0 - transmittance);
+
+    // Light shafts: the caustic web projected down along the sun, sampled along the first meters of the ray.
+    const uint steps = 12;
+    const float reach = min(dist, 24.0);
+    float shafts = 0.0;
+    [loop] for (uint s = 0; s < steps; ++s) {
+        const float d = (float(s) + Hash(uv * 731.0 + float(s))) / float(steps) * reach;
+        const float3 p = g_Water.cameraPosition + dir * d;
+        const float depthBelow = max(g_Water.surfaceY - p.y, 0.0);
+        const float2 cp = p.xz + g_Water.dirToSun.xz / max(g_Water.dirToSun.y, 0.2) * depthBelow;
+        shafts += Caustics(cp * 0.35, t * 0.6) * exp(-depthBelow / max(g_Water.clarity * 2.0, 0.1)) * exp(-d / max(g_Water.clarity * 1.5, 0.1));
+    }
+    const float towardsSun = 0.35 + 0.65 * pow(saturate(dot(dir, SunDirUnderwater())), 3.0);
+    color += g_Water.scatterColor * g_Water.sunRadiance / ATM_PI * (shafts / float(steps)) * reach * 0.02 * towardsSun * sunUp * shadow *
+             g_Water.caustics;
+
+    // A thin dark meniscus where the waterline crosses the lens.
+    color *= 1.0 - 0.6 * smoothstep(0.004, 0.0, abs(under));
     return float4(min(color, 60000.0), 1.0);
 }

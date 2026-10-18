@@ -36,6 +36,7 @@
 #include "Engine/Scripting.h"
 #include "Engine/Terrain.h"
 #include "Engine/SoftBody.h"
+#include "Engine/WaterPhysics.h"
 #include "Engine/GameUI.h"
 #include "Engine/Wind.h"
 #include "UI/UI.h"
@@ -142,6 +143,7 @@ private:
     FireSystem m_fire;
     TerrainSystem m_terrains;
     SoftBodySystem m_softBodies;
+    WaterSystem m_water;
     GameUISystem m_gameUI;
     ui::FontSystem m_fonts;
     UniquePtr<ui::Context> m_uiContext; // loads the fonts
@@ -360,7 +362,7 @@ bool Game::Frame()
     }
     if (!m_started && ready) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water};
         BeginGame(m_world, s);
         m_started = true;
         m_startFrame = m_frame;
@@ -383,7 +385,7 @@ bool Game::Frame()
 
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water};
         ListenerPose fallback;
         fallback.position = m_sceneCamera.position;
         TickGame(m_world, s, dt, m_captured || m_autotest ? &m_input : nullptr, GameListener(m_world, fallback));
@@ -394,7 +396,7 @@ bool Game::Frame()
     scene::UpdateWorldTransforms(m_world);
     {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water};
         const f32 gameDt = m_started ? dt * GameTimeScale(s) : dt; // time.scale (pause menus)
         m_particles.Tick(m_world, gameDt, m_started);
         m_animation->Tick(m_world, gameDt, m_started);
@@ -490,7 +492,7 @@ void Game::Shutdown()
     }
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, {}, nullptr, &m_softBodies, &m_gameUI};
+                      &m_inputActions, &m_inputActionState, {}, nullptr, &m_softBodies, &m_gameUI, &m_water};
         EndGame(s);
     }
     ClearScene(m_world);

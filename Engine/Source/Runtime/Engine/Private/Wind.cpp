@@ -61,6 +61,12 @@ void TickWind(ecs::World& world, f32 dt)
     c->time += f64(Clamp(dt, 0.0f, 0.25f));
 }
 
+f64 EnvironmentTime(ecs::World& world)
+{
+    const WindClock* c = world.GetSingleton<WindClock>();
+    return c ? c->time : -1.0;
+}
+
 bool HasWind(ecs::World& world)
 {
     bool any = false;
