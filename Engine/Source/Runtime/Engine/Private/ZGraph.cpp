@@ -535,6 +535,13 @@ struct Codegen
     Array<Function> functions;
     Array<CodeLine> updatePrelude; // delays, timers, key events (run before the On Update chains)
     bool delays = false;
+    bool trace = false;
+
+    void Trace(Array<CodeLine>& body, u32 level, u32 node)
+    {
+        if (trace)
+            Emit(body, level, String::Format("__trace({})", node), node);
+    }
 
     static String Indent(u32 level) { return String(StringView("                                                ", Min<u32>(level * 4, 48))); }
 
@@ -663,6 +670,7 @@ struct Codegen
             return;
         }
         stack.PushBack(n.id);
+        Trace(body, level, n.id);
         const String id = String::Format("{}", n.id);
         const StringView t = n.type.View();
         if (d->kind == K::Action) {
@@ -739,6 +747,7 @@ struct Codegen
             const StringView code = d->code;
             if (code.StartsWith("@update:")) {
                 Emit(updatePrelude, 2, String::Format("if {} {{", Expand(n, *d, code.DropLeft(8), 0)), n.id);
+                Trace(updatePrelude, 3, n.id);
                 Chain(n, "then", updatePrelude, 3, stack);
                 Emit(updatePrelude, 2, "}", n.id);
             } else if (code == "@every") {
@@ -747,6 +756,7 @@ struct Codegen
                 Emit(updatePrelude, 2, String::Format("_t{} += dt", n.id), n.id);
                 Emit(updatePrelude, 2, String::Format("if _t{} >= {} {{", n.id, seconds), n.id);
                 Emit(updatePrelude, 3, String::Format("_t{} -= {}", n.id, seconds), n.id);
+                Trace(updatePrelude, 3, n.id);
                 Chain(n, "then", updatePrelude, 3, stack);
                 Emit(updatePrelude, 2, "}", n.id);
             } else {
@@ -754,9 +764,11 @@ struct Codegen
                 const String widget = Setting(n, *d, "widget");
                 if (!widget.Empty()) {
                     Emit(f.body, 2, String::Format("if name == {} {{", Quote(widget)), n.id);
+                    Trace(f.body, 3, n.id);
                     Chain(n, "then", f.body, 3, stack);
                     Emit(f.body, 2, "}", n.id);
                 } else {
+                    Trace(f.body, 2, n.id);
                     Chain(n, "then", f.body, 2, stack);
                 }
             }
@@ -821,10 +833,10 @@ struct Codegen
 
 } // namespace
 
-bool CompileGraph(const Graph& graph, GraphCompileResult& out)
+bool CompileGraph(const Graph& graph, GraphCompileResult& out, bool trace)
 {
     out = GraphCompileResult();
-    Codegen c{graph, out, {}, {}, {}, false};
+    Codegen c{graph, out, {}, {}, {}, false, trace};
     c.Run();
     c.Write();
     return out.errors.Empty();

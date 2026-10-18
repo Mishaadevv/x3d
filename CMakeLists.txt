@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 
 # Engine version (single source of truth: Core/Version.h and the executables' version resources read it).
 # Scheme: 0.<last closed milestone>.<release within it> until 1.0 (see docs/CHANGELOG.md).
-project(ZeqouX3D VERSION 0.13.22 LANGUAGES CXX RC)
+project(ZeqouX3D VERSION 0.13.23 LANGUAGES CXX RC)
 
 if(NOT MSVC)
     message(FATAL_ERROR "ZeqouX3D currently supports only MSVC on Windows.")

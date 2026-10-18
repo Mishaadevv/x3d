@@ -2,6 +2,7 @@
 #include "Editor.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/String/Path.h"
+#include "Core/Time/Time.h"
 
 ZX_DEFINE_LOG_CATEGORY_STATIC(LogGraphEditor, Info);
 
@@ -200,7 +201,22 @@ String ValueText(const GraphNode& n, const GraphPinDef& pin)
     return String(text);
 }
 
-void DrawNode(const Graph& g, ui::DrawList& dl, const Canvas& c, const GraphNode& n, bool selected, bool error)
+constexpr f64 HitGlowSeconds = 0.45;
+
+/// 0..1: how recently a node ran (debugging).
+f32 Glow(const ZGraphEditorState& st, u32 node)
+{
+    const f64* t = st.hits.Find(node);
+    if (!t)
+        return 0.0f;
+    // Paused: the time stands still, so the last frame's path stays lit.
+    const f64 now = st.frozenAt > 0.0 ? st.frozenAt : Clock::NowSeconds();
+    const f64 age = now - *t;
+    return age < HitGlowSeconds ? f32(1.0 - age / HitGlowSeconds) : 0.0f;
+}
+
+void DrawNode(const Graph& g, ui::DrawList& dl, const Canvas& c, const GraphNode& n, bool selected, bool error, f32 glow, bool breakpoint,
+              bool breakHere)
 {
     ui::Context& ctx = *ui::GetCurrentContext();
     const ui::Theme& th = ctx.GetStyle().colors;
@@ -214,9 +230,16 @@ void DrawNode(const Graph& g, ui::DrawList& dl, const Canvas& c, const GraphNode
                error ? th.error : selected ? th.accentHovered : Color(0x10, 0x10, 0x12));
     if (selected && !error)
         dl.AddRect(r.Expanded(1.5f * k), Color(0, 0, 0, 0), ui::CornerRadii(7.5f * k), 1.5f * k, th.accentHovered);
+    // Debugging: the node just ran (fading glow), paused here (steady red).
+    if (glow > 0.0f)
+        dl.AddRect(r.Expanded(3.0f * k), Color(0, 0, 0, 0), ui::CornerRadii(9.0f * k), 2.5f * k, Color(0xFF, 0xC8, 0x3C, u8(glow * 255.0f)));
+    if (breakHere)
+        dl.AddRect(r.Expanded(4.0f * k), Color(0, 0, 0, 0), ui::CornerRadii(10.0f * k), 3.0f * k, Color(0xF0, 0x4A, 0x4A));
     const Rect header(r.min, Vec2(r.max.x, r.min.y + HeaderHeight * k));
     const Color hc = d ? KindColor(d->kind) : th.error;
     dl.AddRectGradient(header.Expanded(-1.0f), hc, WithAlpha(hc, 0.5f), ui::GradientDirection::Horizontal, ui::CornerRadii::Top(5.0f * k));
+    if (breakpoint) // a red dot on the header, like a code breakpoint
+        dl.AddCircle(Vec2(r.min.x - 1.0f * k, header.Center().y), 6.0f * k, Color(0xE0, 0x40, 0x40), 1.5f * k, Color(255, 255, 255));
     if (k < 0.45f)
         return;
     const ui::FontHandle semi = ctx.Fonts().FindFont("Inter SemiBold");
@@ -451,8 +474,10 @@ void BeginEdit(ZGraphEditorState& st, StringView field)
     }
 }
 
-void VariablesPanel(ZGraphEditorState& st)
+void VariablesPanel(Editor& ed, ZGraphEditorState& st)
 {
+    const bool live = ed.IsPlaying() && ed.scripts && st.debugEntity;
+    const String relative = Path::MakeRelative(st.path, ed.contentRoot);
     static const StringView TypeNames[] = {"Number", "Bool", "String", "Vector", "Entity"};
     static const GraphPinType Types[] = {GraphPinType::Number, GraphPinType::Bool, GraphPinType::String, GraphPinType::Vec3, GraphPinType::Entity};
     ui::SeparatorText("Variables");
@@ -500,6 +525,9 @@ void VariablesPanel(ZGraphEditorState& st)
                 Changed(st);
             }
         }
+        String current;
+        if (live && ed.scripts->ReadField(st.debugEntity, relative, v.name, current))
+            ui::TextColored(ui::GetCurrentContext()->GetStyle().colors.accentHovered, String::Format(ZX_ICON_ACTIVITY "  now: {}", current));
         if (v.type != GraphPinType::Entity) {
             bool exposed = v.exposed;
             if (ui::Checkbox("Exposed", &exposed)) {
@@ -628,6 +656,36 @@ void DetailsPanel(ZGraphEditorState& st)
 
 } // namespace
 
+void ZGraphTrace(Editor& ed, StringView file, ecs::Entity entity, u32 node)
+{
+    ZGraphEditorState& st = ed.graphEditor;
+    if (!st.open || !Path::MakeRelative(st.path, ed.contentRoot).EqualsIgnoreCase(file))
+        return;
+    if (!st.debugEntity)
+        st.debugEntity = entity; // the first one that runs
+    if (entity != st.debugEntity)
+        return;
+    st.hits.InsertOrAssign(node, Clock::NowSeconds());
+    if (st.breakpoints.Contains(node) && !st.breakPending && ed.playState == PlayState::Playing) {
+        st.breakPending = true;
+        st.breakNode = node;
+    }
+}
+
+void ZGraphAfterTick(Editor& ed)
+{
+    ZGraphEditorState& st = ed.graphEditor;
+    if (!st.breakPending)
+        return;
+    st.breakPending = false;
+    if (ed.playState == PlayState::Playing) {
+        ed.TogglePause();
+        const GraphNode* n = st.graph.FindNode(st.breakNode);
+        const GraphNodeDef* d = n ? FindGraphNode(n->type) : nullptr;
+        ZX_LOG_INFO(LogGraphEditor, "Breakpoint: {} '{}' (#{}) - F6 continues, F10 steps a frame", Path::FileName(st.path), d ? d->title : "?", st.breakNode);
+    }
+}
+
 bool CreateZGraphFile(StringView physicalPath)
 {
     Graph g;
@@ -657,7 +715,10 @@ void OpenZGraphEditor(Editor& ed, StringView physicalPath)
         ZX_LOG_ERROR(LogGraphEditor, "Can't open {}: {}", physicalPath, error);
         return;
     }
+    const bool same = st.path == physicalPath;
+    Array<u32> breakpoints = same ? st.breakpoints : Array<u32>();
     st = ZGraphEditorState();
+    st.breakpoints = move(breakpoints);
     st.open = true;
     st.path = String(physicalPath);
     st.graph = move(g);
@@ -714,6 +775,46 @@ void DrawZGraphEditorPanel(Editor& ed)
     ui::SameLine(0.0f, 8.0f);
     if (ui::Button(ZX_ICON_SCAN "  Frame"))
         st.frameRequested = true;
+    // Debugging while playing: whose graph is shown, and where it stopped.
+    const String relative = Path::MakeRelative(st.path, ed.contentRoot);
+    if (!ed.IsPlaying()) {
+        st.hits.Clear();
+        st.debugEntity = {};
+        st.breakNode = 0;
+    } else if (ed.scripts) {
+        Array<ecs::Entity> running;
+        ed.scripts->InstancesOf(relative, running);
+        ui::SameLine(0.0f, 16.0f);
+        if (running.Empty()) {
+            ui::TextDisabled(ZX_ICON_BUG "  Not running on any entity");
+        } else {
+            if (!running.Contains(st.debugEntity))
+                st.debugEntity = running[0];
+            Array<String> names;
+            Array<StringView> items;
+            i32 current = 0;
+            for (usize i = 0; i < running.Size(); ++i) {
+                const scene::EntityName* n = ed.world.Get<const scene::EntityName>(running[i]);
+                names.PushBack(String::Format(ZX_ICON_BUG "  {}", n ? n->value.View() : StringView("Entity")));
+                if (running[i] == st.debugEntity)
+                    current = i32(i);
+            }
+            for (const String& n : names)
+                items.PushBack(n.View());
+            ui::SetNextItemWidth(170.0f);
+            if (ui::Combo("##zg_debug", &current, items.View()) && current >= 0) {
+                st.debugEntity = running[usize(current)];
+                st.hits.Clear();
+            }
+            ui::ItemTooltip("The entity whose graph is shown running (highlights, variable values, breakpoints)");
+        }
+        if (ed.playState == PlayState::Paused && st.breakNode) {
+            const GraphNode* n = st.graph.FindNode(st.breakNode);
+            const GraphNodeDef* d = n ? FindGraphNode(n->type) : nullptr;
+            ui::SameLine(0.0f, 12.0f);
+            ui::TextColored(th.error, String::Format(ZX_ICON_CIRCLE_PAUSE "  Breakpoint: {} (#{})   F6 continue, F10 next frame", d ? d->title : "?", st.breakNode));
+        }
+    }
 
     // --- Layout: variables | canvas | details ---
     const Rect content = ui::GetWindowContentRect();
@@ -939,7 +1040,12 @@ void DrawZGraphEditorPanel(Editor& ed)
         if (pa < 0 || pb < 0)
             continue;
         const GraphPinType type = st.graph.PinType(*a, da->outputs[pa]);
-        DrawWire(dl, PinPos(c, *a, u32(pa), true), PinPos(c, *b, u32(pb), false), WithAlpha(TypeColor(type), 0.9f), c.scale, type == GraphPinType::Exec);
+        const bool exec = type == GraphPinType::Exec;
+        const f32 glow = exec ? Min(Glow(st, a->id), Glow(st, b->id)) : Glow(st, b->id);
+        const Vec2 from = PinPos(c, *a, u32(pa), true), to = PinPos(c, *b, u32(pb), false);
+        if (glow > 0.0f) // the wire the game just went along
+            DrawWire(dl, from, to, Color(0xFF, 0xC8, 0x3C, u8(glow * 200.0f)), c.scale * 2.2f, exec);
+        DrawWire(dl, from, to, WithAlpha(TypeColor(type), 0.9f), c.scale, exec);
     }
     if (st.drag == ZGraphEditorState::Drag::Link)
         if (const GraphNode* n = st.graph.FindNode(st.linkNode)) {
@@ -954,8 +1060,14 @@ void DrawZGraphEditorPanel(Editor& ed)
         }
 
     // --- Nodes ---
+    const bool paused = ed.playState == PlayState::Paused;
+    if (paused && st.frozenAt <= 0.0)
+        st.frozenAt = Clock::NowSeconds();
+    else if (!paused)
+        st.frozenAt = 0.0;
     for (const GraphNode& n : st.graph.nodes)
-        DrawNode(st.graph, dl, c, n, st.selection.Contains(n.id), st.compiled.errorNodes.Contains(n.id));
+        DrawNode(st.graph, dl, c, n, st.selection.Contains(n.id), st.compiled.errorNodes.Contains(n.id), ed.IsPlaying() ? Glow(st, n.id) : 0.0f,
+                 st.breakpoints.Contains(n.id), paused && st.breakNode == n.id);
     if (hotIsPin)
         if (const GraphNode* n = st.graph.FindNode(hotNode)) {
             const i32 pi = PinIndex(FindGraphNode(n->type), hotPin, hotPinOutput);
@@ -977,6 +1089,13 @@ void DrawZGraphEditorPanel(Editor& ed)
             Paste(st, CopySelection(st), c.ToGraph(st.rightPress) + Vec2(24.0f));
         if (ui::MenuItem(ZX_ICON_CLIPBOARD_COPY "  Copy", "Ctrl+C"))
             st.clipboard = CopySelection(st);
+        if (ui::MenuItem(ZX_ICON_CIRCLE_DOT "  Toggle Breakpoint", "F9"))
+            for (u32 id : st.selection) {
+                if (st.breakpoints.Contains(id))
+                    st.breakpoints.Remove(id);
+                else
+                    st.breakpoints.PushBack(id);
+            }
         if (ui::MenuItem(ZX_ICON_UNLINK "  Break Links")) {
             PushUndo(st);
             for (u32 id : st.selection)
@@ -1006,6 +1125,13 @@ void DrawZGraphEditorPanel(Editor& ed)
         }
         if (ui::IsKeyPressed(Key::F, false))
             st.frameRequested = true;
+        if (ui::IsKeyPressed(Key::F9, false)) // breakpoints on the selected nodes
+            for (u32 id : st.selection) {
+                if (st.breakpoints.Contains(id))
+                    st.breakpoints.Remove(id);
+                else
+                    st.breakpoints.PushBack(id);
+            }
     }
     if (ui::IsWindowHovered() || st.capturesKeys) {
         if (ui::IsShortcutPressed(KeyModifiers::Control, Key::S))
@@ -1028,7 +1154,7 @@ void DrawZGraphEditorPanel(Editor& ed)
     // --- Side panels ---
     ui::SetCursorPos(leftRect.min);
     if (ui::BeginChild("##zg_left", leftRect.Size() / s, false))
-        VariablesPanel(st);
+        VariablesPanel(ed, st);
     ui::EndChild();
     ui::SetCursorPos(rightRect.min);
     if (ui::BeginChild("##zg_right", rightRect.Size() / s, false))

@@ -4,7 +4,9 @@
 // the selected node's settings and the generated code on the right.
 
 #include "Engine/ZGraph.h"
+#include "Core/Containers/HashMap.h"
 #include "Core/Math/Geometry.h"
+#include "Scene/ECS/World.h"
 
 namespace zx::editor {
 
@@ -50,10 +52,22 @@ struct ZGraphEditorState
     u32 addLinkNode = 0;
     String addLinkPin;
     bool addLinkFromOutput = false;
+
+    // Debugging (while playing): which nodes ran when, breakpoints, the entity being watched.
+    Array<u32> breakpoints;
+    HashMap<u32, f64> hits; // node -> time it last ran
+    ecs::Entity debugEntity;
+    u32 breakNode = 0;      // paused at this breakpoint
+    bool breakPending = false;
+    f64 frozenAt = 0.0; // paused: highlights keep this moment
 };
 
 void OpenZGraphEditor(Editor& ed, StringView physicalPath);
 void DrawZGraphEditorPanel(Editor& ed);
+/// ScriptSystem::onGraphTrace: a node of `file` ran on `entity`.
+void ZGraphTrace(Editor& ed, StringView file, ecs::Entity entity, u32 node);
+/// After the game ticked: a breakpoint that was hit pauses Play.
+void ZGraphAfterTick(Editor& ed);
 /// A new graph file with On Start / On Update (returns false if it can't be written).
 bool CreateZGraphFile(StringView physicalPath);
 

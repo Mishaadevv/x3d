@@ -202,6 +202,10 @@ ZGraph (0.13.21): Engine/ZGraph.h (.zgraph JSON: ParseGraph / WriteGraph; GraphN
 templates {pin} {@setting} {#id}; CompileGraph -> ZeqouScript source + lineNodes for errors; MakeExampleGraph).
 ScriptSystem::CheckForChanges compiles .zgraph through it (Script component takes .zs or .zgraph). Tests ZGraph.*
 (every library node must generate compilable script). Console graph.code / graph.new / script.attach.
+ZGraph debugging (0.13.23): CompileGraph(..., trace) emits __trace(node) per event / statement; ScriptSystem::
+traceGraphs (editor on, ZXGame off) + onGraphTrace(file, entity, node) via m_current (set in RebindGlobals);
+InstancesOf / ReadField for live values; editor ZGraphTrace / ZGraphAfterTick (breakpoint -> TogglePause after
+TickGame), hits glow (frozen while paused). Console graph.break.
 ZGraph editor (0.13.22): ZXEditor/ZGraphEditor.cpp (Editor::graphEditor, window "Script Graph"; canvas like the
 Material Editor; snapshot undo = WriteGraph; Graph::PinType gives Get / Set Variable pins their variable's type;
 GraphCompileResult::errorNodes). Console graph.edit. Real-mouse checks: scratchpad uidrag2.py also has "type:text"

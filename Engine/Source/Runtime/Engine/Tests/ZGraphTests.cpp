@@ -184,3 +184,39 @@ ZX_TEST(ZGraph, RunsOnEntities)
     scripts.End();
     platform::DeleteDirectoryTree(root);
 }
+
+ZX_TEST(ZGraph, TracesNodesForTheDebugger)
+{
+    // Traced graphs report every event and statement as it runs (the editor highlights them, breakpoints pause).
+    GraphCompileResult traced;
+    ZX_REQUIRE(CompileGraph(MakeExampleGraph(), traced, true));
+    ZX_EXPECT(traced.source.Contains("__trace(1)"));
+    ZX_EXPECT(CompilesAsScript(traced.source));
+    const String root = Path::Join(Path::Normalize(platform::GetTempDirectory()), "zx_zgraph_trace");
+    platform::DeleteDirectoryTree(root);
+    ZX_REQUIRE(fs::WriteTextFile(root + "/Scripts/Spin.zgraph", WriteGraph(MakeExampleGraph())));
+    ecs::World world;
+    scene::InstallHierarchyHooks(world);
+    const ecs::Entity e = scene::CreateNode(world, "Spinner");
+    world.Add(e, Script{String("Scripts/Spin.zgraph"), String()});
+    ScriptSystem scripts;
+    scripts.SetContentRoot(root);
+    scripts.traceGraphs = true;
+    Array<u32> nodes;
+    scripts.onGraphTrace = [&](StringView file, ecs::Entity entity, u32 node) {
+        if (file == "Scripts/Spin.zgraph" && entity == e)
+            nodes.PushBack(node);
+    };
+    scripts.Begin(world);
+    scripts.Tick(world, 0.016f, nullptr);
+    ZX_EXPECT(nodes.Contains(1u)); // On Update
+    ZX_EXPECT(nodes.Contains(2u)); // Rotate
+    ZX_EXPECT(!nodes.Contains(7u)); // Set Variable: only on Space
+    Array<ecs::Entity> running;
+    scripts.InstancesOf("Scripts/Spin.zgraph", running);
+    ZX_EXPECT(running.Size() == 1u && running[0] == e);
+    String speed;
+    ZX_EXPECT(scripts.ReadField(e, "Scripts/Spin.zgraph", "speed", speed) && speed == "90");
+    scripts.End();
+    platform::DeleteDirectoryTree(root);
+}

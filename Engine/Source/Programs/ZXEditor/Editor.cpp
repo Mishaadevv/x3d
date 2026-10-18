@@ -241,6 +241,9 @@ bool Editor::Initialize()
     };
     scripts.Reset(new ScriptSystem());
     scripts->SetContentRoot(contentRoot);
+    // Script graphs report the nodes they run (the graph editor highlights them, breakpoints pause Play).
+    scripts->traceGraphs = true;
+    scripts->onGraphTrace = [this](StringView file, ecs::Entity e, u32 node) { ZGraphTrace(*this, file, e, node); };
     animation->contentRoot = contentRoot; // Animator graphs (.zanimgraph)
     gameUI.contentRoot = contentRoot;     // UI Canvas styles (.zstyle)
     localization.Load(contentRoot);       // Localization/*.zloc (the editor previews; the player's choice isn't saved here)
@@ -3682,6 +3685,7 @@ bool Editor::Frame()
         GameSystems systems = GameSystemsForPlay();
         // While a UI Input Field has the keyboard the game gets no input (typing doesn't move the player).
         TickGame(world, systems, gameDt, gameInputCaptured && !gameUI.WantsKeyboard() ? &input : nullptr, CurrentListener(), !m_pieStep);
+        ZGraphAfterTick(*this); // a graph breakpoint pauses here
         m_pieStep = false;
     } else if (audio && !IsPlaying()) {
         audio->TickIdle(dt); // previews

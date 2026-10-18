@@ -137,7 +137,8 @@ struct GraphCompileResult
 };
 
 /// Graph -> ZeqouScript source. False when the graph has errors (the source is still produced for inspection).
-bool CompileGraph(const Graph& graph, GraphCompileResult& out);
+/// `trace`: every event and statement first calls __trace(nodeId) (the editor's graph debugger).
+bool CompileGraph(const Graph& graph, GraphCompileResult& out, bool trace = false);
 /// "file.zgraph:LINE:COL: message" from the script compiler -> the node it belongs to.
 String DescribeGraphError(const Graph& graph, const GraphCompileResult& result, u32 line, StringView message);
 

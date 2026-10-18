@@ -108,6 +108,14 @@ public:
     /// Calls onUIClick(name) / onUIChanged(name, value) on the widget's scripts and its ancestors' (the canvas).
     void DispatchUIEvents(ecs::World& world, Span<const UIEvent> events);
 
+    /// Script graphs compile with __trace(node) calls, reported here (the editor's graph debugger).
+    bool traceGraphs = false;
+    Function<void(StringView file, ecs::Entity entity, u32 node)> onGraphTrace;
+    /// Entities running `file` (content-relative).
+    void InstancesOf(StringView file, Array<ecs::Entity>& out) const;
+    /// A field (var / prop) of the script `file` running on `entity`, as text. False if there's none.
+    bool ReadField(ecs::Entity entity, StringView file, StringView field, String& out) const;
+
     /// log()/print() output and errors (file:line: message).
     Function<void(StringView message, bool isError)> onLog;
     /// Material id -> name, for surface types (hit.surface, character.surface); set by the host.
@@ -131,6 +139,7 @@ private:
     Array<script::Program*> m_retired; // replaced by hot reload, freed when no instance uses them
     f64 m_checkTimer = 0.0;
     bool m_running = false;
+    RunningScript* m_current = nullptr; // the script being called (for __trace)
 
 public:
     // State the native bindings read (valid during Tick).

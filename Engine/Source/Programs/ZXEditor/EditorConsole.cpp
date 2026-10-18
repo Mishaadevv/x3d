@@ -476,6 +476,18 @@ ConCommand CmdGraphEdit("graph.edit", "Opens a script graph in the graph editor:
         OpenZGraphEditor(*ed, Path::Join(ed->contentRoot, args[0]));
 });
 
+ConCommand CmdGraphBreak("graph.break", "Toggles a breakpoint on a node of the open script graph: graph.break <node id>", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || args.Empty() || !ed->graphEditor.open)
+        return;
+    const u32 id = u32(ParseInt(args[0]).ValueOr(0));
+    Array<u32>& b = ed->graphEditor.breakpoints;
+    if (b.Contains(id))
+        b.Remove(id);
+    else
+        b.PushBack(id);
+});
+
 ConCommand CmdGraphNew("graph.new", "Writes an example script graph (a spinner): graph.new <Content path .zgraph>", [](Span<const StringView> args) {
     Editor* ed = Ed();
     if (!ed || args.Empty())

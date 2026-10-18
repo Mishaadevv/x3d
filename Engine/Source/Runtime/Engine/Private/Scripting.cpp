@@ -1271,6 +1271,13 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
     };
     vm.SetGlobal("lang", script::MakeNative(langType, this));
 
+    // Graph debugging: compiled graphs call __trace(node) before each step (when traceGraphs is on).
+    vm.SetGlobal("__trace", script::MakeNativeFunction("__trace", [this](script::VM&, Span<const Value> a, Value&) {
+                     if (onGraphTrace && m_current && m_current->source && !a.Empty() && a[0].IsNumber())
+                         onGraphTrace(m_current->source->file, m_current->entity, u32(a[0].AsFloat()));
+                     return true;
+                 }));
+
     vm.SetGlobal("find", script::MakeNativeFunction("find", [this](script::VM& v, Span<const Value> a, Value& out) {
                      if (a.Size() != 1 || a[0].Type() != ValueType::String)
                          return v.Fail("find(\"Entity Name\")");
@@ -1368,7 +1375,7 @@ void ScriptSystem::CheckForChanges()
         const bool isGraph = Path::HasExtension(cp.file, ".zgraph");
         if (isGraph) {
             String graphError;
-            if (!ParseGraph(source, graph, &graphError) || !CompileGraph(graph, generated)) {
+            if (!ParseGraph(source, graph, &graphError) || !CompileGraph(graph, generated, traceGraphs)) {
                 cp.error = String::Format("{}: {}", cp.file, graphError.Empty() ? generated.errors[0] : graphError);
                 cp.errorReported = false;
                 if (m_running) {
@@ -1435,8 +1442,28 @@ void ScriptSystem::CheckForChanges()
     });
 }
 
+void ScriptSystem::InstancesOf(StringView file, Array<ecs::Entity>& out) const
+{
+    out.Clear();
+    for (const UniquePtr<RunningScript>& rs : m_instances)
+        if (rs->source && rs->source->file.EqualsIgnoreCase(file) && !rs->failed)
+            out.PushBack(rs->entity);
+}
+
+bool ScriptSystem::ReadField(ecs::Entity entity, StringView file, StringView field, String& out) const
+{
+    for (const UniquePtr<RunningScript>& rs : m_instances)
+        if (rs->entity == entity && rs->source && rs->source->file.EqualsIgnoreCase(file) && rs->instance)
+            if (const Value* v = rs->instance->Field(field)) {
+                out = v->ToString();
+                return true;
+            }
+    return false;
+}
+
 void ScriptSystem::RebindGlobals(RunningScript& rs)
 {
+    m_current = &rs;
     m_vm->SetGlobal("entity", rs.self);
     m_vm->SetGlobal("transform", rs.self);
     m_vm->SetGlobal("character", rs.character);
@@ -1457,6 +1484,7 @@ void ScriptSystem::Begin(ecs::World& world)
 void ScriptSystem::StartInstances(ecs::World& world)
 {
     // Drop instances whose entity or component is gone.
+    m_current = nullptr; // (instances may go away)
     m_instances.RemoveIf([&](const UniquePtr<RunningScript>& rs) {
         const Script* s = world.IsAlive(rs->entity) ? world.Get<const Script>(rs->entity) : nullptr;
         return !s || !rs->source || s->file != rs->source->file;
@@ -1649,6 +1677,7 @@ void ScriptSystem::DispatchAnimEvents(ecs::World& world, Span<const AnimEvent> e
 void ScriptSystem::End()
 {
     m_instances.Clear();
+    m_current = nullptr;
     if (m_vm) {
         m_vm->SetGlobal("entity", Value());
         m_vm->SetGlobal("transform", Value());
