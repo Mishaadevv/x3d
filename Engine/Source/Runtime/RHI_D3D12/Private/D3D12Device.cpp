@@ -127,6 +127,10 @@ bool D3D12Device::Init(const DeviceDesc& desc)
         if (SUCCEEDED(D3D12GetDebugInterface(ZX_DX_PPV(dred)))) {
             dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
             dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            // Event names (the render graph's pass names) in the breadcrumbs: a device loss names the pass.
+            ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred1;
+            if (SUCCEEDED(dred.As(dred1)))
+                dred1->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
         }
     }
 
@@ -912,7 +916,12 @@ void D3D12Device::Destroy(Resource* resource)
     if (!resource)
         return;
     ScopedLock<Mutex> guard(m_deleteMutex);
-    CurrentFrame().pendingDeletes.PushBack(resource);
+    // Between frames (EndFrame already advanced the index) the resource may still be in use by the frame just
+    // submitted: queue it with that frame, whose fence is waited before its slot frees it. Queuing it with the next
+    // slot would free it as soon as that slot's old fence (three frames back) passed - a page fault while the GPU is
+    // still drawing the last frame (resizing the viewport under GPU load).
+    FrameContext& f = m_frameActive || m_frameIndex == 0 ? CurrentFrame() : m_frames[(m_frameIndex - 1) % FramesInFlight];
+    f.pendingDeletes.PushBack(resource);
 }
 
 void D3D12Device::DestroyImmediate(Resource* resource)
@@ -1102,6 +1111,22 @@ void D3D12Device::OnDeviceRemoved(HRESULT reason)
                         ops += String::Format("{}{}{} ", k == completed ? "[" : "", u32(node->pCommandHistory[k]), k == completed ? "]" : "");
                     ZX_LOG_ERROR(LogD3D12, "  DRED: ops {}", ops);
                 }
+            }
+        }
+        // Pass names (event strings) around the op that did not finish.
+        ComPtr<ID3D12DeviceRemovedExtendedData1> dred1;
+        D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs1 = {};
+        if (SUCCEEDED(dred.As(dred1)) && SUCCEEDED(dred1->GetAutoBreadcrumbsOutput1(&breadcrumbs1))) {
+            for (const D3D12_AUTO_BREADCRUMB_NODE1* node = breadcrumbs1.pHeadAutoBreadcrumbNode; node; node = node->pNext) {
+                const u32 completed = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+                if (completed >= node->BreadcrumbCount)
+                    continue;
+                const wchar_t* last = nullptr;
+                for (u32 c = 0; c < node->BreadcrumbContextsCount; ++c)
+                    if (node->pBreadcrumbContexts[c].BreadcrumbIndex <= completed)
+                        last = node->pBreadcrumbContexts[c].pContextString;
+                if (last)
+                    ZX_LOG_ERROR(LogD3D12, "  DRED: hung in '{}'", Utf16ToUtf8(last));
             }
         }
         D3D12_DRED_PAGE_FAULT_OUTPUT pageFault = {};

@@ -55,7 +55,7 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     return m_scene.Init(m_hdrFormat, DepthFormat()) && m_captureScene.Init(m_hdrFormat, DepthFormat()) && m_reflections.Init() && m_sky.Init(m_hdrFormat, DepthFormat()) && m_post.Init(outputFormat) &&
            m_taa.Init() && m_outline.Init(outputFormat) && m_water.Init(m_hdrFormat, DepthFormat(), lite) &&
            m_particleRenderer.Init(m_hdrFormat) && m_volumetric.Init(m_hdrFormat) &&
-           m_clouds.Init(m_hdrFormat) && m_fluids.Init(m_hdrFormat);
+           m_clouds.Init(m_hdrFormat, lite) && m_fluids.Init(m_hdrFormat);
 }
 
 void ViewportRenderer::ResolveHdriSky(ecs::World& world)
@@ -387,7 +387,9 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     {
         render::CloudSettings clouds = FindClouds(world);
         clouds.enabled &= features.clouds && m_settings.useSky && !m_settings.sky.hdri.IsActive();
-        m_clouds.AddPasses(graph, sceneColor, sceneDepth, view, m_viewProjNoJitter, m_lighting, clouds, exposure, f32(std::fmod(m_time, 3600.0)));
+        const f64 cloudClock = EnvironmentTime(world); // game time: pausing the game stops the clouds too
+        m_clouds.AddPasses(graph, sceneColor, sceneDepth, view, m_viewProjNoJitter, m_lighting, clouds, m_settings.useSky ? &m_sky : nullptr,
+                           exposure, f32(std::fmod(cloudClock >= 0.0 ? cloudClock : m_time, 3600.0)));
     }
     // Water after the sky (its refraction sees the sky) and before the fog (which then covers it too).
     m_waterSurfaces.Clear();

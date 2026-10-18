@@ -141,21 +141,49 @@ ZX_DECLARE_TYPE(HeightFog);
 /// A local volume of fog, mist, steam or smoke (needs a Height Fog with Volumetric on - or none: the default fog is
 /// volumetric). Its size is the entity's scale (a 1 m box / sphere), density fades out at the edge and is broken up by
 /// drifting noise.
-/// Volumetric clouds over the whole scene (the first one counts): a layer of drifting 3D clouds lit by the sun and the
-/// sky (golden at sunset), casting moving shadows on the ground and through the volumetric fog.
+enum class CloudPreset : u8
+{
+    Custom,
+    Clear,       // a few small fair-weather cumulus
+    FairWeather, // scattered cumulus heaps, lots of blue sky
+    Scattered,   // bigger cumulus fields with gaps
+    Cloudy,      // mostly covered, towering heaps
+    Overcast,    // a closed grey stratus deck
+    Storm,       // dark towering cumulonimbus with lightning
+};
+ZX_DECLARE_ENUM(CloudPreset);
+
+/// Volumetric clouds over the whole scene (the first one counts): a layer of 3D clouds around the planet - clusters of
+/// cumulus, flat stratus decks or towering storm clouds - drifting with the wind and slowly changing shape, lit by the
+/// sun (silver linings, golden at sunset) and the sky, casting moving shadows on the ground and through the fog. A
+/// Preset fills in every setting (then tweak them).
 struct VolumetricClouds
 {
+    CloudPreset preset = CloudPreset::Custom;
     f32 coverage = 0.35f;       // 0 = clear sky, 1 = overcast
+    f32 cloudType = 0.5f;       // 0 = flat stratus layers, 0.5 = cumulus heaps, 1 = towering storm clouds
     f32 bottom = 1500.0f;       // m above the ground
-    f32 thickness = 2500.0f;    // m
-    f32 density = 0.03f;        // 1/m in the thick of a cloud
-    f32 detail = 0.35f;         // edges eroded by fine noise (wispy)
+    f32 thickness = 3500.0f;    // m
+    f32 density = 0.04f;        // 1/m in the thick of a cloud
+    f32 detail = 0.6f;          // edges eroded by fine noise: wispy
+    f32 scale = 1.0f;           // size of the clouds
+    f32 evolution = 2.0f;       // m/s: how fast they change shape
     f32 windSpeed = 15.0f;      // m/s
     f32 windDirection = 60.0f;  // degrees around +Y
     Vec3 color = Vec3(1.0f);    // albedo
+    f32 ambient = 1.0f;         // sky light inside the clouds
+    f32 silverLining = 1.0f;    // light scattered around the sun
     f32 shadows = 0.75f;        // how dark their shadows are on the ground
+    f32 lightning = 0.0f;       // 0..1: how often lightning flashes inside them
+    i32 seed = 1;               // the pattern of the cloud fields
+    CloudPreset appliedPreset = CloudPreset::Custom;
 };
 ZX_DECLARE_TYPE(VolumetricClouds);
+
+/// The settings of a cloud preset.
+void ApplyCloudPreset(VolumetricClouds& c, CloudPreset preset);
+/// Applies the presets that changed since last time (the editor calls it every frame).
+void UpdateCloudPresets(ecs::World& world);
 
 /// Real-time smoke and fire: a GPU fluid simulation inside the entity's box (its scale is the size in meters). Hot gas
 /// rises and curls into vortices, smoke drifts and thins out, the hottest gas glows like flames. Expensive: keep the

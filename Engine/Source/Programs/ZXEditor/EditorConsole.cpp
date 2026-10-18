@@ -238,6 +238,30 @@ ConCommand CmdWaterPreset("water.preset", "Applies a water preset to every Water
                                        Ed()->world.Query<Water>().Each([&](ecs::Entity, Water& w) { ApplyWaterPreset(w, WaterPreset(i)); });
                            });
 
+ConCommand CmdCloudPreset("clouds.preset",
+                           "Applies a cloud preset to every Volumetric Clouds: clouds.preset <clear|fairweather|scattered|cloudy|overcast|storm>",
+                           [](Span<const StringView> args) {
+                               if (!Ed() || args.Empty())
+                                   return;
+                               static const char* const Names[] = {"custom", "clear", "fairweather", "scattered", "cloudy", "overcast", "storm"};
+                               for (u32 i = 0; i < ZX_ARRAY_COUNT(Names); ++i)
+                                   if (args[0].EqualsIgnoreCase(Names[i]))
+                                       Ed()->world.Query<VolumetricClouds>().Each(
+                                           [&](ecs::Entity, VolumetricClouds& c) { ApplyCloudPreset(c, CloudPreset(i)); });
+                           });
+
+ConCommand CmdSun("sun", "Turns the scene's sun: sun <elevation deg> [azimuth deg]", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || args.Empty())
+        return;
+    ed->environment.sunElevation = DegToRad(ParseFloat(args[0]).ValueOr(30.0f));
+    if (args.Size() > 1)
+        ed->environment.sunAzimuth = DegToRad(ParseFloat(args[1]).ValueOr(0.0f));
+    ed->world.Query<const DirectionalLight, Transform>().Each([&](ecs::Entity, const DirectionalLight&, Transform& t) {
+        t.rotation = Editor::SunRotation(ed->environment.sunElevation, ed->environment.sunAzimuth);
+    });
+});
+
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
     if (Ed())
         Ed()->Undo();

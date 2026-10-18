@@ -45,17 +45,80 @@ ZX_REFLECT_STRUCT_BEGIN(HeightFog)
     ZX_FIELD(localLights, Meta::Range(0, 20), Meta::Tooltip("How strongly point and spot lights light the fog"))
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_ENUM_BEGIN(CloudPreset)
+    ZX_ENUM_VALUE(Custom)
+    ZX_ENUM_VALUE(Clear)
+    ZX_ENUM_VALUE(FairWeather)
+    ZX_ENUM_VALUE(Scattered)
+    ZX_ENUM_VALUE(Cloudy)
+    ZX_ENUM_VALUE(Overcast)
+    ZX_ENUM_VALUE(Storm)
+ZX_REFLECT_ENUM_END()
+
 ZX_REFLECT_STRUCT_BEGIN(VolumetricClouds)
-    ZX_FIELD(coverage, Meta::Range(0, 1), Meta::Tooltip("0 = clear sky, 1 = overcast"))
-    ZX_FIELD(bottom, Meta::Range(100, 10000), Meta::Units("m"))
-    ZX_FIELD(thickness, Meta::Range(50, 10000), Meta::Units("m"))
-    ZX_FIELD(density, Meta::Range(0, 1), Meta::Units("1/m"))
+    ZX_FIELD(preset, Meta::Tooltip("Fills in every setting below for this kind of sky (then tweak them)"))
+    ZX_FIELD(coverage, Meta::Range(0, 1), Meta::Category("Shape"), Meta::Tooltip("0 = clear sky, 1 = overcast"))
+    ZX_FIELD(cloudType, Meta::Range(0, 1), Meta::Tooltip("0 = flat stratus layers, 0.5 = cumulus heaps, 1 = towering storm clouds"))
+    ZX_FIELD(bottom, Meta::Range(100, 10000), Meta::Units("m"), Meta::Tooltip("Height of the cloud bases"))
+    ZX_FIELD(thickness, Meta::Range(100, 12000), Meta::Units("m"), Meta::Tooltip("Height of the layer (storm clouds fill it)"))
+    ZX_FIELD(density, Meta::Range(0, 0.3), Meta::Units("1/m"), Meta::Tooltip("Thicker = darker bases, sharper edges"))
     ZX_FIELD(detail, Meta::Range(0, 1), Meta::Tooltip("Edges eroded by fine noise: wispy"))
-    ZX_FIELD(windSpeed, Meta::Range(0, 200), Meta::Units("m/s"))
+    ZX_FIELD(scale, Meta::Range(0.2, 5), Meta::Tooltip("Size of the clouds and of the gaps between them"))
+    ZX_FIELD(evolution, Meta::Range(0, 30), Meta::Units("m/s"), Meta::Tooltip("How fast the clouds change shape"))
+    ZX_FIELD(windSpeed, Meta::Range(0, 200), Meta::Units("m/s"), Meta::Category("Motion"))
     ZX_FIELD(windDirection, Meta::Range(0, 360), Meta::Units("deg"))
-    ZX_FIELD(color, Meta::Color())
+    ZX_FIELD(color, Meta::Color(), Meta::Category("Lighting"))
+    ZX_FIELD(ambient, Meta::Range(0, 3), Meta::Tooltip("Sky light inside the clouds (brighter, softer shadows)"))
+    ZX_FIELD(silverLining, Meta::Range(0, 3), Meta::Tooltip("Glow of the edges around the sun"))
     ZX_FIELD(shadows, Meta::Range(0, 1), Meta::Tooltip("How dark their shadows are on the ground"))
+    ZX_FIELD(lightning, Meta::Range(0, 1), Meta::Tooltip("How often lightning flashes inside the clouds"))
+    ZX_FIELD(seed, Meta::Range(1, 1000), Meta::Tooltip("Pattern of the cloud fields"))
+    ZX_FIELD(appliedPreset, Meta::Hidden())
 ZX_REFLECT_STRUCT_END()
+
+void ApplyCloudPreset(VolumetricClouds& c, CloudPreset preset)
+{
+    struct P
+    {
+        f32 coverage, type, bottom, thickness, density, detail, scale, evolution, ambient, silver, shadows, lightning;
+        Vec3 color;
+    };
+    static const P Presets[] = {
+        {}, // Custom: left as is
+        {0.22f, 0.42f, 1500.0f, 2500.0f, 0.035f, 0.85f, 0.8f, 1.5f, 1.0f, 1.0f, 0.6f, 0.0f, Vec3(1.0f)},          // Clear
+        {0.40f, 0.45f, 1400.0f, 3000.0f, 0.040f, 0.85f, 1.0f, 2.0f, 1.0f, 1.0f, 0.7f, 0.0f, Vec3(1.0f)},          // Fair weather
+        {0.48f, 0.55f, 1300.0f, 4000.0f, 0.045f, 0.80f, 1.2f, 2.5f, 1.0f, 1.0f, 0.75f, 0.0f, Vec3(1.0f)},         // Scattered
+        {0.60f, 0.60f, 1100.0f, 5000.0f, 0.050f, 0.75f, 1.3f, 3.0f, 0.9f, 0.9f, 0.8f, 0.0f, Vec3(0.97f)},         // Cloudy
+        {0.92f, 0.20f, 800.0f, 4000.0f, 0.050f, 0.70f, 1.4f, 1.5f, 0.8f, 0.6f, 0.95f, 0.0f, Vec3(0.92f)},         // Overcast
+        {0.58f, 0.95f, 700.0f, 9000.0f, 0.080f, 0.70f, 1.6f, 6.0f, 0.65f, 0.7f, 0.92f, 0.45f, Vec3(0.85f)},       // Storm
+    };
+    c.appliedPreset = preset;
+    c.preset = preset;
+    if (preset == CloudPreset::Custom || u32(preset) >= ZX_ARRAY_COUNT(Presets))
+        return;
+    const P& p = Presets[u32(preset)];
+    c.coverage = p.coverage;
+    c.cloudType = p.type;
+    c.bottom = p.bottom;
+    c.thickness = p.thickness;
+    c.density = p.density;
+    c.detail = p.detail;
+    c.scale = p.scale;
+    c.evolution = p.evolution;
+    c.ambient = p.ambient;
+    c.silverLining = p.silver;
+    c.shadows = p.shadows;
+    c.lightning = p.lightning;
+    c.color = p.color;
+}
+
+void UpdateCloudPresets(ecs::World& world)
+{
+    world.Query<VolumetricClouds>().Each([](ecs::Entity, VolumetricClouds& c) {
+        if (c.preset != c.appliedPreset)
+            ApplyCloudPreset(c, c.preset);
+    });
+}
 
 ZX_REFLECT_STRUCT_BEGIN(FluidVolume)
     ZX_FIELD(resolution, Meta::Range(16, 96), Meta::Tooltip("Cells along the longest side (GPU cost grows with the cube)"))
@@ -509,10 +572,17 @@ render::CloudSettings FindClouds(World& world)
             return;
         s.enabled = true;
         s.coverage = c.coverage;
+        s.cloudType = c.cloudType;
         s.bottom = c.bottom;
         s.thickness = c.thickness;
         s.density = c.density;
         s.detail = c.detail;
+        s.scale = c.scale;
+        s.evolution = c.evolution;
+        s.ambient = c.ambient;
+        s.silverLining = c.silverLining;
+        s.lightning = c.lightning;
+        s.seed = u32(Max(c.seed, 1));
         s.windSpeed = c.windSpeed;
         s.windDirection = c.windDirection;
         // Wind Zones (or the entity's own Wind Response) steer them; winds aloft blow ~2.5x harder than at the ground.

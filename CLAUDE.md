@@ -70,8 +70,10 @@ Volumetric fog: Render/VolumetricFog.h + Shaders/Volumetric/VolumetricFog.hlsl (
 t = sqrt(viewDepth / distance)); lights + cascades come from SceneRenderer::GetLightingInputs(), sky light from the sky SH.
 HeightFog / FogVolume components in Engine/SceneRendering.h; ParticleSystem/FireSystem add extra fog volumes. Particles
 sample the lighting + integrated volumes; Heat look = distortion pass (ParticleRenderer::AddPass returns the new color).
-Clouds: Render/Clouds.h + Shaders/Sky/Clouds.hlsl (quarter-res march + temporal, composite over sky pixels; noise
-volumes built on the CPU in Init). Cloud shadow map: written by AddShadowPass at the very end of the frame, read next
+Clouds (v2, 0.13.10): Render/Clouds.h + Shaders/Sky/Clouds.hlsl (weather map + typed height profiles + Perlin-Worley /
+Worley noise generated on the GPU in slices with mips; spherical shell; multiple-scattering octaves; checkerboard 2x2
+raymarch at 1/4 (Lite) or 1/2 res + temporal variance clipping; depth-aware composite). VolumetricClouds presets
+(CloudPreset, ApplyCloudPreset / UpdateCloudPresets), console clouds.preset / sun. GPU timing: scratchpad gpuavg.py. Cloud shadow map: written by AddShadowPass at the very end of the frame, read next
 frame through SceneLighting::cloudShadow (forward + volumetric fog). VolumetricClouds component (Engine/SceneRendering.h).
 GPU faults: DRED ops/allocations are logged on device loss; -gpuvalidation enables GPU-based validation.
 Fluids: Render/Fluid.h + Shaders/Volumetric/Fluid.hlsl (per-volume grids keyed by entity, velocity always in [0],

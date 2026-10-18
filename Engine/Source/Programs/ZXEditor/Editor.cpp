@@ -1191,7 +1191,8 @@ void Editor::AddAtmosphere(f32 fogDensity, f32 cloudCoverage)
     EnsureEntityGuid(world, fog);
     const ecs::Entity clouds = CreateEntity("Volumetric Clouds", Transform(Vec3(0.0f)));
     VolumetricClouds c;
-    c.coverage = cloudCoverage;
+    ApplyCloudPreset(c, CloudPreset::FairWeather); // cumulus fields (tweak or pick another preset in Details)
+    c.coverage = Max(c.coverage, cloudCoverage);
     world.Add(clouds, c);
     EnsureEntityGuid(world, clouds);
     // A gentle breeze: smoke, fire, fog and clouds drift with it (tune or add Wind Zones; Wind Response per object).
@@ -3556,6 +3557,7 @@ bool Editor::Frame()
         terrains.Update(world, *assets, renderAssets.Get());
         softBodies.Update(world, *assets, renderAssets.Get());
         UpdateWaterPresets(world);
+        UpdateCloudPresets(world);
         TickWind(world, playState == PlayState::Paused ? 0.0f : dt * (IsPlaying() ? GameTimeScale(GameSystemsForPlay()) : 1.0f));
     }
     // Particles: emitters with Simulate In Editor run live while editing, all of them while playing (frozen when paused).

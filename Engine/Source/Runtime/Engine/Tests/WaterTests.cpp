@@ -208,3 +208,35 @@ ZX_TEST(Water, WoodFloatsSteelSinks)
     // Steel keeps sinking (no bottom here).
     ZX_EXPECT_GT(SettledDepth(7800.0f), 5.0f);
 }
+
+// --- Clouds ------------------------------------------------------------------------------------------------------------
+
+ZX_TEST(Clouds, PresetsFillTheSettings)
+{
+    ecs::World world;
+    VolumetricClouds c;
+    c.preset = CloudPreset::Storm; // chosen in Details
+    const ecs::Entity e = world.Create(c);
+    UpdateCloudPresets(world);
+    const VolumetricClouds& storm = *world.Get<const VolumetricClouds>(e);
+    ZX_EXPECT_GT(storm.cloudType, 0.8f);  // towering cumulonimbus
+    ZX_EXPECT_GT(storm.thickness, 6000.0f);
+    ZX_EXPECT_GT(storm.lightning, 0.0f);
+    ZX_EXPECT(storm.appliedPreset == CloudPreset::Storm);
+    // Tweaks stick until another preset is picked.
+    world.Get<VolumetricClouds>(e)->coverage = 0.1f;
+    UpdateCloudPresets(world);
+    ZX_EXPECT_EQ(world.Get<const VolumetricClouds>(e)->coverage, 0.1f);
+    world.Get<VolumetricClouds>(e)->preset = CloudPreset::Overcast;
+    UpdateCloudPresets(world);
+    const VolumetricClouds& overcast = *world.Get<const VolumetricClouds>(e);
+    ZX_EXPECT_GT(overcast.coverage, 0.85f);
+    ZX_EXPECT_LT(overcast.cloudType, 0.3f); // a stratus deck
+    ZX_EXPECT_EQ(overcast.lightning, 0.0f);
+
+    // The renderer gets them.
+    const render::CloudSettings s = FindClouds(world);
+    ZX_EXPECT(s.enabled);
+    ZX_EXPECT_EQ(s.coverage, overcast.coverage);
+    ZX_EXPECT_EQ(s.cloudType, overcast.cloudType);
+}

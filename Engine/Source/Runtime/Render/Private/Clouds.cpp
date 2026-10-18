@@ -1,6 +1,6 @@
 #include "Render/Clouds.h"
 #include "Core/Log/Log.h"
-#include "Core/Jobs/JobSystem.h"
+#include "Render/Sky.h"
 #include "RHI/ShaderCompiler.h"
 
 #include <cmath>
@@ -32,6 +32,7 @@ struct CloudParams
     Vec2 outputSize;
     u32 shapeNoise;
     u32 detailNoise;
+    u32 weatherMap;
     u32 output;
     u32 history;
     u32 current;
@@ -44,75 +45,45 @@ struct CloudParams
     u32 shadowSize;
     Vec2 shadowOrigin;
     f32 shadowExtent;
-    f32 pad;
+    f32 cloudType;
+    f32 scale;
+    f32 evolution;
+    f32 time;
+    u32 steps;
+    u32 lightSteps;
+    f32 ambient;
+    f32 silverLining;
+    Vec3 lightningPos;
+    f32 lightning;
+    u32 skyView;
+    Vec3 skyScale;
+    f32 hazeDistance;
+    f32 weatherScale;
+    Vec2 weatherOffset;
+    u32 invalidDepth;
+    f32 maxDistance;
+    Vec2 subTexel;
+    Vec2 pad3;
+    u32 genOutput;
+    u32 genSize;
+    u32 genSliceBegin;
+    u32 genSeed;
+    u32 genSource;
+    u32 genSourceMip;
+    u32 pad1, pad2;
 };
 
-// --- Tiling noise volumes (computed once on the CPU: a long first-frame dispatch can trip the GPU watchdog on iGPUs).
-
-Vec3 Hash33(Vec3 p)
+u32 HashU32(u32 x)
 {
-    const Vec3 d(Dot(p, Vec3(127.1f, 311.7f, 74.7f)), Dot(p, Vec3(269.5f, 183.3f, 246.1f)), Dot(p, Vec3(113.5f, 271.9f, 124.6f)));
-    auto fr = [](f32 x) { return x - std::floor(x); };
-    return Vec3(fr(std::sin(d.x) * 43758.5453f), fr(std::sin(d.y) * 43758.5453f), fr(std::sin(d.z) * 43758.5453f));
+    x ^= x >> 16;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return x;
 }
 
-f32 Wrap(f32 v, f32 period) { return v - period * std::floor(v / period); }
-
-/// Tiling Worley (cellular) noise: 1 at the cell points, 0 far from them.
-f32 Worley(Vec3 p, f32 period)
-{
-    const Vec3 cell(std::floor(p.x), std::floor(p.y), std::floor(p.z));
-    const Vec3 f = p - cell;
-    f32 best = 1.0f;
-    for (i32 z = -1; z <= 1; ++z)
-        for (i32 y = -1; y <= 1; ++y)
-            for (i32 x = -1; x <= 1; ++x) {
-                const Vec3 o{f32(x), f32(y), f32(z)};
-                const Vec3 c(Wrap(cell.x + o.x, period), Wrap(cell.y + o.y, period), Wrap(cell.z + o.z, period));
-                const Vec3 d = o + Hash33(c) - f;
-                best = Min(best, Dot(d, d));
-            }
-    return 1.0f - Saturate(std::sqrt(best));
-}
-
-f32 GradientNoise(Vec3 p, f32 period)
-{
-    const Vec3 i(std::floor(p.x), std::floor(p.y), std::floor(p.z));
-    const Vec3 f = p - i;
-    auto fade = [](f32 t) { return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f); };
-    const Vec3 u(fade(f.x), fade(f.y), fade(f.z));
-    f32 n[8];
-    for (u32 k = 0; k < 8; ++k) {
-        const Vec3 o(f32(k & 1), f32((k >> 1) & 1), f32((k >> 2) & 1));
-        const Vec3 g = Hash33(Vec3(Wrap(i.x + o.x, period), Wrap(i.y + o.y, period), Wrap(i.z + o.z, period))) * 2.0f - Vec3(1.0f);
-        n[k] = Dot(g, f - o);
-    }
-    const f32 x0 = Lerp(Lerp(n[0], n[1], u.x), Lerp(n[2], n[3], u.x), u.y), x1 = Lerp(Lerp(n[4], n[5], u.x), Lerp(n[6], n[7], u.x), u.y);
-    return Lerp(x0, x1, u.z) * 0.5f + 0.5f;
-}
-
-/// Shape (billowy Perlin-Worley, Schneider 2015) or detail (Worley fbm) noise, size^3 bytes.
-Array<u8> MakeNoise(u32 size, bool shape)
-{
-    Array<u8> out;
-    out.Resize(usize(size) * size * size);
-    jobs::ParallelFor(size, 1, [&](u32 begin, u32 end) {
-        for (u32 z = begin; z < end; ++z)
-            for (u32 y = 0; y < size; ++y)
-                for (u32 x = 0; x < size; ++x) {
-                    const Vec3 p = (Vec3(f32(x), f32(y), f32(z)) + Vec3(0.5f)) / f32(size);
-                    const f32 worley = Worley(p * 4.0f, 4.0f) * 0.625f + Worley(p * 8.0f, 8.0f) * 0.25f + Worley(p * 16.0f, 16.0f) * 0.125f;
-                    f32 v = worley;
-                    if (shape) {
-                        const f32 perlin = GradientNoise(p * 4.0f, 4.0f) * 0.625f + GradientNoise(p * 8.0f, 8.0f) * 0.25f +
-                                           GradientNoise(p * 16.0f, 16.0f) * 0.125f;
-                        v = Saturate((perlin - (worley - 1.0f)) / Max(1.0f - (worley - 1.0f), 1e-4f)); // remap(perlin, worley - 1, 1)
-                    }
-                    out[(usize(z) * size + y) * size + x] = u8(Saturate(v) * 255.0f + 0.5f);
-                }
-    });
-    return out;
-}
+f32 Hash01(u32 x) { return f32(HashU32(x) >> 8) / 16777216.0f; }
 
 } // namespace
 
@@ -120,22 +91,26 @@ CloudRenderer::CloudRenderer(Device& device) : m_device(device) {}
 
 CloudRenderer::~CloudRenderer()
 {
-    for (Pipeline* p : {m_cloudsPipeline, m_temporalPipeline, m_shadowPipeline, m_compositePipeline})
+    for (Pipeline* p : {m_cloudsPipeline, m_temporalPipeline, m_shadowPipeline, m_compositePipeline, m_shapePipeline, m_detailPipeline,
+                        m_weatherPipeline, m_mipPipeline})
         m_device.Destroy(p);
-    for (Texture* t : {m_shapeNoise, m_detailNoise, m_raw, m_resolved[0], m_resolved[1], m_shadow})
+    for (Texture* t : {m_shapeNoise, m_detailNoise, m_weather, m_raw, m_resolved[0], m_resolved[1], m_shadow})
         m_device.Destroy(t);
 }
 
-bool CloudRenderer::Init(Format colorFormat)
+bool CloudRenderer::Init(Format colorFormat, bool lite)
 {
+    m_lite = lite;
     struct Job
     {
         ShaderBytecode* out;
         StringView entry;
         ShaderStage stage;
-    } shaderJobs[] = {{&m_cloudsCS, "CloudsCS", ShaderStage::Compute},       {&m_temporalCS, "TemporalCS", ShaderStage::Compute},
-                      {&m_shadowCS, "ShadowCS", ShaderStage::Compute},       {&m_compositeVS, "CompositeVS", ShaderStage::Vertex},
-                      {&m_compositePS, "CompositePS", ShaderStage::Pixel}};
+    } shaderJobs[] = {{&m_cloudsCS, "CloudsCS", ShaderStage::Compute},         {&m_temporalCS, "TemporalCS", ShaderStage::Compute},
+                      {&m_shadowCS, "ShadowCS", ShaderStage::Compute},         {&m_compositeVS, "CompositeVS", ShaderStage::Vertex},
+                      {&m_compositePS, "CompositePS", ShaderStage::Pixel},     {&m_shapeCS, "ShapeNoiseCS", ShaderStage::Compute},
+                      {&m_detailCS, "DetailNoiseCS", ShaderStage::Compute},    {&m_weatherCS, "WeatherCS", ShaderStage::Compute},
+                      {&m_mipCS, "NoiseMipCS", ShaderStage::Compute}};
     for (const Job& j : shaderJobs) {
         ShaderCompileDesc d;
         d.path = "/Shaders/Sky/Clouds.hlsl";
@@ -157,6 +132,10 @@ bool CloudRenderer::Init(Format colorFormat)
     m_cloudsPipeline = compute(m_cloudsCS, "Clouds");
     m_temporalPipeline = compute(m_temporalCS, "CloudsTemporal");
     m_shadowPipeline = compute(m_shadowCS, "CloudShadows");
+    m_shapePipeline = compute(m_shapeCS, "CloudShapeNoise");
+    m_detailPipeline = compute(m_detailCS, "CloudDetailNoise");
+    m_weatherPipeline = compute(m_weatherCS, "CloudWeather");
+    m_mipPipeline = compute(m_mipCS, "CloudNoiseMip");
     GraphicsPipelineDesc pd;
     pd.vertexShader = &m_compositeVS;
     pd.pixelShader = &m_compositePS;
@@ -173,30 +152,46 @@ bool CloudRenderer::Init(Format colorFormat)
     pd.debugName = "CloudsComposite";
     m_compositePipeline = m_device.CreateGraphicsPipeline(pd);
 
-    auto noiseVolume = [&](u32 size, bool shape, StringView name) {
-        const Array<u8> voxels = MakeNoise(size, shape);
-        TextureDesc nd;
-        nd.dimension = TextureDimension::Texture3D;
-        nd.format = Format::R8_UNORM;
-        nd.usage = TextureUsage::ShaderResource;
-        nd.width = nd.height = nd.depthOrArraySize = size;
-        nd.debugName = name;
-        SubresourceData data;
-        data.data = voxels.Data();
-        data.rowPitch = size;
-        data.slicePitch = u64(size) * size;
-        return m_device.CreateTexture(nd, Span<const SubresourceData>(&data, 1));
-    };
-    m_shapeNoise = noiseVolume(64, true, "CloudShapeNoise");
-    m_detailNoise = noiseVolume(32, false, "CloudDetailNoise");
+    TextureDesc nd;
+    nd.dimension = TextureDimension::Texture3D;
+    nd.format = Format::R8G8B8A8_UNORM;
+    nd.usage = TextureUsage::ShaderResource | TextureUsage::UnorderedAccess;
+    nd.width = nd.height = nd.depthOrArraySize = ShapeSize;
+    nd.mipLevels = ShapeMips;
+    nd.debugName = "CloudShapeNoise";
+    m_shapeNoise = m_device.CreateTexture(nd);
+    nd.width = nd.height = nd.depthOrArraySize = DetailSize;
+    nd.mipLevels = DetailMips;
+    nd.debugName = "CloudDetailNoise";
+    m_detailNoise = m_device.CreateTexture(nd);
+    TextureDesc wd;
+    wd.width = wd.height = WeatherSize;
+    wd.format = Format::R8G8B8A8_UNORM;
+    wd.usage = TextureUsage::ShaderResource | TextureUsage::UnorderedAccess;
+    wd.debugName = "CloudWeather";
+    m_weather = m_device.CreateTexture(wd);
     TextureDesc sd;
     sd.width = sd.height = ShadowSize;
     sd.format = Format::R16G16B16A16_FLOAT;
     sd.usage = TextureUsage::ShaderResource | TextureUsage::UnorderedAccess;
     sd.debugName = "CloudShadows";
     m_shadow = m_device.CreateTexture(sd);
-    return m_cloudsPipeline && m_temporalPipeline && m_shadowPipeline && m_compositePipeline && m_shapeNoise &&
-           m_detailNoise && m_shadow;
+    return m_cloudsPipeline && m_temporalPipeline && m_shadowPipeline && m_compositePipeline && m_shapePipeline && m_detailPipeline &&
+           m_weatherPipeline && m_mipPipeline && m_shapeNoise && m_detailNoise && m_weather && m_shadow;
+}
+
+void CloudRenderer::AddMips(CommandList& cmd, Texture* texture, u32 size, u32 mips)
+{
+    cmd.SetPipeline(m_mipPipeline);
+    for (u32 mip = 1; mip < mips; ++mip) {
+        cmd.Barrier(texture, ResourceState::UnorderedAccess);
+        CloudParams g = {};
+        g.genOutput = texture->GetUavIndex(mip);
+        g.genSource = texture->GetUavIndex(mip - 1);
+        g.genSize = size >> mip;
+        cmd.SetConstants(0, &g, sizeof(g));
+        cmd.Dispatch(Max(g.genSize / 4, 1u), Max(g.genSize / 4, 1u), Max(g.genSize / 4, 1u));
+    }
 }
 
 void CloudRenderer::EnsureTargets(UVec2 size)
@@ -221,52 +216,154 @@ void CloudRenderer::EnsureTargets(UVec2 size)
 }
 
 void CloudRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture depth, const RenderView& view, const Mat4& viewProjNoJitter,
-                              const SceneLighting& lighting, const CloudSettings& settings, f32 exposure, f32 time)
+                              const SceneLighting& lighting, const CloudSettings& settings, const SkyRenderer* sky, f32 exposure, f32 time)
 {
+    m_flash = 0.0f;
     if (!settings.enabled || !m_compositePipeline || settings.coverage <= 0.0f) {
         m_historyValid = false;
         m_shadowValid = false;
         return;
     }
-    // Quarter resolution: soft clouds upsample well, and the temporal blend fills in the detail.
-    EnsureTargets(UVec2(Max(view.width / 4, 1u), Max(view.height / 4, 1u)));
+    const RGTexture shapeRG = graph.ImportTexture(m_shapeNoise, ResourceState::ShaderResource);
+    const RGTexture detailRG = graph.ImportTexture(m_detailNoise, ResourceState::ShaderResource);
+    const RGTexture weatherRG = graph.ImportTexture(m_weather, ResourceState::ShaderResource);
+    m_rgShape = shapeRG;
+    m_rgWeather = weatherRG;
+
+    CloudParams p = {};
+    p.coverage = Clamp(settings.coverage, 0.0f, 1.0f);
+    p.cloudType = Clamp(settings.cloudType, 0.0f, 1.0f);
+
+    // Generation: the noise volumes in slices over the first frames (a long dispatch can trip the GPU watchdog on
+    // integrated GPUs), the weather map whenever coverage / type / seed change.
+    ++m_genFrame;
+    if (!m_detailReady) {
+        m_detailReady = true;
+        CloudParams g = {};
+        g.genOutput = m_detailNoise->GetUavIndex();
+        g.genSize = DetailSize;
+        graph.AddPass(
+            "CloudDetailNoise", PassType::Compute, [=](PassBuilder& b) { b.WriteTexture(detailRG); },
+            [=, this](PassContext& ctx) {
+                ctx.cmd.SetPipeline(m_detailPipeline);
+                ctx.cmd.SetConstants(0, &g, sizeof(g));
+                ctx.cmd.Dispatch(DetailSize / 4, DetailSize / 4, DetailSize / 4);
+                AddMips(ctx.cmd, m_detailNoise, DetailSize, DetailMips);
+            });
+    }
+    if (m_shapeSlices < ShapeSize && m_genFrame > 2) {
+        const u32 slices = Min(4u, ShapeSize - m_shapeSlices);
+        CloudParams g = {};
+        g.genOutput = m_shapeNoise->GetUavIndex();
+        g.genSize = ShapeSize;
+        g.genSliceBegin = m_shapeSlices;
+        m_shapeSlices += slices;
+        const bool last = m_shapeSlices >= ShapeSize;
+        graph.AddPass(
+            "CloudShapeNoise", PassType::Compute, [=](PassBuilder& b) { b.WriteTexture(shapeRG); },
+            [=, this](PassContext& ctx) {
+                ctx.cmd.SetPipeline(m_shapePipeline);
+                ctx.cmd.SetConstants(0, &g, sizeof(g));
+                ctx.cmd.Dispatch(ShapeSize / 4, ShapeSize / 4, (slices + 3) / 4);
+                if (last)
+                    AddMips(ctx.cmd, m_shapeNoise, ShapeSize, ShapeMips);
+            });
+    }
+    const u64 weatherKey = u64(p.coverage * 1000.0f) | (u64(p.cloudType * 1000.0f) << 16) | (u64(settings.seed) << 32);
+    if (weatherKey != m_weatherKey && m_genFrame > 1) {
+        m_weatherKey = weatherKey;
+        CloudParams g = p;
+        g.genOutput = m_weather->GetUavIndex();
+        g.genSize = WeatherSize;
+        g.genSeed = settings.seed * 1000u;
+        graph.AddPass(
+            "CloudWeather", PassType::Compute, [=](PassBuilder& b) { b.WriteTexture(weatherRG); },
+            [=, this](PassContext& ctx) {
+                ctx.cmd.SetPipeline(m_weatherPipeline);
+                ctx.cmd.SetConstants(0, &g, sizeof(g));
+                ctx.cmd.Dispatch(WeatherSize / 8, WeatherSize / 8, 1);
+            });
+    }
+    if (!IsReady()) {
+        m_historyValid = false;
+        m_shadowValid = false;
+        return;
+    }
+
+    // Lite: quarter resolution; Full: half (the temporal blend fills in the detail).
+    const u32 div = m_lite ? 4u : 2u;
+    EnsureTargets(UVec2(Max(view.width / div, 1u), Max(view.height / div, 1u)));
     if (!m_raw || !m_resolved[0] || !m_resolved[1])
         return;
     ++m_frame;
 
-    CloudParams p = {};
     p.invViewProj = Inverse(viewProjNoJitter);
     p.prevViewProj = m_prevViewProj;
     m_prevViewProj = viewProjNoJitter;
     p.cameraPosition = view.position;
-    p.bottom = settings.bottom;
-    p.thickness = Max(settings.thickness, 10.0f);
+    p.bottom = Max(settings.bottom, 0.0f);
+    p.thickness = Max(settings.thickness, 50.0f);
     p.dirToSun = -lighting.sunDirection;
     p.sunColor = lighting.sunColor * (lighting.sunIlluminance * exposure);
-    p.coverage = Clamp(settings.coverage, 0.0f, 1.0f);
     p.skyColor = lighting.skyColor * (lighting.skyLuminance * exposure);
     p.density = Max(settings.density, 0.0f);
     p.albedo = settings.albedo;
     p.detail = Clamp(settings.detail, 0.0f, 1.0f);
+    p.scale = Clamp(settings.scale, 0.2f, 5.0f);
+    p.evolution = Max(settings.evolution, 0.0f);
+    p.time = time;
+    p.steps = m_lite ? 32u : 64u;
+    p.lightSteps = m_lite ? 3u : 6u;
+    p.maxDistance = m_lite ? 35000.0f : 60000.0f;
+    p.ambient = Max(settings.ambient, 0.0f);
+    p.silverLining = Max(settings.silverLining, 0.0f);
     const f32 windAngle = DegToRad(settings.windDirection);
-    // Drift so far: wraps every 60 km so the noise coordinates keep their precision.
-    const f32 drift = std::fmod(settings.windSpeed * time, 60000.0f);
+    // Drift so far: wraps every tile of the weather map so the coordinates keep their precision.
+    const f32 drift = std::fmod(settings.windSpeed * time, WeatherExtent * 3.0f);
     p.wind = Vec2(-Sin(windAngle), -Cos(windAngle)) * drift;
     p.outputSize = Vec2(f32(m_size.x), f32(m_size.y));
     p.shapeNoise = m_shapeNoise->GetSrvIndex();
     p.detailNoise = m_detailNoise->GetSrvIndex();
+    p.weatherMap = m_weather->GetSrvIndex();
     p.frame = m_frame;
+    // Halton(2, 3) positions inside the texel, 8 frames.
+    auto halton = [](u32 i, u32 b) {
+        f32 f = 1.0f, r = 0.0f;
+        for (; i > 0; i /= b) {
+            f /= f32(b);
+            r += f * f32(i % b);
+        }
+        return r;
+    };
+    p.subTexel = Vec2(halton(m_frame % 8 + 1, 2), halton(m_frame % 8 + 1, 3));
     p.shadowStrength = Clamp(settings.shadowStrength, 0.0f, 1.0f);
     p.shadowSize = ShadowSize;
     p.shadowExtent = ShadowExtent;
+    p.weatherScale = 1.0f / (WeatherExtent * p.scale);
+    p.weatherOffset = Vec2(0.37f, 0.61f); // the camera doesn't start right at the tile's seam
+    p.hazeDistance = 45000.0f;
+    p.skyView = InvalidDescriptor;
+    const RGTexture skyView = sky ? sky->SkyViewTexture() : RGTexture{};
+    if (skyView.IsValid())
+        p.skyScale = sky->SkyRadianceScale();
+    // Lightning: random strikes in 0.25 s slots, a bright flicker deep in the clouds near the camera.
+    if (settings.lightning > 0.0f) {
+        const u32 slot = u32(Max(time, 0.0f) * 4.0f);
+        if (Hash01(slot * 7919u + settings.seed) < settings.lightning * 0.07f) {
+            const f32 age = time * 4.0f - f32(slot);
+            const f32 flicker = 0.6f + 0.4f * Sin(age * 60.0f);
+            m_flash = std::exp(-age * 5.0f) * flicker;
+            const f32 a = Hash01(slot * 31u + 5u) * 2.0f * Pi, r = 1500.0f + Hash01(slot * 17u + 3u) * 7000.0f;
+            p.lightningPos = view.position + Vec3(Cos(a) * r, 0.0f, Sin(a) * r);
+            p.lightningPos.y = p.bottom + p.thickness * (0.15f + 0.3f * Hash01(slot * 13u + 1u));
+            p.lightning = m_flash * lighting.sunIlluminance * exposure * 0.08f + 30.0f * exposure * m_flash;
+        }
+    }
     // The shadow map follows the camera in whole texels (no swimming).
     const f32 texel = ShadowExtent / f32(ShadowSize);
     m_shadowOrigin = Vec2(Floor(view.position.x / texel) * texel - ShadowExtent * 0.5f, Floor(view.position.z / texel) * texel - ShadowExtent * 0.5f);
     p.shadowOrigin = m_shadowOrigin;
 
-    const RGTexture shapeRG = graph.ImportTexture(m_shapeNoise, ResourceState::ShaderResource);
-    const RGTexture detailRG = graph.ImportTexture(m_detailNoise, ResourceState::ShaderResource);
-    m_rgShape = shapeRG;
     const RGTexture rawRG = graph.ImportTexture(m_raw, ResourceState::ShaderResource);
     Texture* history = m_resolved[m_current];
     Texture* resolved = m_resolved[m_current ^ 1];
@@ -277,7 +374,7 @@ void CloudRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
     p.current = m_raw->GetSrvIndex();
     p.history = history->GetSrvIndex();
     p.resolved = resolved->GetUavIndex();
-    p.historyWeight = m_historyValid ? 0.85f : 0.0f;
+    p.historyWeight = m_historyValid ? 1.0f : 0.0f;
     p.shadowOutput = m_shadow->GetUavIndex();
     m_historyValid = true;
     const UVec2 half = m_size;
@@ -287,12 +384,20 @@ void CloudRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
         [=](PassBuilder& b) {
             b.ReadTexture(shapeRG);
             b.ReadTexture(detailRG);
+            b.ReadTexture(weatherRG);
+            b.ReadTexture(depth);
+            if (skyView.IsValid())
+                b.ReadTexture(skyView);
             b.WriteTexture(rawRG);
         },
         [=, this](PassContext& ctx) {
+            CloudParams params = p;
+            params.depthTexture = ctx.Texture(depth)->GetSrvIndex();
+            if (skyView.IsValid())
+                params.skyView = ctx.Texture(skyView)->GetSrvIndex();
             ctx.cmd.SetPipeline(m_cloudsPipeline);
-            ctx.cmd.SetConstants(0, &p, sizeof(p));
-            ctx.cmd.Dispatch((half.x + 7) / 8, (half.y + 7) / 8, 1);
+            ctx.cmd.SetConstants(0, &params, sizeof(params));
+            ctx.cmd.Dispatch((half.x / 2 + 8) / 8, (half.y / 2 + 8) / 8, 1); // one pixel of each 2x2 block
         });
     graph.AddPass(
         "CloudsTemporal", PassType::Compute,
@@ -326,7 +431,9 @@ void CloudRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
             ctx.cmd.Draw(3);
         });
     static_assert(sizeof(CloudParams) <= sizeof(m_shadowParams));
-    MemCopy(m_shadowParams, &p, sizeof(p));
+    CloudParams sp = p;
+    sp.invalidDepth = 1;
+    MemCopy(m_shadowParams, &sp, sizeof(sp));
     m_shadowPending = true;
 }
 
@@ -337,12 +444,13 @@ void CloudRenderer::AddShadowPass(RenderGraph& graph)
     m_shadowPending = false;
     CloudParams p;
     MemCopy(&p, m_shadowParams, sizeof(p));
-    const RGTexture shapeRG = m_rgShape;
+    const RGTexture shapeRG = m_rgShape, weatherRG = m_rgWeather;
     const RGTexture shadowRG = graph.ImportTexture(m_shadow, ResourceState::ShaderResource);
     graph.AddPass(
         "CloudShadows", PassType::Compute,
         [=](PassBuilder& b) {
             b.ReadTexture(shapeRG);
+            b.ReadTexture(weatherRG);
             b.WriteTexture(shadowRG);
             b.SideEffects();
         },
