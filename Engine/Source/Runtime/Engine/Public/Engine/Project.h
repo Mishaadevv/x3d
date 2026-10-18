@@ -28,6 +28,7 @@ struct ProjectDescriptor
     String language = "ZeqouScript"; // gameplay language chosen at creation (ProjectLanguageName)
     u32 color = 0;                    // 0xRRGGBB tile color in the Project Browser (0 = derived from the name)
     Array<String> disabledFeatures;   // engine features / editor tools switched off in the Features window
+    String graphicsEra = "modern";    // graphics generation: "modern", "2017", "2011", "2008" (Engine/ViewportRenderer.h)
     bool IsFeatureEnabled(StringView id) const
     {
         for (const String& f : disabledFeatures)

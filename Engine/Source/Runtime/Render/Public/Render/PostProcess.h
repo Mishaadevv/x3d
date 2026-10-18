@@ -13,6 +13,7 @@ enum class Tonemapper : u8
 {
     ACES,
     AgX,
+    Filmic, // Hable / Uncharted 2 (2010): the look of games around 2008-2013
 };
 
 struct PostSettings

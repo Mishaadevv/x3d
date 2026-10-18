@@ -24,6 +24,11 @@ TEMPLATES = {  # -template value -> output name, extra console commands (camera 
     'water': ('Water', ''),
     'physics': ('Physics', ''),
     'vehicle': ('Vehicle', 'action view.gameUI'),  # the HUD would be cut off by the crop
+    'empty': ('Empty', ''),
+    # The graphics-era templates are empty levels: their thumbnails show the Starter Content showcase in that era.
+    '2017': ('Classic2017', 'graphics.era 2017; sun 22 140; camera 3 2.2 -6 -10 -8', 'blank'),
+    '2011': ('Classic2011', 'graphics.era 2011; sun 22 140; camera 3 2.2 -6 -10 -8', 'blank'),
+    '2008': ('Classic2008', 'graphics.era 2008; sun 22 140; camera 3 2.2 -6 -10 -8', 'blank'),
 }
 
 
@@ -122,18 +127,21 @@ def main():
     if '--convert' not in sys.argv:
         exe = os.path.join(ROOT, 'Binaries', 'Win64', 'Development', 'ZXEditor.exe')
         root = short_path(ROOT)
-        for templ, (name, exec_cmds) in templates.items():
+        for templ, entry in templates.items():
+            name, exec_cmds = entry[0], entry[1]
+            create = entry[2] if len(entry) > 2 else templ
             project = os.path.join(ROOT, 'Saved', 'TestProjects', 'Shot_' + templ)
             shutil.rmtree(project, ignore_errors=True)
-            args = [exe, f'-newproject={root}/Saved/TestProjects/Shot_{templ}', f'-template={templ}', '-nodocs', '-autotest=240',
+            args = [exe, f'-newproject={root}/Saved/TestProjects/Shot_{templ}', f'-template={create}', '-nodocs', '-autotest=240',
                     '-resolution=1600x1000', '-resetlayout', '-screenshotviewport', f'-screenshot={root}/Saved/Thumbs/{templ}.png',
                     f'-recentfile={root}/Saved/TestProjects/recent.json']
             if exec_cmds:
                 args.append(f'-exec={exec_cmds}')
-            if templ == 'blank':
+            if create == 'blank':
                 args.append('-starter')  # the default in the New Project page: Starter Content showcase
             print(templ, subprocess.call(args))
-    for templ, (name, _) in templates.items():
+    for templ, entry in templates.items():
+        name = entry[0]
         src = os.path.join(shots, templ + '.png')
         if os.path.exists(src):
             thumbnail(src, os.path.join(out_dir, name + '.png'))

@@ -20,7 +20,7 @@ Editor smoke test: `Binaries/Win64/Debug/ZXEditor.exe -autotest=60` (exit code 0
 Editor flags: -scene=<gltf|zscene>, -resolution=WxH, -resetlayout, -screenshot=<path> (with -autotest), -savescene=<path>
 (saves when the autotest ends), -undotest (runs every undoable edit through the editor; exit code 4 on failure).
 Projects: no args = Project Browser; -autotest/-scene without -project use Samples/Samples.zproj (Sponza). -project=<zproj>,
--newproject=<dir>/<Name> [-template=sample|firstperson|thirdperson|water|physics|vehicle] [-starter] [-nodocs] [-git], -projectbrowser [-browserpage=new], -recentfile=<json> (keep tests out of the
+-newproject=<dir>/<Name> [-template=sample|firstperson|thirdperson|water|physics|vehicle|empty|2017|2011|2008] [-starter] [-nodocs] [-git], -projectbrowser [-browserpage=new], -recentfile=<json> (keep tests out of the
 user's real recent list in %LOCALAPPDATA%/ZeqouX3D).
 -exec="cmd; cmd" runs console commands once loaded (help, stat.gpu, stat.scene, import <path>, create <type>, undo, r.*);
 paths inside -exec must not contain spaces (the command-line parser splits quoted values). -browse=<dir under Content>.
@@ -57,6 +57,9 @@ Collider, implicit mesh collision of MeshRenderer.collision, PIE ticking with in
 Characters on physics: Gameplay.cpp TickCharacters(world, dt, PhysicsSystem&) (capsule shape casts, step up/down,
 supportNormal under the contact for step edges, platforms, mass-based pushes); tests CharacterPhysics.*. Script/C++
 physics API + collision callbacks: Scripting.cpp (physics global, DispatchPhysicsEvents), GameModule.cpp (SDK v2).
+Graphics eras (0.13.12): ProjectDescriptor::graphicsEra -> ViewportRenderer::graphicsEra; ApplyGraphicsEra
+(Engine/ViewportRenderer.h) limits a copy of the settings / features for each frame (Modern = untouched); Game.json
+graphicsEra for ZXGame; Features window "Graphics", console graphics.era; Tonemapper::Filmic (Hable).
 Particles (0.13.11): ParticleEmitter midColor / sizeCurve / alphaCurve / burstInterval / startDelay / orbit / Ring /
 lightFlash / stretch (GpuParticle flags bits 8-15 = stretch in ms); effect prefabs in StarterAssets.cpp (Flames /
 Smoke / Embers / Sparks helpers, P_Explosion, P_Magic portal, P_Snow).

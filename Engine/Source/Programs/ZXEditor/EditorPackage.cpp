@@ -66,6 +66,7 @@ bool Editor::StartPackage(StringView outputDir)
     o.textureMaxSize = packageLiteTextures ? 1024u : 0u;
     o.fullscreen = packageFullscreen;
     o.disabledFeatures = project.descriptor.disabledFeatures;
+    o.graphicsEra = project.descriptor.graphicsEra;
     packageJob.Reset(new PackageJob());
     PackageJob* job = packageJob.Get();
     job->outputDir = o.outputDir;

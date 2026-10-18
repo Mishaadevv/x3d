@@ -4,6 +4,7 @@
 #include "Core/String/Path.h"
 #include "Core/Testing/Test.h"
 #include "Engine/Project.h"
+#include "Engine/ViewportRenderer.h"
 #include "Render/MaterialGraph.h"
 #include "RHI/EngineProfile.h"
 #include "Script/ZeqouScript.h"
@@ -209,4 +210,49 @@ ZX_TEST(Project, EngineProfilePreference)
     ZX_EXPECT_EQ(LoadEngineProfilePreference(file), String("full"));
     fs::WriteTextFile(file, "ultra");
     ZX_EXPECT_EQ(LoadEngineProfilePreference(file), String("auto"));
+}
+
+ZX_TEST(Project, GraphicsEra)
+{
+    for (GraphicsEra e : {GraphicsEra::Modern, GraphicsEra::Y2017, GraphicsEra::Y2011, GraphicsEra::Y2008})
+        ZX_EXPECT(ParseGraphicsEra(GraphicsEraId(e)) == e);
+    ZX_EXPECT(ParseGraphicsEra("nonsense") == GraphicsEra::Modern);
+
+    ViewportSettings base;
+    base.scene.shadows.filter = 3; // PCSS
+    base.scene.shadows.cascades = 4;
+    base.scene.deferred = true;
+    ViewportFeatures features;
+    ViewportSettings s = base;
+    ApplyGraphicsEra(s, features, GraphicsEra::Modern);
+    ZX_EXPECT_EQ(s.scene.shadows.filter, 3u);
+
+    ViewportFeatures f2017;
+    ViewportSettings s2017 = base;
+    ApplyGraphicsEra(s2017, f2017, GraphicsEra::Y2017);
+    ZX_EXPECT(s2017.scene.shadows.filter <= 2u); // no PCSS
+    ZX_EXPECT(f2017.temporalAA && f2017.volumetricFog && f2017.clouds && !f2017.fluids);
+
+    ViewportFeatures f2011;
+    ViewportSettings s2011 = base;
+    ApplyGraphicsEra(s2011, f2011, GraphicsEra::Y2011);
+    ZX_EXPECT(!f2011.temporalAA && !f2011.volumetricFog && !f2011.clouds && !f2011.screenSpaceReflections);
+    ZX_EXPECT(s2011.post.fxaa && s2011.scene.deferred);
+    ZX_EXPECT(s2011.post.tonemapper == render::Tonemapper::Filmic);
+
+    ViewportFeatures f2008;
+    ViewportSettings s2008 = base;
+    ApplyGraphicsEra(s2008, f2008, GraphicsEra::Y2008);
+    ZX_EXPECT(!s2008.scene.deferred && !s2008.post.fxaa && !f2008.temporalAA);
+    ZX_EXPECT(s2008.scene.shadows.cascades <= 2u && s2008.scene.shadows.filter == 0u);
+
+    // Saved with the project.
+    const String parent = TempRoot("era");
+    ProjectDescriptor settings;
+    settings.graphicsEra = "2011";
+    Result<ProjectInfo> p = CreateProject(parent, "Old", settings);
+    ZX_REQUIRE(p.IsOk());
+    Result<ProjectInfo> loaded = LoadProject(p->descriptorPath);
+    ZX_REQUIRE(loaded.IsOk());
+    ZX_EXPECT_EQ(loaded->descriptor.graphicsEra, String("2011"));
 }

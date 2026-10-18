@@ -86,6 +86,27 @@ struct ViewportSettings
     DynamicResolutionSettings dynamicResolution;
 };
 
+/// Graphics of an earlier generation of games (a project setting): the techniques the best games of that year could
+/// afford, so a project can aim for that look or that cost. Applied on top of the profile's settings every frame.
+///   Modern  everything the engine has
+///   Y2017   deferred, TAA, SSR, volumetric fog and clouds, PCF shadows (no PCSS), no fluid simulations
+///   Y2011   deferred, FXAA (no TAA), SSAO, 3 PCF cascades, filmic tonemapping, no SSR / volumetrics / 3D clouds
+///   Y2008   forward, no anti-aliasing, coarse SSAO, 2 cascades of hard-edged shadows, sky reflections only,
+///           strong bloom, filmic tonemapping
+enum class GraphicsEra : u8
+{
+    Modern,
+    Y2017,
+    Y2011,
+    Y2008,
+};
+/// "modern", "2017", "2011", "2008" (project files).
+StringView GraphicsEraId(GraphicsEra era);
+GraphicsEra ParseGraphicsEra(StringView id);
+/// The era's limits on top of `s` / `f` (Modern: unchanged).
+void ApplyGraphicsEra(ViewportSettings& s, ViewportFeatures& f, GraphicsEra era);
+
+
 class ViewportRenderer
 {
 public:
@@ -110,6 +131,7 @@ public:
     f32 LastRenderScale() const { return m_lastScale; }
     bool IsUpscaling() const { return m_taa.IsUpscaling(); }
     ViewportFeatures features;
+    GraphicsEra graphicsEra = GraphicsEra::Modern; // the project's graphics generation (ApplyGraphicsEra)
     render::SceneRenderer& Scene() { return m_scene; }
     const render::SceneLighting& Lighting() const { return m_lighting; }
     const render::RenderView& LastView() const { return m_view; }

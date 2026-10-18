@@ -167,7 +167,8 @@ bool Editor::Initialize()
         if (Result<rhi::Texture*> t = render::LoadTexture(*device, "/Engine/Branding/ZeqouX3D_Logo.png", brand))
             appLogo = t.Value();
         // Template thumbnails: real captures of each template level (Tools/make_template_thumbs.py).
-        static const char* const TemplateNames[] = {"Blank", "Sample", "FirstPerson", "ThirdPerson", "Water", "Physics", "Vehicle"};
+        static const char* const TemplateNames[] = {"Blank",   "Sample", "FirstPerson", "ThirdPerson", "Water", "Physics",
+                                                    "Vehicle", "Empty",  "Classic2017", "Classic2011", "Classic2008"};
         static_assert(ZX_ARRAY_COUNT(TemplateNames) == u32(ProjectTemplate::Count));
         render::TextureLoadOptions art;
         art.compression = render::TextureCompression::None;
@@ -338,6 +339,10 @@ bool Editor::Initialize()
                         : templateArg == "water"       ? ProjectTemplate::Water
                         : templateArg == "physics"     ? ProjectTemplate::Physics
                         : templateArg == "vehicle"     ? ProjectTemplate::Vehicle
+                        : templateArg == "empty"       ? ProjectTemplate::Empty
+                        : templateArg == "2017"        ? ProjectTemplate::Classic2017
+                        : templateArg == "2011"        ? ProjectTemplate::Classic2011
+                        : templateArg == "2008"        ? ProjectTemplate::Classic2008
                                                        : ProjectTemplate::Blank;
         options.starterContent = CommandLine::HasFlag("starter");
         options.documentation = !CommandLine::HasFlag("nodocs");
@@ -433,13 +438,18 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
 {
     ProjectDescriptor settings;
     settings.language = ProjectLanguageName(options.language);
+    // The "Graphics 20xx" templates set the project's graphics generation (Project Settings can change it later).
+    settings.graphicsEra = options.templ == ProjectTemplate::Classic2017   ? "2017"
+                           : options.templ == ProjectTemplate::Classic2011 ? "2011"
+                           : options.templ == ProjectTemplate::Classic2008 ? "2008"
+                                                                            : "modern";
     Result<ProjectInfo> created = CreateProject(parentDirectory, name, settings);
     if (!created) {
         browser.error = created.GetError().message;
         return false;
     }
     // Template levels are built from the Starter Content materials.
-    if (options.starterContent || options.templ != ProjectTemplate::Blank)
+    if (options.starterContent || (options.templ != ProjectTemplate::Blank && options.templ != ProjectTemplate::Empty))
         ZX_LOG_INFO(LogEditor, "Starter Content: {} files", WriteStarterContent(created->contentDir));
     const bool characterTemplate = options.templ == ProjectTemplate::FirstPerson || options.templ == ProjectTemplate::ThirdPerson ||
                                    options.templ == ProjectTemplate::Water || options.templ == ProjectTemplate::Physics;
@@ -531,6 +541,11 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
             BuildVehicleLevel();
         else if (characterTemplate)
             BuildCharacterLevel(options.templ == ProjectTemplate::ThirdPerson);
+        else if (options.templ == ProjectTemplate::Classic2017 || options.templ == ProjectTemplate::Classic2011 ||
+                 options.templ == ProjectTemplate::Classic2008)
+            BuildEraLevel();
+        else if (options.templ == ProjectTemplate::Empty)
+            ; // nothing: an empty scene
         else if (options.starterContent)
             BuildStarterShowcase(starterPrefabs > 0);
         SaveSceneTo(mainScene);
@@ -1173,6 +1188,27 @@ void Editor::BuildVehicleLevel()
     environment.sunElevation = DegToRad(38.0f);
     environment.sunAzimuth = DegToRad(150.0f);
     AddAtmosphere(0.002f, 0.35f);
+}
+
+void Editor::BuildEraLevel()
+{
+    // Sun, sky light, fog and clouds (the era decides which of them render) over a large grid floor.
+    Transform t(Vec3(0, -0.5f, 0));
+    t.scale = Vec3(200, 1, 200);
+    const ecs::Entity floor = CreateEntity("Floor", t);
+    MeshRenderer mr;
+    mr.mesh = builtin::Mesh(BuiltinShape::Cube);
+    const String path = String::Format("{}/StarterContent/Materials/M_Proto_Grey.zmat", contentRoot);
+    if (materials && platform::FileExists(path))
+        if (const Guid g = materials->LoadFile(path); g.IsValid())
+            mr.materials.PushBack(g);
+    world.Add(floor, mr);
+    EnsureEntityGuid(world, floor);
+    environment.sunElevation = DegToRad(35.0f);
+    environment.sunAzimuth = DegToRad(150.0f);
+    AddAtmosphere(0.003f, 0.35f);
+    camera.position = Vec3(0.0f, 2.0f, -8.0f);
+    camera.LookAt(Vec3(0.0f, 1.2f, 10.0f));
 }
 
 void Editor::AddAtmosphere(f32 fogDensity, f32 cloudCoverage)
@@ -2446,6 +2482,15 @@ void Editor::SetFeatureEnabled(StringView id, bool enabled)
     ZX_LOG_INFO(LogEditor, "Feature '{}' {}", id, enabled ? "enabled" : "disabled");
 }
 
+void Editor::SetGraphicsEra(StringView id)
+{
+    project.descriptor.graphicsEra = String(GraphicsEraId(ParseGraphicsEra(id)));
+    if (!project.descriptorPath.Empty())
+        SaveProjectDescriptor(project.descriptorPath, project.descriptor);
+    viewport->ResetHistory();
+    ZX_LOG_INFO(LogEditor, "Graphics: {}", project.descriptor.graphicsEra);
+}
+
 bool Editor::UsingGameCamera()
 {
     return IsPlaying() && !gameCameraEjected && FindGameCamera(world) != ecs::NullEntity;
@@ -3675,6 +3720,7 @@ void Editor::RenderFrame()
         const RGTexture vp = graph.ImportTexture(viewportTexture, ResourceState::ShaderResource);
         sampled.PushBack(vp);
         ViewportFeatures& vf = viewport->features;
+        viewport->graphicsEra = ParseGraphicsEra(project.descriptor.graphicsEra.View());
         vf.shadows = FeatureEnabled("shadows");
         vf.ambientOcclusion = FeatureEnabled("ambientOcclusion");
         vf.sky = FeatureEnabled("sky");

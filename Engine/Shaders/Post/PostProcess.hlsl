@@ -22,7 +22,7 @@ struct PostParams
     float saturation;
     float3 whiteBalance; // per-channel gains
     float vignette;
-    uint tonemapper;    // 0 ACES, 1 AgX
+    uint tonemapper;    // 0 ACES, 1 AgX, 2 Filmic (Hable)
     uint viewMode;      // 0 final, 1 HDR (no tonemap), 2 depth, 3 luminance heatmap, 4 bloom only, 5 DOF focus
     uint depth;
     uint lut;           // color grading LUT (256 x 16, 16 slices of 16 x 16) or invalid
@@ -141,6 +141,18 @@ float4 BloomUpPS(VSOutput i) : SV_Target0
 
 // --- Tonemapping ---------------------------------------------------------------------------------------------------
 
+// Filmic curve of Uncharted 2 (John Hable, 2010), white point 11.2 - the tonemapper of the late-2000s games.
+float3 HableCurve(float3 x)
+{
+    const float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30;
+    return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+}
+
+float3 TonemapHable(float3 c)
+{
+    return saturate(HableCurve(c * 2.0) / HableCurve(11.2.xxx));
+}
+
 // AgX (Troy Sobotka), polynomial fit of the default contrast curve (Benjamin Wrensch).
 float3 AgXContrast(float3 x)
 {
@@ -214,7 +226,7 @@ float4 TonemapPS(VSOutput i) : SV_Target0
         color = g_Post.bloom != ZX_INVALID_INDEX ? GetTexture2D(g_Post.bloom).SampleLevel(g_LinearClamp, i.uv, 0).rgb : 0;
     } else {
         hdr = Grade(hdr);
-        color = g_Post.tonemapper == 1 ? TonemapAgX(hdr) : TonemapACES(hdr);
+        color = g_Post.tonemapper == 1 ? TonemapAgX(hdr) : g_Post.tonemapper == 2 ? TonemapHable(hdr) : TonemapACES(hdr);
         // Vignette.
         const float2 d = i.uv - 0.5;
         color *= saturate(1.0 - dot(d, d) * g_Post.vignette * 2.0);

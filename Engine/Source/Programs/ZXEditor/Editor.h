@@ -129,6 +129,10 @@ enum class ProjectTemplate : u8
     Water,
     Physics,     // Physics Playground
     Vehicle,     // Vehicle Playground (soft-body car)
+    Empty,       // nothing in the scene
+    Classic2017, // an empty outdoor level with the graphics of 2017 (project graphicsEra)
+    Classic2011,
+    Classic2008,
     Count
 };
 
@@ -432,6 +436,8 @@ public:
     /// Features window: engine subsystems / tools switched off for the project (stored in the .zproj).
     bool FeatureEnabled(StringView id) const { return project.descriptor.IsFeatureEnabled(id); }
     void SetFeatureEnabled(StringView id, bool enabled);
+    /// The project's graphics generation ("modern", "2017", "2011", "2008"), saved in the .zproj.
+    void SetGraphicsEra(StringView id);
 
     // Play-in-Editor: the scene is snapshotted on Play and restored on Stop (edits made while playing are discarded).
     bool IsPlaying() const { return playState != PlayState::Editing; }
@@ -467,6 +473,7 @@ private:
     u32 WriteStarterPrefabs(const NewProjectOptions& options);
     void BuildCharacterLevel(bool thirdPerson);
     void BuildWaterLevel();
+    void BuildEraLevel(); // an empty outdoor level: atmosphere and a ground plane (the "Graphics 20xx" templates)
     void BuildPhysicsLevel();
     bool AddAnimatedCharacter(ecs::Entity player);
     void AddSlime(const Transform& at, f32 speed);

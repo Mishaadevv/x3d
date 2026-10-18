@@ -133,10 +133,103 @@ void ViewportRenderer::ApplyEnvironment(const ViewportEnvironment& env)
         l.exposureEV100 = m_post.GetAutoExposureEV100();
 }
 
+StringView GraphicsEraId(GraphicsEra era)
+{
+    switch (era) {
+    case GraphicsEra::Y2017: return "2017";
+    case GraphicsEra::Y2011: return "2011";
+    case GraphicsEra::Y2008: return "2008";
+    default: return "modern";
+    }
+}
+
+GraphicsEra ParseGraphicsEra(StringView id)
+{
+    if (id == "2017")
+        return GraphicsEra::Y2017;
+    if (id == "2011")
+        return GraphicsEra::Y2011;
+    if (id == "2008")
+        return GraphicsEra::Y2008;
+    return GraphicsEra::Modern;
+}
+
+void ApplyGraphicsEra(ViewportSettings& s, ViewportFeatures& f, GraphicsEra era)
+{
+    if (era == GraphicsEra::Modern)
+        return;
+    render::ShadowSettings& sh = s.scene.shadows;
+    f.fluids = false; // real-time GPU fluid simulation came later
+    sh.filter = Min(sh.filter, 2u); // contact-hardening (PCSS) shadows: late 2010s
+    if (era == GraphicsEra::Y2017) {
+        // Battlefield 1, Horizon Zero Dawn, UE 4.18: all of it, a little coarser.
+        sh.resolution = Min(sh.resolution, 2048u);
+        sh.cascades = Min(sh.cascades, 3u);
+        s.volumetricFog.slices = Min(s.volumetricFog.slices, 48u);
+        s.post.tonemapper = render::Tonemapper::ACES;
+        return;
+    }
+    // 2011 and older: no temporal anti-aliasing (FXAA, 2009-), no screen-space reflections, no volumetric lighting or
+    // 3D clouds (skydomes), no contact shadows, filmic tonemapping (Uncharted 2), native resolution.
+    f.temporalAA = false;
+    f.screenSpaceReflections = false;
+    f.volumetricFog = false;
+    f.clouds = false;
+    s.reflections.ssr = false;
+    s.scene.contactShadows.enabled = false;
+    s.post.tonemapper = render::Tonemapper::Filmic;
+    s.post.fxaa = true;
+    s.renderScale = 1.0f;
+    s.dynamicResolution.enabled = false;
+    s.scene.ao.halfResolution = true;
+    if (era == GraphicsEra::Y2011) {
+        // Crysis 2 (DX11), Battlefield 3, Skyrim: deferred, SSAO, three PCF cascades, bokeh depth of field.
+        sh.cascades = Min(sh.cascades, 3u);
+        sh.resolution = Min(sh.resolution, 1024u);
+        sh.distance = Min(sh.distance, 80.0f);
+        sh.filter = Min(sh.filter, 1u);
+        s.scene.ao.slices = Min(s.scene.ao.slices, 2u);
+        s.scene.ao.steps = Min(s.scene.ao.steps, 4u);
+        s.reflections.probeResolution = Min(s.reflections.probeResolution, 64u);
+        s.post.bloomIntensity = Max(s.post.bloomIntensity, 0.06f);
+        return;
+    }
+    // 2008: Crysis (DX10, Very High), GTA IV, Fallout 3: forward shading, no anti-aliasing, the first SSAO (noisy,
+    // short), two cascades of hard shadows, sky reflections, strong bloom.
+    f.reflections = true;
+    s.scene.deferred = false;
+    s.post.fxaa = false;
+    sh.cascades = Min(sh.cascades, 2u);
+    sh.resolution = Min(sh.resolution, 1024u);
+    sh.distance = Min(sh.distance, 50.0f);
+    sh.filter = 0;
+    s.scene.ao.slices = 1;
+    s.scene.ao.steps = Min(s.scene.ao.steps, 3u);
+    s.scene.ao.radius = Min(s.scene.ao.radius, 0.8f);
+    s.reflections.probes = false;
+    s.scene.maxAnisotropy = Min(s.scene.maxAnisotropy, 4u);
+    s.scene.lodBias = Min(s.scene.lodBias, 0.7f);
+    s.post.bloomIntensity = Max(s.post.bloomIntensity, 0.12f);
+    s.post.saturation = Min(s.post.saturation, 0.95f);
+}
+
 void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const ViewportCamera& camera, const ViewportEnvironment& env,
                                  RGTexture output, UVec2 outputSize, f32 deltaTime,
                                  Function<void(CommandList&, const RenderView&, f32)> overlay)
 {
+    if (graphicsEra != GraphicsEra::Modern) {
+        // The era's limits for this frame only (the profile's settings stay as they are for the next).
+        const ViewportSettings savedSettings = m_settings;
+        const ViewportFeatures savedFeatures = features;
+        ApplyGraphicsEra(m_settings, features, graphicsEra);
+        const GraphicsEra era = graphicsEra;
+        graphicsEra = GraphicsEra::Modern;
+        AddPasses(graph, world, camera, env, output, outputSize, deltaTime, move(overlay));
+        graphicsEra = era;
+        m_settings = savedSettings;
+        features = savedFeatures;
+        return;
+    }
     ZX_PROFILE_SCOPE("ViewportRenderer");
     // Feature toggles override the settings for this frame only (the settings stay as the user/CVars set them).
     const ViewportSettings userSettings = m_settings;

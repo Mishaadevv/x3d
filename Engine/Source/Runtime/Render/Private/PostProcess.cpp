@@ -310,7 +310,7 @@ void PostProcess::AddPasses(RenderGraph& graph, RGTexture sceneColor, RGTexture 
     gains = gains / (0.2126f * gains.x + 0.7152f * gains.y + 0.0722f * gains.z); // keep luminance
     base.whiteBalance = gains;
     base.vignette = settings.vignette;
-    base.tonemapper = settings.tonemapper == Tonemapper::AgX ? 1u : 0u;
+    base.tonemapper = u32(settings.tonemapper);
     base.viewMode = settings.viewMode;
     base.colorFilter = settings.colorFilter;
     base.lut = settings.colorLutIntensity > 0.0f ? settings.colorLut : InvalidDescriptor;

@@ -67,6 +67,7 @@ struct GameConfig
     String module;           // C++ game module DLL next to the executable (empty = none)
     u32 textureMaxSize = 0;  // the cook setting (DDC keys depend on it)
     Array<String> disabledFeatures;
+    String graphicsEra = "modern";
     bool fullscreen = true;
     UVec2 resolution = UVec2(1600, 900);
 };
@@ -92,6 +93,7 @@ bool ReadConfig(const String& dir, GameConfig& c)
         c.resolution = UVec2(u32(Max<i64>(res[0].AsInt(1600), 320)), u32(Max<i64>(res[1].AsInt(900), 240)));
     for (const JsonValue& f2 : j.Get("disabledFeatures").Elements())
         c.disabledFeatures.PushBack(String(f2.AsString()));
+    c.graphicsEra = String(j.Get("graphicsEra").AsString("modern"));
     return true;
 }
 
@@ -438,6 +440,7 @@ void Game::Render()
         vf.volumetricFog = FeatureEnabled("volumetricFog");
         vf.clouds = FeatureEnabled("clouds");
         vf.fluids = FeatureEnabled("fluids");
+        m_viewport->graphicsEra = ParseGraphicsEra(m_config.graphicsEra.View());
         ViewportCamera cam = m_sceneCamera;
         const ecs::Entity ge = FindGameCamera(m_world);
         const scene::WorldTransform* wt = m_world.Get<const scene::WorldTransform>(ge);

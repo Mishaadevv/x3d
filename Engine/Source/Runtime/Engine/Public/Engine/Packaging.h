@@ -31,6 +31,7 @@ struct PackageOptions
     u32 textureMaxSize = 0; // 0 = full resolution; 1024 = Lite
     bool fullscreen = true;
     Array<String> disabledFeatures;
+    String graphicsEra = "modern";
 };
 
 struct PackageReport

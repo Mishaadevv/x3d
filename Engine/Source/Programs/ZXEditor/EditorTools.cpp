@@ -497,6 +497,34 @@ void DrawFeaturesPanel(Editor& ed)
     }
     ui::TextWrapped("Switch engine features and editor tools on or off for this project. Saved in the .zproj file.");
     ui::Spacing();
+    // Graphics generation: the techniques the best games of that year could afford (Engine/ViewportRenderer.h).
+    ui::PushFont(ui::FontStyle::SemiBold);
+    ui::Text("Graphics");
+    ui::PopFont();
+    ui::Separator();
+    {
+        struct Era
+        {
+            const char* id;
+            const char* name;
+            const char* description;
+        };
+        static const Era Eras[] = {
+            {"modern", "Modern", "Everything the engine can do."},
+            {"2017", "2017", "Battlefield 1, Horizon Zero Dawn: TAA, SSR, volumetric fog and clouds; no PCSS shadows or fluids."},
+            {"2011", "2011", "Crysis 2, Battlefield 3, Skyrim: deferred, SSAO, FXAA, filmic tonemapping; no TAA, SSR or volumetrics."},
+            {"2008", "2008", "Crysis, GTA IV, Fallout 3: forward, early SSAO, two cascades of hard shadows, strong bloom, no AA."},
+        };
+        const GraphicsEra current = ParseGraphicsEra(ed.project.descriptor.graphicsEra.View());
+        for (const Era& e : Eras) {
+            if (ui::RadioButton(String::Format("{}##era_{}", e.name, e.id), ParseGraphicsEra(e.id) == current))
+                ed.SetGraphicsEra(e.id);
+            ui::ItemTooltip(e.description);
+        }
+        ui::PushTextColor(ui::GetCurrentContext()->GetStyle().colors.textDisabled);
+        ui::TextWrapped("The best graphics of that year: older generations look like the games of their time and cost less.");
+        ui::PopTextColor();
+    }
     StringView category;
     for (const FeatureInfo& f : Features) {
         if (f.category != category) {

@@ -179,6 +179,7 @@ Result<PackageReport> PackageProject(const PackageOptions& o, const Function<voi
     for (const String& f : o.disabledFeatures)
         features.PushBack(JsonValue(f));
     config.Set("disabledFeatures", move(features));
+    config.Set("graphicsEra", JsonValue(o.graphicsEra));
     if (!fs::WriteTextFile(Path::Join(o.outputDir, "Game.json"), ToJsonString(config)))
         return Error::Make(ErrorCode::AccessDenied, "Package: can't write Game.json");
     report.seconds = timer.ElapsedSeconds();

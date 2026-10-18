@@ -125,6 +125,7 @@ Result<ProjectInfo> LoadProject(StringView descriptorPath)
     p.descriptor.startupScene = doc.Get("startupScene").AsString();
     p.descriptor.description = doc.Get("description").AsString();
     p.descriptor.language = doc.Get("language").AsString("ZeqouScript");
+    p.descriptor.graphicsEra = doc.Get("graphicsEra").AsString("modern");
     for (const JsonValue& f : doc.Get("disabledFeatures").Elements())
         if (f.IsString())
             p.descriptor.disabledFeatures.PushBack(String(f.AsString()));
@@ -152,6 +153,8 @@ bool SaveProjectDescriptor(StringView descriptorPath, const ProjectDescriptor& d
         doc.Set("language", d.language);
     if (d.color)
         doc.Set("color", String::Format("#{:06X}", d.color & 0xFFFFFF));
+    if (!d.graphicsEra.Empty() && d.graphicsEra != "modern")
+        doc.Set("graphicsEra", d.graphicsEra);
     if (!d.disabledFeatures.Empty()) {
         JsonValue list = JsonValue::MakeArray();
         for (const String& f : d.disabledFeatures)

@@ -304,6 +304,7 @@ struct TemplateInfo
 };
 
 const TemplateInfo Templates[] = {
+    {ProjectTemplate::Empty, "Empty", "A completely empty scene: no objects, no lights. Build everything yourself.", {}},
     {ProjectTemplate::Blank, "Blank", "An empty level with the physical sky and sun. Start from scratch.", {}},
     {ProjectTemplate::Sample, "Sample Scene", "A PBR model (Damaged Helmet) with lights, ready to explore and edit.", {}},
     {ProjectTemplate::FirstPerson, "First Person", "A first-person character with mouse look, walking, sprinting and jumping on a small playground.", {}},
@@ -313,6 +314,15 @@ const TemplateInfo Templates[] = {
      "Stacks, dominoes, a ramp of balls and rocks, joints (bridge, chain, door, seesaw), raycasts and a physics gun. First person.", {}},
     {ProjectTemplate::Vehicle, "Vehicle Playground",
      "A soft-body car (node-beam physics like BeamNG.drive) that dents where it crashes: jumps, walls, pillars, crates and bumps.", {}},
+    {ProjectTemplate::Classic2017, "Graphics 2017",
+     "An empty outdoor level with the best graphics of 2017 (Battlefield 1, Horizon Zero Dawn): TAA, screen-space reflections, "
+     "volumetric fog and clouds - without PCSS shadows or fluid simulation. Change it later in Window > Features.", {}},
+    {ProjectTemplate::Classic2011, "Graphics 2011",
+     "An empty outdoor level with the best graphics of 2011 (Crysis 2, Battlefield 3, Skyrim): deferred lighting, SSAO, "
+     "FXAA, filmic tonemapping - no TAA, screen-space reflections, volumetric fog or 3D clouds.", {}},
+    {ProjectTemplate::Classic2008, "Graphics 2008",
+     "An empty outdoor level with the best graphics of 2008 (Crysis, GTA IV, Fallout 3): forward lighting, the first SSAO, "
+     "two cascades of hard shadows, strong bloom, no anti-aliasing.", {}},
 };
 
 Color Hex(u32 rgb, u8 a = 255) { return Color(u8(rgb >> 16), u8(rgb >> 8), u8(rgb), a); }

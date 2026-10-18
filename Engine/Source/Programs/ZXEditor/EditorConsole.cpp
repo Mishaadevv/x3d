@@ -262,6 +262,12 @@ ConCommand CmdSun("sun", "Turns the scene's sun: sun <elevation deg> [azimuth de
     });
 });
 
+ConCommand CmdGraphicsEra("graphics.era", "The project's graphics generation: graphics.era <modern|2017|2011|2008>",
+                           [](Span<const StringView> args) {
+                               if (Editor* ed = Ed(); ed && !args.Empty())
+                                   ed->SetGraphicsEra(args[0]);
+                           });
+
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
     if (Ed())
         Ed()->Undo();
