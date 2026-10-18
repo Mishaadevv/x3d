@@ -156,3 +156,63 @@ ZX_TEST(Particles, CollisionBounceDieAndSplash)
     ZX_EXPECT_EQ(bounce, 50u);    // bounced, still alive
     ZX_EXPECT_EQ(splashes, 100u); // 50 drops x 2 splash particles, from the floor
 }
+
+ZX_TEST(Particles, StartDelayAndRepeatedBursts)
+{
+    ecs::World world;
+    scene::InstallHierarchyHooks(world);
+    ParticleEmitter e;
+    e.rate = 0.0f;
+    e.burst = 20;
+    e.burstInterval = 1.0f;
+    e.startDelay = 0.5f;
+    e.lifetime = 0.3f;
+    e.lifetimeVariation = 0.0f;
+    AddEmitter(world, e);
+    ParticleSystem ps;
+    Run(ps, world, 0.4f, true);
+    ZX_EXPECT_EQ(ps.ParticleCount(), 0u); // still waiting
+    Run(ps, world, 0.2f, true);           // 0.6 s: the first burst
+    ZX_EXPECT_EQ(ps.ParticleCount(), 20u);
+    Run(ps, world, 0.5f, true);           // 1.1 s: it has died out
+    ZX_EXPECT_EQ(ps.ParticleCount(), 0u);
+    Run(ps, world, 0.5f, true);           // 1.6 s: the second burst (0.5 + 1.0)
+    ZX_EXPECT_EQ(ps.ParticleCount(), 20u);
+}
+
+ZX_TEST(Particles, OrbitKeepsTheRadiusAndGradientHasAMiddle)
+{
+    ecs::World world;
+    scene::InstallHierarchyHooks(world);
+    ParticleEmitter e;
+    e.shape = EmitterShape::Ring;
+    e.radius = 2.0f;
+    e.coneAngle = 0.0f;
+    e.speed = 0.0f;
+    e.acceleration = Vec3();
+    e.turbulence = 0.0f;
+    e.drag = 0.0f;
+    e.orbit = 3.0f;
+    e.rate = 0.0f;
+    e.burst = 10;
+    e.lifetime = 4.0f;
+    e.lifetimeVariation = 0.0f;
+    e.startColor = Vec3(1, 0, 0);
+    e.midColor = Vec3(0, 1, 0);
+    e.midColorTime = 0.5f;
+    e.endColor = Vec3(0, 0, 1);
+    e.emissive = false;
+    AddEmitter(world, e, Vec3(5, 1, 0));
+    ParticleSystem ps;
+    Run(ps, world, 2.0f, true); // half the life: the middle color
+    Array<render::GpuParticle> out;
+    ps.Gather(Vec3(0, 0, -10), out);
+    ZX_REQUIRE(out.Size() == 10u);
+    for (const render::GpuParticle& p : out) {
+        const Vec3 d = p.position - Vec3(5, 1, 0);
+        ZX_EXPECT_NEAR(Length(Vec3(d.x, 0, d.z)), 2.0f, 0.02f); // still on the ring after turning ~6 rad
+        ZX_EXPECT_NEAR(d.y, 0.0f, 1e-3f);
+        ZX_EXPECT_GT(p.color.y, 0.9f);
+        ZX_EXPECT_LT(p.color.x, 0.1f);
+    }
+}

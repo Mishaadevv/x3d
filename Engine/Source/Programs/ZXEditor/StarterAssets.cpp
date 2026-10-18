@@ -74,54 +74,65 @@ struct PrefabBuilder
 
 ParticleEmitter Flames()
 {
+    // Tongues of a fluid-simulated flame (flipbook) rising and narrowing: white-yellow at the base, orange, then deep
+    // red as they cool; they stay bright most of their life and fade at the tips.
     ParticleEmitter p;
-    p.rate = 45.0f;
-    p.maxParticles = 160;
-    p.lifetime = 0.8f;
+    p.rate = 70.0f;
+    p.maxParticles = 220;
+    p.lifetime = 0.9f;
+    p.lifetimeVariation = 0.35f;
     p.shape = EmitterShape::Cone;
-    p.radius = 0.22f;
-    p.coneAngle = 0.2f;
-    p.speed = 1.0f;
-    p.acceleration = Vec3(0.0f, 2.2f, 0.0f);
-    p.drag = 1.0f;
-    p.turbulence = 1.2f;
-    p.startSize = 0.55f;
-    p.endSize = 0.12f;
-    p.spin = 1.0f;
-    p.startColor = Vec3(1.0f, 0.62f, 0.22f);
-    p.endColor = Vec3(0.9f, 0.2f, 0.03f);
-    p.fadeIn = 0.15f;
+    p.radius = 0.25f;
+    p.coneAngle = 0.15f;
+    p.speed = 0.8f;
+    p.acceleration = Vec3(0.0f, 2.8f, 0.0f);
+    p.drag = 1.2f;
+    p.turbulence = 1.5f;
+    p.startSize = 0.9f;
+    p.endSize = 0.3f;
+    p.sizeCurve = 0.7f;
+    p.spin = 0.0f;
+    p.startColor = Vec3(1.0f, 0.85f, 0.5f);
+    p.midColor = Vec3(1.0f, 0.5f, 0.12f);
+    p.midColorTime = 0.35f;
+    p.endColor = Vec3(0.7f, 0.12f, 0.02f);
+    p.fadeIn = 0.1f;
+    p.alphaCurve = 1.6f;
     p.look = ParticleLook::Flame;
     p.blend = ParticleBlend::Additive;
-    p.intensity = 4.0f;
+    p.intensity = 5.0f;
     p.flipbook = "StarterContent/Flipbooks/T_Flipbook_Fire.png"; // baked from a fluid simulation
     p.flipbookFps = 24.0f;
-    p.startSize = 0.8f;
-    p.endSize = 0.35f;
-    p.spin = 0.0f;
     p.lightFlicker = 0.35f;
     return p;
 }
 
 ParticleEmitter Smoke(f32 density = 1.0f)
 {
+    // Billowing smoke (flipbook puffs, lit by the sun and sky): dense and dark low, spreading and thinning as it rises.
     ParticleEmitter p;
-    p.rate = 7.0f * density;
-    p.maxParticles = 80;
-    p.lifetime = 4.5f;
+    p.rate = 9.0f * density;
+    p.maxParticles = 110;
+    p.lifetime = 6.0f;
+    p.lifetimeVariation = 0.25f;
     p.radius = 0.3f;
     p.coneAngle = 0.25f;
-    p.speed = 0.7f;
-    p.acceleration = Vec3(0.0f, 0.5f, 0.0f);
-    p.drag = 0.4f;
-    p.turbulence = 0.7f;
-    p.startSize = 0.6f;
-    p.endSize = 2.8f;
-    p.spin = 0.3f;
-    p.startColor = Vec3(0.12f);
-    p.endColor = Vec3(0.3f);
-    p.startAlpha = 0.55f;
-    p.fadeIn = 0.25f;
+    p.speed = 0.9f;
+    p.acceleration = Vec3(0.0f, 0.6f, 0.0f);
+    p.drag = 0.5f;
+    p.turbulence = 0.8f;
+    p.startSize = 0.7f;
+    p.endSize = 4.5f;
+    p.sizeCurve = 0.6f;
+    p.spin = 0.25f;
+    p.startColor = Vec3(0.10f);
+    p.midColor = Vec3(0.18f);
+    p.midColorTime = 0.3f;
+    p.endColor = Vec3(0.35f);
+    p.startAlpha = 0.6f;
+    p.endAlpha = 0.0f;
+    p.alphaCurve = 1.6f;
+    p.fadeIn = 0.15f;
     p.look = ParticleLook::Soft;
     p.blend = ParticleBlend::Alpha;
     p.emissive = false;
@@ -131,23 +142,27 @@ ParticleEmitter Smoke(f32 density = 1.0f)
 
 ParticleEmitter Embers()
 {
+    // Glowing embers swirling up out of the fire, cooling from orange to red.
     ParticleEmitter p;
-    p.rate = 5.0f;
-    p.maxParticles = 30;
-    p.lifetime = 1.8f;
-    p.radius = 0.25f;
+    p.rate = 12.0f;
+    p.maxParticles = 70;
+    p.lifetime = 2.5f;
+    p.lifetimeVariation = 0.4f;
+    p.radius = 0.3f;
     p.coneAngle = 0.6f;
-    p.speed = 1.8f;
-    p.acceleration = Vec3(0.0f, 1.0f, 0.0f);
+    p.speed = 2.2f;
+    p.acceleration = Vec3(0.0f, 1.4f, 0.0f);
     p.drag = 0.6f;
-    p.turbulence = 4.0f;
-    p.startSize = 0.05f;
+    p.turbulence = 5.0f;
+    p.startSize = 0.045f;
     p.endSize = 0.02f;
-    p.startColor = Vec3(1.0f, 0.55f, 0.15f);
-    p.endColor = Vec3(1.0f, 0.25f, 0.05f);
+    p.startColor = Vec3(1.0f, 0.75f, 0.35f);
+    p.endColor = Vec3(1.0f, 0.3f, 0.05f);
     p.fadeIn = 0.0f;
+    p.alphaCurve = 2.0f;
     p.look = ParticleLook::Spark;
-    p.intensity = 4.0f;
+    p.stretch = 0.04f;
+    p.intensity = 6.0f;
     return p;
 }
 
@@ -175,27 +190,33 @@ ParticleEmitter HeatHaze(f32 size = 1.0f)
 
 ParticleEmitter Sparks()
 {
+    // Welding / grinder sparks: white-hot streaks cooling to orange and red, bouncing off the floor.
     ParticleEmitter p;
-    p.rate = 60.0f;
-    p.maxParticles = 200;
-    p.lifetime = 1.2f;
+    p.rate = 120.0f;
+    p.maxParticles = 400;
+    p.lifetime = 1.0f;
+    p.lifetimeVariation = 0.4f;
     p.radius = 0.05f;
-    p.coneAngle = 0.9f;
-    p.speed = 5.0f;
-    p.speedVariation = 0.4f;
+    p.coneAngle = 1.1f;
+    p.speed = 6.0f;
+    p.speedVariation = 0.5f;
     p.acceleration = Vec3(0.0f, -9.8f, 0.0f);
-    p.drag = 0.2f;
+    p.drag = 0.15f;
     p.turbulence = 0.0f;
-    p.startSize = 0.05f;
-    p.endSize = 0.03f;
+    p.startSize = 0.035f;
+    p.endSize = 0.025f;
     p.spin = 0.0f;
-    p.startColor = Vec3(1.0f, 0.8f, 0.4f);
-    p.endColor = Vec3(1.0f, 0.35f, 0.05f);
+    p.startColor = Vec3(1.0f, 0.95f, 0.8f);
+    p.midColor = Vec3(1.0f, 0.6f, 0.2f);
+    p.midColorTime = 0.25f;
+    p.endColor = Vec3(0.8f, 0.15f, 0.02f);
     p.fadeIn = 0.0f;
+    p.alphaCurve = 2.0f;
     p.look = ParticleLook::Spark;
-    p.intensity = 5.0f;
+    p.stretch = 0.035f;
+    p.intensity = 8.0f;
     p.collision = ParticleCollision::Bounce; // they skitter over the floor
-    p.bounciness = 0.4f;
+    p.bounciness = 0.35f;
     return p;
 }
 
@@ -281,6 +302,17 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             const ecs::Entity root = b.Node("Campfire");
             const ecs::Entity flames = b.Node("Flames", Vec3(0, 0.15f, 0), root);
             b.world.Add(flames, Flames());
+            ParticleEmitter core = Flames(); // the white-hot heart of the fire among the logs
+            core.rate = 40.0f;
+            core.radius = 0.15f;
+            core.lifetime = 0.5f;
+            core.startSize = 0.5f;
+            core.endSize = 0.2f;
+            core.startColor = Vec3(1.0f, 0.95f, 0.75f);
+            core.midColor = Vec3(1.0f, 0.7f, 0.3f);
+            core.intensity = 7.0f;
+            core.lightFlicker = 0.0f;
+            b.world.Add(b.Node("Core", Vec3(0, 0.1f, 0), root), core);
             PointLight light;
             light.color = Vec3(1.0f, 0.6f, 0.28f);
             light.lumens = 2400.0f;
@@ -330,14 +362,16 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
         {
             PrefabBuilder b;
             const ecs::Entity root = b.Node("Smoke Column");
-            ParticleEmitter s = Smoke(2.0f);
-            s.startColor = Vec3(0.08f);
-            s.endColor = Vec3(0.22f);
-            s.startSize = 1.0f;
-            s.endSize = 5.0f;
-            s.lifetime = 8.0f;
-            s.speed = 1.2f;
-            s.maxParticles = 160;
+            ParticleEmitter s = Smoke(2.2f);
+            s.startColor = Vec3(0.07f);
+            s.midColor = Vec3(0.13f);
+            s.endColor = Vec3(0.25f);
+            s.startSize = 1.4f;
+            s.endSize = 8.0f;
+            s.startAlpha = 0.5f;
+            s.lifetime = 9.0f;
+            s.speed = 1.4f;
+            s.maxParticles = 200;
             b.world.Add(root, s);
             save(b, root, "Effects/P_Smoke");
         }
@@ -427,28 +461,70 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
         }
         {
             PrefabBuilder b;
-            const ecs::Entity root = b.Node("Magic Orb");
+            // A magic portal: glowing motes spiralling around a ring (the entity's up axis faces the viewer), sparkles racing
+            // around it faster, a soft glow in the middle.
+            const ecs::Entity root = b.Node("Magic Portal");
+            // The ring stands up (placing a prefab sets only the root's yaw): its up axis faces +Z.
+            const ecs::Entity ring = b.Node("Ring", Vec3(), root, Quat::FromAxisAngle(Vec3(1, 0, 0), HalfPi));
             ParticleEmitter m;
-            m.shape = EmitterShape::Sphere;
-            m.radius = 0.6f;
-            m.rate = 40.0f;
-            m.lifetime = 1.6f;
-            m.speed = 0.4f;
-            m.acceleration = Vec3(0.0f, 0.6f, 0.0f);
-            m.turbulence = 2.5f;
-            m.startSize = 0.18f;
+            m.shape = EmitterShape::Ring;
+            m.radius = 1.3f;
+            m.coneAngle = 0.05f;
+            m.rate = 160.0f;
+            m.maxParticles = 600;
+            m.lifetime = 2.2f;
+            m.speed = 0.15f;
+            m.acceleration = Vec3();
+            m.drag = 0.5f;
+            m.turbulence = 0.4f;
+            m.orbit = 2.2f;
+            m.startSize = 0.22f;
             m.endSize = 0.0f;
-            m.startColor = Vec3(0.3f, 0.6f, 1.0f);
-            m.endColor = Vec3(0.8f, 0.3f, 1.0f);
-            m.intensity = 3.0f;
-            m.lightFlicker = 0.15f;
-            b.world.Add(root, m);
+            m.startColor = Vec3(0.25f, 0.55f, 1.0f);
+            m.midColor = Vec3(0.55f, 0.3f, 1.0f);
+            m.midColorTime = 0.5f;
+            m.endColor = Vec3(0.9f, 0.25f, 0.85f);
+            m.fadeIn = 0.2f;
+            m.intensity = 1.4f;
+            m.lightFlicker = 0.0f;
+            b.world.Add(ring, m);
+            ParticleEmitter sparkles = m;
+            sparkles.rate = 90.0f;
+            sparkles.radius = 1.45f;
+            sparkles.orbit = 4.0f;
+            sparkles.lifetime = 1.2f;
+            sparkles.startSize = 0.05f;
+            sparkles.endSize = 0.02f;
+            sparkles.look = ParticleLook::Spark;
+            sparkles.stretch = 0.06f;
+            sparkles.startColor = Vec3(0.8f, 0.9f, 1.0f);
+            sparkles.midColor = Vec3(0.6f, 0.5f, 1.0f);
+            sparkles.intensity = 4.0f;
+            sparkles.lightFlicker = 0.0f;
+            b.world.Add(b.Node("Sparkles", Vec3(), ring), sparkles);
+            ParticleEmitter glow;
+            glow.shape = EmitterShape::Sphere;
+            glow.radius = 0.4f;
+            glow.rate = 6.0f;
+            glow.maxParticles = 20;
+            glow.lifetime = 2.0f;
+            glow.speed = 0.05f;
+            glow.acceleration = Vec3();
+            glow.turbulence = 0.0f;
+            glow.startSize = 2.2f;
+            glow.endSize = 2.6f;
+            glow.spin = 0.3f;
+            glow.startColor = glow.endColor = Vec3(0.35f, 0.3f, 1.0f);
+            glow.startAlpha = 0.2f;
+            glow.endAlpha = 0.0f;
+            glow.fadeIn = 0.4f;
+            glow.intensity = 1.0f;
+            b.world.Add(b.Node("Glow", Vec3(), ring), glow);
             PointLight light;
-            light.color = Vec3(0.5f, 0.6f, 1.0f);
-            light.lumens = 600.0f;
-            light.range = 6.0f;
+            light.color = Vec3(0.5f, 0.45f, 1.0f);
+            light.lumens = 900.0f;
+            light.range = 8.0f;
             b.world.Add(root, light);
-            b.Mesh("Core", BuiltinShape::Sphere, Vec3(), Vec3(0.3f), "M_Emissive_Cyan", root);
             AudioSource hum;
             hum.clip = "StarterContent/Sounds/Props/Machine_Hum_Loop.ogg";
             hum.volume = 0.25f;
@@ -456,6 +532,185 @@ u32 Editor::WriteStarterPrefabs(const NewProjectOptions& options)
             hum.maxDistance = 10.0f;
             b.world.Add(root, hum);
             save(b, root, "Effects/P_Magic");
+        }
+        {
+            // An explosion, repeating every few seconds (Burst Interval): a flash of light, a fireball swelling and cooling
+            // to dark red, black smoke billowing up after it, burning debris flying out and bouncing, a ground dust ring,
+            // a shockwave bending the air, lingering embers.
+            PrefabBuilder b;
+            const ecs::Entity root = b.Node("Explosion");
+            const f32 every = 4.5f;
+            ParticleEmitter fireball;
+            fireball.shape = EmitterShape::Sphere;
+            fireball.radius = 0.6f;
+            fireball.rate = 0.0f;
+            fireball.burst = 60;
+            fireball.burstInterval = every;
+            fireball.maxParticles = 120;
+            fireball.lifetime = 1.1f;
+            fireball.lifetimeVariation = 0.3f;
+            fireball.speed = 4.0f;
+            fireball.speedVariation = 0.6f;
+            fireball.drag = 3.5f;
+            fireball.acceleration = Vec3(0.0f, 1.5f, 0.0f);
+            fireball.turbulence = 2.0f;
+            fireball.startSize = 2.2f;
+            fireball.endSize = 8.0f;
+            fireball.sizeCurve = 0.35f;
+            fireball.startColor = Vec3(1.0f, 0.9f, 0.6f);
+            fireball.midColor = Vec3(1.0f, 0.45f, 0.1f);
+            fireball.midColorTime = 0.3f;
+            fireball.endColor = Vec3(0.35f, 0.06f, 0.02f);
+            fireball.alphaCurve = 1.8f;
+            fireball.fadeIn = 0.02f;
+            fireball.look = ParticleLook::Flame;
+            fireball.intensity = 9.0f;
+            fireball.flipbook = "StarterContent/Flipbooks/T_Flipbook_Fire.png";
+            fireball.flipbookFps = 30.0f;
+            fireball.lightFlash = 1.0f;
+            b.world.Add(root, fireball);
+            PointLight flash;
+            flash.color = Vec3(1.0f, 0.62f, 0.3f);
+            flash.lumens = 60000.0f;
+            flash.range = 35.0f;
+            b.world.Add(root, flash);
+
+            ParticleEmitter smoke = Smoke();
+            smoke.shape = EmitterShape::Sphere;
+            smoke.radius = 1.0f;
+            smoke.rate = 0.0f;
+            smoke.burst = 22;
+            smoke.burstInterval = every;
+            smoke.startDelay = 0.12f;
+            smoke.maxParticles = 120;
+            smoke.lifetime = 6.0f;
+            smoke.speed = 3.2f;
+            smoke.drag = 1.4f;
+            smoke.acceleration = Vec3(0.0f, 0.9f, 0.0f);
+            smoke.turbulence = 1.0f;
+            smoke.startSize = 2.4f;
+            smoke.endSize = 10.0f;
+            smoke.sizeCurve = 0.45f;
+            smoke.startColor = Vec3(0.03f);
+            smoke.midColor = Vec3(0.07f);
+            smoke.endColor = Vec3(0.18f);
+            smoke.startAlpha = 0.85f;
+            b.world.Add(b.Node("Smoke", Vec3(0, 0.5f, 0), root), smoke);
+
+            ParticleEmitter debris = Sparks();
+            debris.shape = EmitterShape::Cone;
+            debris.coneAngle = 1.4f;
+            debris.radius = 0.4f;
+            debris.rate = 0.0f;
+            debris.burst = 140;
+            debris.burstInterval = every;
+            debris.maxParticles = 400;
+            debris.lifetime = 2.2f;
+            debris.speed = 16.0f;
+            debris.drag = 0.25f;
+            debris.startSize = 0.07f;
+            debris.endSize = 0.03f;
+            debris.stretch = 0.025f;
+            debris.startColor = Vec3(1.0f, 0.9f, 0.6f);
+            debris.midColor = Vec3(1.0f, 0.5f, 0.1f);
+            debris.midColorTime = 0.3f;
+            debris.endColor = Vec3(0.5f, 0.08f, 0.02f);
+            debris.intensity = 10.0f;
+            debris.bounciness = 0.3f;
+            b.world.Add(b.Node("Debris", Vec3(), root), debris);
+
+            ParticleEmitter wave = HeatHaze(1.0f); // the shockwave bends the air as it races out
+            wave.shape = EmitterShape::Point;
+            wave.rate = 0.0f;
+            wave.burst = 3;
+            wave.burstInterval = every;
+            wave.lifetime = 0.45f;
+            wave.lifetimeVariation = 0.0f;
+            wave.speed = 0.0f;
+            wave.acceleration = Vec3();
+            wave.turbulence = 0.0f;
+            wave.startSize = 1.0f;
+            wave.endSize = 18.0f;
+            wave.sizeCurve = 0.5f;
+            wave.fadeIn = 0.0f;
+            b.world.Add(b.Node("Shockwave", Vec3(), root), wave);
+
+            ParticleEmitter dust;
+            dust.shape = EmitterShape::Cone;
+            dust.coneAngle = 1.5f; // almost flat: a ring racing over the ground
+            dust.radius = 0.5f;
+            dust.rate = 0.0f;
+            dust.burst = 40;
+            dust.burstInterval = every;
+            dust.startDelay = 0.05f;
+            dust.maxParticles = 80;
+            dust.lifetime = 3.0f;
+            dust.speed = 9.0f;
+            dust.drag = 2.5f;
+            dust.acceleration = Vec3(0.0f, 0.05f, 0.0f);
+            dust.turbulence = 0.5f;
+            dust.startSize = 1.0f;
+            dust.endSize = 3.5f;
+            dust.sizeCurve = 0.4f;
+            dust.spin = 0.4f;
+            dust.startColor = Vec3(0.16f, 0.12f, 0.08f);
+            dust.endColor = Vec3(0.24f, 0.2f, 0.15f);
+            dust.startAlpha = 0.4f;
+            dust.endAlpha = 0.0f;
+            dust.fadeIn = 0.05f;
+            dust.look = ParticleLook::Soft;
+            dust.blend = ParticleBlend::Alpha;
+            dust.emissive = false;
+            b.world.Add(b.Node("Dust Ring", Vec3(0, -0.9f, 0), root), dust);
+
+            ParticleEmitter embers = Embers();
+            embers.shape = EmitterShape::Sphere;
+            embers.radius = 1.5f;
+            embers.rate = 0.0f;
+            embers.burst = 50;
+            embers.burstInterval = every;
+            embers.startDelay = 0.2f;
+            embers.lifetime = 3.0f;
+            embers.speed = 3.0f;
+            b.world.Add(b.Node("Embers", Vec3(), root), embers);
+            save(b, root, "Effects/P_Explosion");
+        }
+        {
+            // Snow: flakes drifting down and swirling in the breeze over a 30 m square (move it with the camera / player).
+            PrefabBuilder b;
+            const ecs::Entity root = b.Node("Snow");
+            const ecs::Entity sky = b.Node("Snow Cloud", Vec3(0, 12, 0), root, Quat::FromAxisAngle(Vec3(1, 0, 0), Pi));
+            ParticleEmitter f;
+            f.shape = EmitterShape::Box;
+            f.boxSize = Vec3(30.0f, 0.1f, 30.0f);
+            f.rate = 450.0f;
+            f.maxParticles = 4500;
+            f.lifetime = 9.0f;
+            f.lifetimeVariation = 0.2f;
+            f.speed = 0.8f;
+            f.speedVariation = 0.4f;
+            f.acceleration = Vec3(0.0f, -0.4f, 0.0f);
+            f.drag = 1.5f;
+            f.turbulence = 0.9f;
+            f.startSize = 0.06f;
+            f.endSize = 0.05f;
+            f.sizeVariation = 0.5f;
+            f.spin = 1.0f;
+            f.startColor = f.endColor = Vec3(0.95f, 0.97f, 1.0f);
+            f.startAlpha = 0.9f;
+            f.endAlpha = 0.9f;
+            f.fadeIn = 0.1f;
+            f.look = ParticleLook::Soft;
+            f.blend = ParticleBlend::Alpha;
+            f.emissive = false;
+            f.collision = ParticleCollision::Die; // flakes settle where they land
+            b.world.Add(sky, f);
+            AudioSource wind;
+            wind.clip = "StarterContent/Sounds/Wind_Loop.ogg";
+            wind.spatial = false;
+            wind.volume = 0.4f;
+            b.world.Add(root, wind);
+            save(b, root, "Effects/P_Snow");
         }
         {
             PrefabBuilder b;

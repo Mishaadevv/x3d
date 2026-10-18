@@ -72,7 +72,13 @@ VSOut ParticleVS(uint vertexId : SV_VertexID)
         if (speed > 1e-3) {
             up = along / speed;
             right = normalize(cross(up, toCam));
-            extent.y *= 1.0 + speed * 0.08;
+            // Per emitter: the streak is the path covered in `stretch` seconds (like a camera exposure); 0 = the
+            // classic look (proportional to the size: rain).
+            const uint stretchBits = (flags >> 8) & 0xFF;
+            if (stretchBits)
+                extent.y += speed * (float(stretchBits) / 1000.0) * 0.5;
+            else
+                extent.y *= 1.0 + speed * 0.08;
         }
     } else if (shape == 1) {
         // Flames: upright tongues (cylindrical billboards), leaning a little with their sideways motion and swaying.
@@ -161,14 +167,24 @@ float4 ParticlePS(VSOut i) : SV_Target0
         const float3 hot = float3(1.0, 0.75, 0.38) * peak * 1.15;
         tint = lerp(edge, hot, core * core);
     } else if (shape == 2) {
+        // Spark / streak: a hot white core, the head brighter than the fading tail.
+        const float r2 = uv.x * uv.x * 4.0 + uv.y * uv.y;
+        mask = exp(-r2 * 5.0) * saturate(1.0 - r2) * lerp(0.35, 1.0, saturate(uv.y * 0.5 + 0.5));
+        if (i.info.x > 0.5)
+            tint = lerp(tint, max(tint.r, max(tint.g, tint.b)).xxx, saturate(exp(-uv.x * uv.x * 30.0) * 0.6)); // white-hot core
+    } else if (i.info.y > 0.5) {
+        // Glow (additive puff): a bright center with a soft halo, keeps its color instead of washing out to white.
         const float r2 = dot(uv, uv);
-        mask = exp(-r2 * 6.0) * saturate(1.0 - r2);
+        mask = exp(-r2 * 4.0) * saturate(1.0 - r2) * 1.4;
+        tint *= lerp(0.6, 1.0, exp(-r2 * 8.0));
     } else {
-        // Puff: smooth falloff broken up by slow noise.
+        // Billow: a round puff carved by three octaves of noise drifting through it.
         const float r2 = dot(uv, uv);
-        const float n = Noise2(uv * 2.1 + seed * 23.0 + g_P.time * 0.15) * 0.5 + Noise2(uv * 4.3 - seed * 7.0) * 0.5;
-        mask = saturate(1.0 - r2) * saturate(1.0 - r2);
-        mask *= lerp(0.55, 1.15, n);
+        const float2 q = uv * 1.6 + seed * 23.0;
+        const float tq = g_P.time * 0.12;
+        const float n = Noise2(q + tq) * 0.55 + Noise2(q * 2.1 - tq * 1.3 + 3.7) * 0.3 + Noise2(q * 4.3 + tq * 2.0 - 1.9) * 0.15;
+        const float edge = saturate(1.0 - r2);
+        mask = saturate(edge * edge * 1.6 - (1.0 - n) * 0.55 * (1.0 - edge * 0.5));
     }
     if (mask <= 0.002)
         discard;
@@ -183,9 +199,15 @@ float4 ParticlePS(VSOut i) : SV_Target0
         discard;
 
     // Lit (smoke): sky light plus the sun, brighter on the side facing it; emissive (fire, sparks): glows.
-    const float3 n = normalize(float3(i.uv.x * g_P.cameraRight + i.uv.y * g_P.cameraUp) * 0.6 - g_P.cameraForward);
-    const float sunWrap = saturate(dot(n, g_P.dirToSun) * 0.5 + 0.5);
-    float3 lit = tint * (g_P.ambient + g_P.sunLight * (0.35 + 0.65 * sunWrap));
+    const float bulge = sqrt(saturate(1.0 - dot(i.uv, i.uv)));
+    const float3 n = normalize((i.uv.x * g_P.cameraRight + i.uv.y * g_P.cameraUp) - g_P.cameraForward * (bulge + 0.2));
+    const float sunWrap = saturate(dot(n, g_P.dirToSun) * 0.6 + 0.4);
+    // Thick middles shadow themselves; thin edges let the sun through (bright rims seen against the sun).
+    const float thickness = saturate(mask * 1.4);
+    const float selfShadow = lerp(1.0, 0.45, thickness * saturate(-dot(n, g_P.dirToSun) * 0.5 + 0.6));
+    const float backlit = pow(saturate(dot(g_P.cameraForward, g_P.dirToSun)), 6.0) * (1.0 - thickness) * 1.5;
+    const float skyFromAbove = 0.75 + 0.25 * n.y;
+    float3 lit = tint * (g_P.ambient * skyFromAbove + g_P.sunLight * (sunWrap * selfShadow + backlit) * 0.9);
     // Volumetric fog: the cell's light (sun through the shadows, point lights, fires) lights the smoke too.
     float3 fogInscatter = 0.0;
     float fogTransmittance = 1.0;

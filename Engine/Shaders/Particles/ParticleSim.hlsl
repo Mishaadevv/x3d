@@ -161,8 +161,8 @@ void EmitCS(uint id : SV_DispatchThreadID)
         dir = d;
     } else if (emitShape == 2) { // box
         local = float3(r.Range(-0.5, 0.5), r.Range(-0.5, 0.5), r.Range(-0.5, 0.5)) * shapeBox.xyz;
-    } else { // cone
-        const float a = r.Next() * TWO_PI, rr = sqrt(r.Next());
+    } else { // cone (3), ring (4: on the circle)
+        const float a = r.Next() * TWO_PI, rr = emitShape == 4 ? 1.0 : sqrt(r.Next());
         local = float3(cos(a) * rr, 0.0, sin(a) * rr) * shapeBox.w;
         const float angle = coneAngle * sqrt(r.Next());
         const float around = r.Next() * TWO_PI;

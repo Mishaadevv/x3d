@@ -57,6 +57,9 @@ Collider, implicit mesh collision of MeshRenderer.collision, PIE ticking with in
 Characters on physics: Gameplay.cpp TickCharacters(world, dt, PhysicsSystem&) (capsule shape casts, step up/down,
 supportNormal under the contact for step edges, platforms, mass-based pushes); tests CharacterPhysics.*. Script/C++
 physics API + collision callbacks: Scripting.cpp (physics global, DispatchPhysicsEvents), GameModule.cpp (SDK v2).
+Particles (0.13.11): ParticleEmitter midColor / sizeCurve / alphaCurve / burstInterval / startDelay / orbit / Ring /
+lightFlash / stretch (GpuParticle flags bits 8-15 = stretch in ms); effect prefabs in StarterAssets.cpp (Flames /
+Smoke / Embers / Sparks helpers, P_Explosion, P_Magic portal, P_Snow).
 Particles: Engine/Particles.h (Particle Emitter component, ParticleSystem CPU simulation owned by the editor, ticked live
 for Simulate In Editor emitters), Render/Particles.h + Shaders/Particles/Particles.hlsl (64-byte GpuParticle, premultiplied,
 soft depth fade). Starter Content: StarterContent.cpp (materials incl. WorldGrid/Noise patterns, scripts, sounds) +

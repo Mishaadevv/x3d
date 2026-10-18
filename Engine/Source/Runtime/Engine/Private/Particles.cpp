@@ -4,6 +4,7 @@
 #include "Scene/Hierarchy.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace zx {
 
@@ -12,6 +13,7 @@ ZX_REFLECT_ENUM_BEGIN(EmitterShape)
     ZX_ENUM_VALUE(Sphere)
     ZX_ENUM_VALUE(Box)
     ZX_ENUM_VALUE(Cone)
+    ZX_ENUM_VALUE(Ring)
 ZX_REFLECT_ENUM_END()
 
 ZX_REFLECT_ENUM_BEGIN(ParticleLook)
@@ -37,6 +39,8 @@ ZX_REFLECT_STRUCT_BEGIN(ParticleEmitter)
     ZX_FIELD(simulateInEditor, Meta::Tooltip("Real-time preview while editing; off = simulated only in Play"))
     ZX_FIELD(rate, Meta::Range(0, 2000), Meta::Units("/s"))
     ZX_FIELD(burst, Meta::Range(0, 5000), Meta::Tooltip("Particles emitted at once on start (and by entity.emit)"))
+    ZX_FIELD(burstInterval, Meta::Range(0, 60), Meta::Units("s"), Meta::Tooltip("Repeat the burst this often (0 = once): explosions, geysers"))
+    ZX_FIELD(startDelay, Meta::Range(0, 30), Meta::Units("s"), Meta::Tooltip("Wait before emitting (stages of an effect: smoke after the flash)"))
     ZX_FIELD(maxParticles, Meta::Range(1, 20000))
     ZX_FIELD(lifetime, Meta::Range(0.05, 60), Meta::Units("s"))
     ZX_FIELD(lifetimeVariation, Meta::Range(0, 1))
@@ -49,21 +53,28 @@ ZX_REFLECT_STRUCT_BEGIN(ParticleEmitter)
     ZX_FIELD(acceleration, Meta::Units("m/s2"), Meta::Tooltip("World space: -Y = gravity, +Y = rising heat"))
     ZX_FIELD(drag, Meta::Range(0, 20))
     ZX_FIELD(turbulence, Meta::Range(0, 50), Meta::Tooltip("Swirling noise force"))
+    ZX_FIELD(orbit, Meta::Range(-20, 20), Meta::Units("rad/s"), Meta::Tooltip("Swirl around the emitter's up axis: vortices, portals, tornadoes"))
     ZX_FIELD(worldSpace, Meta::Tooltip("Particles stay where they were emitted when the entity moves"))
     ZX_FIELD(startSize, Meta::Category("Look"), Meta::Range(0, 100), Meta::Units("m"))
     ZX_FIELD(endSize, Meta::Range(0, 100), Meta::Units("m"))
+    ZX_FIELD(sizeCurve, Meta::Range(0.1, 4), Meta::Tooltip("1 = linear; below 1 grows fast then slows (fireballs, smoke)"))
     ZX_FIELD(sizeVariation, Meta::Range(0, 1))
     ZX_FIELD(spin, Meta::Range(0, 20), Meta::Units("rad/s"))
     ZX_FIELD(startColor, Meta::Color())
+    ZX_FIELD(midColor, Meta::Color(), Meta::Tooltip("Middle of the gradient (with Mid Color Time above 0)"))
+    ZX_FIELD(midColorTime, Meta::Range(0, 1), Meta::Tooltip("0 = start -> end; else start -> mid at this fraction of the life -> end"))
     ZX_FIELD(endColor, Meta::Color())
     ZX_FIELD(startAlpha, Meta::Range(0, 1))
     ZX_FIELD(endAlpha, Meta::Range(0, 1))
     ZX_FIELD(fadeIn, Meta::Range(0, 1), Meta::Tooltip("Fraction of the life spent fading in"))
+    ZX_FIELD(alphaCurve, Meta::Range(0.1, 4), Meta::Tooltip("1 = linear fade; above 1 stays opaque longer, below 1 fades early"))
     ZX_FIELD(look, Meta::Tooltip("Soft puff, flickering flame, spark stretched along its motion, or invisible heat haze (Alpha = strength)"))
     ZX_FIELD(blend, Meta::Tooltip("Additive glows and adds light; Alpha covers what is behind (smoke)"))
     ZX_FIELD(emissive, Meta::Tooltip("Glows by itself instead of being lit by the sun and sky"))
     ZX_FIELD(intensity, Meta::Range(0, 100), Meta::Tooltip("Brightness of emissive particles"))
     ZX_FIELD(lightFlicker, Meta::Range(0, 1), Meta::Tooltip("Flickers the Point Light on this entity (fire)"))
+    ZX_FIELD(lightFlash, Meta::Range(0, 1), Meta::Tooltip("The Point Light on this entity flashes with each burst and fades (explosions)"))
+    ZX_FIELD(stretch, Meta::Range(0, 0.25), Meta::Units("s"), Meta::Tooltip("Spark: the streak shows the path of this many seconds (0.03 = sparks); 0 = proportional to the size"))
     ZX_FIELD(flipbook, Meta::Category("Flipbook"),
              Meta::Tooltip("Animated texture atlas, e.g. StarterContent/Flipbooks/T_Flipbook_Fire.png (Flame: r = heat, a = mask; Soft: rgb = shading, a = mask)"))
     ZX_FIELD(flipbookColumns, Meta::Range(1, 16))
@@ -121,8 +132,13 @@ void ParticleSystem::Spawn(Emitter& em, u32 count, const Vec3* origin)
         case EmitterShape::Box:
             local = Vec3(em.rng.Range(-0.5f, 0.5f), em.rng.Range(-0.5f, 0.5f), em.rng.Range(-0.5f, 0.5f)) * d.boxSize;
             break;
-        case EmitterShape::Cone: {
-            const Vec2 disc = em.rng.InsideUnitCircle();
+        case EmitterShape::Cone:
+        case EmitterShape::Ring: {
+            Vec2 disc = em.rng.InsideUnitCircle();
+            if (d.shape == EmitterShape::Ring) {
+                const f32 a = em.rng.NextFloat() * TwoPi;
+                disc = Vec2(Cos(a), Sin(a));
+            }
             local = Vec3(disc.x, 0.0f, disc.y) * d.radius;
             const f32 angle = d.coneAngle * Sqrt(em.rng.NextFloat());
             const f32 around = em.rng.NextFloat() * TwoPi;
@@ -215,8 +231,24 @@ void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
             if (!em.started) {
                 em.started = true;
                 em.lastWorld = em.world;
-                em.pendingBurst += u32(Max(desc.burst, 0));
+                em.delayed = desc.startDelay > 0.0f;
+                em.nextBurst = desc.startDelay;
+                if (!em.delayed) {
+                    em.pendingBurst += u32(Max(desc.burst, 0));
+                    em.burstClock = 0.0f;
+                    em.nextBurst = desc.burstInterval;
+                }
+            } else if (em.delayed || desc.burstInterval > 0.0f) {
+                // Delayed start, then the burst again every interval.
+                em.nextBurst -= dt;
+                if (em.nextBurst <= 0.0f) {
+                    em.delayed = false;
+                    em.pendingBurst += u32(Max(desc.burst, 0));
+                    em.burstClock = 0.0f;
+                    em.nextBurst += desc.burstInterval > 0.0f ? desc.burstInterval : 1e9f;
+                }
             }
+            em.burstClock += dt;
             // Flicker: two slow noises (the light breathes rather than strobes).
             em.wind = desc.worldSpace ? WindFor(world, e, wt.GetPosition()) : Vec3();
             em.flicker = 1.0f - desc.lightFlicker * (0.5f + 0.3f * Sin(em.time * 9.1f + f32(e.index)) + 0.2f * Sin(em.time * 23.7f));
@@ -229,7 +261,7 @@ void ParticleSystem::Tick(ecs::World& world, f32 dt, bool playing)
             // Emit.
             u32 count = em.pendingBurst;
             em.pendingBurst = 0;
-            if (desc.playing && desc.rate > 0.0f) {
+            if (desc.playing && desc.rate > 0.0f && !em.delayed) {
                 em.accumulator += desc.rate * dt;
                 const u32 n = u32(em.accumulator);
                 em.accumulator -= f32(n);
@@ -292,6 +324,14 @@ void ParticleSystem::Advance(Emitter& em, f32 dt)
             accel += Swirl(p.position * 1.3f + Vec3(p.seed * 10.0f), em.time) * desc.turbulence;
         p.velocity = em.wind + (p.velocity - em.wind + accel * dt) * dragFactor; // drag pulls towards the wind
         p.position += p.velocity * dt;
+        if (desc.orbit != 0.0f) {
+            // Turn the offset from the axis around it (the radius stays: a stable vortex).
+            const Vec3 center = desc.worldSpace ? em.world.GetTranslation() : Vec3();
+            const Vec3 axis = desc.worldSpace ? SafeNormalize(em.world.TransformVector(Vec3(0, 1, 0)), Vec3(0, 1, 0)) : Vec3(0, 1, 0);
+            const Quat turn = Quat::FromAxisAngle(axis, desc.orbit * dt);
+            p.position = center + turn * (p.position - center);
+            p.velocity = turn * p.velocity;
+        }
         p.rotation += p.spin * dt;
         if (p.willHit && Dot(p.position - p.hitPoint, p.hitNormal) < 0.0f) {
             // Crossed the surface it was heading for.
@@ -364,11 +404,20 @@ void ParticleSystem::Gather(Vec3 cameraPosition, Array<render::GpuParticle>& out
             const f32 fade = d.fadeIn > 0.0f ? Min(t / d.fadeIn, 1.0f) : 1.0f;
             render::GpuParticle g;
             g.position = d.worldSpace ? p.position : em.world.TransformPointAffine(p.position);
-            g.size = Max(Lerp(d.startSize, d.endSize, t) * p.sizeScale, 0.0f);
-            const Vec3 rgb = Lerp(d.startColor, d.endColor, t) * (d.emissive ? d.intensity : 1.0f);
-            g.color = Vec4(rgb.x, rgb.y, rgb.z, Clamp(Lerp(d.startAlpha, d.endAlpha, t) * fade, 0.0f, 1.0f));
+            const f32 sizeT = d.sizeCurve != 1.0f ? Pow(t, Max(d.sizeCurve, 0.05f)) : t;
+            g.size = Max(Lerp(d.startSize, d.endSize, sizeT) * p.sizeScale, 0.0f);
+            Vec3 rgb;
+            if (d.midColorTime > 0.0f && d.midColorTime < 1.0f)
+                rgb = t < d.midColorTime ? Lerp(d.startColor, d.midColor, t / d.midColorTime)
+                                         : Lerp(d.midColor, d.endColor, (t - d.midColorTime) / (1.0f - d.midColorTime));
+            else
+                rgb = Lerp(d.startColor, d.endColor, t);
+            rgb *= d.emissive ? d.intensity : 1.0f;
+            const f32 alphaT = d.alphaCurve != 1.0f ? Pow(t, Max(d.alphaCurve, 0.05f)) : t;
+            g.color = Vec4(rgb.x, rgb.y, rgb.z, Clamp(Lerp(d.startAlpha, d.endAlpha, alphaT) * fade, 0.0f, 1.0f));
             g.rotation = p.rotation;
-            g.flags = (d.emissive ? u32(render::ParticleEmissive) : 0u) | (additive ? u32(render::ParticleAdditive) : 0u);
+            g.flags = (d.emissive ? u32(render::ParticleEmissive) : 0u) | (additive ? u32(render::ParticleAdditive) : 0u) |
+                      (u32(Clamp(d.stretch * 1000.0f, 0.0f, 255.0f) + 0.5f) << 8); // ms of motion; 0 = the classic streak
             g.texture = atlas;
             g.shape = packedShape;
             g.velocity = d.worldSpace ? p.velocity : em.world.TransformVector(p.velocity);
@@ -454,11 +503,17 @@ void ParticleSystem::GatherGpu(Array<render::GpuEmitter>& out, render::GpuPartic
 void ParticleSystem::ModulateLights(Span<render::LightDesc> lights) const
 {
     for (const auto& [key, em] : m_emitters) {
-        if (em.desc.lightFlicker <= 0.0f || !em.started)
+        if ((em.desc.lightFlicker <= 0.0f && em.desc.lightFlash <= 0.0f) || !em.started)
             continue;
+        f32 k = em.desc.lightFlicker > 0.0f ? Max(em.flicker, 0.0f) : 1.0f;
+        if (em.desc.lightFlash > 0.0f) {
+            // Bright at the burst, gone within a second (dark while a delayed effect waits).
+            const f32 flash = em.delayed ? 0.0f : std::exp(-em.burstClock * 5.0f);
+            k *= Lerp(1.0f, flash, em.desc.lightFlash);
+        }
         for (render::LightDesc& l : lights)
             if (l.id == em.lightId)
-                l.intensity *= Max(em.flicker, 0.0f);
+                l.intensity *= k;
     }
 }
 

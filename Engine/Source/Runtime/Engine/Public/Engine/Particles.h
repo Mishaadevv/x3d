@@ -28,6 +28,7 @@ enum class EmitterShape : u8
     Sphere, // inside a sphere of Radius, moving outwards
     Box,    // inside Box Size, moving along the entity's +Y
     Cone,   // from a disc of Radius, spreading by Cone Angle around +Y
+    Ring,   // from a circle of Radius, spreading by Cone Angle around +Y (portals, shockwaves, halos)
 };
 
 enum class ParticleLook : u8
@@ -57,6 +58,8 @@ struct ParticleEmitter
     bool simulateInEditor = true; // real-time preview while editing (off: only in Play)
     f32 rate = 20.0f;             // particles per second
     i32 burst = 0;                // particles emitted at once on start (and by entity.emit)
+    f32 burstInterval = 0.0f;     // s: repeat the burst this often (0 = once) - explosions, geysers
+    f32 startDelay = 0.0f;        // s before the first particle (stages of an effect: the smoke after the flash)
     i32 maxParticles = 300;
     f32 lifetime = 1.5f;          // seconds
     f32 lifetimeVariation = 0.3f; // fraction
@@ -69,21 +72,28 @@ struct ParticleEmitter
     Vec3 acceleration = Vec3(0.0f, 0.5f, 0.0f); // world m/s^2 (negative Y = gravity, positive = rising heat)
     f32 drag = 0.5f;       // 1/s
     f32 turbulence = 0.5f; // m/s^2 of swirling noise
+    f32 orbit = 0.0f;      // rad/s around the emitter's up axis (vortices, portals, tornadoes)
     f32 startSize = 0.5f;
     f32 endSize = 0.2f;
+    f32 sizeCurve = 1.0f;  // 1 = linear; < 1 grows fast then slows (fireballs, smoke), > 1 the other way
     f32 sizeVariation = 0.3f;
     f32 spin = 0.5f;       // max rad/s either way
     Vec3 startColor = Vec3(1.0f, 0.6f, 0.2f);
+    Vec3 midColor = Vec3(1.0f, 0.4f, 0.1f);
+    f32 midColorTime = 0.0f; // 0 = start -> end; else start -> mid (at this fraction of the life) -> end
     Vec3 endColor = Vec3(0.6f, 0.1f, 0.02f);
     f32 startAlpha = 1.0f;
     f32 endAlpha = 0.0f;
     f32 fadeIn = 0.1f;     // fraction of the life spent fading in
+    f32 alphaCurve = 1.0f; // 1 = linear start -> end alpha; > 1 stays opaque longer, < 1 fades early
     f32 intensity = 1.0f;  // brightness of emissive (glowing) particles
     ParticleLook look = ParticleLook::Soft;
     ParticleBlend blend = ParticleBlend::Additive;
     bool emissive = true;  // glows (not lit by the sun)
     bool worldSpace = true; // particles stay where they were emitted when the entity moves
     f32 lightFlicker = 0.0f; // 0..1: flickers the Point Light on this entity (fire)
+    f32 lightFlash = 0.0f;   // 0..1: the Point Light on this entity flashes with each burst and fades (explosions)
+    f32 stretch = 0.0f;      // Spark: streak = the path covered in this many seconds (0.03 = sparks, 0 = scaled by the size)
     String flipbook;          // animated texture atlas (Content-relative), e.g. StarterContent/Flipbooks/T_Flipbook_Fire.png
     i32 flipbookColumns = 8;
     i32 flipbookRows = 8;
@@ -170,6 +180,9 @@ private:
         u32 lightId = 0; // entity index + 1 (LightDesc::id)
         f32 flicker = 1.0f;
         f32 time = 0.0f;
+        f32 burstClock = 0.0f;  // since the last burst (light flash)
+        f32 nextBurst = 0.0f;   // burstInterval countdown
+        bool delayed = false;   // waiting for startDelay
         Vec3 wind; // this tick (world space, m/s)
         // GPU simulation (gpuSlot valid): what the last Tick asks the GPU to do.
         u32 gpuSlot = 0xFFFFFFFFu;
