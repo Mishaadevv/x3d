@@ -58,7 +58,8 @@ Scripting:  ZeqouScript works out of the box (docs\ZeqouScript.md). C++ game cod
 Requires:   Windows 10 / 11 64-bit, a DirectX 12 GPU (Intel UHD 620 or better), 8 GB RAM.
 Logs:       Saved\Logs (attach them to bug reports)
 Bugs:       https://github.com/Mishaadevv/x3d/issues
-License:    PolyForm Strict 1.0.0 (LICENSE)
+License:    ZeqouX3D License (LICENSE): make games and sell them royalty-free; the engine itself
+            may not be redistributed or modified.
 "@
 Set-Content -Path (Join-Path $stage "README.txt") -Value $readme -Encoding UTF8
 

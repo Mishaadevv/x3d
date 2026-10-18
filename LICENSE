@@ -1,5 +1,29 @@
 Copyright 2026 Misha (misakolot6@gmail.com)
 
+# ZeqouX3D License
+
+ZeqouX3D - the engine, the editor, their source code, tools and bundled engine content (together, "the Software") - is licensed under the PolyForm Strict License 1.0.0 printed below, together with the Game Exception that follows. The Game Exception gives you more rights than PolyForm Strict alone; where the two differ, the Game Exception applies.
+
+In short: you can use ZeqouX3D for free to make games, and give away or sell those games, with no royalties. You can't redistribute, modify or resell the engine or the editor themselves.
+
+## Game Exception
+
+1. Making games. You may use the Software, for any purpose including commercial ones, to create games and other interactive applications ("Your Game").
+
+2. Distributing games. You may copy and distribute Your Game, for free or for a fee, in any number of copies and on any store or website. Your Game may include the parts of the Software that the editor's Package Project command puts into a packaged game (the game runtime, the shader compiler libraries, and cooked engine content such as Starter Content, fonts and shaders), only in that packaged form and only as part of Your Game.
+
+3. Your work is yours. The licensor claims no rights in the content, scripts and code that you create for Your Game, and asks for no royalties or fees. Crediting "Made with ZeqouX3D" is welcome but not required.
+
+4. Limits. This exception does not allow you to:
+   - distribute the Software itself (the editor, the installer, the source code, the Game SDK or the engine content) outside of Your Game, or any modified version of it;
+   - extract parts of the Software from a packaged game and distribute or use them on their own, for example as an asset pack or a library;
+   - make a game engine, editor or development tool from the Software, or offer the Software as a service;
+   - remove or change copyright notices in the Software.
+
+5. Third-party parts. Some included files have their own licenses, which also apply: the Inter and Lucide fonts (SIL Open Font License 1.1 and ISC; see Engine/Content/Fonts), the asset packs in Engine/Content/Packs (CC0 by Quaternius; see their License.txt), and dxcompiler.dll / dxil.dll (Microsoft DirectX Shader Compiler, redistributed with the Windows SDK).
+
+6. The No Liability section of the license below also applies to this exception: the Software and the right to distribute games made with it come as is, without any warranty.
+
 # PolyForm Strict License 1.0.0
 
 <https://polyformproject.org/licenses/strict/1.0.0>

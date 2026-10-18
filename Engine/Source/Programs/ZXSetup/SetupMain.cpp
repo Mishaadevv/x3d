@@ -504,9 +504,10 @@ void DrawPage(SetupUI& s)
         break;
     case Page::License:
         heading("License Agreement");
-        ui::TextWrapped("ZeqouX3D is licensed under the PolyForm Strict License 1.0.0. Please read it before installing.");
+        ui::TextWrapped("You can make games with ZeqouX3D and give them away or sell them, royalty-free. The engine and the editor "
+                        "themselves may not be redistributed or modified. Please read the license before installing.");
         ui::Spacing();
-        if (ui::BeginChild("##license", Vec2(-1.0f, 318.0f), true))
+        if (ui::BeginChild("##license", Vec2(-1.0f, 290.0f), true))
             ui::TextWrapped(s.license);
         ui::EndChild();
         ui::Spacing();

@@ -262,7 +262,7 @@ UI headless interaction tests: `ZXTests.exe UI.*` (synthetic mouse/keys drive re
   shadows are drawn hollow automatically. Lucide icons: macros in UI/Icons.h (regenerate with Tools/gen_lucide_icons.py).
 
 ## Publishing
-- GitHub: https://github.com/Mishaadevv/x3d (public, branch main, PolyForm Strict). Screenshots for the README live in docs/images.
+- GitHub: https://github.com/Mishaadevv/x3d (public, branch main, ZeqouX3D License = PolyForm Strict 1.0.0 + Game Exception: games made with it may be sold / distributed with the packaged runtime). Screenshots for the README live in docs/images.
 - Website: the sibling repo ../Zeqou (https://mishaadevv.github.io/zeqou/, page /apps/x3d, docs /docs/x3d) reads the engine
   version from this CMakeLists.txt: after a version bump run `npm run versions` there, commit and push (GitHub Pages deploys).
 
