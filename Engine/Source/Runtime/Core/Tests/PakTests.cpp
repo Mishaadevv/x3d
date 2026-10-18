@@ -88,3 +88,28 @@ ZX_TEST(Pak, RoundTripMountAndList)
     // Not a package.
     ZX_EXPECT(!fs::OpenPak(scope.root + "/saved/New.txt"));
 }
+
+ZX_TEST(Pak, AppendedToAnotherFile)
+{
+    // The installer: an executable with the package appended (opened at its offset).
+    PakScope scope;
+    const Array<u8> text = Bytes("ZeqouX3D installer payload");
+    {
+        fs::PakWriter w;
+        ZX_REQUIRE(w.Open(scope.root + "/Payload.zpak"));
+        ZX_EXPECT(w.AddFile("Files/readme.txt", text.View()));
+        ZX_REQUIRE(w.Finish());
+    }
+    Array<u8> pakBytes, combined;
+    ZX_REQUIRE(fs::ReadFile(scope.root + "/Payload.zpak", pakBytes));
+    for (u32 i = 0; i < 1234; ++i)
+        combined.PushBack(u8(i * 7));
+    combined.Append(pakBytes.View());
+    ZX_REQUIRE(fs::WriteFile(scope.root + "/Setup.exe", combined.View()));
+    RefPtr<fs::PakArchive> pak = fs::OpenPak(scope.root + "/Setup.exe", 1234);
+    ZX_REQUIRE(pak);
+    Array<u8> out;
+    ZX_REQUIRE(pak->Read("Files/readme.txt", out));
+    ZX_EXPECT(out == text);
+    ZX_EXPECT(!fs::OpenPak(scope.root + "/Setup.exe", 0)); // not at the start
+}

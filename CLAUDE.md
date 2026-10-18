@@ -111,6 +111,13 @@ terrain.sculpt. File > Settings: EditorSettings.h/.cpp (reflected prefs, Propert
 scale gizmo one-sided (prefs.scaleFromOneSide, LocalBounds in ViewportPanel.cpp).
 Terrain brush v2 (0.13.16): TerrainBrushMode (IsTerrainPaintMode), TerrainRamp / TerrainOperation / Import|Export
 TerrainHeightmap in EditorTools.cpp; Editor::CreateTerrain(flat); console terrain.ramp / terrain.op.
+Release (0.13.16): `powershell -ExecutionPolicy Bypass -File Tools/make_release.ps1 [-SkipBuild]` -> Build/Release
+(staged install folder, <ver>-Beta-Setup.exe, Portable.zip). Installer = Programs/ZXSetup (SetupMain.cpp: payload =
+.zpak "Files/..." appended to the exe + 24-byte trailer, PakArchive::Open(path, baseOffset); window on ZUI with fonts /
+shaders from the payload and dxcompiler unpacked to %TEMP%/ZeqouX3D-Setup/bin; SetupWin32.cpp = HKCU uninstall entry,
+shortcuts). Flags: -silent -dir= [-nopacks] [-noshortcuts], -makeinstaller=<stage> -out=<exe> (8.3 paths!),
+-autotest -page=N / -autoinstall -dir=; Uninstall.exe [-silent]. Logs in %TEMP%/ZeqouX3D-Setup/Logs/Setup.log.
+GitHub releases: tag v<version>, prerelease, assets Setup.exe + Portable.zip.
 Solver islands: PhysicsWorld::Step builds SolverIsland lists (bodies / contacts / joints) and runs phase1 / kinematic
 integration / phase2 per substep, in parallel only when no island holds half the work (stats.parallelIslands); only
 active solver bodies are written (shared static / kinematic ones are read-only). Queries: ClosestPoint (1 mm probe

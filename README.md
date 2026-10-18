@@ -4,7 +4,23 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12 — par
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a Unity URP / Unreal Engine 5 style workflow that runs
 well on everyday hardware (the development machine is a laptop with Intel UHD 620 graphics).
 
-**Version 0.10.4** · zero third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md)
+**Version 0.13.16 (Beta)** · zero third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md)
+
+> [!WARNING]
+> **ZeqouX3D is in beta and is not a complete 3D engine yet.** Many features are missing or unfinished, expect bugs and
+> crashes, and projects made with one version may need changes to open in later ones. Keep backups of your work.
+
+## Download
+
+Get the latest build from [Releases](https://github.com/Mishaadevv/x3d/releases/latest):
+
+- **ZeqouX3D-&lt;version&gt;-Beta-Setup.exe** — installer (per user, no administrator rights; Start menu and desktop
+  shortcuts, uninstall from *Apps & features*)
+- **ZeqouX3D-&lt;version&gt;-Beta-Portable.zip** — the same files to unpack anywhere; run `Binaries/Win64/ZXEditor.exe`
+
+Requirements: Windows 10 / 11 64-bit, a DirectX 12 GPU (Intel UHD 620 or better), 8 GB RAM. ZeqouScript gameplay works out
+of the box; C++ game code additionally needs Visual Studio 2022 Build Tools with the C++ workload. Bug reports with the
+log from `Saved/Logs` are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues).
 
 ![Water template](docs/images/water.jpg)
 
@@ -56,6 +72,7 @@ Requirements: Windows 10/11, Visual Studio 2022 Build Tools (C++ workload, CMake
 powershell -ExecutionPolicy Bypass -File Tools/build.ps1 -Config Development        # build
 powershell -ExecutionPolicy Bypass -File Tools/build.ps1 -Config Debug -Test         # build + tests
 powershell -ExecutionPolicy Bypass -File Tools/fetch_samples.ps1                     # optional samples (Sponza, an HDRI, ...)
+powershell -ExecutionPolicy Bypass -File Tools/make_release.ps1                     # Shipping build + installer + portable zip (Build/Release)
 ```
 
 Binaries go to `Binaries/Win64/<Debug|Development|Shipping>/`: `ZXEditor.exe` (the editor), `ZXTests.exe` (tests),

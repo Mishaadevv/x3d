@@ -125,19 +125,20 @@ bool PakWriter::Finish()
 
 // --- Reader ------------------------------------------------------------------------------------------------------------
 
-bool PakArchive::Open(StringView physicalPath)
+bool PakArchive::Open(StringView physicalPath, u64 baseOffset)
 {
     m_path = physicalPath;
+    m_base = baseOffset;
     if (!m_file.Open(physicalPath, platform::FileMode::Read))
         return false;
     Header h;
-    if (m_file.ReadAt(&h, sizeof(h), 0) != sizeof(h) || h.magic != PakMagic || h.version != PakVersion || h.tocOffset + h.tocSize > m_file.Size()) {
+    if (m_file.ReadAt(&h, sizeof(h), m_base) != sizeof(h) || h.magic != PakMagic || h.version != PakVersion || m_base + h.tocOffset + h.tocSize > m_file.Size()) {
         ZX_LOG_ERROR(LogPak, "{}: not a package of this version", physicalPath);
         return false;
     }
     Array<u8> toc;
     toc.ResizeUninitialized(usize(h.tocSize));
-    if (m_file.ReadAt(toc.Data(), toc.Size(), h.tocOffset) != toc.Size())
+    if (m_file.ReadAt(toc.Data(), toc.Size(), m_base + h.tocOffset) != toc.Size())
         return false;
     BinaryReader r(toc.View());
     m_files.Resize(h.fileCount);
@@ -227,12 +228,12 @@ bool PakArchive::Read(StringView path, Array<u8>& out) const
         const usize at = usize(b) * PakBlockSize;
         const usize rawSize = Min<usize>(PakBlockSize, usize(f->size) - at);
         if (block.stored) {
-            if (m_file.ReadAt(out.Data() + at, rawSize, block.offset) != rawSize)
+            if (m_file.ReadAt(out.Data() + at, rawSize, m_base + block.offset) != rawSize)
                 return false;
             continue;
         }
         packed.ResizeUninitialized(block.packedSize);
-        if (m_file.ReadAt(packed.Data(), packed.Size(), block.offset) != packed.Size() ||
+        if (m_file.ReadAt(packed.Data(), packed.Size(), m_base + block.offset) != packed.Size() ||
             !compression::ZlzDecompress(packed.View(), out.Data() + at, rawSize)) {
             ZX_LOG_ERROR(LogPak, "{}: damaged block in {}", m_path, f->path);
             return false;
@@ -250,10 +251,10 @@ bool PakArchive::List(StringView dir, Array<platform::DirectoryEntry>& out) cons
     return true;
 }
 
-RefPtr<PakArchive> OpenPak(StringView physicalPath)
+RefPtr<PakArchive> OpenPak(StringView physicalPath, u64 baseOffset)
 {
     RefPtr<PakArchive> pak = MakeRef<PakArchive>();
-    return pak->Open(physicalPath) ? pak : RefPtr<PakArchive>();
+    return pak->Open(physicalPath, baseOffset) ? pak : RefPtr<PakArchive>();
 }
 
 namespace {

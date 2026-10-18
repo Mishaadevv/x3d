@@ -283,7 +283,11 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "editor.commands", "Command Palette...", "Editor", ZX_ICON_SQUARE_CHEVRON_RIGHT, "Ctrl+Shift+P", [](Editor& e) { OpenCommandPalette(e, true); });
     Add(ed, "editor.keys", "Edit Keyboard Shortcuts", "Editor", ZX_ICON_KEYBOARD, "", [](Editor&) { platform::OpenUrl(fs::ToPhysicalPath(KeysFile)); });
     // Help
-    Add(ed, "help.docs", "Documentation", "Help", ZX_ICON_BOOK_OPEN, "F1", [](Editor& e) { platform::OpenUrl("file:///" + e.engineRoot + "/docs/TZ.md"); });
+    Add(ed, "help.docs", "Documentation", "Help", ZX_ICON_BOOK_OPEN, "F1", [](Editor& e) {
+        // Engine checkouts have the spec; installed builds open the online README.
+        const String spec = e.engineRoot + "/docs/TZ.md";
+        platform::OpenUrl(platform::FileExists(spec) ? "file:///" + spec : String("https://github.com/Mishaadevv/x3d#readme"));
+    });
     Add(ed, "help.engineProfile", "Engine Profile (Lite / Full)...", "Help", ZX_ICON_GAUGE, "", [](Editor& e) { e.showProfileDialog = true; });
     Add(ed, "help.about", "About ZeqouX3D", "Help", ZX_ICON_INFO, "", [](Editor& e) { e.showAbout = true; });
 

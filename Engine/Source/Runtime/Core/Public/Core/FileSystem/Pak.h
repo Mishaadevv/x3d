@@ -62,7 +62,8 @@ private:
 class PakArchive : public RefCounted
 {
 public:
-    bool Open(StringView physicalPath);
+    /// `baseOffset`: where the package starts inside the file (a package appended to an executable, e.g. the installer).
+    bool Open(StringView physicalPath, u64 baseOffset = 0);
     bool Exists(StringView path) const;
     bool IsDirectory(StringView path) const;
     bool GetInfo(StringView path, platform::FileInfo& out) const;
@@ -89,6 +90,7 @@ private:
 
     String m_path;
     mutable platform::File m_file;
+    u64 m_base = 0;
     Array<FileEntry> m_files;
     Array<Block> m_blocks;
     HashMap<String, u32> m_index;                         // lower-case path -> file
@@ -96,7 +98,7 @@ private:
 };
 
 /// Opens a package; null if it can't be read.
-RefPtr<PakArchive> OpenPak(StringView physicalPath);
+RefPtr<PakArchive> OpenPak(StringView physicalPath, u64 baseOffset = 0);
 /// Read-only mount source for the files under `prefix` (a directory inside the package, "" = all).
 UniquePtr<MountSource> MakePakSource(RefPtr<PakArchive> pak, StringView prefix);
 

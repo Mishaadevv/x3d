@@ -33,6 +33,7 @@ add_subdirectory(Engine/Source/Runtime/UI)
 # Programs
 add_subdirectory(Engine/Source/Programs/ZXEditor)
 add_subdirectory(Engine/Source/Programs/ZXGame)
+add_subdirectory(Engine/Source/Programs/ZXSetup)
 
 # Samples
 add_subdirectory(Samples/HelloTriangle)
