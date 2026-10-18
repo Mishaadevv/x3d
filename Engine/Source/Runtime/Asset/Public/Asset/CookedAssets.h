@@ -323,6 +323,6 @@ bool Deserialize(ByteSpan data, Skeleton& out);
 bool Deserialize(ByteSpan data, AnimationClip& out);
 
 /// Bump when any cooked format or cooker output changes (part of every DDC key).
-inline constexpr u32 CookerVersion = 7; // 6: ZNano clusters, 7: fallback LODs cut from the cluster DAG
+inline constexpr u32 CookerVersion = 8; // 6: ZNano clusters, 7: fallback LODs cut from the cluster DAG, 8: unique group errors
 
 } // namespace zx::asset

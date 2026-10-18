@@ -166,3 +166,46 @@ ZX_TEST(ManualNano, RockDagStats)
         std::printf("%s\n", line.CStr());
     }
 }
+
+ZX_TEST(Nano, PagesStreamWithoutHoles)
+{
+    MeshData data = BumpyGrid(128); // 32768 triangles
+    const CookedMesh mesh = CookMesh(data, true, NanoMode::On);
+    const NanoMesh& nm = mesh.nano;
+    // Group errors are unique: equal parent errors mean one group (same parent sphere).
+    for (usize i = 1; i < nm.clusters.Size(); ++i)
+        if (nm.clusters[i].parentError == nm.clusters[i - 1].parentError && nm.clusters[i].parentError < NanoRootError)
+            ZX_EXPECT(nm.clusters[i].parentSphere.w == nm.clusters[i - 1].parentSphere.w);
+    nano::GpuPages pages;
+    nano::BuildGpuPages(mesh, pages);
+    const u32 pageCount = u32(pages.pageFirstCluster.Size());
+    ZX_REQUIRE(pageCount >= 3u);
+    ZX_EXPECT_EQ(pages.headers.Size(), nm.clusters.Size());
+    ZX_EXPECT_EQ(pages.data.Size(), usize(pageCount) * nano::PageBytes);
+    for (u32 c = 0; c < pages.headers.Size(); ++c) {
+        const NanoClusterHeader& h = pages.headers[c];
+        ZX_REQUIRE(h.level < pageCount);
+        ZX_EXPECT(pages.pageFirstCluster[h.level] <= c);
+        ZX_EXPECT(h.vertexStart * 36 + h.vertexCount * 36 <= nano::PageBytes);
+        ZX_EXPECT(h.triangleStart + h.triangleCount * 4 <= nano::PageBytes);
+        // The page holds this cluster's first triangle as cooked.
+        u32 packed = 0;
+        MemCopy(&packed, pages.data.Data() + usize(h.level) * nano::PageBytes + h.triangleStart, 4);
+        ZX_EXPECT_EQ(packed, nm.triangles[nm.clusters[c].triangleStart]);
+    }
+    // Every page prefix gives a complete surface.
+    Array<u32> all;
+    for (u32 i = 0; i < nm.clusters.Size(); ++i)
+        if (nm.clusters[i].level == 0)
+            all.PushBack(i);
+    const f32 fullArea = Area(mesh, nm, all.View());
+    const f32 pixelsPerUnit = 1080.0f / (2.0f * Tan(DegToRad(30.0f)));
+    for (u32 resident = pages.pinnedPages; resident <= pageCount; ++resident) {
+        const u32 clusters = resident < pageCount ? pages.pageFirstCluster[resident] : u32(nm.clusters.Size());
+        Array<u32> cut;
+        nano::SelectCutResident(nm, Vec3(0.0f, 3.0f, -3.0f), pixelsPerUnit, 1.0f, clusters, cut);
+        ZX_EXPECT(!cut.Empty());
+        const f32 area = Area(mesh, nm, cut.View());
+        ZX_EXPECT(Abs(area - fullArea) < fullArea * 0.06f);
+    }
+}

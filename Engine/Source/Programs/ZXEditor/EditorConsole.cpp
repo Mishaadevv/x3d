@@ -123,6 +123,10 @@ ConCommand CmdStatScene("stat.scene", "Prints viewport and scene statistics", []
     ZX_LOG_INFO(LogCmd, "  Draws {} (+{} shadow), {:.0f}k triangles", st.draws, st.shadowDraws, f64(st.triangles) / 1000.0);
     if (st.gpuDriven)
         ZX_LOG_INFO(LogCmd, "  GPU-driven: {} cull items, {} groups, {} indirect calls", st.gpuItems, st.gpuGroups, st.indirectCalls);
+    if (ra.nanoPoolPages > 0)
+        ZX_LOG_INFO(LogCmd, "  Cluster streaming: {} / {} pool pages resident ({:.0f} / {:.0f} MB), {} wanted, {} loaded last frame, {:.0f} MB of pages on disk",
+                    ra.nanoResidentPages, ra.nanoPoolPages, f64(ra.nanoResidentPages) * 0.125, f64(ra.nanoPoolPages) * 0.125,
+                    ra.nanoWantedPages, ra.nanoStreamedPages, f64(ra.nanoFileBytes) / (1024.0 * 1024.0));
     if (st.nanoInstances > 0)
         ZX_LOG_INFO(LogCmd, "  Virtual geometry: {} instances, {:.1f}M source triangles; {} clusters tested, {} drawn, {:.0f}k triangles "
                             "(+{:.0f}k shadow), {} bins, error x{:.2f}{}",
@@ -160,18 +164,23 @@ ConCommand CmdStressInstances("stress.instances",
 
 ConCommand CmdStressNano("stress.nano",
                           "Virtual geometry stress test: N instances of a procedural rock with 1.3M triangles each (outside undo): "
-                          "stress.nano 770 (= 1 billion source triangles) [subdivisions 6..8]",
+                          "stress.nano 770 (= 1 billion source triangles) [subdivisions 4..8] [different rocks 1..16]",
                           [](Span<const StringView> args) {
                               Editor* ed = Ed();
                               if (!ed)
                                   return;
                               const u32 n = args.Empty() ? 770u : u32(Clamp<i64>(ParseInt(args[0]).ValueOr(770), 1, 100000));
                               const u32 subdivisions = args.Size() > 1 ? u32(Clamp<i64>(ParseInt(args[1]).ValueOr(8), 4, 8)) : 8u;
+                              const u32 variants = args.Size() > 2 ? u32(Clamp<i64>(ParseInt(args[2]).ValueOr(1), 1, 16)) : 1u;
                               static const Guid ns(0x5A584E616E6F5374ull, 0x72657373526F636Bull);
-                              const asset::AssetId id = Guid::FromName(ns, String::Format("Rock{}", subdivisions).View());
-                              if (ed->assets->GetState(id) != asset::AssetState::Loaded) {
+                              Array<asset::AssetId> ids;
+                              for (u32 v = 0; v < variants; ++v) {
+                                  const asset::AssetId id = Guid::FromName(ns, String::Format("Rock{}.{}", subdivisions, v).View());
+                                  ids.PushBack(id);
+                                  if (ed->assets->GetState(id) == asset::AssetState::Loaded)
+                                      continue;
                                   const Stopwatch timer;
-                                  asset::MeshData rock = asset::nano::MakeDetailedRock(subdivisions);
+                                  asset::MeshData rock = asset::nano::MakeDetailedRock(subdivisions, v + 1);
                                   asset::CookedMesh cooked = asset::CookMesh(rock, true, asset::NanoMode::On);
                                   ZX_LOG_INFO(LogCmd, "Rock: {} triangles, {} clusters in {} levels, cooked in {:.1f} s", cooked.nano.leafTriangles,
                                               cooked.nano.clusters.Size(), cooked.nano.levels, timer.ElapsedMilliseconds() / 1000.0);
@@ -192,7 +201,7 @@ ConCommand CmdStressNano("stress.nano",
                                               Vec3(rng.Range(1.5f, 3.0f)));
                                   const ecs::Entity e = scene::CreateNode(ed->world, StringView(), t);
                                   MeshRenderer mr;
-                                  mr.mesh = id;
+                                  mr.mesh = ids[i % variants];
                                   mr.collision = false;
                                   ed->world.Add(e, mr);
                               }

@@ -68,6 +68,25 @@ inline void SelectCut(const NanoMesh& m, Vec3 eye, f32 pixelsPerUnit, f32 thresh
 /// layered noise on the radius (about 1 m). Stress scenes and tests for virtual geometry.
 MeshData MakeDetailedRock(u32 subdivisions, u32 seed = 1);
 
+/// GPU streaming layout: fixed-size pages of whole clusters (their vertices copied in, then their packed triangles), in
+/// cluster order, so the resident part of a mesh is always a prefix of pages - coarse levels first. Headers are copies
+/// with page-relative offsets: vertexStart = vertex index in the page, triangleStart = byte offset in the page,
+/// level = page index. Past the roots (always resident: pinnedPages) pages end only between groups.
+inline constexpr u32 PageBytes = 131040; // 3640 vertices of 36 bytes, a multiple of 4
+inline constexpr u32 PageVertices = PageBytes / 36;
+struct GpuPages
+{
+    Array<NanoClusterHeader> headers;
+    Array<u32> pageFirstCluster;
+    Array<u8> data; // pageFirstCluster.Size() * PageBytes
+    u32 pinnedPages = 1;
+};
+void BuildGpuPages(const CookedMesh& mesh, GpuPages& out);
+
+/// SelectCut with only the first `residentClusters` clusters available (a page prefix): where a cluster's children are
+/// missing it is drawn instead - the same rule the GPU uses.
+void SelectCutResident(const NanoMesh& m, Vec3 eye, f32 pixelsPerUnit, f32 thresholdPixels, u32 residentClusters, Array<u32>& out);
+
 /// Cook policy: static meshes (no skin, no morphs) with at least this many LOD0 triangles become virtual geometry when
 /// their .zmeta says "virtualGeometry": "auto" (the default); true / false force it.
 inline constexpr u32 AutoTriangleThreshold = 50000;

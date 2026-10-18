@@ -255,7 +255,7 @@ void SceneRenderer::PrepareGpu(Span<const RenderInstance> instances, const Rende
         firstItem[i] = items;
         DrawTemplate& tmpl = m_templates[t];
         tmpl.hasTranslucent = false;
-        if (mesh->nanoBuffer && nanoEnabled) {
+        if (mesh->NanoReady() && nanoEnabled) { // until its roots stream in, the fallback LODs draw it
             // Virtual geometry: clusters are culled per view (SceneRendererNano.cpp); the template only keeps the
             // section materials. Translucent sections still draw from the CPU lists with the fallback LODs.
             firstItem[i] = InvalidIndex;

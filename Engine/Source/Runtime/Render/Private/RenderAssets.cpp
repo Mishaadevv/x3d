@@ -1,5 +1,8 @@
 #include "Render/RenderAssets.h"
+#include "Asset/Nano.h"
 #include "Core/Log/Log.h"
+#include "Core/String/Path.h"
+#include "Core/Time/Time.h"
 
 ZX_DEFINE_LOG_CATEGORY_STATIC(LogRenderAssets, Info);
 
@@ -69,6 +72,11 @@ RenderAssets::~RenderAssets()
         m_device.Destroy(kv.second->mesh.morphBuffer);
         m_device.Destroy(kv.second->mesh.indexBuffer);
         m_device.Destroy(kv.second->mesh.nanoBuffer);
+    }
+    m_device.Destroy(m_nanoPool);
+    if (m_nanoFile.IsOpen()) {
+        m_nanoFile.Close();
+        platform::DeleteFileAt(m_nanoFilePath);
     }
     for (auto& kv : m_textures)
         m_device.Destroy(kv.second.texture);
@@ -309,6 +317,7 @@ void RenderAssets::ReloadMesh(AssetId id)
     m_device.Destroy(e->mesh.morphBuffer);
     e->mesh.morphBuffer = nullptr;
     m_device.Destroy(e->mesh.indexBuffer);
+    ReleaseNanoPages(e->mesh);
     m_device.Destroy(e->mesh.nanoBuffer);
     e->mesh.nanoBuffer = nullptr;
     m_meshes.Remove(id);
@@ -335,13 +344,69 @@ bool RenderAssets::TryUploadMesh(AssetId id, MeshEntry& e, u64& budget)
         return false; // wait for the next frame (always allow one item per frame)
     budget -= Min(budget, bytes);
     GpuMesh& g = e.mesh;
-    // Initial data goes through the device's staging copy (load-time path; an async copy queue comes later).
-    g.vertexBuffer = m_device.CreateBuffer(
-        BufferDesc{m->vertices.SizeBytes(), BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, m->name.View()},
-        m->vertices.Data());
-    g.indexBuffer = m_device.CreateBuffer(
-        BufferDesc{m->indexData.Size(), BufferUsage::Index | BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, m->name.View()},
-        m->indexData.Data());
+    g.sections = m->sections;
+    g.sectionLods = m->sectionLods;
+    g.lodCount = m->lodCount;
+    g.index16 = m->index16;
+    const bool nano = !m->nano.Empty() && PrepareNanoMesh(*m, g);
+    if (nano) {
+        // Clusters draw the detail; the vertex / index buffers get the fallback chain from LOD1 on (sections without
+        // one keep LOD0), compacted to the vertices it uses.
+        Array<u32> remap;
+        remap.Resize(m->vertices.Size(), InvalidIndex);
+        Array<asset::PackedVertex> vertices;
+        Array<u32> indices;
+        Array<asset::CookedSectionLod> lods;
+        u32 lodCount = 1;
+        for (asset::CookedMeshSection& s : g.sections) {
+            const u32 first = s.lodCount > 1 ? 1 : 0;
+            const u32 firstLod = u32(lods.Size());
+            for (u32 l = first; l < s.lodCount; ++l) {
+                const asset::CookedSectionLod& src = m->SectionLod(s, l);
+                const u32 offset = u32(indices.Size());
+                for (u32 i = 0; i < src.indexCount; ++i) {
+                    const u32 v = m->Index(src.indexOffset + i);
+                    if (remap[v] == InvalidIndex) {
+                        remap[v] = u32(vertices.Size());
+                        vertices.PushBack(m->vertices[v]);
+                    }
+                    indices.PushBack(remap[v]);
+                }
+                lods.PushBack(asset::CookedSectionLod{offset, src.indexCount, l == first ? 1.0f : src.screenSize, src.error});
+            }
+            s.firstLod = firstLod;
+            s.lodCount -= first;
+            lodCount = Max(lodCount, s.lodCount);
+        }
+        g.sectionLods = move(lods);
+        g.lodCount = lodCount;
+        g.index16 = vertices.Size() <= 0xFFFF;
+        Array<u8> indexData;
+        indexData.ResizeUninitialized(indices.Size() * (g.index16 ? 2 : 4));
+        for (usize i = 0; i < indices.Size(); ++i) {
+            if (g.index16) {
+                const u16 v = u16(indices[i]);
+                MemCopy(indexData.Data() + i * 2, &v, 2);
+            } else {
+                MemCopy(indexData.Data() + i * 4, &indices[i], 4);
+            }
+        }
+        g.vertexBuffer = m_device.CreateBuffer(
+            BufferDesc{vertices.SizeBytes(), BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, m->name.View()}, vertices.Data());
+        g.indexBuffer = m_device.CreateBuffer(
+            BufferDesc{indexData.Size(), BufferUsage::Index | BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, m->name.View()},
+            indexData.Data());
+        g.vertexCount = u32(vertices.Size());
+    } else {
+        // Initial data goes through the device's staging copy (load-time path; an async copy queue comes later).
+        g.vertexBuffer = m_device.CreateBuffer(
+            BufferDesc{m->vertices.SizeBytes(), BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, m->name.View()},
+            m->vertices.Data());
+        g.indexBuffer = m_device.CreateBuffer(
+            BufferDesc{m->indexData.Size(), BufferUsage::Index | BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, m->name.View()},
+            m->indexData.Data());
+        g.vertexCount = u32(m->vertices.Size());
+    }
     if (m->IsSkinned())
         g.skinBuffer = m_device.CreateBuffer(
             BufferDesc{m->skin.SizeBytes(), BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, m->name.View()}, m->skin.Data());
@@ -351,33 +416,7 @@ bool RenderAssets::TryUploadMesh(AssetId id, MeshEntry& e, u64& budget)
         g.morphCount = m->MorphCount();
         g.morphNames = m->morphNames;
     }
-    if (!m->nano.Empty()) {
-        Array<u8> nano;
-        m->nano.WriteGpu(nano);
-        g.nanoBuffer = m_device.CreateBuffer(
-            BufferDesc{nano.Size(), BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, m->name.View()}, nano.Data());
-        g.nanoClusters = u32(m->nano.clusters.Size());
-        g.nanoTrianglesOffset = u32(m->nano.TrianglesOffset());
-        g.nanoRemapOffset = u32(m->nano.RemapOffset());
-        g.nanoLeafTriangles = m->nano.leafTriangles;
-        const Sphere meshSphere = Sphere::FromAABB(m->bounds);
-        f32 reach = meshSphere.radius;
-        g.nanoParentErrors.Reserve(m->nano.clusters.Size());
-        for (const asset::NanoClusterHeader& c : m->nano.clusters) {
-            reach = Max(reach, Length(c.bounds.XYZ() - meshSphere.center) + c.bounds.w);
-            reach = Max(reach, Length(c.selfSphere.XYZ() - meshSphere.center) + c.selfSphere.w);
-            if (c.parentError < asset::NanoRootError)
-                reach = Max(reach, Length(c.parentSphere.XYZ() - meshSphere.center) + c.parentSphere.w);
-            g.nanoParentErrors.PushBack(c.parentError);
-        }
-        g.nanoSphere = Sphere{meshSphere.center, reach};
-    }
-    g.vertexCount = u32(m->vertices.Size());
     g.boneCount = m->boneCount;
-    g.index16 = m->index16;
-    g.sections = m->sections;
-    g.sectionLods = m->sectionLods;
-    g.lodCount = m->lodCount;
     g.bounds = m->bounds;
     g.sphere = Sphere::FromAABB(m->bounds);
     g.materialSlots = m->materialSlotCount;
@@ -391,9 +430,187 @@ bool RenderAssets::TryUploadMesh(AssetId id, MeshEntry& e, u64& budget)
         for (u32 i = 0; i < lod.indexCount; ++i)
             g.cpuIndices.PushBack(m->Index(lod.indexOffset + i));
     }
+    if (nano)
+        g.bytes = g.vertexBuffer->GetSize() + g.indexBuffer->GetSize() + g.nanoBuffer->GetSize();
     e.resident = g.vertexBuffer && g.indexBuffer;
     e.failed = !e.resident;
     return true;
+}
+
+bool RenderAssets::PrepareNanoMesh(const asset::CookedMesh& m, GpuMesh& g)
+{
+    namespace nano = asset::nano;
+    if (!m_nanoFile.IsOpen()) {
+        // One scratch file per run holds every nano mesh's pages (written once, read back as they stream in).
+        const String dir = Path::Join(platform::GetTempDirectory(), "ZeqouX3D");
+        platform::CreateDirectoryTree(dir);
+        // Leftovers of runs that crashed (files other running instances hold open can't be deleted).
+        Array<platform::DirectoryEntry> entries;
+        if (platform::ListDirectory(dir, entries))
+            for (const platform::DirectoryEntry& e : entries)
+                if (!e.isDirectory && e.name.View().StartsWith("NanoPages-"))
+                    platform::DeleteFileAt(Path::Join(dir, e.name.View()));
+        m_nanoFilePath = Path::Join(dir, String::Format("NanoPages-{}.bin", Clock::NowTicks()).View());
+        if (!m_nanoFile.Open(m_nanoFilePath, platform::FileMode::ReadWrite)) {
+            ZX_LOG_ERROR(LogRenderAssets, "Can't create the cluster page file {}", m_nanoFilePath);
+            return false;
+        }
+        m_nanoFileSize = 0;
+    }
+    if (!m_nanoPool) {
+        m_nanoSlotCount = u32(Max<u64>(m_nanoPoolBytes / nano::PageBytes, 64));
+        m_nanoPool = m_device.CreateBuffer(BufferDesc{u64(m_nanoSlotCount) * nano::PageBytes, BufferUsage::ShaderResource,
+                                                      MemoryType::GpuOnly, 0, "Nano.PagePool"});
+        if (!m_nanoPool)
+            return false;
+        for (u32 s = m_nanoSlotCount; s-- > 0;)
+            m_nanoFreeSlots.PushBack(s);
+        m_nanoScratch.Resize(nano::PageBytes);
+    }
+    nano::GpuPages pages;
+    nano::BuildGpuPages(m, pages);
+    if (!m_nanoFile.Seek(m_nanoFileSize) || m_nanoFile.Write(pages.data.Data(), pages.data.Size()) != pages.data.Size()) {
+        ZX_LOG_ERROR(LogRenderAssets, "Can't write cluster pages of {}", m.name);
+        return false;
+    }
+    g.nanoBuffer = m_device.CreateBuffer(BufferDesc{pages.headers.SizeBytes(), BufferUsage::ShaderResource, MemoryType::GpuOnly, 0,
+                                                    m.name.View()},
+                                         pages.headers.Data());
+    if (!g.nanoBuffer)
+        return false;
+    g.nanoFileOffset = m_nanoFileSize;
+    m_nanoFileSize += pages.data.Size();
+    g.nanoClusters = u32(m.nano.clusters.Size());
+    g.nanoLeafTriangles = m.nano.leafTriangles;
+    g.nanoPages = u32(pages.pageFirstCluster.Size());
+    g.nanoPinnedPages = Min(pages.pinnedPages, g.nanoPages);
+    g.nanoPageFirstCluster = move(pages.pageFirstCluster);
+    g.nanoResidentPages = 0;
+    g.nanoSlots.Clear();
+    const Sphere meshSphere = Sphere::FromAABB(m.bounds);
+    f32 reach = meshSphere.radius;
+    g.nanoParentErrors.Reserve(m.nano.clusters.Size());
+    for (const asset::NanoClusterHeader& c : m.nano.clusters) {
+        reach = Max(reach, Length(c.bounds.XYZ() - meshSphere.center) + c.bounds.w);
+        reach = Max(reach, Length(c.selfSphere.XYZ() - meshSphere.center) + c.selfSphere.w);
+        if (c.parentError < asset::NanoRootError)
+            reach = Max(reach, Length(c.parentSphere.XYZ() - meshSphere.center) + c.parentSphere.w);
+        g.nanoParentErrors.PushBack(c.parentError);
+    }
+    g.nanoSphere = Sphere{meshSphere.center, reach};
+    m_nanoMeshes.PushBack(&g);
+    return true;
+}
+
+void RenderAssets::RequestNanoClusters(const GpuMesh* mesh, u32 clusters)
+{
+    if (!mesh || !mesh->nanoBuffer)
+        return;
+    GpuMesh& g = const_cast<GpuMesh&>(*mesh); // residency is RenderAssets' own bookkeeping
+    g.nanoWantedPages = Max(g.nanoWantedPages, g.NanoPagesFor(clusters));
+    g.nanoLastWanted = m_frame;
+}
+
+void RenderAssets::ReleaseNanoPages(GpuMesh& g)
+{
+    for (u32 slot : g.nanoSlots)
+        m_nanoRetired.PushBack(RetiredSlot{slot, m_frame});
+    g.nanoSlots.Clear();
+    g.nanoResidentPages = 0;
+    m_nanoMeshes.Remove(&g);
+}
+
+void RenderAssets::UpdateNanoStreaming(CommandList& cmd)
+{
+    namespace nano = asset::nano;
+    ++m_frame;
+    m_nanoStreamed = 0;
+    // Slots evicted FramesInFlight + 1 updates ago are no longer read by the GPU.
+    for (usize i = 0; i < m_nanoRetired.Size();) {
+        if (m_frame - m_nanoRetired[i].frame > FramesInFlight + 1) {
+            m_nanoFreeSlots.PushBack(m_nanoRetired[i].slot);
+            m_nanoRetired.RemoveAtSwap(i);
+        } else {
+            ++i;
+        }
+    }
+    if (m_nanoMeshes.Empty())
+        return;
+    // What each mesh wants: its roots always, plus what the views asked for last frame. Pinned pages first, then the
+    // rest round-robin by how far each mesh is from its goal.
+    auto want = [](const GpuMesh* g) { return Max(g->nanoPinnedPages, Min(g->nanoWantedPages, g->nanoPages)); };
+    u32 missing = 0;
+    for (const GpuMesh* g : m_nanoMeshes)
+        missing += want(g) > g->nanoResidentPages ? want(g) - g->nanoResidentPages : 0;
+    const u32 toLoad = Min(missing, m_nanoPagesPerFrame);
+    // Make room: evict the last pages of meshes holding more than they want, least recently wanted first.
+    while (m_nanoFreeSlots.Size() + m_nanoRetired.Size() < toLoad) { // retired slots free up in a few frames
+        GpuMesh* victim = nullptr;
+        for (GpuMesh* g : m_nanoMeshes)
+            if (g->nanoResidentPages > want(g) && (!victim || g->nanoLastWanted < victim->nanoLastWanted))
+                victim = g;
+        if (!victim) {
+            // The pool is full of wanted pages: share it. The mesh furthest behind its goal takes the finest page of the
+            // one closest to its own (pages are coarse first, so the tails matter least).
+            const GpuMesh* needy = nullptr;
+            f32 needyShare = 1.0f;
+            for (const GpuMesh* g : m_nanoMeshes)
+                if (g->nanoResidentPages < want(g)) {
+                    const f32 share = f32(g->nanoResidentPages) / f32(want(g));
+                    if (share < needyShare) {
+                        needy = g;
+                        needyShare = share;
+                    }
+                }
+            f32 victimShare = 0.0f;
+            for (GpuMesh* g : m_nanoMeshes)
+                if (g != needy && g->nanoResidentPages > g->nanoPinnedPages) {
+                    const f32 share = f32(g->nanoResidentPages - 1) / f32(Max(want(g), 1u));
+                    if (share > victimShare) {
+                        victim = g;
+                        victimShare = share;
+                    }
+                }
+            if (!needy || !victim || victimShare <= needyShare + 0.05f)
+                break; // balanced: detail stays where it is
+        }
+        m_nanoRetired.PushBack(RetiredSlot{victim->nanoSlots.Back(), m_frame});
+        victim->nanoSlots.PopBack();
+        --victim->nanoResidentPages;
+    }
+    bool uploaded = false;
+    for (u32 round = 0; m_nanoStreamed < toLoad && !m_nanoFreeSlots.Empty(); ++round) {
+        bool progress = false;
+        for (GpuMesh* g : m_nanoMeshes) {
+            if (m_nanoStreamed >= toLoad || m_nanoFreeSlots.Empty())
+                break;
+            // One page per mesh per round (each mesh's pinned pages come first in its order).
+            if (g->nanoResidentPages >= want(g))
+                continue;
+            const u32 page = g->nanoResidentPages;
+            if (m_nanoFile.ReadAt(m_nanoScratch.Data(), nano::PageBytes, g->nanoFileOffset + u64(page) * nano::PageBytes) != nano::PageBytes) {
+                ZX_LOG_ERROR(LogRenderAssets, "Can't read a cluster page");
+                g->nanoWantedPages = g->nanoResidentPages; // stop asking
+                continue;
+            }
+            const u32 slot = m_nanoFreeSlots.Back();
+            m_nanoFreeSlots.PopBack();
+            cmd.UploadBuffer(m_nanoPool, u64(slot) * nano::PageBytes, m_nanoScratch.Data(), nano::PageBytes);
+            g->nanoSlots.PushBack(slot);
+            ++g->nanoResidentPages;
+            ++m_nanoStreamed;
+            progress = uploaded = true;
+        }
+        if (!progress)
+            break;
+    }
+    if (uploaded)
+        cmd.Barrier(m_nanoPool, ResourceState::ShaderResource);
+    m_nanoWantedTotal = 0;
+    for (GpuMesh* g : m_nanoMeshes) {
+        m_nanoWantedTotal += want(g);
+        g->nanoWantedPages = 0; // the views ask again every frame
+    }
 }
 
 bool RenderAssets::TryUploadTexture(AssetId id, TextureEntry& e, u64& budget)
@@ -465,6 +682,7 @@ void RenderAssets::Update(CommandList& cmd)
         else
             ++i;
     }
+    UpdateNanoStreaming(cmd); // last frame's requests (meshes that arrive below start next frame)
     for (usize i = 0; i < m_pendingMeshes.Size();) {
         MeshEntry& e = **m_meshes.Find(m_pendingMeshes[i]);
         if (TryUploadMesh(m_pendingMeshes[i], e, budget)) {
@@ -536,6 +754,13 @@ RenderAssets::Stats RenderAssets::GetStats() const
         }
     s.materials = m_materialCount;
     s.pendingUploads = u32(m_pendingMeshes.Size() + m_pendingTextures.Size() + m_pendingMaterials.Size());
+    s.nanoPoolPages = m_nanoSlotCount;
+    for (const GpuMesh* g : m_nanoMeshes) {
+        s.nanoResidentPages += g->nanoResidentPages;
+    }
+    s.nanoWantedPages = m_nanoWantedTotal;
+    s.nanoStreamedPages = m_nanoStreamed;
+    s.nanoFileBytes = m_nanoFileSize;
     return s;
 }
 

@@ -104,6 +104,7 @@ struct DrawData
     uint vertexBuffer;
     uint lod;
     uint drawId; // != invalid: an indirect draw (rhi::IndirectDrawIdConstant) - the fields above come from its slot
+    uint nanoPool; // ZX_NANO: the cluster page pool
 };
 ZX_PUSH_CONSTANTS(DrawData, g_Draw);
 
@@ -217,18 +218,18 @@ VSOutput MakeVertex(uint vertexBuffer, uint vertexIndex, uint instanceIndex, uin
 #ifdef ZX_NANO
 // Virtual geometry (Forward/Nano.hlsl): the index is (visible cluster record << 8 | the cluster's local vertex); the
 // draw id is the material bin. Push constants: instanceIndex = visible records, materialIndex = the frame's nano tables,
-// vertexBuffer = byte offset of the instance table in them, lod = byte offset of the bin table.
+// vertexBuffer = byte offset of the instance table in them, lod = byte offset of the bin table, nanoPool = page pool.
 VSOutput VSMain(uint vertexId : SV_VertexID)
 {
     const uint4 rec = GetBuffer(g_Draw.instanceIndex).Load4((vertexId >> 8) * 16); // instance, cluster, bin, offset
     ByteAddressBuffer tables = GetBuffer(g_Draw.materialIndex);
-    const uint io = g_Draw.vertexBuffer + rec.x * 32;
-    const uint4 inst = tables.Load4(io); // row, nano buffer, vertex buffer, section bins
-    const uint remap = tables.Load(io + 20);
-    const uint vertexStart = GetBuffer(inst.y).Load(rec.y * 80 + 64);
-    const uint vertexIndex = GetBuffer(inst.y).Load(remap + (vertexStart + (vertexId & 0xFF)) * 4);
+    const uint4 inst = tables.Load4(g_Draw.vertexBuffer + rec.x * 32); // row, headers, page table, section bins
+    ByteAddressBuffer headers = GetBuffer(inst.y);
+    const uint vertexStart = headers.Load(rec.y * 80 + 64); // vertex in its page
+    const uint slot = tables.Load(inst.z + headers.Load(rec.y * 80 + 76) * 4);
+    const uint vertexIndex = slot * 3640 + vertexStart + (vertexId & 0xFF); // asset::nano::PageVertices
     const uint material = tables.Load(g_Draw.lod + g_Draw.drawId * 16);
-    return MakeVertex(inst.z, vertexIndex, inst.x, material, 0x10000u | (rec.y & 0xFFFFu)); // LOD view: cluster colors
+    return MakeVertex(g_Draw.nanoPool, vertexIndex, inst.x, material, 0x10000u | (rec.y & 0xFFFFu)); // LOD view: cluster colors
 }
 #else
 VSOutput VSMain(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)

@@ -7,6 +7,8 @@
 #include "Core/Hash/Hash.h"
 #include "Core/Memory/Memory.h"
 
+#include <bit>
+
 namespace zx::asset::nano {
 
 namespace {
@@ -228,6 +230,9 @@ bool Build(const CookedMesh& mesh, NanoMesh& out, const BuildOptions& options)
 
     Array<BuildCluster> all;
     u32 levels = 1;
+    // Group errors are made unique (bumped by ulps, bottom-up so parents stay >= children): clusters sharing a parent
+    // error then always form one group, which lets streaming cut the cluster list exactly between groups.
+    HashSet<u32> usedErrors;
     for (u32 s = 0; s < mesh.sections.Size(); ++s) {
         const CookedSectionLod& lod0 = mesh.SectionLod(mesh.sections[s], 0);
         Array<u32> indices;
@@ -295,7 +300,11 @@ bool Build(const CookedMesh& mesh, NanoMesh& out, const BuildOptions& options)
                     continue;
                 }
                 anyReduced = true;
-                const f32 groupError = childError + relError * extent;
+                f32 groupError = childError + relError * extent;
+                u32 errorBits = std::bit_cast<u32>(Max(groupError, 0.0f));
+                while (!usedErrors.Insert(errorBits))
+                    ++errorBits; // next float up
+                groupError = std::bit_cast<f32>(errorBits);
                 const Vec4 groupSphere = SphereOfSpheres(spheres.View());
                 for (u32 ci : group) {
                     BuildCluster& c = level[ci];
@@ -462,6 +471,94 @@ MeshData MakeDetailedRock(u32 subdivisions, u32 seed)
     m.lods.PushBack(move(lod));
     m.ComputeBounds();
     return m;
+}
+
+void BuildGpuPages(const CookedMesh& mesh, GpuPages& out)
+{
+    const NanoMesh& nm = mesh.nano;
+    out = GpuPages();
+    out.headers.Reserve(nm.clusters.Size());
+    // Pages fill with whole clusters in their (coarse to fine) order: vertices from the front, triangles after them.
+    // Past the roots, a page may only end where the parent error changes (between groups).
+    struct Pending
+    {
+        u32 cluster;
+        u32 vertexBytes, triangleBytes;
+    };
+    Array<Pending> page;
+    u32 pageVertexBytes = 0, pageTriangleBytes = 0;
+    auto bytesOf = [](const ClusterHeader& c) { return Pair<u32, u32>{c.vertexCount * u32(sizeof(PackedVertex)), c.triangleCount * 4u}; };
+    auto emit = [&](usize count) { // writes the first `count` pending clusters as one page
+        const u32 pageIndex = u32(out.pageFirstCluster.Size());
+        out.pageFirstCluster.PushBack(page[0].cluster);
+        const usize base = out.data.Size();
+        out.data.Resize(base + PageBytes, u8(0));
+        u8* dst = out.data.Data() + base;
+        u32 vertexBytes = 0;
+        for (usize i = 0; i < count; ++i)
+            vertexBytes += page[i].vertexBytes;
+        u32 vertexAt = 0, triangleAt = vertexBytes;
+        for (usize i = 0; i < count; ++i) {
+            const ClusterHeader& c = nm.clusters[page[i].cluster];
+            ClusterHeader h = c;
+            h.vertexStart = vertexAt / u32(sizeof(PackedVertex)); // vertices into the page
+            h.triangleStart = triangleAt;                         // bytes into the page
+            h.level = pageIndex;
+            for (u32 v = 0; v < c.vertexCount; ++v)
+                MemCopy(dst + vertexAt + v * sizeof(PackedVertex), &mesh.vertices[nm.vertexRemap[c.vertexStart + v]], sizeof(PackedVertex));
+            MemCopy(dst + triangleAt, nm.triangles.Data() + c.triangleStart, c.triangleCount * 4);
+            vertexAt += page[i].vertexBytes;
+            triangleAt += page[i].triangleBytes;
+            out.headers.PushBack(h);
+            if (c.parentError >= RootError)
+                out.pinnedPages = pageIndex + 1;
+        }
+        page.RemoveAt(0, count);
+        pageVertexBytes = pageTriangleBytes = 0;
+        for (const Pending& p : page) {
+            pageVertexBytes += p.vertexBytes;
+            pageTriangleBytes += p.triangleBytes;
+        }
+    };
+    for (u32 i = 0; i < nm.clusters.Size(); ++i) {
+        const auto [vb, tb] = bytesOf(nm.clusters[i]);
+        if (pageVertexBytes + pageTriangleBytes + vb + tb > PageBytes) {
+            // Close the page at the last group boundary (anywhere among the roots: they are always resident).
+            usize cut = page.Size();
+            const bool rootsOnly = nm.clusters[page.Back().cluster].parentError >= RootError;
+            if (!rootsOnly && nm.clusters[i].parentError == nm.clusters[page.Back().cluster].parentError) {
+                cut = 0;
+                for (usize k = page.Size() - 1; k > 0; --k)
+                    if (nm.clusters[page[k].cluster].parentError != nm.clusters[page[k - 1].cluster].parentError) {
+                        cut = k;
+                        break;
+                    }
+                if (cut == 0) // one group larger than a page (cannot happen with 4-cluster groups): keep it whole
+                    cut = page.Size();
+            }
+            emit(cut);
+        }
+        page.PushBack(Pending{i, vb, tb});
+        pageVertexBytes += vb;
+        pageTriangleBytes += tb;
+    }
+    while (!page.Empty())
+        emit(page.Size());
+    out.pinnedPages = Max(out.pinnedPages, 1u);
+}
+
+void SelectCutResident(const NanoMesh& m, Vec3 eye, f32 pixelsPerUnit, f32 thresholdPixels, u32 residentClusters, Array<u32>& out)
+{
+    out.Clear();
+    residentClusters = Min(residentClusters, u32(m.clusters.Size()));
+    const f32 residentError = residentClusters < m.clusters.Size() && residentClusters > 0 ? m.clusters[residentClusters - 1].parentError : -1.0f;
+    for (u32 i = 0; i < residentClusters; ++i) {
+        const NanoClusterHeader& c = m.clusters[i];
+        // Children not resident (their parent error = this selfError is below the resident prefix): stop here.
+        const bool selfOk = c.selfError < residentError || ProjectedError(c.selfError, c.selfSphere, eye, pixelsPerUnit) <= thresholdPixels;
+        if (selfOk && ProjectedError(c.parentError, c.parentSphere, eye, pixelsPerUnit) > thresholdPixels)
+            out.PushBack(i);
+    }
 }
 
 void AppendFallbackLods(CookedMesh& mesh, u32 maxLods, f32 referenceHeight)

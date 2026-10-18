@@ -46,13 +46,14 @@ struct NanoParams // Nano.hlsl
     u32 view, region, binCount, binCapacity;
     u32 visibleCapacity, indexCapacity, indexBase, resetCandidates;
     u32 candidateCapacity;
-    u32 pad[3];
+    u32 pool;
+    u32 pad[2];
 };
 static_assert(sizeof(NanoParams) == 368); // HLSL constant buffer layout
 
 struct NanoPush // ForwardPBR.hlsl DrawData under ZX_NANO; the bin (draw id) lands in dword 4
 {
-    u32 visible = 0, tables = 0, instancesOffset = 0, binsOffset = 0, drawId = 0;
+    u32 visible = 0, tables = 0, instancesOffset = 0, binsOffset = 0, drawId = 0, pool = 0;
 };
 static_assert(offsetof(NanoPush, drawId) == IndirectDrawIdConstant * 4);
 
@@ -273,6 +274,7 @@ void SceneRenderer::PrepareNano(Span<const RenderInstance> instances, const Rend
     // is drawn only if its parent's error projects above the threshold; from the instance's nearest point (every cluster
     // sphere lies inside r.sphere) that needs parentError > threshold * distance / (scale * pixelsPerUnit).
     Array<UVec2> items[GpuViewCount];
+    HashMap<const GpuMesh*, u32> wanted; // clusters each mesh needs in some view (streaming requests)
     auto addView = [&](u32 v, const Frustum& fr, bool ortho, f32 pixelsPerUnit, f32 threshold, bool castersOnly) {
         NanoView& nv = m_nanoViews[v];
         nv.ortho = ortho;
@@ -291,7 +293,10 @@ void SceneRenderer::PrepareNano(Span<const RenderInstance> instances, const Rend
                 const f32 d = Length(r.sphere.center - view.position) - r.sphere.radius;
                 cutoff = d > 1e-4f ? threshold * d / (r.scale * pixelsPerUnit) : 0.0f;
             }
-            const u32 count = CountAbove(r.mesh->nanoParentErrors.View(), cutoff * 0.999f);
+            const u32 needed = CountAbove(r.mesh->nanoParentErrors.View(), cutoff * 0.999f);
+            u32& w = *wanted.Insert(r.mesh, 0u).first;
+            w = Max(w, needed);
+            const u32 count = Min(needed, r.mesh->NanoResidentClusters()); // what's streamed in so far
             if (count == 0)
                 continue;
             items[v].PushBack(UVec2(nv.threads, i));
@@ -308,6 +313,8 @@ void SceneRenderer::PrepareNano(Span<const RenderInstance> instances, const Rend
                     Max(ns.shadowPixelError, 0.1f) * m_nanoShadowErrorScale, true);
     m_nanoViews[1] = m_nanoViews[0]; // phase 2 tests phase 1's candidates with the same cut
     m_nanoViews[1].itemCount = 0;
+    for (const auto& kv : wanted)
+        m_assets.RequestNanoClusters(kv.first, kv.second);
     m_stats.nanoTested = m_nanoViews[0].threads;
     m_stats.nanoBins = m_nanoBinCount;
 
@@ -316,6 +323,14 @@ void SceneRenderer::PrepareNano(Span<const RenderInstance> instances, const Rend
     m_nanoSectionBinsOffset = Align16(u32(m_nanoRefs.Size()) * NanoInstanceStride);
     m_nanoBinsOffset = m_nanoSectionBinsOffset + Align16(u32(sectionBins.Size()) * 4);
     u32 bytes = m_nanoBinsOffset + m_nanoBinCount * NanoBinStride;
+    // Page tables (pool slot per resident page) of every mesh in use.
+    HashMap<const GpuMesh*, u32> pageTables;
+    Array<const GpuMesh*> tableMeshes;
+    for (const NanoRef& r : m_nanoRefs)
+        if (pageTables.Insert(r.mesh, bytes).second) {
+            tableMeshes.PushBack(r.mesh);
+            bytes += Align16(u32(r.mesh->nanoSlots.Size()) * 4);
+        }
     for (u32 v = 0; v < GpuViewCount; ++v) {
         m_nanoViews[v].itemsOffset = bytes;
         bytes += Align16(u32(items[v].Size()) * 8);
@@ -335,15 +350,17 @@ void SceneRenderer::PrepareNano(Span<const RenderInstance> instances, const Rend
         const NanoRef& r = m_nanoRefs[i];
         const u32 record[8] = {r.row,
                                r.mesh->nanoBuffer->GetSrvIndex(),
-                               r.mesh->vertexBuffer->GetSrvIndex(),
+                               *pageTables.Find(r.mesh),
                                r.sectionBase,
-                               r.mesh->nanoTrianglesOffset,
-                               r.mesh->nanoRemapOffset,
-                               r.mesh->nanoClusters,
+                               std::bit_cast<u32>(r.mesh->NanoResidentError()),
+                               r.mesh->NanoResidentClusters(),
+                               0,
                                std::bit_cast<u32>(r.scale)};
         MemCopy(data + m_nanoInstancesOffset + usize(i) * NanoInstanceStride, record, sizeof(record));
     }
     MemCopy(data + m_nanoSectionBinsOffset, sectionBins.Data(), sectionBins.SizeBytes());
+    for (const GpuMesh* mesh : tableMeshes)
+        MemCopy(data + *pageTables.Find(mesh), mesh->nanoSlots.Data(), mesh->nanoSlots.SizeBytes());
     for (u32 i = 0; i < order.Size(); ++i) {
         const u32 bin[4] = {u32(keys[order[i]] & 0xFFFFFFFFu), 0, 0, 0}; // material
         MemCopy(data + m_nanoBinsOffset + usize(i) * NanoBinStride, bin, sizeof(bin));
@@ -387,6 +404,7 @@ void SceneRenderer::AddNanoCullPass(RenderGraph& graph, u32 view, u32 mode, cons
     p.indexBase = m_nanoIndexBase[region];
     p.resetCandidates = view == 0 ? 1u : 0u;
     p.candidateCapacity = m_nanoCandidateCapacity;
+    p.pool = m_assets.GetNanoPoolSrv();
     const u32 frame = m_device.GetFrameIndex() % FramesInFlight;
     p.tables = m_nanoTables[frame]->GetSrvIndex();
     // Phase 1 reads last frame's pyramid, phase 2 this frame's.
@@ -471,6 +489,7 @@ void SceneRenderer::DrawNano(CommandList& cmd, u32 view, PipelineVariant variant
     push.tables = m_nanoTables[m_device.GetFrameIndex() % FramesInFlight]->GetSrvIndex();
     push.instancesOffset = m_nanoInstancesOffset;
     push.binsOffset = m_nanoBinsOffset;
+    push.pool = m_assets.GetNanoPoolSrv();
     Pipeline* bound = nullptr;
     cmd.SetIndexBuffer(m_nanoIndices, IndexFormat::UInt32);
     for (const NanoBucket& b : m_nanoBuckets) {

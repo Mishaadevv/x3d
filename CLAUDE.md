@@ -209,7 +209,13 @@ Render/Private/SceneRendererNano.cpp (PrepareNano: bins + per-view instance pref
 Args / Expand in Shaders/Forward/Nano.hlsl; DrawNano; budget feedback via readback) + ForwardPBR VSMain under ZX_NANO
 (index = visible record << 8 | local vertex; drawId = bin). Regions: 0 main phase 1, 1 phase 2, 2 shadows (culled
 right before each cascade). Common/HiZ.hlsli shared with GpuCull. Console stress.nano N [subdiv], r.Nano*,
-r.ViewMode 4 colors clusters. Tests Nano.*, ManualNano.RockDagStats. -gpuvalidation TDRs on UHD 620 even without nano.
+r.ViewMode 4 colors clusters. Tests Nano.*, ManualNano.RockDagStats.
+Streaming (0.15.0): asset::nano::BuildGpuPages (PageBytes 131040 = 3640 vertices; headers page-relative: vertexStart =
+vertex in page, triangleStart = byte in page, level = page), SelectCutResident; RenderAssets PrepareNanoMesh (pages ->
+%TEMP%/ZeqouX3D/NanoPages-*.bin, nano VB/IB = fallback LOD1+ only), RequestNanoClusters (PrepareNano), UpdateNanoStreaming
+(pool slots, retire for FramesInFlight + 1 updates, fair sharing); GpuMesh::NanoReady / NanoResidentClusters /
+NanoResidentError; shaders read pages via the instance's page table (tables) + pool SRV (NanoParams.pool, DrawData.nanoPool).
+stress.nano N [subdiv] [variants]. -gpuvalidation TDRs on UHD 620 even without nano.
 M14 acceptance (0.14.0): Engine/Private/ZGraphDemo.cpp (MakeCoinGraph / MakeGateGraph / MakeGameHUDGraph, a
 Builder helper) written by Editor::BuildCoinGame into the Third Person template (Content/Scripts/Graphs); scripts
 game.get/set/add (ScriptSystem::m_gameValues, GameValue) and entity.moveTo (m_moves, ticked in Tick); ZGraph actions

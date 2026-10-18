@@ -7,6 +7,7 @@
 // data is resident, so a scene can be drawn while it streams in.
 
 #include "Asset/AssetManager.h"
+#include "Core/HAL/PlatformFile.h"
 #include "RHI/RHI.h"
 #include "Render/MaterialShaderCache.h"
 
@@ -36,14 +37,44 @@ struct GpuMesh
     Sphere sphere;
     u32 materialSlots = 0;
     u64 bytes = 0;
-    // ZNano virtual geometry (CookedMesh::nano): headers, packed triangles and vertex remap in one raw buffer.
-    rhi::Buffer* nanoBuffer = nullptr;
+    // ZNano virtual geometry (CookedMesh::nano). The cluster headers stay resident (page-relative offsets, see
+    // asset::nano::BuildGpuPages); the clusters' vertices and triangles stream in pages through RenderAssets' page pool,
+    // coarse levels first, so the resident part is always a prefix of pages. The vertex / index buffers above then
+    // hold only the fallback LOD chain from LOD1 down (CPU path, point / spot shadows, velocity, translucent parts).
+    rhi::Buffer* nanoBuffer = nullptr; // headers
     u32 nanoClusters = 0;
-    u32 nanoTrianglesOffset = 0; // bytes into nanoBuffer
-    u32 nanoRemapOffset = 0;
     u32 nanoLeafTriangles = 0;
     Sphere nanoSphere;           // mesh space: holds every cluster's and parent group's sphere
     Array<f32> nanoParentErrors; // per cluster, descending: the clusters an instance can need are a prefix
+    u32 nanoPages = 0;
+    u32 nanoPinnedPages = 1;     // the roots: always resident before the mesh draws as clusters
+    Array<u32> nanoPageFirstCluster;
+    u64 nanoFileOffset = 0;      // page i at nanoFileOffset + i * PageBytes in RenderAssets' page file
+    u32 nanoResidentPages = 0;   // pages [0, resident) are in the pool at nanoSlots
+    Array<u32> nanoSlots;
+    u32 nanoWantedPages = 0;     // requested this frame (RenderAssets::RequestNanoClusters)
+    u64 nanoLastWanted = 0;
+    bool NanoReady() const { return nanoBuffer && nanoResidentPages >= nanoPinnedPages; }
+    u32 NanoResidentClusters() const { return nanoResidentPages < nanoPages ? nanoPageFirstCluster[nanoResidentPages] : nanoClusters; }
+    /// Clusters whose own error is below this have no resident children: they are drawn instead (-1: all resident).
+    f32 NanoResidentError() const
+    {
+        const u32 resident = NanoResidentClusters();
+        return resident < nanoClusters && resident > 0 ? nanoParentErrors[resident - 1] : -1.0f;
+    }
+    /// Pages that hold the first `clusters` clusters.
+    u32 NanoPagesFor(u32 clusters) const
+    {
+        u32 lo = 0, hi = nanoPages; // first page starting at or after `clusters`
+        while (lo < hi) {
+            const u32 mid = (lo + hi) / 2;
+            if (nanoPageFirstCluster[mid] < clusters)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        return lo;
+    }
     // LOD0 triangles kept on the CPU for ray queries (picking, editor tools, gameplay raycasts).
     Array<Vec3> cpuPositions;
     Array<u32> cpuIndices;
@@ -126,6 +157,16 @@ public:
     bool IsGraphMaterial(AssetId id) const { return m_graphs.Contains(id); }
     rhi::Buffer* GetMaterialParamBuffer() const { return m_paramBuffer; }
     MaterialShaderCache& Shaders() { return m_shaders; }
+
+    // --- Virtual geometry streaming ---
+    /// The first `clusters` clusters of a nano mesh are needed this frame (by any view); pages stream in from the next
+    /// Update, within the pool and the per-frame budget, evicting pages nobody asked for lately.
+    void RequestNanoClusters(const GpuMesh* mesh, u32 clusters);
+    /// The page pool (raw buffer: vertices of 36 bytes + packed triangles), invalid before the first nano mesh.
+    u32 GetNanoPoolSrv() const { return m_nanoPool ? m_nanoPool->GetSrvIndex() : rhi::InvalidDescriptor; }
+    /// Before the first nano mesh loads: GPU memory for streamed cluster pages.
+    void SetNanoPoolBytes(u64 bytes) { m_nanoPoolBytes = bytes; }
+    void SetNanoPagesPerFrame(u32 pages) { m_nanoPagesPerFrame = Max(pages, 1u); }
     const MaterialShaderCache& Shaders() const { return m_shaders; }
 
     struct Stats
@@ -136,6 +177,11 @@ public:
         u64 meshBytes = 0;
         u64 textureBytes = 0;
         u32 pendingUploads = 0;
+        u32 nanoPoolPages = 0;     // pool capacity
+        u32 nanoResidentPages = 0;
+        u32 nanoWantedPages = 0;   // asked for last frame
+        u32 nanoStreamedPages = 0; // loaded by the last Update
+        u64 nanoFileBytes = 0;     // all pages of all nano meshes
     };
     Stats GetStats() const;
 
@@ -178,6 +224,9 @@ private:
     void WriteGraphParams(GraphEntry& g);
     bool TryUploadMesh(AssetId id, MeshEntry& e, u64& budget);
     bool TryUploadTexture(AssetId id, TextureEntry& e, u64& budget);
+    bool PrepareNanoMesh(const asset::CookedMesh& m, GpuMesh& g); // headers, pages into the page file
+    void UpdateNanoStreaming(rhi::CommandList& cmd);
+    void ReleaseNanoPages(GpuMesh& g);
 
     rhi::Device& m_device;
     asset::AssetManager& m_assets;
@@ -211,6 +260,26 @@ private:
     };
     Array<VertexUpdate> m_vertexUpdates;
     u64 m_contentVersion = 1;
+    // Virtual geometry streaming: fixed-size page slots in one pool buffer; pages come from a scratch file.
+    rhi::Buffer* m_nanoPool = nullptr;
+    u64 m_nanoPoolBytes = 160ull << 20;
+    u32 m_nanoPagesPerFrame = 24;
+    u32 m_nanoSlotCount = 0;
+    Array<u32> m_nanoFreeSlots;
+    struct RetiredSlot
+    {
+        u32 slot;
+        u64 frame;
+    };
+    Array<RetiredSlot> m_nanoRetired; // reusable once the GPU frames that read them are done
+    Array<GpuMesh*> m_nanoMeshes;
+    platform::File m_nanoFile;
+    String m_nanoFilePath;
+    u64 m_nanoFileSize = 0;
+    Array<u8> m_nanoScratch;
+    u64 m_frame = 0;
+    u32 m_nanoStreamed = 0;
+    u32 m_nanoWantedTotal = 0;
     u32 m_readyShaders = 0;
 };
 
