@@ -52,7 +52,12 @@ struct NanoParams
     uint resetCandidates;
     uint candidateCapacity;
     uint pool;                  // cluster page pool (vertices + packed triangles)
-    uint2 pad;
+    uint vsmTable;              // virtual shadow level views: the table and this level's window -> render page map
+    uint vsmMapOffset;          // invalid: an ordinary view
+    float4 vsmRows[3];          // world -> light space
+    int2 vsmOrigin;             // the level's window (first page)
+    float vsmPageWorld;
+    uint vsmPad;
 };
 ZX_PASS_CONSTANTS(NanoParams, g_Nano);
 
@@ -137,7 +142,7 @@ void Emit(uint inst, uint cluster, uint bin, uint triangleCount)
         return;
     }
     uint offset;
-    GetRWBuffer(g_Nano.args).InterlockedAdd((g_Nano.region * g_Nano.binCapacity + bin) * ArgsStride + 4, triangleCount * 3, offset);
+    GetRWBuffer(g_Nano.args).InterlockedAdd((g_Nano.region * g_Nano.binCapacity + (bin & 0xFFFF)) * ArgsStride + 4, triangleCount * 3, offset);
     GetRWBuffer(g_Nano.visible).Store4((g_Nano.region * g_Nano.visibleCapacity + record) * 16, uint4(inst, cluster, bin, offset));
 }
 
@@ -176,6 +181,20 @@ void Process(uint inst, uint cluster)
             if (at < g_Nano.candidateCapacity)
                 cand.Store2(8 + at * 8, uint2(inst, cluster));
         }
+        return;
+    }
+    if (g_Nano.vsmMapOffset != ZX_INVALID_INDEX) {
+        // Virtual shadow level: one record per page being rendered that the cluster touches.
+        const float2 l = float2(dot(g_Nano.vsmRows[0].xyz, center), dot(g_Nano.vsmRows[1].xyz, center));
+        const int2 lo = max(int2(floor((l - radius) / g_Nano.vsmPageWorld)) - g_Nano.vsmOrigin, 0);
+        const int2 hi = min(int2(floor((l + radius) / g_Nano.vsmPageWorld)) - g_Nano.vsmOrigin, 127);
+        ByteAddressBuffer map = GetBuffer(g_Nano.vsmTable);
+        for (int y = lo.y; y <= hi.y; ++y)
+            for (int x = lo.x; x <= hi.x; ++x) {
+                const uint page = map.Load(g_Nano.vsmMapOffset + uint(y * 128 + x) * 4);
+                if (page != ZX_INVALID_INDEX)
+                    Emit(inst, cluster, bin | (page << 16), c.triangleCount);
+            }
         return;
     }
     Emit(inst, cluster, bin, c.triangleCount);
@@ -243,7 +262,7 @@ void NanoExpandCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
             continue;
         const uint slot = tables.Load(r0.z + headers.Load(rec.y * HeaderStride + 76) * 4);
         const uint packed = GetBuffer(g_Nano.pool).Load(slot * PageBytes + tri.x + thread.x * 4);
-        const uint at = args.Load((g_Nano.region * g_Nano.binCapacity + rec.z) * ArgsStride + 12) + rec.w + thread.x * 3;
+        const uint at = args.Load((g_Nano.region * g_Nano.binCapacity + (rec.z & 0xFFFF)) * ArgsStride + 12) + rec.w + thread.x * 3;
         const uint base = globalRecord << 8;
         indices.Store3(at * 4, uint3(base | (packed & 0xFF), base | ((packed >> 8) & 0xFF), base | ((packed >> 16) & 0xFF)));
     }

@@ -26,7 +26,11 @@ struct SkyParams
     float hdriClampLum;
     float hdriLutLod;       // mip resampled into the sky-view LUT
     float skyBrightness;    // visible sky (and distant fog colour): artistic multiplier
-    float pad;
+    float starLuminance;    // night sky (absolute cd/m^2, added on top): brightest stars
+    float3 moonDirection;   // direction to the moon
+    float moonIlluminance;  // lux from the moon disk (0 = none)
+    float nightLuminance;   // the dark sky itself
+    float3 pad;
 };
 ZX_PASS_CONSTANTS(SkyParams, g_Sky);
 
@@ -187,6 +191,53 @@ VSOutput SkyVS(uint vertexId : SV_VertexID)
     return o;
 }
 
+float Hash31(float3 p)
+{
+    p = frac(p * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return frac((p.x + p.y) * p.z);
+}
+
+/// Stars, the moon and the dark sky glow in absolute luminance (cd/m^2), seen through the atmosphere.
+float3 NightSky(float3 dir)
+{
+    if (g_Sky.starLuminance <= 0.0 && g_Sky.moonIlluminance <= 0.0 && g_Sky.nightLuminance <= 0.0)
+        return 0.0;
+    if (dir.y < -0.02)
+        return 0.0;
+    const float r = ATM_BOTTOM + g_Sky.cameraAltitude;
+    const float3 T = SampleTransmittance(GetTexture2D(g_Sky.transmittanceLut), g_LinearClamp, r, max(dir.y, 0.0));
+    float3 night = g_Sky.nightLuminance * float3(0.35, 0.45, 0.8) * (0.7 + 0.3 * saturate(1.0 - dir.y));
+    // Stars: one candidate per cell of a fine grid on the sphere; few cells hold one, brightness falls off steeply.
+    if (g_Sky.starLuminance > 0.0) {
+        const float3 p = dir * 260.0;
+        const float3 cell = floor(p);
+        const float h = Hash31(cell);
+        if (h > 0.982) {
+            const float3 center = cell + 0.5 + (float3(Hash31(cell + 17.1), Hash31(cell + 41.7), Hash31(cell + 73.3)) - 0.5) * 0.5;
+            const float d = length(p - center);
+            const float strength = pow((h - 0.982) / 0.018, 4.0);
+            const float t = Hash31(cell + 5.3);
+            const float3 tint = lerp(float3(0.75, 0.85, 1.0), float3(1.0, 0.85, 0.65), t);
+            night += g_Sky.starLuminance * strength * exp(-d * d * 30.0) * tint;
+        }
+    }
+    // The moon: a disk (twice its real size, like the sun) with darker seas.
+    if (g_Sky.moonIlluminance > 0.0) {
+        const float cosMoon = dot(dir, g_Sky.moonDirection);
+        const float radius = 0.0093;
+        const float cosRadius = cos(radius);
+        if (cosMoon > cosRadius) {
+            const float solidAngle = 2.0 * ATM_PI * (1.0 - cosRadius);
+            const float3 local = (dir - g_Sky.moonDirection * cosMoon) / radius;
+            const float seas = Hash31(floor(local * 3.0 + 7.0)) * 0.25 + Hash31(floor(local * 7.0 + 3.0)) * 0.15;
+            const float edge = saturate((cosMoon - cosRadius) / (1.0 - cosRadius) * 8.0);
+            night += g_Sky.moonIlluminance / solidAngle * (1.0 - seas) * edge * float3(0.95, 0.95, 1.0);
+        }
+    }
+    return night * T;
+}
+
 float4 SkyPS(VSOutput i) : SV_Target0
 {
     const float4 p = mul(g_Sky.invViewProj, float4(i.ndc, 1.0, 1.0));
@@ -207,8 +258,10 @@ float4 SkyPS(VSOutput i) : SV_Target0
         const float limb = 1.0 - 0.6 * (1.0 - sqrt(1.0 - x));
         L += T * limb / solidAngle;
     }
+    float3 color = L * g_Sky.sunColor * (g_Sky.sunIlluminance * g_Sky.skyBrightness);
+    color += NightSky(dir);
     // Pre-exposed; clamp to keep the 11/10-bit float target finite.
-    return float4(min(L * g_Sky.sunColor * (g_Sky.sunIlluminance * g_Sky.exposure * g_Sky.skyBrightness), 60000.0), 1.0);
+    return float4(min(color * g_Sky.exposure, 60000.0), 1.0);
 }
 
 // --- Sky irradiance (SH9) ----------------------------------------------------------------------------------------

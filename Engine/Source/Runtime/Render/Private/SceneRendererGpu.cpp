@@ -267,7 +267,7 @@ void SceneRenderer::PrepareGpu(Span<const RenderInstance> instances, const Rende
             }
             m_nanoRefs.PushBack(NanoRef{u32(i), rows[i], t, mesh});
             if (inst.castShadows)
-                m_casters.PushBack(InstanceRef{rows[i], mesh, &inst});
+                m_casters.PushBack(InstanceRef{rows[i], mesh, &inst, InvalidIndex, true});
             continue;
         }
         for (u32 g : tmpl.groups) {

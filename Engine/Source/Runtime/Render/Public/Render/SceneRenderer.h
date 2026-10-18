@@ -120,6 +120,9 @@ struct SceneLighting
     u32 cloudShadow = rhi::InvalidDescriptor;
     Vec2 cloudShadowOrigin; // world xz of the map's corner
     f32 cloudShadowExtent = 1.0f;
+    /// Night: the hemispherical skyColor / groundColor x skyLuminance ambient is added on top of the SH sky with this
+    /// weight (the physical sky goes dark after sunset; this is the moon- and starlight around).
+    f32 ambientFloor = 0.0f;
 };
 
 inline f32 ExposureFromEV100(f32 ev100) { return 1.0f / (1.2f * std::exp2(ev100)); }
@@ -150,6 +153,17 @@ struct ShadowSettings
     bool cache = true;
     f32 cacheMargin = 0.15f; // extra cascade radius that lets the camera move before a refresh
     u32 maxUpdatesPerFrame = 2;
+    // Virtual shadow maps for the sun (surfaces; fog, water and particles keep the cascades): a clipmap of levels with
+    // 16k x 16k virtual texels each, texel size doubling per level; only the 128x128 pages the screen needs are
+    // rendered into a pool and cached until something moves.
+    bool virtualShadows = false;
+    u32 vsmLevels = 12;
+    f32 vsmTexel = 0.0006f;       // level 0 texel, meters (finer levels serve pixels near the camera)
+    f32 vsmResolution = 1.0f;     // < 1: coarser texels than the pixel footprint (Lite)
+    f32 vsmDistance = 250.0f;     // meters
+    u32 vsmPoolPages = 1024;      // 128x128 D32 pages (1024 = a 4096 x 4096 atlas, 64 MB)
+    u32 vsmPagesPerFrame = 48;    // render budget
+    f32 vsmNormalBias = 1.5f;     // texels
 };
 
 struct AOSettings
@@ -300,6 +314,14 @@ public:
         u64 nanoShadowTriangles = 0; // the last cascade rendered
         f32 nanoErrorScale = 1.0f;   // > 1: over budget, coarser than asked
         bool nanoOverflow = false;
+        // Virtual shadow maps.
+        bool virtualShadows = false;
+        u32 vsmMappedPages = 0;
+        u32 vsmRequestedPages = 0;
+        u32 vsmRenderedPages = 0;   // this frame
+        u32 vsmPendingPages = 0;    // requested but waiting for the render budget
+        u32 vsmDraws = 0;
+        bool vsmBuilding = false;   // pages for a turned sun are being rendered (the old ones still show)
     };
     const Stats& GetStats() const { return m_stats; }
 
@@ -390,6 +412,8 @@ private:
     void EnsureInstanceCapacity(u32 count);
     // --- Virtual geometry (SceneRendererNano.cpp) ---
     static constexpr u32 NanoRegions = 3; // index / record regions: main phase 1, main phase 2, shadows (one at a time)
+    static constexpr u32 VsmMaxLevels = 16;
+    static constexpr u32 NanoViewCount = GpuViewCount + VsmMaxLevels; // + one view per virtual shadow level
     struct NanoRef
     {
         u32 instance;   // into Prepare's instances
@@ -415,6 +439,8 @@ private:
         bool ortho = false;
         f32 pixelsPerUnit = 1.0f;
         f32 threshold = 1.0f;
+        u32 vsmLevel = InvalidIndex; // virtual shadow level: clusters replicate into the pages they touch
+        u32 vsmMapOffset = 0;        // bytes into the VSM table: window page -> render page
     };
     struct NanoBuffers
     {
@@ -427,6 +453,29 @@ private:
     void AddNanoCullPass(RenderGraph& graph, u32 view, u32 mode, const Mat4& viewProj, const NanoBuffers& buffers);
     void AddNanoStatsPass(RenderGraph& graph, const NanoBuffers& buffers);
     void DrawNano(rhi::CommandList& cmd, u32 view, PipelineVariant variant);
+    // --- Virtual shadow maps (SceneRendererVsm.cpp) ---
+    struct VsmPage
+    {
+        u32 phys = 0;
+        u64 lastRequested = 0;
+        bool rendered = false; // holds valid depth
+        bool dirty = false;    // something moved through it (stale until re-rendered)
+    };
+    struct VsmRenderPage
+    {
+        u32 level;
+        i32 x, y;  // absolute page coordinates in light space
+        u32 phys;
+        Mat4 viewProj;
+        Array<DrawItem> draws; // regular casters (clusters come from the nano pass of the level)
+    };
+    bool InitVsm();
+    void PrepareVsm(const RenderView& view, const SceneLighting& lighting);
+    void AddVsmPasses(RenderGraph& graph, RGTexture atlas, const NanoBuffers* nanoBuffers);
+    void AddVsmMarkPass(RenderGraph& graph, RGTexture depth);
+    rhi::Pipeline* GetVsmPipeline(bool masked, u32 shader);
+    static Vec2 VsmLight(const Vec4 rows[3], Vec3 world) { return Vec2(Dot(rows[0].XYZ(), world), Dot(rows[1].XYZ(), world)); }
+    f32 VsmPageWorld(u32 level) const { return m_vsmTexel0 * f32(1u << level) * 128.0f; }
     void SetupCascades(const RenderView& view, const SceneLighting& lighting);
     u32 GetMaterialSampler(u32 maxAnisotropy);
 
@@ -473,7 +522,7 @@ private:
         u32 debugMode;
         u32 materialSampler;
         u32 materialParams; // material graph parameter buffer
-        u32 pad;
+        f32 ambientFloor;   // hemispherical ambient added on top of the SH sky (SceneLighting::ambientFloor)
         // Shadows (keep in sync with ForwardPBR.hlsl).
         Mat4 shadowMatrices[MaxCascades]; // world -> shadow uv + depth
         Vec4 cascadeSplits;               // view-space far distance of each cascade
@@ -532,6 +581,19 @@ private:
         // Deferred lighting.
         Mat4 invViewProj;
         u32 gbufferA, gbufferB, gbufferC, sceneDepth;
+        // Virtual shadow maps (Common/VirtualShadows.hlsli).
+        Vec4 vsmLightRows[3]; // world -> light space (meters; z along the sun's rays)
+        u32 vsmTable;         // SRV: level headers + page tables, invalid = cascades
+        u32 vsmAtlas;
+        u32 vsmLevels;
+        f32 vsmTexel0;
+        f32 vsmPixelScale;    // meters per pixel per meter of distance / resolution
+        f32 vsmDepthScale;    // depth = 0.5 - z * scale
+        f32 vsmNormalBias;
+        f32 vsmMaxDistance;
+        Vec2 vsmInvAtlasSize;
+        u32 vsmPagesPerRow;
+        f32 vsmPad;
     } m_viewConstants = {};
     // HLSL constant buffer packing: a matrix starts on a 16-byte boundary.
     static_assert(offsetof(ViewConstants, ssrViewProj) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
@@ -559,6 +621,7 @@ private:
         const GpuMesh* mesh;
         const RenderInstance* instance;
         u32 vertexBuffer = InvalidIndex; // skinned: posed vertices
+        bool nano = false;               // drawn as clusters this frame
     };
     // GPU skinning: each skinned instance owns two vertex buffers used in turn (this frame's pose, last frame's).
     struct SkinJob
@@ -727,11 +790,54 @@ private:
     Vec3 m_cullCamera;
     f32 m_cullInvTanHalfFov = 1.0f;
     rhi::ShaderBytecode m_cullInitCS, m_cullCS, m_hizCS;
+    // Virtual shadow map state.
+    bool m_vsmActive = false;
+    u32 m_vsmLevels = 0;
+    f32 m_vsmTexel0 = 0.001f;
+    // Two generations of pages: the one shown (m_vsmRows) and, while the sun has turned, the one being built for the
+    // new direction; it replaces the shown one once all its needed pages are rendered.
+    Vec4 m_vsmRows[3];
+    Vec3 m_vsmLightDir;
+    u32 m_vsmGen = 0;
+    bool m_vsmBuilding = false;
+    Vec4 m_vsmBuildRows[3];
+    Vec3 m_vsmBuildDir;
+    bool m_vsmBuildMarked = false;               // the GPU has marked pages for the build generation
+    bool m_vsmInvalidate = false;
+    i32 m_vsmOrigin[VsmMaxLevels][2] = {};
+    i32 m_vsmBuildOrigin[VsmMaxLevels][2] = {};
+    const Vec4* m_vsmRenderRows = m_vsmRows;     // the generation rendered this frame
+    const i32 (*m_vsmRenderOrigin)[2] = m_vsmOrigin;
+    HashMap<u64, VsmPage> m_vsmPages;
+    Array<u32> m_vsmFree;
+    Array<VsmRenderPage> m_vsmRender;
+    u32 m_vsmRenderLevels = 0;                   // bit per level that renders pages this frame
+    u32 m_vsmMapOffset[VsmMaxLevels] = {};       // bytes into the table: the level's window -> render page map
+    u32 m_vsmRenderPagesOffset = 0;              // bytes into the table: per render page rect + atlas position
+    rhi::Texture* m_vsmAtlas = nullptr;
+    u32 m_vsmAtlasPagesX = 0, m_vsmAtlasPagesY = 0;
+    rhi::Buffer* m_vsmTables[rhi::FramesInFlight] = {};
+    u64 m_vsmTableBytes = 0;
+    rhi::Buffer* m_vsmRequests = nullptr;
+    rhi::Buffer* m_vsmReadback[rhi::FramesInFlight] = {};
+    bool m_vsmReadbackValid[rhi::FramesInFlight] = {};
+    i32 m_vsmReadOrigin[rhi::FramesInFlight][2][VsmMaxLevels][2] = {}; // [slot][shown / building][level]
+    u32 m_vsmReadGen[rhi::FramesInFlight][2] = {};
+    bool m_vsmReadBuild[rhi::FramesInFlight] = {};
+    u32 m_vsmReadLevels[rhi::FramesInFlight] = {};
+    f32 m_vsmReadTexel[rhi::FramesInFlight] = {};
+    rhi::ShaderBytecode m_vsmMarkCS, m_vsmClearCS, m_vsNanoVsm, m_vsNanoVsmAlpha;
+    rhi::Pipeline* m_vsmMarkPipeline = nullptr;
+    rhi::Pipeline* m_vsmClearPipeline = nullptr;
+    Mat4 m_vsmLevelViewProj[VsmMaxLevels]; // per rendering level: the rectangle around its pages (cluster culling)
+    u64 m_vsmFrame = 0;
+    HashMap<u64, rhi::Pipeline*> m_vsmPipelines; // (shader, masked) -> nano page pipeline
+    f32 m_vsmPipelineBias[2] = {0.0f, 0.0f};
     // Virtual geometry state.
     bool m_nanoActive = false; // this frame draws clusters
     Array<NanoRef> m_nanoRefs;
     Array<NanoBucket> m_nanoBuckets;
-    NanoView m_nanoViews[GpuViewCount];
+    NanoView m_nanoViews[NanoViewCount];
     u32 m_nanoBinCount = 0, m_nanoBinCapacity = 0;
     u32 m_nanoInstancesOffset = 0, m_nanoSectionBinsOffset = 0, m_nanoBinsOffset = 0; // bytes into the tables
     u32 m_nanoIndexCapacity[NanoRegions] = {}, m_nanoIndexBase[NanoRegions] = {};

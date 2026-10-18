@@ -1,3 +1,4 @@
+#include "Engine/TimeOfDay.h"
 #include "Engine/ViewportRenderer.h"
 #include "Engine/WaterPhysics.h"
 #include "Engine/Wind.h"
@@ -27,6 +28,10 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     s.scene.maxAnisotropy = lite ? 4 : 16;
     s.scene.nano.pixelError = lite ? 2.0f : 1.0f;
     s.scene.nano.triangleBudget = lite ? 1500000u : 3000000u;
+    // Virtual shadow maps are a High-end feature: on by default in Full; Lite (cvar) uses coarser texels and fewer pages.
+    s.scene.shadows.virtualShadows = !lite;
+    s.scene.shadows.vsmResolution = lite ? 0.5f : 1.0f;
+    s.scene.shadows.vsmPagesPerFrame = lite ? 24u : 48u;
     if (lite) {
         s.scene.shadows.cascades = 3;
         s.scene.shadows.resolution = 1024;
@@ -96,8 +101,40 @@ void ViewportRenderer::ResolveHdriSky(ecs::World& world)
 void ViewportRenderer::ApplyEnvironment(const ViewportEnvironment& env)
 {
     SceneLighting& l = m_lighting;
-    m_dirToSun = atmosphere::SunDirection(env.night ? DegToRad(-12.0f) : env.sunElevation, env.sunAzimuth);
-    if (env.night) {
+    m_dirToSun = atmosphere::SunDirection(env.night && !env.timeOfDay ? DegToRad(-12.0f) : env.sunElevation, env.sunAzimuth);
+    l.ambientFloor = 0.0f;
+    m_settings.sky.moonIlluminance = 0.0f;
+    m_settings.sky.starLuminance = 0.0f;
+    m_settings.sky.nightLuminance = 0.0f;
+    if (env.timeOfDay) {
+        // Day -> dusk -> night: the sun's light fades through the atmosphere by itself; ambient light and exposure
+        // follow the sun's height down to a moonlit night, where the moon becomes the directional light.
+        const f32 sinSun = Sin(env.sunElevation);
+        // The atmosphere tables stop at the horizon: after sunset the sky's own glow fades out (about 7 % with the
+        // sun 5 degrees down, nothing left by astronomical night).
+        m_settings.sky.sunIlluminanceTop *= std::exp(Min(sinSun, 0.0f) * 30.0f);
+        SkyRenderer::ApplySun(l, m_dirToSun, m_settings.sky);
+        l.sunIlluminance *= Saturate((sinSun + 0.015f) / 0.03f); // the disk sets below the horizon
+        const f32 day = Saturate(sinSun * 2.0f);
+        const f32 twilight = Saturate((sinSun + 0.12f) / 0.12f); // 1 with the sun up, 0 about 7 degrees below
+        const f32 nightAmbient = 0.4f + 1.5f * env.moonLight;
+        const f32 dayAmbient = 300.0f + 13700.0f * day;
+        l.skyLuminance = nightAmbient * Pow(dayAmbient / nightAmbient, twilight);
+        l.skyColor = Lerp(Vec3(0.25f, 0.35f, 0.6f), Vec3(0.45f, 0.6f, 0.9f), twilight);
+        l.exposureEV100 = Lerp(1.0f, 9.0f + 4.5f * day, twilight);
+        l.ambientFloor = 1.0f - twilight;
+        // Auto exposure must not turn the night into day: its darkest setting rises as the sun goes down.
+        m_settings.post.minEV100 = Max(m_settings.post.minEV100, Lerp(0.5f, m_settings.post.minEV100, twilight));
+        if (twilight < 0.5f && env.moonLight > 0.0f) {
+            l.sunDirection = -env.toMoon;
+            l.sunColor = Vec3(0.6f, 0.7f, 1.0f);
+            l.sunIlluminance = env.moonLight * Saturate(1.0f - twilight * 2.0f);
+        }
+        m_settings.sky.moonDirection = env.toMoon;
+        m_settings.sky.moonIlluminance = env.toMoon.y > -0.02f ? Max(env.moonLight, 0.05f) : 0.0f;
+        m_settings.sky.starLuminance = 40.0f * env.starBrightness * Saturate(1.0f - twilight * 1.5f);
+        m_settings.sky.nightLuminance = 0.03f * (1.0f - twilight);
+    } else if (env.night) {
         l.sunDirection = Normalize(Vec3(-0.4f, -1.0f, -0.2f)); // moon
         l.sunColor = Vec3(0.6f, 0.7f, 1.0f);
         l.sunIlluminance = 0.4f;
@@ -291,10 +328,24 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     // Directional Light: the sun follows the entity (its forward axis is the direction the light travels).
     ViewportEnvironment sceneEnv = env;
     Vec3 sunTravel;
+    const TimeOfDay* clock = FindTimeOfDay(world);
+    if (clock) {
+        // Time of Day: the sun and the moon from the clock (over the Directional Light's rotation).
+        const CelestialState sky = ComputeCelestial(*clock);
+        sceneEnv.timeOfDay = true;
+        sceneEnv.night = false;
+        sceneEnv.sunElevation = Asin(Clamp(sky.toSun.y, -1.0f, 1.0f));
+        sceneEnv.sunAzimuth = Atan2(sky.toSun.x, sky.toSun.z);
+        sceneEnv.toMoon = sky.toMoon;
+        sceneEnv.moonLight = 1.0f * Max(clock->moonBrightness, 0.0f) * (0.1f + 0.9f * sky.moonPhase) * Saturate(sky.toMoon.y * 10.0f);
+        sceneEnv.starBrightness = Max(clock->starBrightness, 0.0f);
+    }
     if (const DirectionalLight* sun = FindDirectionalLight(world, &sunTravel)) {
         const Vec3 toSun = -sunTravel;
-        sceneEnv.sunElevation = Asin(Clamp(toSun.y, -1.0f, 1.0f));
-        sceneEnv.sunAzimuth = Atan2(toSun.x, toSun.z);
+        if (!clock) {
+            sceneEnv.sunElevation = Asin(Clamp(toSun.y, -1.0f, 1.0f));
+            sceneEnv.sunAzimuth = Atan2(toSun.x, toSun.z);
+        }
         m_settings.sky.sunIlluminanceTop *= Max(sun->intensity, 0.0f);
         m_settings.sky.sunColor = m_settings.sky.sunColor * sun->color;
         if (!sun->castShadows)

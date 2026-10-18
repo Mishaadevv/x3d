@@ -4,7 +4,7 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12, part o
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a workflow like Unity URP or Unreal Engine 5 that
 runs well on everyday hardware. The development machine is a laptop with Intel UHD 620 graphics.
 
-**Version 0.15.0 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
+**Version 0.16.0 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
 [download](https://github.com/Mishaadevv/x3d/releases/latest)
 
 > [!WARNING]
@@ -47,7 +47,8 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
     LOD hierarchy at import and drawn at the detail the screen needs, with a triangle budget and cluster streaming.
     A billion source triangles (instanced) run at ~35-40 FPS on Intel UHD 620.
   - Clustered forward+ and deferred PBR.
-  - Cascaded shadows with PCSS, contact shadows, GTAO.
+  - Virtual shadow maps for the sun (sharp near and far, pages cached until something moves), cascaded shadows with
+    PCSS, contact shadows, GTAO.
   - Screen-space reflections, reflection probes, decals.
   - TAA with temporal upscaling and dynamic resolution, bloom, auto exposure, depth of field, motion blur, color LUTs,
     Post Process Volumes.
@@ -55,6 +56,7 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
   - "Graphics era" presets (2017 / 2011 / 2008) for a retro look.
 - **Sky and weather**:
   - A physical sky or an HDRI sky.
+  - Day and night: the sun follows the clock, latitude and season; dusk, stars and the moon with its phases.
   - Volumetric clouds with presets and cloud shadows.
   - Height fog, volumetric fog and light shafts.
   - Wind that moves particles, water, cloth-like drag and bodies.

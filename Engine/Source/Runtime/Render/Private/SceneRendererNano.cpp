@@ -47,13 +47,19 @@ struct NanoParams // Nano.hlsl
     u32 visibleCapacity, indexCapacity, indexBase, resetCandidates;
     u32 candidateCapacity;
     u32 pool;
-    u32 pad[2];
+    u32 vsmTable;
+    u32 vsmMapOffset;
+    Vec4 vsmRows[3];
+    i32 vsmOrigin[2];
+    f32 vsmPageWorld;
+    u32 vsmPad;
 };
-static_assert(sizeof(NanoParams) == 368); // HLSL constant buffer layout
+static_assert(sizeof(NanoParams) == 432); // HLSL constant buffer layout
 
 struct NanoPush // ForwardPBR.hlsl DrawData under ZX_NANO; the bin (draw id) lands in dword 4
 {
     u32 visible = 0, tables = 0, instancesOffset = 0, binsOffset = 0, drawId = 0, pool = 0;
+    u32 vsmTable = 0, vsmPages = 0; // virtual shadow pages (ZX_VSM)
 };
 static_assert(offsetof(NanoPush, drawId) == IndirectDrawIdConstant * 4);
 
@@ -110,8 +116,8 @@ bool SceneRenderer::InitNano()
             return false;
     }
     for (Buffer*& b : m_nanoReadback)
-        b = m_device.CreateBuffer(BufferDesc{GpuViewCount * NanoCounterStride, BufferUsage::CopyDest, MemoryType::Readback, 0, "Nano.Readback"});
-    m_nanoCounters = m_device.CreateBuffer(BufferDesc{GpuViewCount * NanoCounterStride,
+        b = m_device.CreateBuffer(BufferDesc{NanoViewCount * NanoCounterStride, BufferUsage::CopyDest, MemoryType::Readback, 0, "Nano.Readback"});
+    m_nanoCounters = m_device.CreateBuffer(BufferDesc{NanoViewCount * NanoCounterStride,
                                                       BufferUsage::UnorderedAccess | BufferUsage::ShaderResource | BufferUsage::CopySource,
                                                       MemoryType::GpuOnly, 0, "Nano.Counters"});
     return m_nanoCounters != nullptr;
@@ -185,7 +191,7 @@ void SceneRenderer::PrepareNano(Span<const RenderInstance> instances, const Rend
     const u32 frame = m_device.GetFrameIndex() % FramesInFlight;
     if (m_nanoReadbackValid[frame]) {
         m_nanoReadbackValid[frame] = false;
-        u32 c[GpuViewCount * 4];
+        u32 c[NanoViewCount * 4];
         MemCopy(c, m_nanoReadback[frame]->GetMappedData(), sizeof(c));
         const u64 mainIndices = u64(Min(c[1], m_nanoIndexCapacity[0])) + Min(c[5], m_nanoIndexCapacity[1]);
         const bool mainOver = (c[2] | c[6]) != 0;
@@ -195,7 +201,7 @@ void SceneRenderer::PrepareNano(Span<const RenderInstance> instances, const Rend
         adapt(m_nanoErrorScale, f32(mainIndices), f32(m_nanoIndexCapacity[0]), mainOver);
         u32 shadowIndices = 0;
         bool shadowOver = false;
-        for (u32 v = 2; v < GpuViewCount; ++v) {
+        for (u32 v = 2; v < NanoViewCount; ++v) {
             shadowIndices = Max(shadowIndices, Min(c[v * 4 + 1], m_nanoIndexCapacity[2]));
             shadowOver |= c[v * 4 + 2] != 0;
         }
@@ -273,7 +279,7 @@ void SceneRenderer::PrepareNano(Span<const RenderInstance> instances, const Rend
     // Per view: the instances it sees and, for each, the prefix of clusters whose parent error can still show. A cluster
     // is drawn only if its parent's error projects above the threshold; from the instance's nearest point (every cluster
     // sphere lies inside r.sphere) that needs parentError > threshold * distance / (scale * pixelsPerUnit).
-    Array<UVec2> items[GpuViewCount];
+    Array<UVec2> items[NanoViewCount];
     HashMap<const GpuMesh*, u32> wanted; // clusters each mesh needs in some view (streaming requests)
     auto addView = [&](u32 v, const Frustum& fr, bool ortho, f32 pixelsPerUnit, f32 threshold, bool castersOnly) {
         NanoView& nv = m_nanoViews[v];
@@ -311,6 +317,15 @@ void SceneRenderer::PrepareNano(Span<const RenderInstance> instances, const Rend
         if (m_cascades[c].update)
             addView(2 + c, cascadeFrustums[c], true, 1.0f / Max(m_viewConstants.cascadeTexelWorld[c], 1e-6f),
                     Max(ns.shadowPixelError, 0.1f) * m_nanoShadowErrorScale, true);
+    // Virtual shadow levels rendering pages this frame: casters inside the rectangle around those pages.
+    for (u32 k = 0; m_vsmActive && k < m_vsmLevels; ++k)
+        if (m_vsmRenderLevels & (1u << k)) {
+            const u32 v = GpuViewCount + k;
+            addView(v, Frustum::FromMatrix(m_vsmLevelViewProj[k]), true, 1.0f / (VsmPageWorld(k) / 128.0f),
+                    Max(ns.shadowPixelError, 0.1f) * m_nanoShadowErrorScale, true);
+            m_nanoViews[v].vsmLevel = k;
+            m_nanoViews[v].vsmMapOffset = m_vsmMapOffset[k];
+        }
     m_nanoViews[1] = m_nanoViews[0]; // phase 2 tests phase 1's candidates with the same cut
     m_nanoViews[1].itemCount = 0;
     for (const auto& kv : wanted)
@@ -331,7 +346,7 @@ void SceneRenderer::PrepareNano(Span<const RenderInstance> instances, const Rend
             tableMeshes.PushBack(r.mesh);
             bytes += Align16(u32(r.mesh->nanoSlots.Size()) * 4);
         }
-    for (u32 v = 0; v < GpuViewCount; ++v) {
+    for (u32 v = 0; v < NanoViewCount; ++v) {
         m_nanoViews[v].itemsOffset = bytes;
         bytes += Align16(u32(items[v].Size()) * 8);
     }
@@ -365,7 +380,7 @@ void SceneRenderer::PrepareNano(Span<const RenderInstance> instances, const Rend
         const u32 bin[4] = {u32(keys[order[i]] & 0xFFFFFFFFu), 0, 0, 0}; // material
         MemCopy(data + m_nanoBinsOffset + usize(i) * NanoBinStride, bin, sizeof(bin));
     }
-    for (u32 v = 0; v < GpuViewCount; ++v)
+    for (u32 v = 0; v < NanoViewCount; ++v)
         if (!items[v].Empty())
             MemCopy(data + m_nanoViews[v].itemsOffset, items[v].Data(), items[v].SizeBytes());
 
@@ -405,6 +420,15 @@ void SceneRenderer::AddNanoCullPass(RenderGraph& graph, u32 view, u32 mode, cons
     p.resetCandidates = view == 0 ? 1u : 0u;
     p.candidateCapacity = m_nanoCandidateCapacity;
     p.pool = m_assets.GetNanoPoolSrv();
+    p.vsmTable = m_viewConstants.vsmTable;
+    p.vsmMapOffset = nv.vsmLevel != InvalidIndex ? nv.vsmMapOffset : InvalidIndex;
+    if (nv.vsmLevel != InvalidIndex) {
+        for (u32 r = 0; r < 3; ++r)
+            p.vsmRows[r] = m_vsmRenderRows[r];
+        p.vsmOrigin[0] = m_vsmRenderOrigin[nv.vsmLevel][0];
+        p.vsmOrigin[1] = m_vsmRenderOrigin[nv.vsmLevel][1];
+        p.vsmPageWorld = VsmPageWorld(nv.vsmLevel);
+    }
     const u32 frame = m_device.GetFrameIndex() % FramesInFlight;
     p.tables = m_nanoTables[frame]->GetSrvIndex();
     // Phase 1 reads last frame's pyramid, phase 2 this frame's.
@@ -476,7 +500,7 @@ void SceneRenderer::AddNanoStatsPass(RenderGraph& graph, const NanoBuffers& buff
             b.ReadBuffer(counters, ResourceState::CopySource);
             b.SideEffects();
         },
-        [this, frame](PassContext& ctx) { ctx.cmd.CopyBuffer(m_nanoReadback[frame], 0, m_nanoCounters, 0, GpuViewCount * NanoCounterStride); });
+        [this, frame](PassContext& ctx) { ctx.cmd.CopyBuffer(m_nanoReadback[frame], 0, m_nanoCounters, 0, NanoViewCount * NanoCounterStride); });
 }
 
 void SceneRenderer::DrawNano(CommandList& cmd, u32 view, PipelineVariant variant)
@@ -490,13 +514,16 @@ void SceneRenderer::DrawNano(CommandList& cmd, u32 view, PipelineVariant variant
     push.instancesOffset = m_nanoInstancesOffset;
     push.binsOffset = m_nanoBinsOffset;
     push.pool = m_assets.GetNanoPoolSrv();
+    const bool vsm = view >= GpuViewCount; // virtual shadow level: page-replicated records
+    push.vsmTable = m_viewConstants.vsmTable;
+    push.vsmPages = m_vsmRenderPagesOffset;
     Pipeline* bound = nullptr;
     cmd.SetIndexBuffer(m_nanoIndices, IndexFormat::UInt32);
     for (const NanoBucket& b : m_nanoBuckets) {
         u32 kind = b.pipeline;
         if (variant == VariantShadow) // shadow passes are two-sided anyway
             kind = (kind == Masked || kind == MaskedTwoSided) ? Masked : Opaque;
-        Pipeline* p = GetPipeline(kind, variant, b.shader, true);
+        Pipeline* p = vsm ? GetVsmPipeline(kind == Masked, b.shader) : GetPipeline(kind, variant, b.shader, true);
         if (!p)
             continue;
         if (p != bound) {

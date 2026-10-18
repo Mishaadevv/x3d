@@ -3,6 +3,7 @@
 // editing the settings directly.
 
 #include "Asset/Nano.h"
+#include "Engine/TimeOfDay.h"
 #include "Engine/ZGraph.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Editor.h"
@@ -40,6 +41,10 @@ CVar<f32> CVarDynResTarget("r.DynamicResolution.TargetMs", 16.6f, "Dynamic resol
 CVar<f32> CVarDynResMin("r.DynamicResolution.MinPercentage", 50.0f, "Lowest render scale of dynamic resolution (percent)");
 CVar<bool> CVarSSR("r.SSR", false, "Screen-space reflections (on by default in the Full profile)");
 CVar<bool> CVarGpuDriven("r.GPUDriven", true, "GPU culling + ExecuteIndirect for opaque geometry (CPU draw lists when off)");
+CVar<bool> CVarVsm("r.Shadows.Virtual", false, "Virtual shadow maps for the sun: sharp shadows near and far, pages cached until something moves");
+CVar<f32> CVarVsmNormalBias("r.Shadows.Virtual.NormalBias", 1.5f, "Virtual shadow receiver offset along the normal, texels");
+CVar<f32> CVarVsmResolution("r.Shadows.Virtual.Resolution", 1.0f, "Virtual shadow texels per pixel footprint (< 1 coarser, Lite 0.5)");
+CVar<f32> CVarNanoShadowError("r.Nano.ShadowPixelError", 2.0f, "Virtual geometry LOD error allowed in shadow maps, texels");
 CVar<bool> CVarNano("r.Nano", true, "Virtual geometry: meshes cooked with clusters are drawn cluster by cluster (fallback LODs when off)");
 CVar<f32> CVarNanoPixelError("r.Nano.PixelError", 1.0f, "Virtual geometry LOD error allowed on screen, pixels (Lite: 2)");
 CVar<i32> CVarNanoBudget("r.Nano.TriangleBudget", 3000, "Virtual geometry triangle budget of the main view, thousands (over it detail drops)");
@@ -133,6 +138,10 @@ ConCommand CmdStatScene("stat.scene", "Prints viewport and scene statistics", []
                     st.nanoInstances, f64(st.nanoSourceTriangles) / 1e6, st.nanoTested, st.nanoClusters, f64(st.nanoTriangles) / 1000.0,
                     f64(st.nanoShadowTriangles) / 1000.0, st.nanoBins, st.nanoErrorScale, st.nanoOverflow ? " (over budget)" : "");
     ZX_LOG_INFO(LogCmd, "  Sun cascades re-rendered this frame: {}", st.cascadesUpdated);
+    if (st.virtualShadows)
+        ZX_LOG_INFO(LogCmd, "  Virtual shadows: {} pages resident, {} needed, {} rendered this frame ({} draws), {} waiting{}",
+                    st.vsmMappedPages, st.vsmRequestedPages, st.vsmRenderedPages, st.vsmDraws, st.vsmPendingPages,
+                    st.vsmBuilding ? " (rebuilding for the turned sun)" : "");
     ZX_LOG_INFO(LogCmd, "  GPU assets: {} meshes ({:.1f} MB), {} textures ({:.1f} MB), {} materials", ra.meshes,
                 f64(ra.meshBytes) / (1024.0 * 1024.0), ra.textures, f64(ra.textureBytes) / (1024.0 * 1024.0), ra.materials);
 });
@@ -208,6 +217,32 @@ ConCommand CmdStressNano("stress.nano",
                               scene::UpdateWorldTransforms(ed->world);
                               ZX_LOG_INFO(LogCmd, "Spawned {} rocks", n);
                           });
+
+ConCommand CmdTime("time", "Time of Day: time <hour 0..24> [day length in minutes] - adds a Time of Day to the scene if it has none",
+                   [](Span<const StringView> args) {
+                       Editor* ed = Ed();
+                       if (!ed)
+                           return;
+                       TimeOfDay* clock = nullptr;
+                       ed->world.Query<TimeOfDay>().Each([&](TimeOfDay& t) {
+                           if (!clock)
+                               clock = &t;
+                       });
+                       if (!clock) {
+                           const ecs::Entity e = scene::CreateNode(ed->world, "Time of Day", Transform());
+                           ed->world.Add(e, TimeOfDay());
+                           clock = ed->world.Get<TimeOfDay>(e);
+                       }
+                       if (!clock)
+                           return;
+                       if (!args.Empty())
+                           clock->hour = Clamp(ParseFloat(args[0]).ValueOr(clock->hour), 0.0f, 24.0f);
+                       if (args.Size() > 1)
+                           clock->dayLength = Max(ParseFloat(args[1]).ValueOr(clock->dayLength), 0.0f);
+                       const CelestialState sky = ComputeCelestial(*clock);
+                       ZX_LOG_INFO(LogCmd, "Time {} (day length {} min), sun {:.1f} deg, moon {:.1f} deg ({:.0f} % lit)", FormatHour(clock->hour),
+                                   clock->dayLength, RadToDeg(Asin(sky.toSun.y)), RadToDeg(Asin(sky.toMoon.y)), sky.moonPhase * 100.0f);
+                   });
 
 ConCommand CmdStressParticles("stress.particles",
                                "Adds a GPU-simulated spark fountain in front of the camera keeping about N particles alive (bouncing off the scene): stress.particles 200000",
@@ -1091,6 +1126,10 @@ void RegisterEditorConsole(Editor& ed)
               [](f32 v) { Ed()->viewport->Settings().dynamicResolution.minScale = Clamp(v, 25.0f, 100.0f) / 100.0f; });
     Bind<bool>(CVarSSR, s.reflections.ssr, [](bool v) { Ed()->viewport->Settings().reflections.ssr = v; });
     Bind<bool>(CVarGpuDriven, s.scene.gpuDriven, [](bool v) { Ed()->viewport->Settings().scene.gpuDriven = v; });
+    Bind<bool>(CVarVsm, s.scene.shadows.virtualShadows, [](bool v) { Ed()->viewport->Settings().scene.shadows.virtualShadows = v; });
+    Bind<f32>(CVarVsmNormalBias, s.scene.shadows.vsmNormalBias, [](f32 v) { Ed()->viewport->Settings().scene.shadows.vsmNormalBias = Clamp(v, 0.0f, 16.0f); });
+    Bind<f32>(CVarVsmResolution, s.scene.shadows.vsmResolution, [](f32 v) { Ed()->viewport->Settings().scene.shadows.vsmResolution = Clamp(v, 0.125f, 4.0f); });
+    Bind<f32>(CVarNanoShadowError, s.scene.nano.shadowPixelError, [](f32 v) { Ed()->viewport->Settings().scene.nano.shadowPixelError = Clamp(v, 0.25f, 32.0f); });
     Bind<bool>(CVarNano, s.scene.nano.enabled, [](bool v) { Ed()->viewport->Settings().scene.nano.enabled = v; });
     Bind<f32>(CVarNanoPixelError, s.scene.nano.pixelError,
               [](f32 v) { Ed()->viewport->Settings().scene.nano.pixelError = Clamp(v, 0.25f, 32.0f); });

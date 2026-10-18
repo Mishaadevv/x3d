@@ -1,4 +1,5 @@
 #include "Editor.h"
+#include "Engine/TimeOfDay.h"
 #include "Engine/ZGraph.h"
 #include "Engine/PostProcessVolume.h"
 #include "Thumbnails.h"
@@ -3814,6 +3815,7 @@ bool Editor::Frame()
         UpdateWaterPresets(world);
         UpdateCloudPresets(world);
         TickWind(world, playState == PlayState::Paused ? 0.0f : dt * (IsPlaying() ? GameTimeScale(GameSystemsForPlay()) : 1.0f));
+        TickTimeOfDay(world, playState == PlayState::Paused ? 0.0f : dt * (IsPlaying() ? GameTimeScale(GameSystemsForPlay()) : 1.0f), IsPlaying());
     }
     // Particles: emitters with Simulate In Editor run live while editing, all of them while playing (frozen when paused).
     if (FeatureEnabled("particles")) {

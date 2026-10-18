@@ -8,6 +8,7 @@
 #include "Common/Bindless.hlsli"
 #include "Common/Lights.hlsli"
 #include "Common/Mesh.hlsli"
+#include "Common/VirtualShadows.hlsli"
 
 struct ViewData
 {
@@ -25,7 +26,7 @@ struct ViewData
     uint debugMode; // 0 lit, 1 base color, 2 normal, 3 roughness/metallic, 4 LOD
     uint materialSampler; // bindless sampler (anisotropy level chosen by the engine profile)
     uint materialParams;  // material graph parameter buffer (ByteAddressBuffer)
-    uint pad;
+    float ambientFloor;   // weight of the hemispherical ambient added on top of the SH sky (night: the sky itself is dark)
     // Cascaded sun shadows (SceneRenderer::SetupCascades).
     float4x4 shadowMatrices[4]; // world -> shadow uv + depth
     float4 cascadeSplits;       // view-space far distance per cascade
@@ -87,6 +88,19 @@ struct ViewData
     uint gbufferB;   // octahedral normal + roughness, a: 1 lit, 2/3 unlit (>= 0.5: an opaque surface for SSR)
     uint gbufferC;   // subsurface color + metallic
     uint sceneDepth;
+    // Virtual shadow maps (Common/VirtualShadows.hlsli; keep in sync with SceneRenderer::ViewConstants).
+    float4 vsmLightRows[3];
+    uint vsmTable;        // invalid: the cascades
+    uint vsmAtlas;
+    uint vsmLevels;
+    float vsmTexel0;
+    float vsmPixelScale;
+    float vsmDepthScale;  // depth = 0.5 - light z * scale
+    float vsmNormalBias;  // texels
+    float vsmMaxDistance;
+    float2 vsmInvAtlasSize;
+    uint vsmPagesPerRow;
+    float vsmPad;
 };
 ZX_VIEW_CONSTANTS(ViewData, g_View);
 
@@ -105,6 +119,8 @@ struct DrawData
     uint lod;
     uint drawId; // != invalid: an indirect draw (rhi::IndirectDrawIdConstant) - the fields above come from its slot
     uint nanoPool; // ZX_NANO: the cluster page pool
+    uint vsmTable; // ZX_VSM: the virtual shadow table and the byte offset of its render pages
+    uint vsmPages;
 };
 ZX_PUSH_CONSTANTS(DrawData, g_Draw);
 
@@ -193,6 +209,9 @@ struct VSOutput
     float4 tangent : TANGENT;
     float4 color : COLOR;
 #endif
+#ifdef ZX_VSM
+    float4 clip : SV_ClipDistance0; // the triangle is cut to its virtual shadow page
+#endif
 };
 
 VSOutput MakeVertex(uint vertexBuffer, uint vertexIndex, uint instanceIndex, uint material, uint lod)
@@ -229,7 +248,26 @@ VSOutput VSMain(uint vertexId : SV_VertexID)
     const uint slot = tables.Load(inst.z + headers.Load(rec.y * 80 + 76) * 4);
     const uint vertexIndex = slot * 3640 + vertexStart + (vertexId & 0xFF); // asset::nano::PageVertices
     const uint material = tables.Load(g_Draw.lod + g_Draw.drawId * 16);
+#ifdef ZX_VSM
+    // Into the page of the virtual shadow map this record was replicated for: light space -> its atlas rectangle,
+    // clipped at the page's edges.
+    const MeshVertex v = LoadMeshVertex(GetBuffer(g_Draw.nanoPool), vertexIndex);
+    VSOutput o;
+#ifdef ALPHA_TEST
+    o.uv = v.uv0;
+    o.drawInfo = uint3(inst.x, material, 0);
+#endif
+    const float3 world = mul(LoadInstance(inst.x).world, float4(v.position, 1.0)).xyz;
+    const float3 l = VsmLightSpace(g_View.vsmLightRows, world);
+    const uint4 page = GetBuffer(g_Draw.vsmTable).Load4(g_Draw.vsmPages + (rec.z >> 16) * 16); // rect min, size, atlas page
+    const float2 local = (l.xy - asfloat(page.xy)) / asfloat(page.z);
+    const float2 atlas = (float2(page.w & 0xFFFF, page.w >> 16) + local) * VsmPageTexels * g_View.vsmInvAtlasSize;
+    o.position = float4(atlas.x * 2.0 - 1.0, 1.0 - atlas.y * 2.0, 0.5 - l.z * g_View.vsmDepthScale, 1.0);
+    o.clip = float4(local.x, 1.0 - local.x, local.y, 1.0 - local.y);
+    return o;
+#else
     return MakeVertex(g_Draw.nanoPool, vertexIndex, inst.x, material, 0x10000u | (rec.y & 0xFFFFu)); // LOD view: cluster colors
+#endif
 }
 #else
 VSOutput VSMain(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
@@ -365,12 +403,53 @@ float SampleCascade(uint cascade, float3 worldPos, float3 N, float noise)
     return sum / 9.0;
 }
 
+/// Sun visibility from the virtual shadow map: the level matching the pixel's footprint, or the first coarser one whose
+/// page is resident. level: the one used (debug view), levels = none.
+float VirtualSunShadow(float3 worldPos, float3 N, out uint usedLevel)
+{
+    usedLevel = g_View.vsmLevels;
+    const float distance = length(worldPos - g_View.cameraPosition);
+    if (distance > g_View.vsmMaxDistance)
+        return 1.0;
+    ByteAddressBuffer table = GetBuffer(g_View.vsmTable);
+    Texture2D<float4> atlas = GetTexture2D(g_View.vsmAtlas);
+    [loop] for (uint level = VsmLevel(distance, g_View.vsmPixelScale, g_View.vsmTexel0, g_View.vsmLevels); level < g_View.vsmLevels; ++level) {
+        const float texel = g_View.vsmTexel0 * exp2(float(level));
+        const float3 l = VsmLightSpace(g_View.vsmLightRows, worldPos + N * (g_View.vsmNormalBias * texel));
+        uint phys;
+        float2 inPage;
+        if (!VsmLookup(table, level, l.xy, phys, inPage))
+            continue;
+        // 2x2 PCF taps (each filters 2x2 texels) kept inside the page.
+        const float2 origin = float2(phys % g_View.vsmPagesPerRow, phys / g_View.vsmPagesPerRow) * VsmPageTexels;
+        const float2 texelPos = clamp(inPage * VsmPageTexels, 1.0, VsmPageTexels - 1.0);
+        const float depth = 0.5 - l.z * g_View.vsmDepthScale;
+        usedLevel = level;
+        if (g_View.shadowFilter == 0)
+            return atlas.SampleCmpLevelZero(g_ShadowSampler, (origin + texelPos) * g_View.vsmInvAtlasSize, depth);
+        float sum = 0.0;
+        [unroll] for (uint t = 0; t < 4; ++t) {
+            const float2 o = float2((t & 1) ? 0.5 : -0.5, (t & 2) ? 0.5 : -0.5);
+            sum += atlas.SampleCmpLevelZero(g_ShadowSampler, (origin + clamp(texelPos + o, 0.5, VsmPageTexels - 0.5)) * g_View.vsmInvAtlasSize, depth);
+        }
+        // Fade out over the last 10 % of the distance.
+        return lerp(1.0, sum * 0.25, saturate((g_View.vsmMaxDistance - distance) / (g_View.vsmMaxDistance * 0.1)));
+    }
+    return 1.0;
+}
+
 /// Sun visibility (1 = lit). Picks the cascade by view depth and cross-fades near the cascade's far end.
 /// pixel: screen position (rotates the PCSS sample pattern per pixel and frame; TAA resolves it).
 float SunShadow(float3 worldPos, float3 N, float2 pixel, out uint cascade)
 {
     const float noise = frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))) + frac(g_View.time * 37.0) * 0.618034);
     cascade = 4;
+    if (g_View.vsmTable != ZX_INVALID_INDEX) {
+        uint level;
+        const float s = VirtualSunShadow(worldPos, N, level);
+        cascade = level; // the debug view colors levels
+        return s;
+    }
     if (g_View.cascadeCount == 0)
         return 1.0;
     const float viewDepth = dot(worldPos - g_View.cameraPosition, g_View.cameraForward);
@@ -646,11 +725,18 @@ float3 SkyIrradiance(float3 n)
     float3 e = 0;
     [unroll] for (uint k = 0; k < 9; ++k)
         e += g_SkySH.coefficients[k].rgb * y[k];
-    return max(e, 0.0) * g_View.skyIrradianceScale;
+    return max(e, 0.0) * g_View.skyIrradianceScale +
+           lerp(g_View.groundColor, g_View.skyColor, n.y * 0.5 + 0.5) * (g_View.ambientIntensity * g_View.ambientFloor);
 }
 
 float3 CascadeColor(uint c)
 {
+    if (g_View.vsmTable != ZX_INVALID_INDEX) { // virtual shadow levels
+        if (c >= g_View.vsmLevels)
+            return float3(1, 1, 1);
+        const uint h = (c + 1) * 2654435761u;
+        return float3((h >> 8) & 0xFF, (h >> 16) & 0xFF, (h >> 24) & 0xFF) / 255.0 * 0.7 + 0.3;
+    }
     const float3 colors[5] = {float3(1, 0.3, 0.3), float3(0.3, 1, 0.3), float3(0.3, 0.5, 1), float3(1, 1, 0.3), float3(1, 1, 1)};
     return colors[min(c, 4u)];
 }

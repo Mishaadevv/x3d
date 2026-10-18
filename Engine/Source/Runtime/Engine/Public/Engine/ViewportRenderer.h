@@ -38,6 +38,11 @@ struct ViewportEnvironment
     f32 sunAzimuth = DegToRad(80.0f);   // radians, 0 = +Z, pi/2 = +X
     bool autoExposure = true;
     bool playing = false; // Play-in-Editor / game: every Fluid Volume simulates
+    // Time of Day (set by the renderer from the component): continuous day, dusk and night instead of `night`.
+    bool timeOfDay = false;
+    Vec3 toMoon = Vec3(0, 1, 0);
+    f32 moonLight = 0.0f;   // lux on the ground from the moon (phase and height applied)
+    f32 starBrightness = 1.0f;
 };
 
 /// Subsystems switched off for the project (Features window); applied on top of ViewportSettings each frame.

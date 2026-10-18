@@ -55,6 +55,11 @@ struct SkySettings
     f32 sunAngularRadius = 0.0093f;     // radians (2x the real sun, reads better on screen)
     f32 cameraAltitude = 0.2f;          // km above the ground at world y = 0
     f32 skyBrightness = 1.6f;           // visible sky (artistic: the physical sky reads dusky next to sunlit ground)
+    // Night sky (Time of Day): drawn in absolute luminance on top of the physical sky.
+    Vec3 moonDirection = Vec3(0, 1, 0); // direction to the moon
+    f32 moonIlluminance = 0.0f;         // lux the moon disk sends (0 = no moon)
+    f32 starLuminance = 0.0f;           // cd/m^2 of the brightest stars (0 = none)
+    f32 nightLuminance = 0.0f;          // cd/m^2 of the dark sky (airglow, light pollution)
     FogSettings fog;
     HdriSkySettings hdri;
 };
@@ -115,7 +120,11 @@ private:
         f32 hdriClampLum;
         f32 hdriLutLod;   // sky-view LUT resampling mip
         f32 skyBrightness;
-        f32 pad;
+        f32 starLuminance;
+        Vec3 moonDirection;
+        f32 moonIlluminance;
+        f32 nightLuminance;
+        f32 pad[3];
     };
 
     rhi::Device& m_device;

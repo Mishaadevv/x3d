@@ -202,6 +202,15 @@ ZGraph (0.13.21): Engine/ZGraph.h (.zgraph JSON: ParseGraph / WriteGraph; GraphN
 templates {pin} {@setting} {#id}; CompileGraph -> ZeqouScript source + lineNodes for errors; MakeExampleGraph).
 ScriptSystem::CheckForChanges compiles .zgraph through it (Script component takes .zs or .zgraph). Tests ZGraph.*
 (every library node must generate compilable script). Console graph.code / graph.new / script.attach.
+Virtual shadow maps (M16, 0.16.0): Render/Private/SceneRendererVsm.cpp (PrepareVsm: level windows, GPU marks read back
+FramesInFlight frames later, coarse coverage level, page map m_vsmPages keyed (gen, level, x, y), eviction, fresh / stale
+budgets, two generations m_vsmRows / m_vsmBuildRows swapped when the build has every needed page; AddVsmPasses: per-page
+CPU draws + VsmNano{k} nano passes; AddVsmMarkPass), Shaders/Common/VirtualShadows.hlsli (table layout, VsmLevel /
+VsmLookup), Lighting/VirtualShadows.hlsl (MarkCS), ForwardPBR VirtualSunShadow + ZX_VSM nano VS (SV_ClipDistance),
+Nano.hlsl vsm replication (bin | page << 16). ShadowSettings::virtualShadows (Full on), cvars r.Shadows.Virtual*.
+Time of Day (0.16.0): Engine/TimeOfDay.h (component, ComputeCelestial, TickTimeOfDay in the editor and ZXGame),
+ViewportRenderer timeOfDay branch of ApplyEnvironment (sky fade, moon light, ambientFloor, min EV), SkySettings moon /
+stars / night (Sky.hlsl NightSky). Console `time <hour> [day minutes]`. Tests TimeOfDay.*.
 ZNano virtual geometry (M15, 0.14.1): Asset/Nano.h (Build = cluster DAG, AppendFallbackLods, SelectCut /
 ProjectedError on the CPU, MakeDetailedRock), CookedMesh::nano (NanoClusterHeader 80 B, sorted by parentError desc),
 CookMesh NanoMode (Auto >= 50k static triangles, .zmeta virtualGeometry). GPU: GpuMesh::nano* (RenderAssets),

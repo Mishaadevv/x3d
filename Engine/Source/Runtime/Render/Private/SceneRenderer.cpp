@@ -158,6 +158,16 @@ SceneRenderer::~SceneRenderer()
     m_device.Destroy(m_nanoCullPipeline);
     m_device.Destroy(m_nanoArgsPipeline);
     m_device.Destroy(m_nanoExpandPipeline);
+    for (auto& kv : m_vsmPipelines)
+        m_device.Destroy(kv.second);
+    m_device.Destroy(m_vsmAtlas);
+    for (Buffer* b : m_vsmTables)
+        m_device.Destroy(b);
+    for (Buffer* b : m_vsmReadback)
+        m_device.Destroy(b);
+    m_device.Destroy(m_vsmRequests);
+    m_device.Destroy(m_vsmMarkPipeline);
+    m_device.Destroy(m_vsmClearPipeline);
 }
 
 void SceneRenderer::InvalidateShadows()
@@ -166,6 +176,7 @@ void SceneRenderer::InvalidateShadows()
         c.valid = false;
     for (LocalSlot& s : m_localSlots)
         s.valid = false;
+    m_vsmInvalidate = true;
 }
 
 bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
@@ -180,6 +191,8 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
     const ShaderDefine nano[] = {{"ZX_NANO"}};
     const ShaderDefine nanoDepth[] = {{"ZX_NANO"}, {"DEPTH_ONLY"}};
     const ShaderDefine nanoDepthAlpha[] = {{"ZX_NANO"}, {"DEPTH_ONLY"}, {"ALPHA_TEST"}};
+    const ShaderDefine nanoVsm[] = {{"ZX_NANO"}, {"ZX_VSM"}, {"DEPTH_ONLY"}};
+    const ShaderDefine nanoVsmAlpha[] = {{"ZX_NANO"}, {"ZX_VSM"}, {"DEPTH_ONLY"}, {"ALPHA_TEST"}};
     struct Job
     {
         ShaderBytecode* out;
@@ -193,6 +206,8 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
         {&m_vsNano, "VSMain", ShaderStage::Vertex, Span<const ShaderDefine>(nano)},
         {&m_vsNanoDepth, "VSMain", ShaderStage::Vertex, Span<const ShaderDefine>(nanoDepth)},
         {&m_vsNanoDepthAlpha, "VSMain", ShaderStage::Vertex, Span<const ShaderDefine>(nanoDepthAlpha)},
+        {&m_vsNanoVsm, "VSMain", ShaderStage::Vertex, Span<const ShaderDefine>(nanoVsm)},
+        {&m_vsNanoVsmAlpha, "VSMain", ShaderStage::Vertex, Span<const ShaderDefine>(nanoVsmAlpha)},
         {&m_ps, "PSMain", ShaderStage::Pixel, {}},
         {&m_psAlpha, "PSMain", ShaderStage::Pixel, Span<const ShaderDefine>(alpha)},
         {&m_psDepthAlpha, "PSDepth", ShaderStage::Pixel, Span<const ShaderDefine>(depthAlpha)},
@@ -358,6 +373,8 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
         ZX_LOG_WARN(LogSceneRenderer, "GPU-driven rendering unavailable: CPU culling and draws");
     else if (!InitNano())
         ZX_LOG_WARN(LogSceneRenderer, "Virtual geometry unavailable: nano meshes use their LOD chains");
+    if (!InitVsm())
+        ZX_LOG_WARN(LogSceneRenderer, "Virtual shadow maps unavailable: the sun uses its cascades");
     EnsureInstanceCapacity(1024);
     return m_instanceBuffers[0] && m_clusterPipeline && m_clusterBuffer;
 }
@@ -867,10 +884,8 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
     m_gpuFrame = settings.gpuDriven && settings.depthPrepass && m_cullPipeline && m_cullInitPipeline && m_hizPipeline;
     m_nanoActive = false;
     m_nanoRefs.Clear();
-    if (m_gpuFrame) {
+    if (m_gpuFrame)
         PrepareGpu(instances, view, frustum, invTanHalfFov, instanceData);
-        PrepareNano(instances, view, frustum, invTanHalfFov, cascadeFrustums);
-    }
     // CPU draw lists: every instance in CPU frames, the skinned ones (own vertex buffers) in GPU-driven frames.
     if (!m_gpuFrame || !m_skinJobs.Empty()) {
         u32 instanceCount = 0;
@@ -1006,6 +1021,10 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
             }
         }
     }
+    // Virtual shadow pages (needs every caster), then the cluster views (some VSM levels are among them).
+    PrepareVsm(view, lighting);
+    if (m_gpuFrame)
+        PrepareNano(instances, view, frustum, invTanHalfFov, cascadeFrustums);
     Sort(m_opaque, [](const DrawItem& a, const DrawItem& b) { return a.sortKey < b.sortKey; });
     Sort(m_translucent, [](const DrawItem& a, const DrawItem& b) { return a.sortKey < b.sortKey; });
     for (u32 c = 0; c < m_cascadeCount; ++c)
@@ -1105,6 +1124,7 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
     m_viewConstants.time = m_time;
     m_viewConstants.groundColor = lighting.groundColor;
     m_viewConstants.ambientIntensity = lighting.skyLuminance * exposure;
+    m_viewConstants.ambientFloor = lighting.ambientFloor;
     m_skyIrradianceBuffer = lighting.skyIrradianceBuffer;
     m_viewConstants.skyIrradianceSH = lighting.skyIrradianceBuffer ? 1u : InvalidDescriptor;
     m_viewConstants.skyIrradianceScale = lighting.skyIrradianceScale;
@@ -1410,6 +1430,10 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                     Draw(ctx.cmd, d, VariantShadow, bound);
             });
     }
+    // Virtual shadow pages (sampled by the opaque passes below).
+    const RGTexture vsmAtlas = m_vsmActive ? graph.ImportTexture(m_vsmAtlas, ResourceState::ShaderResource) : RGTexture();
+    if (m_vsmActive)
+        AddVsmPasses(graph, vsmAtlas, nano ? &nanoBuffers : nullptr);
     RGTexture localAtlas;
     const bool hasLocalShadows = m_viewConstants.localShadowAtlas != InvalidDescriptor || !m_localUpdates.Empty();
     if (m_localAtlas && hasLocalShadows) {
@@ -1483,6 +1507,8 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                     DrawNano(ctx.cmd, 1, VariantDepth);
             });
     }
+    if (prepass)
+        AddVsmMarkPass(graph, depth); // pages the visible pixels need (allocated a frame or two later)
     // GTAO from the pre-pass depth (normals reconstructed from depth), then a depth-aware blur.
     RGTexture aoTexture;
     const bool hasAO = prepass && m_settings.ao.enabled && m_gtaoPipeline && m_aoBlurPipeline;
@@ -1598,8 +1624,11 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
             ctx.cmd.SetConstantBuffer(0, skySH->GetGpuAddress());
     };
     const bool readLocal = m_localAtlas && hasLocalShadows;
+    const bool readVsm = m_vsmActive;
     auto readShadows = [shadowMaps, cascadeCount, clusters, hasLights, skySHHandle, skySH, aoTexture, hasAO, localAtlas,
-                        readLocal, contactTexture, hasContact](PassBuilder& b) {
+                        readLocal, contactTexture, hasContact, readVsm, vsmAtlas](PassBuilder& b) {
+        if (readVsm)
+            b.ReadTexture(vsmAtlas);
         if (hasAO)
             b.ReadTexture(aoTexture);
         if (hasContact)

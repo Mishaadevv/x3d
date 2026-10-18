@@ -39,6 +39,7 @@
 #include "Engine/WaterPhysics.h"
 #include "Engine/GameUI.h"
 #include "Engine/Localization.h"
+#include "Engine/TimeOfDay.h"
 #include "Engine/Wind.h"
 #include "UI/UI.h"
 #include "UI/UIRenderer.h"
@@ -406,6 +407,7 @@ bool Game::Frame()
     }
     m_terrains.Update(m_world, *m_assets, m_renderAssets.Get());
     TickWind(m_world, dt);
+    TickTimeOfDay(m_world, dt, true);
     m_softBodies.Update(m_world, *m_assets, m_renderAssets.Get());
     scene::UpdateWorldTransforms(m_world);
     {
