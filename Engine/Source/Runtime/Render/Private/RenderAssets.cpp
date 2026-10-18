@@ -68,6 +68,7 @@ RenderAssets::~RenderAssets()
         m_device.Destroy(kv.second->mesh.skinBuffer);
         m_device.Destroy(kv.second->mesh.morphBuffer);
         m_device.Destroy(kv.second->mesh.indexBuffer);
+        m_device.Destroy(kv.second->mesh.nanoBuffer);
     }
     for (auto& kv : m_textures)
         m_device.Destroy(kv.second.texture);
@@ -308,6 +309,8 @@ void RenderAssets::ReloadMesh(AssetId id)
     m_device.Destroy(e->mesh.morphBuffer);
     e->mesh.morphBuffer = nullptr;
     m_device.Destroy(e->mesh.indexBuffer);
+    m_device.Destroy(e->mesh.nanoBuffer);
+    e->mesh.nanoBuffer = nullptr;
     m_meshes.Remove(id);
     for (usize i = 0; i < m_pendingMeshes.Size(); ++i)
         if (m_pendingMeshes[i] == id) {
@@ -347,6 +350,27 @@ bool RenderAssets::TryUploadMesh(AssetId id, MeshEntry& e, u64& budget)
             BufferDesc{m->morphDeltas.SizeBytes(), BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, m->name.View()}, m->morphDeltas.Data());
         g.morphCount = m->MorphCount();
         g.morphNames = m->morphNames;
+    }
+    if (!m->nano.Empty()) {
+        Array<u8> nano;
+        m->nano.WriteGpu(nano);
+        g.nanoBuffer = m_device.CreateBuffer(
+            BufferDesc{nano.Size(), BufferUsage::ShaderResource, MemoryType::GpuOnly, 0, m->name.View()}, nano.Data());
+        g.nanoClusters = u32(m->nano.clusters.Size());
+        g.nanoTrianglesOffset = u32(m->nano.TrianglesOffset());
+        g.nanoRemapOffset = u32(m->nano.RemapOffset());
+        g.nanoLeafTriangles = m->nano.leafTriangles;
+        const Sphere meshSphere = Sphere::FromAABB(m->bounds);
+        f32 reach = meshSphere.radius;
+        g.nanoParentErrors.Reserve(m->nano.clusters.Size());
+        for (const asset::NanoClusterHeader& c : m->nano.clusters) {
+            reach = Max(reach, Length(c.bounds.XYZ() - meshSphere.center) + c.bounds.w);
+            reach = Max(reach, Length(c.selfSphere.XYZ() - meshSphere.center) + c.selfSphere.w);
+            if (c.parentError < asset::NanoRootError)
+                reach = Max(reach, Length(c.parentSphere.XYZ() - meshSphere.center) + c.parentSphere.w);
+            g.nanoParentErrors.PushBack(c.parentError);
+        }
+        g.nanoSphere = Sphere{meshSphere.center, reach};
     }
     g.vertexCount = u32(m->vertices.Size());
     g.boneCount = m->boneCount;

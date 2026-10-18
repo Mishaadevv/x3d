@@ -25,6 +25,8 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     ViewportSettings& s = m_settings;
     s.scene.lodBias = lite ? 0.75f : 1.0f;
     s.scene.maxAnisotropy = lite ? 4 : 16;
+    s.scene.nano.pixelError = lite ? 2.0f : 1.0f;
+    s.scene.nano.triangleBudget = lite ? 1500000u : 3000000u;
     if (lite) {
         s.scene.shadows.cascades = 3;
         s.scene.shadows.resolution = 1024;
@@ -438,6 +440,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         cs.ao.enabled = false;
         cs.debugMode = 0;
         cs.lodBias = 0.5f;
+        cs.nano.pixelError = Max(cs.nano.pixelError, 4.0f);
         cs.shadows.localEnabled = false;
         cs.shadows.cascades = Min(cs.shadows.cascades, 2u);
         cs.shadows.cache = false;

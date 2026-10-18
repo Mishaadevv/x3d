@@ -172,6 +172,16 @@ struct ContactShadowSettings
     f32 thickness = 0.03f; // assumed depth of the occluders, meters per meter of view distance
 };
 
+/// ZNano virtual geometry (Asset/Nano.h): meshes cooked with clusters are drawn cluster by cluster at the detail the
+/// screen needs (GPU-driven frames; otherwise they use their fallback LOD chains).
+struct NanoSettings
+{
+    bool enabled = true;
+    f32 pixelError = 1.0f;          // LOD error allowed on screen, pixels (Lite: 2)
+    f32 shadowPixelError = 2.0f;    // in shadow texels
+    u32 triangleBudget = 3000000;   // main view; over it the error threshold rises (shadows and phase 2 get half)
+};
+
 struct SceneRenderSettings
 {
     bool depthPrepass = true;
@@ -195,6 +205,7 @@ struct SceneRenderSettings
     ShadowSettings shadows;
     AOSettings ao;
     ContactShadowSettings contactShadows;
+    NanoSettings nano;
 };
 
 class SceneRenderer
@@ -279,6 +290,16 @@ public:
         u32 gpuItems = 0;      // (instance, section) items culled on the GPU
         u32 gpuGroups = 0;     // mesh section + material combinations
         u32 indirectCalls = 0; // DrawIndexedIndirect calls (per pass)
+        // Virtual geometry (the GPU numbers are from a frame or two ago).
+        u32 nanoInstances = 0;
+        u64 nanoSourceTriangles = 0; // LOD0 triangles of the nano instances
+        u32 nanoTested = 0;          // clusters the main view tests
+        u32 nanoBins = 0;
+        u32 nanoClusters = 0;        // drawn in the main view
+        u64 nanoTriangles = 0;
+        u64 nanoShadowTriangles = 0; // the last cascade rendered
+        f32 nanoErrorScale = 1.0f;   // > 1: over budget, coarser than asked
+        bool nanoOverflow = false;
     };
     const Stats& GetStats() const { return m_stats; }
 
@@ -319,7 +340,7 @@ private:
         VariantCount
     };
 
-    rhi::Pipeline* GetPipeline(u32 kind, PipelineVariant variant, u32 shader = 0);
+    rhi::Pipeline* GetPipeline(u32 kind, PipelineVariant variant, u32 shader = 0, bool nano = false);
     void SetGBufferFormats(rhi::GraphicsPipelineDesc& pd) const;
     // --- GPU-driven path (SceneRendererGpu.cpp) ---
     static constexpr u32 GpuViewCount = 2 + MaxCascades; // main phase 1, main phase 2, cascades
@@ -367,6 +388,45 @@ private:
     void EnsureGpuBuffers();
     void Draw(rhi::CommandList& cmd, const DrawItem& d, PipelineVariant variant, rhi::Pipeline*& bound);
     void EnsureInstanceCapacity(u32 count);
+    // --- Virtual geometry (SceneRendererNano.cpp) ---
+    static constexpr u32 NanoRegions = 3; // index / record regions: main phase 1, main phase 2, shadows (one at a time)
+    struct NanoRef
+    {
+        u32 instance;   // into Prepare's instances
+        u32 row;
+        u32 templ;
+        const GpuMesh* mesh;
+        u32 sectionBase = 0; // into this frame's section -> bin table
+        Sphere sphere;       // world, holds every cluster sphere
+        f32 scale = 1.0f;
+    };
+    struct NanoBucket // bins drawn by one DrawIndexedIndirect: same pipeline and shader
+    {
+        u8 pipeline = Opaque;
+        u32 shader = 0;
+        u32 firstBin = 0;
+        u32 binCount = 0;
+    };
+    struct NanoView
+    {
+        u32 itemsOffset = 0; // bytes into the tables
+        u32 itemCount = 0;
+        u32 threads = 0;     // candidate clusters
+        bool ortho = false;
+        f32 pixelsPerUnit = 1.0f;
+        f32 threshold = 1.0f;
+    };
+    struct NanoBuffers
+    {
+        RGBuffer args, counters, visible, indices, candidates;
+    };
+    bool InitNano();
+    void PrepareNano(Span<const RenderInstance> instances, const RenderView& view, const struct Frustum& frustum, f32 invTanHalfFov,
+                     const struct Frustum* cascadeFrustums);
+    void EnsureNanoBuffers(u32 binCount, u32 candidates);
+    void AddNanoCullPass(RenderGraph& graph, u32 view, u32 mode, const Mat4& viewProj, const NanoBuffers& buffers);
+    void AddNanoStatsPass(RenderGraph& graph, const NanoBuffers& buffers);
+    void DrawNano(rhi::CommandList& cmd, u32 view, PipelineVariant variant);
     void SetupCascades(const RenderView& view, const SceneLighting& lighting);
     u32 GetMaterialSampler(u32 maxAnisotropy);
 
@@ -374,6 +434,9 @@ private:
     RenderAssets& m_assets;
     rhi::Format m_colorFormat = rhi::Format::Unknown;
     rhi::Format m_depthFormat = rhi::Format::Unknown;
+    rhi::ShaderBytecode m_vsNano, m_vsNanoDepth, m_vsNanoDepthAlpha; // ZX_NANO: cluster indices
+    rhi::Pipeline* m_nanoPipelines[KindCount][VariantCount] = {};
+    f32 m_nanoShadowPipelineBias[2] = {0.0f, 0.0f};
     rhi::ShaderBytecode m_vs, m_vsDepth, m_vsDepthAlpha, m_ps, m_psAlpha, m_psDepthAlpha, m_psNormals, m_psAlphaNormals;
     rhi::ShaderBytecode m_psGBuffer, m_psGBufferAlpha, m_deferredVS, m_deferredPS;
     rhi::Pipeline* m_deferredPipeline = nullptr; // lighting of the G-buffer (fullscreen, additive)
@@ -664,6 +727,37 @@ private:
     Vec3 m_cullCamera;
     f32 m_cullInvTanHalfFov = 1.0f;
     rhi::ShaderBytecode m_cullInitCS, m_cullCS, m_hizCS;
+    // Virtual geometry state.
+    bool m_nanoActive = false; // this frame draws clusters
+    Array<NanoRef> m_nanoRefs;
+    Array<NanoBucket> m_nanoBuckets;
+    NanoView m_nanoViews[GpuViewCount];
+    u32 m_nanoBinCount = 0, m_nanoBinCapacity = 0;
+    u32 m_nanoInstancesOffset = 0, m_nanoSectionBinsOffset = 0, m_nanoBinsOffset = 0; // bytes into the tables
+    u32 m_nanoIndexCapacity[NanoRegions] = {}, m_nanoIndexBase[NanoRegions] = {};
+    u32 m_nanoVisibleCapacity = 0, m_nanoCandidateCapacity = 0;
+    u64 m_nanoIndexBytes = 0;
+    f32 m_nanoErrorScale = 1.0f, m_nanoShadowErrorScale = 1.0f; // budget feedback
+    struct NanoReadback
+    {
+        u32 clusters = 0;
+        u64 triangles = 0, shadowTriangles = 0;
+        bool overflow = false;
+    } m_nanoLast;
+    rhi::Buffer* m_nanoTables[rhi::FramesInFlight] = {}; // upload: instances, section bins, bins, view items
+    u64 m_nanoTableBytes = 0;
+    rhi::Buffer* m_nanoArgs = nullptr;       // IndirectDrawArgs per (region, bin)
+    rhi::Buffer* m_nanoCounters = nullptr;   // per view: visible records, indices, overflow flags
+    rhi::Buffer* m_nanoVisible = nullptr;    // uint4 records per region
+    rhi::Buffer* m_nanoIndices = nullptr;    // the cluster index buffer (all regions)
+    rhi::Buffer* m_nanoCandidates = nullptr; // phase 1 -> phase 2
+    rhi::Buffer* m_nanoReadback[rhi::FramesInFlight] = {};
+    bool m_nanoReadbackValid[rhi::FramesInFlight] = {};
+    rhi::ShaderBytecode m_nanoClearCS, m_nanoCullCS, m_nanoArgsCS, m_nanoExpandCS;
+    rhi::Pipeline* m_nanoClearPipeline = nullptr;
+    rhi::Pipeline* m_nanoCullPipeline = nullptr;
+    rhi::Pipeline* m_nanoArgsPipeline = nullptr;
+    rhi::Pipeline* m_nanoExpandPipeline = nullptr;
     rhi::Pipeline* m_cullInitPipeline = nullptr;
     rhi::Pipeline* m_cullPipeline = nullptr;
     rhi::Pipeline* m_hizPipeline = nullptr;

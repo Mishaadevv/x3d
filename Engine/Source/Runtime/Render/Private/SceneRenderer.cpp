@@ -142,6 +142,22 @@ SceneRenderer::~SceneRenderer()
     m_device.Destroy(m_cullInitPipeline);
     m_device.Destroy(m_cullPipeline);
     m_device.Destroy(m_hizPipeline);
+    for (auto& kind : m_nanoPipelines)
+        for (Pipeline* p : kind)
+            m_device.Destroy(p);
+    for (Buffer* b : m_nanoTables)
+        m_device.Destroy(b);
+    for (Buffer* b : m_nanoReadback)
+        m_device.Destroy(b);
+    m_device.Destroy(m_nanoArgs);
+    m_device.Destroy(m_nanoCounters);
+    m_device.Destroy(m_nanoVisible);
+    m_device.Destroy(m_nanoIndices);
+    m_device.Destroy(m_nanoCandidates);
+    m_device.Destroy(m_nanoClearPipeline);
+    m_device.Destroy(m_nanoCullPipeline);
+    m_device.Destroy(m_nanoArgsPipeline);
+    m_device.Destroy(m_nanoExpandPipeline);
 }
 
 void SceneRenderer::InvalidateShadows()
@@ -161,6 +177,9 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
     const ShaderDefine alpha[] = {{"ALPHA_TEST"}};
     const ShaderDefine normals[] = {{"ZX_NORMAL_OUTPUT"}};
     const ShaderDefine alphaNormals[] = {{"ALPHA_TEST"}, {"ZX_NORMAL_OUTPUT"}};
+    const ShaderDefine nano[] = {{"ZX_NANO"}};
+    const ShaderDefine nanoDepth[] = {{"ZX_NANO"}, {"DEPTH_ONLY"}};
+    const ShaderDefine nanoDepthAlpha[] = {{"ZX_NANO"}, {"DEPTH_ONLY"}, {"ALPHA_TEST"}};
     struct Job
     {
         ShaderBytecode* out;
@@ -171,6 +190,9 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
         {&m_vs, "VSMain", ShaderStage::Vertex, {}},
         {&m_vsDepth, "VSMain", ShaderStage::Vertex, Span<const ShaderDefine>(depthOnly)},
         {&m_vsDepthAlpha, "VSMain", ShaderStage::Vertex, Span<const ShaderDefine>(depthAlpha)},
+        {&m_vsNano, "VSMain", ShaderStage::Vertex, Span<const ShaderDefine>(nano)},
+        {&m_vsNanoDepth, "VSMain", ShaderStage::Vertex, Span<const ShaderDefine>(nanoDepth)},
+        {&m_vsNanoDepthAlpha, "VSMain", ShaderStage::Vertex, Span<const ShaderDefine>(nanoDepthAlpha)},
         {&m_ps, "PSMain", ShaderStage::Pixel, {}},
         {&m_psAlpha, "PSMain", ShaderStage::Pixel, Span<const ShaderDefine>(alpha)},
         {&m_psDepthAlpha, "PSDepth", ShaderStage::Pixel, Span<const ShaderDefine>(depthAlpha)},
@@ -334,6 +356,8 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
     m_shadersOk = true;
     if (!InitGpuDriven())
         ZX_LOG_WARN(LogSceneRenderer, "GPU-driven rendering unavailable: CPU culling and draws");
+    else if (!InitNano())
+        ZX_LOG_WARN(LogSceneRenderer, "Virtual geometry unavailable: nano meshes use their LOD chains");
     EnsureInstanceCapacity(1024);
     return m_instanceBuffers[0] && m_clusterPipeline && m_clusterBuffer;
 }
@@ -347,23 +371,28 @@ void SceneRenderer::SetGBufferFormats(GraphicsPipelineDesc& pd) const
     pd.colorCount = 4;
 }
 
-Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shader)
+Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shader, bool nano)
 {
     const bool masked = kind == Masked || kind == MaskedTwoSided;
     const bool depthOnly = variant == VariantDepth || variant == VariantShadow;
+    // Virtual geometry pipelines differ only in the vertex shader (cluster indices, Forward/Nano.hlsl).
+    const ShaderBytecode& vsMain = nano ? m_vsNano : m_vs;
+    const ShaderBytecode& vsDepth = nano ? m_vsNanoDepth : m_vsDepth;
+    const ShaderBytecode& vsDepthAlpha = nano ? m_vsNanoDepthAlpha : m_vsDepthAlpha;
+    f32(&shadowBias)[2] = nano ? m_nanoShadowPipelineBias : m_shadowPipelineBias;
     // Material graphs: their own pixel shaders once compiled (opaque depth passes need no pixel shader at all).
     if (shader != 0 && !(depthOnly && !masked)) {
         if (const MaterialShaderCache::Shaders* shaders = m_assets.Shaders().Get(shader)) {
-            const u64 key = (u64(shader) << 16) | (u64(kind) << 8) | u64(variant);
+            const u64 key = (u64(nano) << 62) | (u64(shader) << 16) | (u64(kind) << 8) | u64(variant);
             Pipeline*& gp = *m_graphPipelines.Insert(key, nullptr).first;
             if (variant == VariantShadow && gp &&
-                (m_shadowPipelineBias[0] != m_settings.shadows.depthBias || m_shadowPipelineBias[1] != m_settings.shadows.slopeBias)) {
+                (shadowBias[0] != m_settings.shadows.depthBias || shadowBias[1] != m_settings.shadows.slopeBias)) {
                 m_device.Destroy(gp);
                 gp = nullptr;
             }
             if (gp)
                 return gp;
-            Pipeline* standard = GetPipeline(kind, variant); // builds the matching fixed-function state
+            Pipeline* standard = GetPipeline(kind, variant, 0, nano); // builds the matching fixed-function state
             if (!standard)
                 return nullptr;
             const bool twoSided = kind == OpaqueTwoSided || kind == MaskedTwoSided || kind == TranslucentTwoSided;
@@ -378,15 +407,15 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
                 pd.rasterizer.slopeScaledDepthBias = m_settings.shadows.slopeBias;
             }
             if (depthOnly) {
-                pd.vertexShader = &m_vsDepthAlpha;
+                pd.vertexShader = &vsDepthAlpha;
                 pd.pixelShader = &shaders->depthAlphaTest;
                 pd.colorCount = 0;
             } else if (variant == VariantGBuffer) {
-                pd.vertexShader = &m_vs;
+                pd.vertexShader = &vsMain;
                 pd.pixelShader = masked ? &shaders->gbufferAlphaTest : &shaders->gbuffer;
                 SetGBufferFormats(pd);
             } else {
-                pd.vertexShader = &m_vs;
+                pd.vertexShader = &vsMain;
                 const bool mrt = variant == VariantMainMRT || variant == VariantMainNoWriteMRT;
                 pd.pixelShader = masked ? (mrt ? &shaders->mainAlphaTestNormals : &shaders->mainAlphaTest)
                                         : (mrt ? &shaders->mainNormals : &shaders->main);
@@ -396,16 +425,16 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
                 if (translucent)
                     pd.blend[0] = BlendTarget::AlphaBlend();
             }
-            const String name = String::Format("Forward.Graph{}.{}.{}", shader, u32(kind), u32(variant));
+            const String name = String::Format("Forward{}.Graph{}.{}.{}", nano ? ".Nano" : "", shader, u32(kind), u32(variant));
             pd.debugName = name.View();
             gp = m_device.CreateGraphicsPipeline(pd);
             if (gp)
                 return gp;
         }
     }
-    Pipeline*& p = m_pipelines[kind][variant];
+    Pipeline*& p = nano ? m_nanoPipelines[kind][variant] : m_pipelines[kind][variant];
     if (variant == VariantShadow && p &&
-        (m_shadowPipelineBias[0] != m_settings.shadows.depthBias || m_shadowPipelineBias[1] != m_settings.shadows.slopeBias)) {
+        (shadowBias[0] != m_settings.shadows.depthBias || shadowBias[1] != m_settings.shadows.slopeBias)) {
         m_device.Destroy(p); // bias changed (tweaking); deferred destruction
         p = nullptr;
     }
@@ -422,19 +451,19 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
         pd.rasterizer.cullMode = CullMode::None;
         pd.rasterizer.depthBias = i32(m_settings.shadows.depthBias);
         pd.rasterizer.slopeScaledDepthBias = m_settings.shadows.slopeBias;
-        m_shadowPipelineBias[0] = m_settings.shadows.depthBias;
-        m_shadowPipelineBias[1] = m_settings.shadows.slopeBias;
+        shadowBias[0] = m_settings.shadows.depthBias;
+        shadowBias[1] = m_settings.shadows.slopeBias;
     }
     if (depthOnly) {
-        pd.vertexShader = masked ? &m_vsDepthAlpha : &m_vsDepth;
+        pd.vertexShader = masked ? &vsDepthAlpha : &vsDepth;
         pd.pixelShader = masked ? &m_psDepthAlpha : nullptr;
         pd.colorCount = 0;
     } else if (variant == VariantGBuffer) {
-        pd.vertexShader = &m_vs;
+        pd.vertexShader = &vsMain;
         pd.pixelShader = masked ? &m_psGBufferAlpha : &m_psGBuffer;
         SetGBufferFormats(pd);
     } else {
-        pd.vertexShader = &m_vs;
+        pd.vertexShader = &vsMain;
         const bool mrt = variant == VariantMainMRT || variant == VariantMainNoWriteMRT;
         pd.pixelShader = masked ? (mrt ? &m_psAlphaNormals : &m_psAlpha) : (mrt ? &m_psNormals : &m_ps);
         pd.colorFormats[0] = m_colorFormat;
@@ -445,7 +474,7 @@ Pipeline* SceneRenderer::GetPipeline(u32 kind, PipelineVariant variant, u32 shad
     }
     static const char* kinds[KindCount] = {"Opaque", "Opaque2S", "Masked", "Masked2S", "Translucent", "Translucent2S"};
     static const char* variants[VariantCount] = {"Depth", "Main", "MainNoWrite", "Shadow", "MainMRT", "MainNoWriteMRT", "GBuffer"};
-    const String name = String::Format("Forward.{}.{}", kinds[kind], variants[variant]);
+    const String name = String::Format("Forward{}.{}.{}", nano ? ".Nano" : "", kinds[kind], variants[variant]);
     pd.debugName = name.View();
     p = m_device.CreateGraphicsPipeline(pd);
     return p;
@@ -836,8 +865,12 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
     const Frustum frustum = Frustum::FromMatrix(view.viewProj);
     const f32 invTanHalfFov = 1.0f / Tan(view.fovY * 0.5f);
     m_gpuFrame = settings.gpuDriven && settings.depthPrepass && m_cullPipeline && m_cullInitPipeline && m_hizPipeline;
-    if (m_gpuFrame)
+    m_nanoActive = false;
+    m_nanoRefs.Clear();
+    if (m_gpuFrame) {
         PrepareGpu(instances, view, frustum, invTanHalfFov, instanceData);
+        PrepareNano(instances, view, frustum, invTanHalfFov, cascadeFrustums);
+    }
     // CPU draw lists: every instance in CPU frames, the skinned ones (own vertex buffers) in GPU-driven frames.
     if (!m_gpuFrame || !m_skinJobs.Empty()) {
         u32 instanceCount = 0;
@@ -1307,10 +1340,21 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
     if (!m_shadersOk)
         return;
     // GPU-driven: culling of the main view (phase 1) and of the cascades that re-render, before anything draws.
-    const bool gpu = m_gpuFrame && m_slotCount > 0;
+    const bool regular = m_gpuFrame && m_slotCount > 0;
+    const bool nano = m_gpuFrame && m_nanoActive;
+    const bool gpu = regular || nano;
     const bool occlusion = gpu && m_settings.occlusionCulling;
     RGBuffer gpuArgs, gpuLists, gpuCandidates;
-    if (gpu) {
+    NanoBuffers nanoBuffers;
+    if (nano) {
+        nanoBuffers.args = graph.ImportBuffer(m_nanoArgs, ResourceState::IndirectArgument);
+        nanoBuffers.counters = graph.ImportBuffer(m_nanoCounters, ResourceState::UnorderedAccess);
+        nanoBuffers.visible = graph.ImportBuffer(m_nanoVisible, ResourceState::ShaderResource);
+        nanoBuffers.indices = graph.ImportBuffer(m_nanoIndices, ResourceState::IndexBuffer);
+        nanoBuffers.candidates = graph.ImportBuffer(m_nanoCandidates, ResourceState::UnorderedAccess);
+        AddNanoCullPass(graph, 0, occlusion && m_hizValid ? 1u : 0u, m_cullViewProj, nanoBuffers);
+    }
+    if (regular) {
         gpuArgs = graph.ImportBuffer(m_indirectArgs, ResourceState::IndirectArgument);
         gpuLists = graph.ImportBuffer(m_visibleLists, ResourceState::ShaderResource);
         gpuCandidates = graph.ImportBuffer(m_candidates, ResourceState::UnorderedAccess);
@@ -1325,10 +1369,15 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 AddCullPass(graph, 2 + c, 0, m_cascades[c].viewProj, gpuArgs, gpuLists, gpuCandidates, 1u,
                             m_viewConstants.cascadeTexelWorld[c], m_settings.shadows.lodBias);
     }
-    auto readIndirect = [gpu, gpuArgs, gpuLists](PassBuilder& b) {
-        if (gpu) {
+    auto readIndirect = [regular, gpuArgs, gpuLists, nano, nanoBuffers](PassBuilder& b) {
+        if (regular) {
             b.ReadBuffer(gpuArgs, ResourceState::IndirectArgument);
             b.ReadBuffer(gpuLists);
+        }
+        if (nano) {
+            b.ReadBuffer(nanoBuffers.args, ResourceState::IndirectArgument);
+            b.ReadBuffer(nanoBuffers.indices, ResourceState::IndexBuffer);
+            b.ReadBuffer(nanoBuffers.visible);
         }
     };
     RGTexture shadowMaps[MaxCascades];
@@ -1336,6 +1385,8 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
         shadowMaps[c] = graph.ImportTexture(m_cascades[c].map, ResourceState::ShaderResource);
         if (!m_cascades[c].update)
             continue;
+        if (nano) // the cascades share one cluster region: cull right before drawing
+            AddNanoCullPass(graph, 2 + c, 0, m_cascades[c].viewProj, nanoBuffers);
         const RGTexture target = shadowMaps[c];
         graph.AddPass(
             Name(String::Format("SunShadow{}", c)).CStr(), PassType::Graphics,
@@ -1344,11 +1395,13 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 b.SideEffects(); // persistent cache: written for later frames
                 readIndirect(b);
             },
-            [this, c, gpu](PassContext& ctx) {
+            [this, c, regular, nano](PassContext& ctx) {
                 ViewConstants cascadeView = m_viewConstants;
                 cascadeView.viewProj = m_cascades[c].viewProj;
                 ctx.cmd.SetConstants(1, &cascadeView, sizeof(cascadeView));
-                if (gpu) {
+                if (nano)
+                    DrawNano(ctx.cmd, 2 + c, VariantShadow);
+                if (regular) {
                     DrawIndirect(ctx.cmd, 2 + c, VariantShadow);
                     // GPU-driven frames: the CPU lists hold only the skinned meshes (their own vertex buffers).
                 }
@@ -1395,9 +1448,11 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 b.DepthStencil(depth, LoadOp::Clear, 0.0f);
                 readIndirect(b);
             },
-            [this, gpu](PassContext& ctx) {
+            [this, regular, nano](PassContext& ctx) {
                 ctx.cmd.SetConstants(1, &m_viewConstants, sizeof(m_viewConstants));
-                if (gpu) {
+                if (nano)
+                    DrawNano(ctx.cmd, 0, VariantDepth);
+                if (regular) {
                     DrawIndirect(ctx.cmd, 0, VariantDepth);
                     // GPU-driven frames: the CPU lists hold only the skinned meshes (their own vertex buffers).
                 }
@@ -1410,16 +1465,22 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
         // Phase 2: a min-depth pyramid of what phase 1 drew, then the items hidden behind the previous frame's depth
         // are tested again against it - the ones that became visible are drawn now.
         AddHiZPass(graph, depth);
-        AddCullPass(graph, 1, 2, m_cullViewProj, gpuArgs, gpuLists, gpuCandidates, 0, 0.0f, 0);
+        if (regular)
+            AddCullPass(graph, 1, 2, m_cullViewProj, gpuArgs, gpuLists, gpuCandidates, 0, 0.0f, 0);
+        if (nano)
+            AddNanoCullPass(graph, 1, 2, m_cullViewProj, nanoBuffers);
         graph.AddPass(
             "DepthPrepass2", PassType::Graphics,
             [depth, readIndirect](PassBuilder& b) {
                 b.DepthStencil(depth, LoadOp::Load, 0.0f);
                 readIndirect(b);
             },
-            [this](PassContext& ctx) {
+            [this, regular, nano](PassContext& ctx) {
                 ctx.cmd.SetConstants(1, &m_viewConstants, sizeof(m_viewConstants));
-                DrawIndirect(ctx.cmd, 1, VariantDepth);
+                if (regular)
+                    DrawIndirect(ctx.cmd, 1, VariantDepth);
+                if (nano)
+                    DrawNano(ctx.cmd, 1, VariantDepth);
             });
     }
     // GTAO from the pre-pass depth (normals reconstructed from depth), then a depth-aware blur.
@@ -1589,9 +1650,14 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 readIndirect(b);
                 readShadows(b); // bindView binds them (the G-buffer shader ignores them)
             },
-            [this, bindView, gpu, occlusion](PassContext& ctx) {
+            [this, bindView, regular, nano, occlusion](PassContext& ctx) {
                 bindView(ctx);
-                if (gpu) {
+                if (nano) {
+                    DrawNano(ctx.cmd, 0, VariantGBuffer);
+                    if (occlusion)
+                        DrawNano(ctx.cmd, 1, VariantGBuffer);
+                }
+                if (regular) {
                     DrawIndirect(ctx.cmd, 0, VariantGBuffer);
                     if (occlusion)
                         DrawIndirect(ctx.cmd, 1, VariantGBuffer);
@@ -1635,10 +1701,15 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 readShadows(b);
                 readIndirect(b);
             },
-            [this, prepass, bindView, mrt, gpu, occlusion](PassContext& ctx) {
+            [this, prepass, bindView, mrt, regular, nano, occlusion](PassContext& ctx) {
                 bindView(ctx);
                 const PipelineVariant variant = prepass ? (mrt ? VariantMainNoWriteMRT : VariantMainNoWrite) : (mrt ? VariantMainMRT : VariantMain);
-                if (gpu) {
+                if (nano) {
+                    DrawNano(ctx.cmd, 0, variant);
+                    if (occlusion)
+                        DrawNano(ctx.cmd, 1, variant);
+                }
+                if (regular) {
                     DrawIndirect(ctx.cmd, 0, variant);
                     if (occlusion)
                         DrawIndirect(ctx.cmd, 1, variant);
@@ -1686,6 +1757,8 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 }
             });
     }
+    if (nano)
+        AddNanoStatsPass(graph, nanoBuffers);
     if (gpu) {
         // The pyramid built this frame tests the next frame's phase 1.
         m_hizViewProj = m_cullViewProj;

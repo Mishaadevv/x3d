@@ -7,6 +7,7 @@
 // Layouts mirror SceneRenderer.cpp (GpuCullItem, GpuDrawGroup, GpuDrawSlot, rhi::IndirectDrawArgs).
 
 #include "Common/Bindless.hlsli"
+#include "Common/HiZ.hlsli"
 
 struct CullParams
 {
@@ -59,37 +60,7 @@ void InitArgsCS(uint3 id : SV_DispatchThreadID)
 /// Conservative occlusion against the min-depth pyramid: the sphere's screen box and nearest depth.
 bool Occluded(float3 center, float radius)
 {
-    if (g_Cull.hiz == ZX_INVALID_INDEX)
-        return false;
-    float2 lo = float2(1e9, 1e9), hi = float2(-1e9, -1e9);
-    float nearest = 0.0;
-    [unroll]
-    for (uint c = 0; c < 8; ++c) {
-        const float3 corner = center + radius * float3((c & 1) ? 1 : -1, (c & 2) ? 1 : -1, (c & 4) ? 1 : -1);
-        const float4 clip = mul(g_Cull.occlusionViewProj, float4(corner, 1.0));
-        if (clip.w <= 1e-3)
-            return false; // crosses the camera plane: visible
-        const float3 ndc = clip.xyz / clip.w;
-        const float2 uv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-        lo = min(lo, uv);
-        hi = max(hi, uv);
-        nearest = max(nearest, ndc.z); // reversed-Z: larger = nearer
-    }
-    if (hi.x < 0.0 || hi.y < 0.0 || lo.x > 1.0 || lo.y > 1.0)
-        return false; // off the HiZ (outside the last view): don't trust it
-    lo = saturate(lo);
-    hi = saturate(hi);
-    const float2 extent = (hi - lo) * g_Cull.hizSize;
-    const float mip = clamp(ceil(log2(max(max(extent.x, extent.y), 1.0))), 0.0, float(g_Cull.hizMips - 1));
-    const uint level = uint(mip);
-    // Even and odd levels are split over two textures (each one is read while the other is written when built).
-    Texture2D<float4> hiz = GetTexture2D((level & 1) ? g_Cull.hizOdd : g_Cull.hiz);
-    const float2 size = max(floor(g_Cull.hizSize / exp2(mip)), 1.0);
-    const int2 a = int2(lo * size), b = int2(min(hi * size, size - 1.0));
-    // The box covers at most 2x2 texels at this level: the farthest depth among them.
-    const float d = min(min(hiz.Load(int3(a.x, a.y, level)).x, hiz.Load(int3(b.x, a.y, level)).x),
-                        min(hiz.Load(int3(a.x, b.y, level)).x, hiz.Load(int3(b.x, b.y, level)).x));
-    return nearest < d;
+    return HiZOccluded(center, radius, g_Cull.occlusionViewProj, g_Cull.hiz, g_Cull.hizOdd, g_Cull.hizSize, g_Cull.hizMips);
 }
 
 void Emit(uint itemIndex, uint instance, uint group, float3 center, float radius)

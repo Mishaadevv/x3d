@@ -1,4 +1,5 @@
 #include "Asset/CookedAssets.h"
+#include "Asset/Nano.h"
 #include "Asset/MeshOptimizer.h"
 #include "Core/Math/Packing.h"
 #include "Core/Serialization/Binary.h"
@@ -76,8 +77,17 @@ Vec3 UnpackMorphNormal(u32 p)
     return Vec3(u(p), u(p >> 10), u(p >> 20));
 }
 
-CookedMesh CookMesh(MeshData& mesh, bool generateLods)
+CookedMesh CookMesh(MeshData& mesh, bool generateLods, NanoMode nanoMode)
 {
+    // Virtual geometry replaces chunks and LOD chains (clusters do both); static meshes only.
+    u32 triangles = 0;
+    if (!mesh.lods.Empty())
+        for (const MeshSection& s : mesh.lods[0].sections)
+            triangles += s.indexCount / 3;
+    const bool staticMesh = (mesh.attributes & MeshAttributes::Skin) == MeshAttributes::None && mesh.morphs.Empty();
+    const bool nano = staticMesh && (nanoMode == NanoMode::On || (nanoMode == NanoMode::Auto && triangles >= nano::AutoTriangleThreshold));
+    if (nano)
+        generateLods = false;
     if (generateLods) {
         mesh::SplitSections(mesh);
         mesh::GenerateLods(mesh);
@@ -179,6 +189,8 @@ CookedMesh CookMesh(MeshData& mesh, bool generateLods)
                 at += 4;
             }
         }
+    if (nano && nano::Build(out, out.nano)) // clusters + LOD DAG over the LOD0 sections
+        nano::AppendFallbackLods(out);
     return out;
 }
 
@@ -527,6 +539,11 @@ void Serialize(const CookedMesh& m, Array<u8>& out)
         w.WriteString(name);
     w.WriteArray(m.morphDefaults.View());
     w.WriteArray(m.morphDeltas.View());
+    w.WriteArray(m.nano.clusters.View());
+    w.WriteArray(m.nano.triangles.View());
+    w.WriteArray(m.nano.vertexRemap.View());
+    w.Write<u32>(m.nano.levels);
+    w.Write<u32>(m.nano.leafTriangles);
 }
 
 bool Deserialize(ByteSpan data, CookedMesh& m)
@@ -553,6 +570,17 @@ bool Deserialize(ByteSpan data, CookedMesh& m)
         m.morphNames.PushBack(r.ReadString());
     r.ReadArray(m.morphDefaults);
     r.ReadArray(m.morphDeltas);
+    r.ReadArray(m.nano.clusters);
+    r.ReadArray(m.nano.triangles);
+    r.ReadArray(m.nano.vertexRemap);
+    m.nano.levels = r.Read<u32>();
+    m.nano.leafTriangles = r.Read<u32>();
+    for (const NanoClusterHeader& c : m.nano.clusters)
+        if (u64(c.triangleStart) + c.triangleCount > m.nano.triangles.Size() || u64(c.vertexStart) + c.vertexCount > m.nano.vertexRemap.Size())
+            return false;
+    for (u32 v : m.nano.vertexRemap)
+        if (v >= m.vertices.Size())
+            return false;
     if (r.HasError() || (!m.skin.Empty() && m.skin.Size() != m.vertices.Size() * 2))
         return false;
     if (m.morphDefaults.Size() != morphs || m.morphDeltas.Size() != morphs * m.vertices.Size() * 4)

@@ -202,6 +202,14 @@ ZGraph (0.13.21): Engine/ZGraph.h (.zgraph JSON: ParseGraph / WriteGraph; GraphN
 templates {pin} {@setting} {#id}; CompileGraph -> ZeqouScript source + lineNodes for errors; MakeExampleGraph).
 ScriptSystem::CheckForChanges compiles .zgraph through it (Script component takes .zs or .zgraph). Tests ZGraph.*
 (every library node must generate compilable script). Console graph.code / graph.new / script.attach.
+ZNano virtual geometry (M15, 0.14.1): Asset/Nano.h (Build = cluster DAG, AppendFallbackLods, SelectCut /
+ProjectedError on the CPU, MakeDetailedRock), CookedMesh::nano (NanoClusterHeader 80 B, sorted by parentError desc),
+CookMesh NanoMode (Auto >= 50k static triangles, .zmeta virtualGeometry). GPU: GpuMesh::nano* (RenderAssets),
+Render/Private/SceneRendererNano.cpp (PrepareNano: bins + per-view instance prefixes; AddNanoCullPass = Clear / Cull /
+Args / Expand in Shaders/Forward/Nano.hlsl; DrawNano; budget feedback via readback) + ForwardPBR VSMain under ZX_NANO
+(index = visible record << 8 | local vertex; drawId = bin). Regions: 0 main phase 1, 1 phase 2, 2 shadows (culled
+right before each cascade). Common/HiZ.hlsli shared with GpuCull. Console stress.nano N [subdiv], r.Nano*,
+r.ViewMode 4 colors clusters. Tests Nano.*, ManualNano.RockDagStats. -gpuvalidation TDRs on UHD 620 even without nano.
 M14 acceptance (0.14.0): Engine/Private/ZGraphDemo.cpp (MakeCoinGraph / MakeGateGraph / MakeGameHUDGraph, a
 Builder helper) written by Editor::BuildCoinGame into the Third Person template (Content/Scripts/Graphs); scripts
 game.get/set/add (ScriptSystem::m_gameValues, GameValue) and entity.moveTo (m_moves, ticked in Tick); ZGraph actions

@@ -36,6 +36,14 @@ struct GpuMesh
     Sphere sphere;
     u32 materialSlots = 0;
     u64 bytes = 0;
+    // ZNano virtual geometry (CookedMesh::nano): headers, packed triangles and vertex remap in one raw buffer.
+    rhi::Buffer* nanoBuffer = nullptr;
+    u32 nanoClusters = 0;
+    u32 nanoTrianglesOffset = 0; // bytes into nanoBuffer
+    u32 nanoRemapOffset = 0;
+    u32 nanoLeafTriangles = 0;
+    Sphere nanoSphere;           // mesh space: holds every cluster's and parent group's sphere
+    Array<f32> nanoParentErrors; // per cluster, descending: the clusters an instance can need are a prefix
     // LOD0 triangles kept on the CPU for ray queries (picking, editor tools, gameplay raycasts).
     Array<Vec3> cpuPositions;
     Array<u32> cpuIndices;

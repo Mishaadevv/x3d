@@ -70,6 +70,45 @@ struct CookedMeshSection
     u32 pad = 0;
 };
 
+// --- ZNano virtual geometry (Asset/Nano.h builds it) ------------------------------------------------------------------
+
+inline constexpr f32 NanoRootError = 3.0e38f; // parentError of the coarsest clusters
+
+/// GPU layout (Shaders/Forward/Nano.hlsl reads it): 80 bytes.
+struct NanoClusterHeader
+{
+    Vec4 bounds;       // center (mesh space) + radius: culling
+    Vec4 selfSphere;   // LOD sphere of this cluster's level
+    Vec4 parentSphere; // LOD sphere of the level replacing it
+    f32 selfError = 0.0f;   // mesh units (0 for LOD0)
+    f32 parentError = NanoRootError;
+    u32 triangleStart = 0;  // into NanoMesh::triangles
+    u32 triangleCount = 0;
+    u32 vertexStart = 0;    // into NanoMesh::vertexRemap
+    u32 vertexCount = 0;
+    u32 section = 0;        // mesh section (material slot through it)
+    u32 level = 0;          // 0 = LOD0
+};
+static_assert(sizeof(NanoClusterHeader) == 80);
+
+struct NanoMesh
+{
+    Array<NanoClusterHeader> clusters; // sorted by parentError, largest first
+    Array<u32> triangles;          // per triangle: local indices a | b << 8 | c << 16
+    Array<u32> vertexRemap;        // per cluster vertex: index into the mesh's vertices
+    u32 levels = 0;
+    u32 leafTriangles = 0;
+
+    bool Empty() const { return clusters.Empty(); }
+    /// The GPU buffer: headers, then triangles, then the vertex remap (offsets in ClusterHeader are relative to
+    /// their arrays; the shader adds TrianglesOffset() / RemapOffset()).
+    u32 TrianglesOffset() const { return u32(clusters.Size() * sizeof(NanoClusterHeader)); }
+    u32 RemapOffset() const { return TrianglesOffset() + u32(triangles.Size() * 4); }
+    u64 GpuBytes() const { return u64(RemapOffset()) + vertexRemap.Size() * 4; }
+    void WriteGpu(Array<u8>& out) const;
+};
+
+
 struct CookedMesh
 {
     String name;
@@ -92,6 +131,8 @@ struct CookedMesh
     Array<String> morphNames;
     Array<f32> morphDefaults;
     Array<u32> morphDeltas;
+    /// Virtual geometry: the cluster DAG (empty for regular meshes).
+    NanoMesh nano;
 
     u32 IndexCount() const { return u32(indexData.Size() / (index16 ? 2 : 4)); }
     u32 Index(u32 i) const;
@@ -101,7 +142,7 @@ struct CookedMesh
     {
         return sectionLods[s.firstLod + Min(lod, s.lodCount - 1)];
     }
-    u64 MemorySize() const { return vertices.SizeBytes() + indexData.Size() + skin.SizeBytes() + morphDeltas.SizeBytes(); }
+    u64 MemorySize() const { return vertices.SizeBytes() + indexData.Size() + skin.SizeBytes() + morphDeltas.SizeBytes() + nano.GpuBytes(); }
     u32 MorphCount() const { return u32(morphNames.Size()); }
     bool IsSkinned() const { return !skin.Empty(); }
 };
@@ -112,7 +153,14 @@ Vec3 UnpackMorphNormal(u32 packed);
 
 /// Splits large sections into chunks and generates LODs (optional), optimizes for the vertex cache/fetch and
 /// packs. `mesh` is modified.
-CookedMesh CookMesh(MeshData& mesh, bool generateLods = true);
+/// Virtual geometry: Off, On, or Auto (static meshes with nano::AutoTriangleThreshold+ triangles).
+enum class NanoMode : u8
+{
+    Auto,
+    On,
+    Off,
+};
+CookedMesh CookMesh(MeshData& mesh, bool generateLods = true, NanoMode nano = NanoMode::Off);
 
 // --- Texture ----------------------------------------------------------------------------------------------------------
 
@@ -275,6 +323,6 @@ bool Deserialize(ByteSpan data, Skeleton& out);
 bool Deserialize(ByteSpan data, AnimationClip& out);
 
 /// Bump when any cooked format or cooker output changes (part of every DDC key).
-inline constexpr u32 CookerVersion = 5;
+inline constexpr u32 CookerVersion = 7; // 6: ZNano clusters, 7: fallback LODs cut from the cluster DAG
 
 } // namespace zx::asset

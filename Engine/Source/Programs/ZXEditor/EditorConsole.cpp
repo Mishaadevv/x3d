@@ -2,6 +2,7 @@
 // Render CVars push their value into the viewport settings when set from the console; the viewport toolbar keeps
 // editing the settings directly.
 
+#include "Asset/Nano.h"
 #include "Engine/ZGraph.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Editor.h"
@@ -39,6 +40,9 @@ CVar<f32> CVarDynResTarget("r.DynamicResolution.TargetMs", 16.6f, "Dynamic resol
 CVar<f32> CVarDynResMin("r.DynamicResolution.MinPercentage", 50.0f, "Lowest render scale of dynamic resolution (percent)");
 CVar<bool> CVarSSR("r.SSR", false, "Screen-space reflections (on by default in the Full profile)");
 CVar<bool> CVarGpuDriven("r.GPUDriven", true, "GPU culling + ExecuteIndirect for opaque geometry (CPU draw lists when off)");
+CVar<bool> CVarNano("r.Nano", true, "Virtual geometry: meshes cooked with clusters are drawn cluster by cluster (fallback LODs when off)");
+CVar<f32> CVarNanoPixelError("r.Nano.PixelError", 1.0f, "Virtual geometry LOD error allowed on screen, pixels (Lite: 2)");
+CVar<i32> CVarNanoBudget("r.Nano.TriangleBudget", 3000, "Virtual geometry triangle budget of the main view, thousands (over it detail drops)");
 CVar<bool> CVarOcclusion("r.OcclusionCulling", true, "Two-phase HiZ occlusion culling (GPU-driven path)");
 CVar<i32> CVarShadowFilter("r.ShadowFilter", 1, "Sun shadow filter: 0 hard, 1 4 taps, 2 9 taps, 3 PCSS (soft, contact-hardening)");
 CVar<bool> CVarContactShadows("r.ContactShadows", true, "Screen-space contact shadows of the sun");
@@ -119,6 +123,11 @@ ConCommand CmdStatScene("stat.scene", "Prints viewport and scene statistics", []
     ZX_LOG_INFO(LogCmd, "  Draws {} (+{} shadow), {:.0f}k triangles", st.draws, st.shadowDraws, f64(st.triangles) / 1000.0);
     if (st.gpuDriven)
         ZX_LOG_INFO(LogCmd, "  GPU-driven: {} cull items, {} groups, {} indirect calls", st.gpuItems, st.gpuGroups, st.indirectCalls);
+    if (st.nanoInstances > 0)
+        ZX_LOG_INFO(LogCmd, "  Virtual geometry: {} instances, {:.1f}M source triangles; {} clusters tested, {} drawn, {:.0f}k triangles "
+                            "(+{:.0f}k shadow), {} bins, error x{:.2f}{}",
+                    st.nanoInstances, f64(st.nanoSourceTriangles) / 1e6, st.nanoTested, st.nanoClusters, f64(st.nanoTriangles) / 1000.0,
+                    f64(st.nanoShadowTriangles) / 1000.0, st.nanoBins, st.nanoErrorScale, st.nanoOverflow ? " (over budget)" : "");
     ZX_LOG_INFO(LogCmd, "  Sun cascades re-rendered this frame: {}", st.cascadesUpdated);
     ZX_LOG_INFO(LogCmd, "  GPU assets: {} meshes ({:.1f} MB), {} textures ({:.1f} MB), {} materials", ra.meshes,
                 f64(ra.meshBytes) / (1024.0 * 1024.0), ra.textures, f64(ra.textureBytes) / (1024.0 * 1024.0), ra.materials);
@@ -148,6 +157,48 @@ ConCommand CmdStressInstances("stress.instances",
                                    scene::UpdateWorldTransforms(ed->world);
                                    ZX_LOG_INFO(LogCmd, "Spawned {} instances", n);
                                });
+
+ConCommand CmdStressNano("stress.nano",
+                          "Virtual geometry stress test: N instances of a procedural rock with 1.3M triangles each (outside undo): "
+                          "stress.nano 770 (= 1 billion source triangles) [subdivisions 6..8]",
+                          [](Span<const StringView> args) {
+                              Editor* ed = Ed();
+                              if (!ed)
+                                  return;
+                              const u32 n = args.Empty() ? 770u : u32(Clamp<i64>(ParseInt(args[0]).ValueOr(770), 1, 100000));
+                              const u32 subdivisions = args.Size() > 1 ? u32(Clamp<i64>(ParseInt(args[1]).ValueOr(8), 4, 8)) : 8u;
+                              static const Guid ns(0x5A584E616E6F5374ull, 0x72657373526F636Bull);
+                              const asset::AssetId id = Guid::FromName(ns, String::Format("Rock{}", subdivisions).View());
+                              if (ed->assets->GetState(id) != asset::AssetState::Loaded) {
+                                  const Stopwatch timer;
+                                  asset::MeshData rock = asset::nano::MakeDetailedRock(subdivisions);
+                                  asset::CookedMesh cooked = asset::CookMesh(rock, true, asset::NanoMode::On);
+                                  ZX_LOG_INFO(LogCmd, "Rock: {} triangles, {} clusters in {} levels, cooked in {:.1f} s", cooked.nano.leafTriangles,
+                                              cooked.nano.clusters.Size(), cooked.nano.levels, timer.ElapsedMilliseconds() / 1000.0);
+                                  ed->assets->AddMemoryMesh(id, move(cooked));
+                              }
+                              const u32 side = u32(Ceil(Sqrt(f32(n))));
+                              const f32 spacing = 7.0f;
+                              const Vec3 forward = SafeNormalize(ed->camera.Forward() * Vec3(1.0f, 0.0f, 1.0f), Vec3(0, 0, 1));
+                              const Vec3 right = Cross(Vec3(0, 1, 0), forward);
+                              const Vec3 origin = ed->camera.position + forward * 8.0f - right * (f32(side) * spacing * 0.5f);
+                              const f32 groundY = 0.0f; // rocks rest half-buried on the ground plane
+                              Random rng(11);
+                              for (u32 i = 0; i < n; ++i) {
+                                  Vec3 p = origin + right * (f32(i % side) * spacing + rng.Range(-1.5f, 1.5f)) +
+                                           forward * (f32(i / side) * spacing + rng.Range(-1.5f, 1.5f));
+                                  p.y = groundY;
+                                  Transform t(p, Quat::FromEulerDegrees(Vec3(rng.Range(-20.0f, 20.0f), rng.Range(0.0f, 360.0f), 0.0f)),
+                                              Vec3(rng.Range(1.5f, 3.0f)));
+                                  const ecs::Entity e = scene::CreateNode(ed->world, StringView(), t);
+                                  MeshRenderer mr;
+                                  mr.mesh = id;
+                                  mr.collision = false;
+                                  ed->world.Add(e, mr);
+                              }
+                              scene::UpdateWorldTransforms(ed->world);
+                              ZX_LOG_INFO(LogCmd, "Spawned {} rocks", n);
+                          });
 
 ConCommand CmdStressParticles("stress.particles",
                                "Adds a GPU-simulated spark fountain in front of the camera keeping about N particles alive (bouncing off the scene): stress.particles 200000",
@@ -1031,6 +1082,11 @@ void RegisterEditorConsole(Editor& ed)
               [](f32 v) { Ed()->viewport->Settings().dynamicResolution.minScale = Clamp(v, 25.0f, 100.0f) / 100.0f; });
     Bind<bool>(CVarSSR, s.reflections.ssr, [](bool v) { Ed()->viewport->Settings().reflections.ssr = v; });
     Bind<bool>(CVarGpuDriven, s.scene.gpuDriven, [](bool v) { Ed()->viewport->Settings().scene.gpuDriven = v; });
+    Bind<bool>(CVarNano, s.scene.nano.enabled, [](bool v) { Ed()->viewport->Settings().scene.nano.enabled = v; });
+    Bind<f32>(CVarNanoPixelError, s.scene.nano.pixelError,
+              [](f32 v) { Ed()->viewport->Settings().scene.nano.pixelError = Clamp(v, 0.25f, 32.0f); });
+    Bind<i32>(CVarNanoBudget, i32(s.scene.nano.triangleBudget / 1000),
+              [](i32 v) { Ed()->viewport->Settings().scene.nano.triangleBudget = u32(Clamp(v, 100, 20000)) * 1000u; });
     Bind<bool>(CVarOcclusion, s.scene.occlusionCulling, [](bool v) { Ed()->viewport->Settings().scene.occlusionCulling = v; });
     Bind<i32>(CVarShadowFilter, i32(s.scene.shadows.filter), [](i32 v) { Ed()->viewport->Settings().scene.shadows.filter = u32(Clamp(v, 0, 3)); });
     Bind<bool>(CVarContactShadows, s.scene.contactShadows.enabled, [](bool v) { Ed()->viewport->Settings().scene.contactShadows.enabled = v; });

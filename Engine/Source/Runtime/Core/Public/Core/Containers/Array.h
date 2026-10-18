@@ -214,7 +214,8 @@ public:
             Append(copy.View());
             return;
         }
-        Reserve(m_size + values.Size());
+        if (m_size + values.Size() > m_capacity)
+            Grow(m_size + values.Size()); // geometric: repeated appends stay linear
         if constexpr (std::is_trivially_copyable_v<T>) {
             MemCopy(m_data + m_size, values.Data(), values.SizeBytes());
         } else {
@@ -245,7 +246,8 @@ public:
         if (values.Empty())
             return;
         ArrayImpl<T, 0> copy(values); // guard against aliasing
-        Reserve(m_size + copy.Size());
+        if (m_size + copy.Size() > m_capacity)
+            Grow(m_size + copy.Size());
         OpenGap(index, copy.Size());
         for (usize i = 0; i < copy.Size(); ++i)
             ::new (m_data + index + i) T(move(copy[i]));

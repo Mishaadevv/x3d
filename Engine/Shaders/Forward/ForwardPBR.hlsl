@@ -194,19 +194,9 @@ struct VSOutput
 #endif
 };
 
-VSOutput VSMain(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
+VSOutput MakeVertex(uint vertexBuffer, uint vertexIndex, uint instanceIndex, uint material, uint lod)
 {
-    uint instanceIndex = g_Draw.instanceIndex, material = g_Draw.materialIndex, vertexBuffer = g_Draw.vertexBuffer, lod = g_Draw.lod;
-    if (g_Draw.drawId != ZX_INVALID_INDEX) {
-        // Indirect: the draw's slot (one LOD of a mesh section + material) and this instance's entry in its list.
-        const uint slot = g_Draw.drawId % g_View.slotCount, view = g_Draw.drawId / g_View.slotCount;
-        const uint4 s = GetBuffer(g_View.drawSlots).Load4(slot * 32); // listOffset, material, vertexBuffer, lod
-        instanceIndex = GetBuffer(g_View.visibleLists).Load((view * g_View.listCapacity + s.x + instanceId) * 4);
-        material = s.y;
-        vertexBuffer = s.z;
-        lod = s.w;
-    }
-    const MeshVertex v = LoadMeshVertex(GetBuffer(vertexBuffer), vertexId);
+    const MeshVertex v = LoadMeshVertex(GetBuffer(vertexBuffer), vertexIndex);
     const Instance inst = LoadInstance(instanceIndex);
     const float4 world = mul(inst.world, float4(v.position, 1.0));
     VSOutput o;
@@ -223,6 +213,39 @@ VSOutput VSMain(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
 #endif
     return o;
 }
+
+#ifdef ZX_NANO
+// Virtual geometry (Forward/Nano.hlsl): the index is (visible cluster record << 8 | the cluster's local vertex); the
+// draw id is the material bin. Push constants: instanceIndex = visible records, materialIndex = the frame's nano tables,
+// vertexBuffer = byte offset of the instance table in them, lod = byte offset of the bin table.
+VSOutput VSMain(uint vertexId : SV_VertexID)
+{
+    const uint4 rec = GetBuffer(g_Draw.instanceIndex).Load4((vertexId >> 8) * 16); // instance, cluster, bin, offset
+    ByteAddressBuffer tables = GetBuffer(g_Draw.materialIndex);
+    const uint io = g_Draw.vertexBuffer + rec.x * 32;
+    const uint4 inst = tables.Load4(io); // row, nano buffer, vertex buffer, section bins
+    const uint remap = tables.Load(io + 20);
+    const uint vertexStart = GetBuffer(inst.y).Load(rec.y * 80 + 64);
+    const uint vertexIndex = GetBuffer(inst.y).Load(remap + (vertexStart + (vertexId & 0xFF)) * 4);
+    const uint material = tables.Load(g_Draw.lod + g_Draw.drawId * 16);
+    return MakeVertex(inst.z, vertexIndex, inst.x, material, 0x10000u | (rec.y & 0xFFFFu)); // LOD view: cluster colors
+}
+#else
+VSOutput VSMain(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
+{
+    uint instanceIndex = g_Draw.instanceIndex, material = g_Draw.materialIndex, vertexBuffer = g_Draw.vertexBuffer, lod = g_Draw.lod;
+    if (g_Draw.drawId != ZX_INVALID_INDEX) {
+        // Indirect: the draw's slot (one LOD of a mesh section + material) and this instance's entry in its list.
+        const uint slot = g_Draw.drawId % g_View.slotCount, view = g_Draw.drawId / g_View.slotCount;
+        const uint4 s = GetBuffer(g_View.drawSlots).Load4(slot * 32); // listOffset, material, vertexBuffer, lod
+        instanceIndex = GetBuffer(g_View.visibleLists).Load((view * g_View.listCapacity + s.x + instanceId) * 4);
+        material = s.y;
+        vertexBuffer = s.z;
+        lod = s.w;
+    }
+    return MakeVertex(vertexBuffer, vertexId, instanceIndex, material, lod);
+}
+#endif
 
 float2 TransformUV(Material m, float2 uv)
 {
@@ -633,6 +656,10 @@ float3 CascadeColor(uint c)
 
 float3 LodColor(uint lod)
 {
+    if (lod >= 0x10000u) { // virtual geometry: one color per cluster
+        const uint h = (lod & 0xFFFFu) * 2654435761u;
+        return float3((h >> 8) & 0xFF, (h >> 16) & 0xFF, (h >> 24) & 0xFF) / 255.0 * 0.8 + 0.2;
+    }
     const float3 colors[5] = {float3(1, 1, 1), float3(0.2, 0.9, 0.2), float3(0.2, 0.5, 1), float3(1, 0.8, 0.1), float3(1, 0.2, 0.2)};
     return colors[min(lod, 4u)];
 }

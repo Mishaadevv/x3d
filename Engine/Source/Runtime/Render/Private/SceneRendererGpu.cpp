@@ -205,6 +205,22 @@ void SceneRenderer::PrepareGpu(Span<const RenderInstance> instances, const Rende
     m_activeGroups.Clear();
     u32 rowCount = 0, items = 0;
     ZX_PROFILE_SCOPE("PrepareGpu.Serial");
+    auto refresh = [&](DrawGroup& group, const GpuMesh* mesh, bool active) {
+        // First use this frame: current material state (shaders compile, textures stream in).
+        group.lastFrame = m_frame;
+        group.count = 0;
+        group.mesh = mesh;
+        group.lodCount = Min(mesh->sections[group.section].lodCount, MaxGpuLods);
+        group.material = m_assets.GetMaterialIndex(group.materialId);
+        const MaterialInfo& info = m_assets.GetMaterialInfo(group.material);
+        group.translucent = info.blend == MaterialBlend::Translucent;
+        const bool masked = info.blend == MaterialBlend::Masked;
+        group.pipeline = u8(masked ? (info.doubleSided ? MaskedTwoSided : Masked) : (info.doubleSided ? OpaqueTwoSided : Opaque));
+        group.shader = info.shader;
+        if (active && !group.translucent)
+            m_activeGroups.PushBack(u32(&group - m_groups.Data()));
+    };
+    const bool nanoEnabled = m_settings.nano.enabled && m_nanoCullPipeline;
     if (m_instanceCacheGeneration != m_assets.MeshGeneration()) {
         m_instanceCache.Clear();
         m_instanceCacheGeneration = m_assets.MeshGeneration();
@@ -239,23 +255,25 @@ void SceneRenderer::PrepareGpu(Span<const RenderInstance> instances, const Rende
         firstItem[i] = items;
         DrawTemplate& tmpl = m_templates[t];
         tmpl.hasTranslucent = false;
+        if (mesh->nanoBuffer && nanoEnabled) {
+            // Virtual geometry: clusters are culled per view (SceneRendererNano.cpp); the template only keeps the
+            // section materials. Translucent sections still draw from the CPU lists with the fallback LODs.
+            firstItem[i] = InvalidIndex;
+            for (u32 g : tmpl.groups) {
+                DrawGroup& group = m_groups[g];
+                if (group.lastFrame != m_frame)
+                    refresh(group, mesh, false);
+                tmpl.hasTranslucent |= group.translucent;
+            }
+            m_nanoRefs.PushBack(NanoRef{u32(i), rows[i], t, mesh});
+            if (inst.castShadows)
+                m_casters.PushBack(InstanceRef{rows[i], mesh, &inst});
+            continue;
+        }
         for (u32 g : tmpl.groups) {
             DrawGroup& group = m_groups[g];
-            if (group.lastFrame != m_frame) {
-                // First use this frame: current material state (shaders compile, textures stream in).
-                group.lastFrame = m_frame;
-                group.count = 0;
-                group.mesh = mesh;
-                group.lodCount = Min(mesh->sections[group.section].lodCount, MaxGpuLods);
-                group.material = m_assets.GetMaterialIndex(group.materialId);
-                const MaterialInfo& info = m_assets.GetMaterialInfo(group.material);
-                group.translucent = info.blend == MaterialBlend::Translucent;
-                const bool masked = info.blend == MaterialBlend::Masked;
-                group.pipeline = u8(masked ? (info.doubleSided ? MaskedTwoSided : Masked) : (info.doubleSided ? OpaqueTwoSided : Opaque));
-                group.shader = info.shader;
-                if (!group.translucent)
-                    m_activeGroups.PushBack(g);
-            }
+            if (group.lastFrame != m_frame)
+                refresh(group, mesh, true);
             if (group.translucent) {
                 tmpl.hasTranslucent = true;
                 continue;
@@ -356,6 +374,8 @@ void SceneRenderer::PrepareGpu(Span<const RenderInstance> instances, const Rende
                 moved[i] = 0;
                 continue;
             }
+            if (firstItem[i] == InvalidIndex) // virtual geometry: no cull items
+                continue;
             const f32 scale = MaxScaleOf(inst.world);
             const DrawTemplate& tmpl = m_templates[templates[i]];
             u32 item = firstItem[i];
