@@ -38,6 +38,7 @@
 #include "Engine/SoftBody.h"
 #include "Engine/WaterPhysics.h"
 #include "Engine/GameUI.h"
+#include "Engine/Localization.h"
 #include "Engine/Wind.h"
 #include "UI/UI.h"
 #include "UI/UIRenderer.h"
@@ -147,6 +148,7 @@ private:
     SoftBodySystem m_softBodies;
     WaterSystem m_water;
     GameUISystem m_gameUI;
+    Localization m_localization;
     ui::FontSystem m_fonts;
     UniquePtr<ui::Context> m_uiContext; // loads the fonts
     UniquePtr<ui::UIRenderer> m_uiRenderer;
@@ -263,6 +265,11 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     m_scripts->SetContentRoot("/Game");
     m_animation->contentRoot = "/Game";
     m_gameUI.contentRoot = "/Game";
+    // Texts in the player's language (their choice is remembered in Saved/Config/Language.txt).
+    m_localization.preferenceFile = Path::Join(GetSavedDirectory(), "Config/Language.txt");
+    m_localization.Load("/Game");
+    m_gameUI.localization = &m_localization;
+    m_scripts->localization = &m_localization;
     m_animation->raycast = [this](Vec3 from, Vec3 to, ecs::Entity ignore, Vec3& point, Vec3& normal) {
         const Vec3 d = to - from;
         const f32 dist = Length(d);

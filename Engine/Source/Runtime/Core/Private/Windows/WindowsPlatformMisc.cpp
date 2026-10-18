@@ -336,4 +336,15 @@ StringView GetExecutablePath() { return StringView(GetExePaths().path, GetExePat
 StringView GetExecutableDirectory() { return StringView(GetExePaths().path, GetExePaths().dirLen); }
 StringView GetCommandLineArgs() { return StringView(GetExePaths().args, GetExePaths().argsLen); }
 
+String GetUserLanguage()
+{
+    wchar_t name[LOCALE_NAME_MAX_LENGTH] = {};
+    if (::GetUserDefaultLocaleName(name, LOCALE_NAME_MAX_LENGTH) <= 0)
+        return String("en");
+    String code;
+    for (u32 i = 0; name[i] && name[i] != L'-' && i < 8; ++i)
+        code += char(name[i] >= L'A' && name[i] <= L'Z' ? name[i] - L'A' + L'a' : name[i]);
+    return code.Empty() ? String("en") : code;
+}
+
 } // namespace zx::platform

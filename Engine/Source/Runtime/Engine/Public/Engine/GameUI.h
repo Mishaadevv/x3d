@@ -48,6 +48,7 @@ class FontSystem;
 class DrawList;
 } // namespace ui
 class InputState;
+class Localization;
 
 enum class UIDirection : u8
 {
@@ -191,6 +192,7 @@ struct UIPanel
 struct UIText
 {
     String text = "Text";
+    String key; // localization key (Localization/*.zloc): shows its translation; Text is the fallback
     f32 fontSize = 32.0f; // UI units
     LinearColor color = LinearColor(1.0f, 1.0f, 1.0f, 1.0f);
     UIFontWeight weight = UIFontWeight::Medium;
@@ -248,6 +250,7 @@ struct UIInputField
 {
     String text;
     String placeholder = "Type here...";
+    String placeholderKey; // localization key of the placeholder
     i32 maxLength = 64;     // characters
     bool password = false;  // shown as dots
     f32 fontSize = 28.0f;
@@ -328,6 +331,8 @@ public:
     f32 time = 0.0f;
     /// Where canvas styles are read from (the project's Content folder or "/Game").
     String contentRoot;
+    /// Texts with a Key show their translation (null = keys are ignored).
+    Localization* localization = nullptr;
     /// Gamepad / keyboard: moves the focus, presses the focused widget, Back events. Call after Interact.
     void Navigate(ecs::World& world, const InputState& input, f32 dt);
     /// While playing: transitions of the Look, UI Animation presets, tweens.

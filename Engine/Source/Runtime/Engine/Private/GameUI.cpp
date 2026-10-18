@@ -1,4 +1,5 @@
 #include "Engine/GameUI.h"
+#include "Engine/Localization.h"
 #include "Core/Containers/Algorithm.h"
 #include "Scene/Hierarchy.h"
 #include "UI/DrawList.h"
@@ -84,6 +85,7 @@ ZX_REFLECT_STRUCT_END()
 ZX_REFLECT_STRUCT_BEGIN(UIInputField)
     ZX_FIELD(text)
     ZX_FIELD(placeholder, Meta::Tooltip("Shown greyed out while empty"))
+    ZX_FIELD(placeholderKey, Meta::Tooltip("Localization key of the placeholder"))
     ZX_FIELD(maxLength, Meta::Range(1, 4096))
     ZX_FIELD(password, Meta::Tooltip("Show dots instead of the characters"))
     ZX_FIELD(fontSize, Meta::Range(6, 200))
@@ -131,6 +133,7 @@ ZX_REFLECT_STRUCT_END()
 
 ZX_REFLECT_STRUCT_BEGIN(UIText)
     ZX_FIELD(text, Meta::Multiline())
+    ZX_FIELD(key, Meta::Tooltip("Localization key (Window > Localization): the text in the player's language; Text is the fallback"))
     ZX_FIELD(fontSize, Meta::Range(6, 300))
     ZX_FIELD(color)
     ZX_FIELD(weight)
@@ -664,6 +667,20 @@ void GameUISystem::Layout(ecs::World& world, ui::FontSystem& fonts, const Rect& 
     Canvases(world, canvases);
     // Styles (state rules from the last frame's hover / press / focus are undone first).
     RestoreOverrides(world);
+    // Localized texts: a Key shows its translation (the widget's own text stays as the fallback when there's none).
+    if (localization) {
+        localization->Poll();
+        world.Query<UIText>().Each([&](ecs::Entity, UIText& t) {
+            if (!t.key.Empty())
+                if (const String* tr = localization->Translate(t.key.View()); tr && *tr != t.text.View())
+                    t.text = *tr;
+        });
+        world.Query<UIInputField>().Each([&](ecs::Entity, UIInputField& in) {
+            if (!in.placeholderKey.Empty())
+                if (const String* tr = localization->Translate(in.placeholderKey.View()); tr && *tr != in.placeholder.View())
+                    in.placeholder = *tr;
+        });
+    }
     for (ecs::Entity c : canvases) {
         if (!world.Has<UIElement>(c))
             world.Add(c, UIElement{});

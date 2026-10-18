@@ -180,6 +180,7 @@ void DrawMenus(Editor& ed)
         ui::MenuItem(StatsTitle, {}, &ed.showStats);
         ui::MenuItem(AudioMixerTitle, {}, &ed.showMixer);
         ui::MenuItem(InputActionsTitle, {}, &ed.showInputActions);
+        ui::MenuItem(LocalizationTitle, {}, &ed.showLocalization);
         ui::Separator();
         ActionMenuItem(ed, "window.resetLayout");
         ActionMenuItem(ed, "view.fullscreen");
@@ -602,6 +603,7 @@ void DrawShell(Editor& ed)
     DrawSettingsWindow(ed);
     DrawAudioMixerPanel(ed);
     DrawInputActionsPanel(ed);
+    DrawLocalizationPanel(ed);
     DrawPackagePanel(ed);
     DrawScriptEditorPanel(ed);
     DrawAbout(ed);

@@ -420,6 +420,21 @@ ConCommand CmdInputPress("input.press", "Presses a key for the game in Play (cap
                               ed->simulatedFrames = args.Size() > 1 ? u32(Max<i64>(1, ParseInt(args[1]).ValueOr(2))) : 2u;
                           });
 
+ConCommand CmdLang("lang", "Game UI language: lang (lists them) / lang <code> (en, ru, ...) - previews it in the viewport",
+                   [](Span<const StringView> args) {
+                       Editor* ed = Ed();
+                       if (!ed)
+                           return;
+                       if (args.Empty()) {
+                           for (const Localization::Language& l : ed->localization.Languages())
+                               ZX_LOG_INFO(LogCmd, "{} {} ({}){}", l.code == ed->localization.Current() ? ">" : " ", l.code, l.name,
+                                           String::Format(", {} texts", l.texts.Size()));
+                           return;
+                       }
+                       if (!ed->localization.SetLanguage(args[0]))
+                           ZX_LOG_WARN(LogCmd, "lang: no table for '{}' (Content/Localization/{}.zloc)", args[0], args[0]);
+                   });
+
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
     if (Ed())
         Ed()->Undo();

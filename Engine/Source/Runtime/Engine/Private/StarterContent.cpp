@@ -688,19 +688,54 @@ ProgressBar { corner-radius: 6; }
 InputField { focus-color: $accent; corner-radius: 10; }
 )css";
 
+/// Localization tables of the templates' UI.
+const char* const StarterTextsEn = R"zloc(# Texts of the Starter Content templates in English (key = text; \n = new line, {0} = an argument).
+# Your own tables go to Content/Localization/<code>.zloc (Window > Localization edits them).
+@language: English
+
+hud.unit = km/h
+hud.damage = DAMAGE
+hud.controls = W / S  throttle, brake      A / D  steer      Space  handbrake\nR  repair      Tab  menu
+menu.paused = Paused
+menu.resume = Resume
+menu.repair = Repair
+menu.volume = Volume
+menu.language = Language: {0}
+)zloc";
+const char* const StarterTextsRu = R"zloc(# Тексты шаблонов Starter Content на русском (ключ = текст; \n = новая строка, {0} = аргумент).
+@language: Русский
+
+hud.unit = км/ч
+hud.damage = ПОВРЕЖДЕНИЯ
+hud.controls = W / S  газ, тормоз      A / D  руль      Space  ручник\nR  починить      Tab  меню
+menu.paused = Пауза
+menu.resume = Продолжить
+menu.repair = Починить
+menu.volume = Громкость
+menu.language = Язык: {0}
+)zloc";
+
 /// Scripts of the Starter Content prefabs (vehicles and gameplay props).
 const StarterScript PropScripts[] = {
     {"CarHUD.zs", R"zs(// Car HUD on a UI Canvas: speedometer, damage bar, and a pause menu on Tab / gamepad Start (time stops, the mouse is
 // free; arrows / D-pad and Enter / A work too, Escape / B closes it): Resume, Repair, a volume slider. Widgets are
-// found by name: "Speed", "Damage", "Pause Menu", buttons "Resume" / "Repair" and the slider "Volume". The look
-// comes from StarterContent/UI/Game.zstyle, the pop-in from the menu's UI Animation.
+// found by name: "Speed", "Damage", "Pause Menu", buttons "Resume" / "Repair" / "Language" and the slider "Volume".
+// The look comes from StarterContent/UI/Game.zstyle, the pop-in from the menu's UI Animation, the texts from
+// StarterContent/Localization (Language switches between the tables).
 script CarHUD {
     @tooltip("Name of the car (Soft Body) to show")
     prop car = "Car"
 
     var paused = false
 
-    fn start() { find("Pause Menu").visible = false }
+    fn start() {
+        find("Pause Menu").visible = false
+        showLanguage()
+    }
+
+    fn showLanguage() {
+        find("Language Label").text = tr("menu.language", lang.name(lang.current))
+    }
 
     fn update(dt) {
         let c = find(car)
@@ -727,6 +762,13 @@ script CarHUD {
 
     fn onUIClick(name) {
         if name == "Resume" { setPaused(false) }
+        elif name == "Language" {
+            // The next language with a table (en, ru, ...).
+            let codes = lang.list()
+            let i = codes.indexOf(lang.current)
+            lang.set(codes[(i + 1) % len(codes)])
+            showLanguage()
+        }
         elif name == "Repair" {
             find(car).carReset()
             setPaused(false)
@@ -1330,6 +1372,9 @@ u32 WriteStarterContent(StringView contentDir)
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(PropScripts, ZX_ARRAY_COUNT(PropScripts)));
     written += WriteSounds(root + "/Sounds");
     written += fs::WriteTextFile(root + "/UI/Game.zstyle", GameUIStyle) ? 1u : 0u; // the look of the templates' HUDs and menus
+    // Texts of the templates' UI in English and Russian (UI Text > Key; switch with lang.set or the menu's Language button).
+    written += fs::WriteTextFile(root + "/Localization/en.zloc", StarterTextsEn) ? 1u : 0u;
+    written += fs::WriteTextFile(root + "/Localization/ru.zloc", StarterTextsRu) ? 1u : 0u;
     return written;
 }
 

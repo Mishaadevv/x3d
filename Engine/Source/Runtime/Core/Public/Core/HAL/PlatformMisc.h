@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Core/String/StringView.h"
+#include "Core/String/String.h"
 
 namespace zx::platform {
 
@@ -66,5 +66,8 @@ StringView GetExecutableDirectory();
 
 /// Raw command line of the process (UTF-8, without the executable name).
 StringView GetCommandLineArgs();
+
+/// The user's interface language as a two-letter code ("en", "ru", "de"; "en" if unknown).
+String GetUserLanguage();
 
 } // namespace zx::platform

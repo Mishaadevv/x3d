@@ -243,6 +243,9 @@ bool Editor::Initialize()
     scripts->SetContentRoot(contentRoot);
     animation->contentRoot = contentRoot; // Animator graphs (.zanimgraph)
     gameUI.contentRoot = contentRoot;     // UI Canvas styles (.zstyle)
+    localization.Load(contentRoot);       // Localization/*.zloc (the editor previews; the player's choice isn't saved here)
+    gameUI.localization = &localization;
+    scripts->localization = &localization;
     animation->raycast = [this](Vec3 from, Vec3 to, ecs::Entity ignore, Vec3& point, Vec3& normal) {
         const Vec3 d = to - from;
         const f32 dist = Length(d);
@@ -415,6 +418,7 @@ bool Editor::OpenProject(StringView descriptorPath)
     if (animation) {
         animation->contentRoot = contentRoot;
         gameUI.contentRoot = contentRoot;
+        localization.Load(contentRoot);
         animation->Clear();
     }
     SetupGameModule(*this);
@@ -1133,11 +1137,14 @@ void Editor::BuildVehicleLevel()
         const ecs::Entity unit = node("Unit", speedLine, unitBox);
         UIText u;
         u.text = "km/h";
+        u.key = "hud.unit";
         u.fontSize = 24.0f;
         u.color = LinearColor(0.75f, 0.78f, 0.82f, 1.0f);
         world.Add(unit, u);
-        world.Get<UIElement>(text("Damage Label", gauge, "DAMAGE", 18.0f, UIFontWeight::SemiBold, UITextAlign::Left,
-                                  LinearColor(0.75f, 0.78f, 0.82f, 1.0f)))->styleClass = "hint";
+        const ecs::Entity damageLabel = text("Damage Label", gauge, "DAMAGE", 18.0f, UIFontWeight::SemiBold, UITextAlign::Left,
+                                             LinearColor(0.75f, 0.78f, 0.82f, 1.0f));
+        world.Get<UIElement>(damageLabel)->styleClass = "hint";
+        world.Get<UIText>(damageLabel)->key = "hud.damage";
         UIElement barBox;
         barBox.size = Vec2(0.0f, 12.0f);
         const ecs::Entity damage = node("Damage", gauge, barBox);
@@ -1148,8 +1155,10 @@ void Editor::BuildVehicleLevel()
 
         const ecs::Entity hints = node("Controls", hud, corner(Vec2(0.0f, 1.0f)));
         world.Add(hints, UIPanel{});
-        world.Get<UIElement>(text("Controls Text", hints, "W / S  throttle, brake      A / D  steer      Space  handbrake\nR  repair      Tab  menu",
-                                  22.0f, UIFontWeight::Medium, UITextAlign::Left, LinearColor(0.85f, 0.87f, 0.9f, 1.0f)))->styleClass = "hint";
+        const ecs::Entity controls = text("Controls Text", hints, "W / S  throttle, brake      A / D  steer      Space  handbrake\nR  repair      Tab  menu",
+                                          22.0f, UIFontWeight::Medium, UITextAlign::Left, LinearColor(0.85f, 0.87f, 0.9f, 1.0f));
+        world.Get<UIElement>(controls)->styleClass = "hint";
+        world.Get<UIText>(controls)->key = "hud.controls";
 
         UIElement menuBox;
         menuBox.absolute = true;
@@ -1169,8 +1178,10 @@ void Editor::BuildVehicleLevel()
         menuPanel.cornerRadius = 16.0f;
         menuPanel.shadow = 40.0f;
         world.Add(menu, menuPanel);
-        world.Get<UIElement>(text("Title", menu, "Paused", 54.0f, UIFontWeight::Bold, UITextAlign::Center))->styleClass = "title";
-        for (StringView label : {StringView("Resume"), StringView("Repair")}) {
+        const ecs::Entity title = text("Title", menu, "Paused", 54.0f, UIFontWeight::Bold, UITextAlign::Center);
+        world.Get<UIElement>(title)->styleClass = "title";
+        world.Get<UIText>(title)->key = "menu.paused";
+        for (StringView label : {StringView("Resume"), StringView("Repair"), StringView("Language")}) {
             UIElement b;
             b.size = Vec2(0.0f, 64.0f);
             b.justify = UIJustify::Center;
@@ -1181,6 +1192,8 @@ void Editor::BuildVehicleLevel()
             world.Add(button, UIButton{});
             const ecs::Entity l = text(String::Format("{} Label", label), button, label, 28.0f, UIFontWeight::SemiBold, UITextAlign::Center);
             world.Get<UIText>(l)->shadow = false;
+            if (label != "Language") // its text is set by CarHUD.zs (with the language's name)
+                world.Get<UIText>(l)->key = label == "Resume" ? String("menu.resume") : String("menu.repair");
         }
         UIElement volumeRow;
         volumeRow.direction = UIDirection::Row;
@@ -1188,7 +1201,7 @@ void Editor::BuildVehicleLevel()
         volumeRow.gap = 16.0f;
         volumeRow.margin = Vec4(0, 8.0f, 0, 0);
         const ecs::Entity row = node("Volume Row", menu, volumeRow);
-        text("Volume Label", row, "Volume", 24.0f, UIFontWeight::Medium, UITextAlign::Left);
+        world.Get<UIText>(text("Volume Label", row, "Volume", 24.0f, UIFontWeight::Medium, UITextAlign::Left))->key = "menu.volume";
         UIElement sliderBox;
         sliderBox.grow = 1.0f;
         sliderBox.size = Vec2(0.0f, 32.0f);

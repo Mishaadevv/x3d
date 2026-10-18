@@ -198,6 +198,11 @@ action view.gameUI), Interact only while the game shows the cursor (ui.cursor); 
 ZXGame: m_fonts + ui::Context (fonts) + UIRenderer pass; Packaging adds Engine/Content/Fonts as pak "Fonts".
 UI v2 (0.13.13): UICanvas::worldSpace (GameUISystem::SetCamera before Layout; onScreen / depth runtime), UIElement
 scroll / wrap, UIInputField (GameUISystem::TypeText, WantsKeyboard gates game input, UIEvent::Submit -> onUISubmit).
+Localization (0.13.19): Engine/Localization.h (Load scans <content>/StarterContent/Localization then Localization,
+*.zloc per language; Translate / Format, SetLanguage + preferenceFile, Poll hot reload, editing SetText / Save);
+UIText::key / UIInputField::placeholderKey resolved in GameUISystem::Layout (localization pointer); scripts tr() /
+lang (ScriptSystem::localization); editor Editor::localization + EditorLocalization.cpp (Window > Localization),
+console lang; ZXGame preference Saved/Config/Language.txt; platform::GetUserLanguage. Tests Localization.*.
 UI styles / look / navigation (0.13.18): Engine/UIStyle.h (ParseUIStyle, ParseStyleValue: .zstyle CSS-like sheets),
 GameUILook.cpp (GameUISystem::ApplyStyles in Layout - base rules write fields, state rules are Overrides undone by
 RestoreOverrides at the end of Draw / start of Update; UIElement opacity / scale / translate / transition -> runtime

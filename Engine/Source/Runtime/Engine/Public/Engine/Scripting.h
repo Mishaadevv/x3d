@@ -24,6 +24,8 @@
 
 namespace zx {
 
+class Localization;
+
 class InputState;
 class InputActionState;
 class AudioSystem;
@@ -93,6 +95,8 @@ public:
     SoftBodySystem* softBodies = nullptr; // vehicles: entity.carInput / carSpeed / ...
     /// Game UI for ui.cursor / ui.overUI (null = no UI).
     GameUISystem* gameUI = nullptr;
+    /// tr(key, ...) and lang (null = tr returns the key).
+    Localization* localization = nullptr;
     /// time.scale set by scripts (0 = paused); the host scales the game's dt with it. Reset to 1 by Begin.
     f32 timeScale = 1.0f;
     /// Fire for entity.ignite / extinguish / burning and the fire global (null = nothing burns).

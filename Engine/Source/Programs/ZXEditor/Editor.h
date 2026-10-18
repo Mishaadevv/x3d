@@ -19,6 +19,7 @@
 #include "Engine/Terrain.h"
 #include "Engine/SoftBody.h"
 #include "Engine/GameUI.h"
+#include "Engine/Localization.h"
 #include "Engine/Wind.h"
 #include "Engine/Animation.h"
 #include "Engine/Particles.h"
@@ -267,6 +268,13 @@ public:
     TerrainSystem terrains;               // builds Terrain meshes (edit and Play)
     SoftBodySystem softBodies;            // soft-body vehicles (meshes while editing, simulation in Play)
     WaterSystem waterSystem;              // wave heights for gameplay, buoyancy, splashes
+    Localization localization;            // Localization/*.zloc: game texts per language (Window > Localization)
+    bool showLocalization = false;
+    struct LocalizationWindowState
+    {
+        String filter, newKey, newCode, newName;
+        bool dirty = false;
+    } localizationWindow;
     GameUISystem gameUI;                  // UI Canvases: layout and drawing over the viewport, clicks while playing
     GameSystems GameSystemsForPlay();     // the systems Play drives (same loop as the packaged game)
     UniquePtr<GameModuleSystem> game;     // C++ game module of the open project (Source/<Name>), hot-reloaded
@@ -601,6 +609,7 @@ void UpdateGameModule(Editor& ed); // every frame: build results, hot reload
 bool CompileGameCode(Editor& ed);  // F7: background build, hot reload when it succeeds
 bool CreateGameModule(Editor& ed); // writes Source/<Name> (sample components) and builds it
 void DrawInputActionsPanel(Editor& ed);
+void DrawLocalizationPanel(Editor& ed);
 void DrawPackagePanel(Editor& ed);
 
 /// A Package Project run (EditorPackage.cpp).
@@ -629,5 +638,6 @@ inline constexpr StringView LogTitle = ZX_ICON_SQUARE_TERMINAL "  Output Log";
 inline constexpr StringView StatsTitle = ZX_ICON_GAUGE "  Statistics";
 inline constexpr StringView AudioMixerTitle = ZX_ICON_SLIDERS_VERTICAL "  Audio Mixer";
 inline constexpr StringView InputActionsTitle = ZX_ICON_GAMEPAD_2 "  Input Actions";
+inline constexpr StringView LocalizationTitle = ZX_ICON_LANGUAGES "  Localization";
 
 } // namespace zx::editor

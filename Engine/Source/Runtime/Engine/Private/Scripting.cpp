@@ -1,4 +1,5 @@
 #include "Engine/Scripting.h"
+#include "Engine/Localization.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/Surfaces.h"
 #include "Core/FileSystem/FileSystem.h"
@@ -271,6 +272,13 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             }
             return true;
         }
+        if (m == "textKey") { // UI Text's localization key
+            ecs::World* w = SystemOf(o).context.world;
+            e = ecs::Entity::Unpack(o.id);
+            const UIText* t = w && w->IsAlive(e) ? w->Get<const UIText>(e) : nullptr;
+            out = Value(t ? t->key.View() : StringView());
+            return true;
+        }
         if (m == "alive") {
             ecs::World* w = SystemOf(o).context.world;
             out = Value(w && w->IsAlive(ecs::Entity::Unpack(o.id)));
@@ -360,6 +368,7 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
                 if (!t)
                     return v.Fail("No UI Text or UI Input Field on this entity");
                 t->text = s;
+                t->key.Clear(); // the script's text, not a translation
             } else if (m == "visible") {
                 UIElement* el = w->Get<UIElement>(e);
                 if (!el)
@@ -374,6 +383,15 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             } else {
                 return v.Fail("No UI Progress Bar, Slider or Toggle on this entity");
             }
+            return true;
+        }
+        if (m == "textKey") {
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = SystemOf(o).context.world;
+            UIText* t = w && w->IsAlive(e) ? w->Get<UIText>(e) : nullptr;
+            if (!t)
+                return v.Fail("No UI Text on this entity");
+            t->key = String(value.AsString());
             return true;
         }
         if (m == "name") {
@@ -1204,6 +1222,52 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
     };
     m_hitType = &hitType;
     vm.SetGlobal("physics", script::MakeNative(physicsType, this));
+
+    // Localization: tr("key", args...) -> the text in the player's language ({0} {1} = the arguments);
+    // lang.current, lang.set("ru"), lang.list() (codes), lang.name("ru") ("Русский").
+    vm.SetGlobal("tr", script::MakeNativeFunction("tr", [this](script::VM& v, Span<const Value> a, Value& out) {
+                     if (a.Empty() || a[0].Type() != ValueType::String)
+                         return v.Fail("tr(\"key\"[, args...])");
+                     Array<String> args;
+                     for (usize i = 1; i < a.Size(); ++i)
+                         args.PushBack(a[i].Type() == ValueType::String ? String(a[i].AsString()) : a[i].ToString());
+                     out = Value(localization ? localization->Format(a[0].AsString(), args.View()).View() : a[0].AsString());
+                     return true;
+                 }));
+    script::NativeType& langType = vm.AddType("Language");
+    langType.get = [](script::VM&, script::NativeObject& o, StringView m, Value& out) {
+        if (m != "current")
+            return false;
+        const Localization* l = SystemOf(o).localization;
+        out = Value(l ? l->Current() : StringView());
+        return true;
+    };
+    langType.call = [](script::VM& v, script::NativeObject& o, StringView m, Span<const Value> a, Value& out) {
+        Localization* l = SystemOf(o).localization;
+        if (m == "set") {
+            if (a.Size() != 1 || a[0].Type() != ValueType::String)
+                return v.Fail("lang.set(\"ru\")");
+            out = Value(l && l->SetLanguage(a[0].AsString()));
+            return true;
+        }
+        if (m == "list") {
+            script::ListObject* list = new script::ListObject();
+            if (l)
+                for (const Localization::Language& lg : l->Languages())
+                    list->items.PushBack(Value(lg.code.View()));
+            out = Value::FromObject(list);
+            return true;
+        }
+        if (m == "name") {
+            if (a.Size() != 1 || a[0].Type() != ValueType::String)
+                return v.Fail("lang.name(\"ru\")");
+            const Localization::Language* lg = l ? l->Find(a[0].AsString()) : nullptr;
+            out = Value(lg ? lg->name.View() : a[0].AsString());
+            return true;
+        }
+        return false;
+    };
+    vm.SetGlobal("lang", script::MakeNative(langType, this));
 
     vm.SetGlobal("find", script::MakeNativeFunction("find", [this](script::VM& v, Span<const Value> a, Value& out) {
                      if (a.Size() != 1 || a[0].Type() != ValueType::String)
