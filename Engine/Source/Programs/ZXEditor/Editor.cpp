@@ -242,6 +242,7 @@ bool Editor::Initialize()
     scripts.Reset(new ScriptSystem());
     scripts->SetContentRoot(contentRoot);
     animation->contentRoot = contentRoot; // Animator graphs (.zanimgraph)
+    gameUI.contentRoot = contentRoot;     // UI Canvas styles (.zstyle)
     animation->raycast = [this](Vec3 from, Vec3 to, ecs::Entity ignore, Vec3& point, Vec3& normal) {
         const Vec3 d = to - from;
         const f32 dist = Length(d);
@@ -413,6 +414,7 @@ bool Editor::OpenProject(StringView descriptorPath)
         audio->SetContentRoot(contentRoot);
     if (animation) {
         animation->contentRoot = contentRoot;
+        gameUI.contentRoot = contentRoot;
         animation->Clear();
     }
     SetupGameModule(*this);
@@ -1080,7 +1082,9 @@ void Editor::BuildVehicleLevel()
     // HUD: speedometer and damage (bottom right), controls (bottom left), pause menu on Tab (CarHUD.zs).
     {
         const ecs::Entity hud = CreateEntity("HUD", Transform());
-        world.Add(hud, UICanvas{});
+        UICanvas hudCanvas;
+        hudCanvas.style = "StarterContent/UI/Game.zstyle"; // the look of every widget below
+        world.Add(hud, hudCanvas);
         UIElement root;
         root.padding = Vec4(36.0f);
         world.Add(hud, root);
@@ -1125,13 +1129,15 @@ void Editor::BuildVehicleLevel()
         text("Speed", speedLine, "0", 84.0f, UIFontWeight::Bold, UITextAlign::Right);
         UIElement unitBox;
         unitBox.margin = Vec4(0, 0, 0, 14.0f);
+        unitBox.styleClass = "hint";
         const ecs::Entity unit = node("Unit", speedLine, unitBox);
         UIText u;
         u.text = "km/h";
         u.fontSize = 24.0f;
         u.color = LinearColor(0.75f, 0.78f, 0.82f, 1.0f);
         world.Add(unit, u);
-        text("Damage Label", gauge, "DAMAGE", 18.0f, UIFontWeight::SemiBold, UITextAlign::Left, LinearColor(0.75f, 0.78f, 0.82f, 1.0f));
+        world.Get<UIElement>(text("Damage Label", gauge, "DAMAGE", 18.0f, UIFontWeight::SemiBold, UITextAlign::Left,
+                                  LinearColor(0.75f, 0.78f, 0.82f, 1.0f)))->styleClass = "hint";
         UIElement barBox;
         barBox.size = Vec2(0.0f, 12.0f);
         const ecs::Entity damage = node("Damage", gauge, barBox);
@@ -1142,8 +1148,8 @@ void Editor::BuildVehicleLevel()
 
         const ecs::Entity hints = node("Controls", hud, corner(Vec2(0.0f, 1.0f)));
         world.Add(hints, UIPanel{});
-        text("Controls Text", hints, "W / S  throttle, brake      A / D  steer      Space  handbrake\nR  repair      Tab  menu", 22.0f,
-             UIFontWeight::Medium, UITextAlign::Left, LinearColor(0.85f, 0.87f, 0.9f, 1.0f));
+        world.Get<UIElement>(text("Controls Text", hints, "W / S  throttle, brake      A / D  steer      Space  handbrake\nR  repair      Tab  menu",
+                                  22.0f, UIFontWeight::Medium, UITextAlign::Left, LinearColor(0.85f, 0.87f, 0.9f, 1.0f)))->styleClass = "hint";
 
         UIElement menuBox;
         menuBox.absolute = true;
@@ -1151,18 +1157,26 @@ void Editor::BuildVehicleLevel()
         menuBox.padding = Vec4(36.0f);
         menuBox.gap = 16.0f;
         menuBox.visible = false; // shown by CarHUD.zs on Tab (tick Visible in Details to edit it)
+        menuBox.styleClass = "menu";
         const ecs::Entity menu = node("Pause Menu", hud, menuBox);
+        UIAnimation pop; // pops in every time it opens
+        pop.preset = UIAnimationPreset::PopIn;
+        pop.duration = 0.28f;
+        pop.easing = UIEasing::Back;
+        world.Add(menu, pop);
         UIPanel menuPanel;
         menuPanel.color = LinearColor(0.015f, 0.018f, 0.025f, 0.92f);
         menuPanel.cornerRadius = 16.0f;
         menuPanel.shadow = 40.0f;
         world.Add(menu, menuPanel);
-        text("Title", menu, "Paused", 54.0f, UIFontWeight::Bold, UITextAlign::Center);
+        world.Get<UIElement>(text("Title", menu, "Paused", 54.0f, UIFontWeight::Bold, UITextAlign::Center))->styleClass = "title";
         for (StringView label : {StringView("Resume"), StringView("Repair")}) {
             UIElement b;
             b.size = Vec2(0.0f, 64.0f);
             b.justify = UIJustify::Center;
             b.align = UIAlign::Center;
+            if (label == "Resume")
+                b.styleClass = "primary";
             const ecs::Entity button = node(label, menu, b);
             world.Add(button, UIButton{});
             const ecs::Entity l = text(String::Format("{} Label", label), button, label, 28.0f, UIFontWeight::SemiBold, UITextAlign::Center);
@@ -3590,6 +3604,14 @@ bool Editor::Frame()
             return e.type == WindowEventType::MouseDown || e.type == WindowEventType::MouseUp || e.type == WindowEventType::MouseWheel ||
                    e.type == WindowEventType::KeyDown || e.type == WindowEventType::KeyUp || e.type == WindowEventType::Char;
         });
+    }
+    // Console input.press: a key held for a few frames (works in automated runs too).
+    if (simulatedKey != Key::Unknown) {
+        input.SetKey(simulatedKey, simulatedFrames > 0);
+        if (simulatedFrames > 0)
+            --simulatedFrames;
+        else
+            simulatedKey = Key::Unknown;
     }
     const UVec2 client = window->GetClientSize();
     if (client.x == 0 || client.y == 0 || window->IsMinimized()) {

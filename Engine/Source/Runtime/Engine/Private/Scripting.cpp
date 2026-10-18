@@ -460,6 +460,106 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             SystemOf(o).context.destroyQueue.PushBack(e);
             return true;
         }
+        if (m == "uiAnimate" || m == "uiPlay" || m == "focus" || m == "addClass" || m == "removeClass" || m == "hasClass") {
+            // Game UI: tweens, UI Animation, gamepad focus, style classes.
+            ScriptSystem& sys = SystemOf(o);
+            ecs::World* w = sys.context.world;
+            e = ecs::Entity::Unpack(o.id);
+            if (!w || !w->IsAlive(e))
+                return v.Fail("The entity was destroyed");
+            if (m == "uiAnimate") {
+                // uiAnimate(property, to (number / vec3 / color as vec4-ish array), seconds[, easing[, delay]])
+                if (a.Size() < 3 || a[0].Type() != ValueType::String || !a[2].IsNumber())
+                    return v.Fail("entity.uiAnimate(\"opacity\", 0, 0.3[, \"easeOut\"[, delay]])");
+                f32 to[4] = {};
+                u32 count = 1;
+                if (a[1].IsNumber())
+                    to[0] = a[1].AsFloat();
+                else if (a[1].Type() == ValueType::Vec3) {
+                    const Vec3 c = a[1].AsVec3();
+                    to[0] = c.x;
+                    to[1] = c.y;
+                    to[2] = c.z;
+                    to[3] = 1.0f;
+                    count = 4;
+                } else if (a[1].Type() == ValueType::String) {
+                    LinearColor c;
+                    if (!ParseStyleColor(a[1].AsString(), c))
+                        return v.Fail("uiAnimate: a color is \"#RRGGBB\" / \"#RRGGBBAA\"");
+                    to[0] = c.r;
+                    to[1] = c.g;
+                    to[2] = c.b;
+                    to[3] = c.a;
+                    count = 4;
+                } else
+                    return v.Fail("uiAnimate: the target is a number, a vec3 (color) or \"#RRGGBB\"");
+                UIEasing easing = UIEasing::EaseOut;
+                if (a.Size() > 3 && a[3].Type() == ValueType::String) {
+                    const String want = NormalizeStyleName(a[3].AsString());
+                    bool found = false;
+                    for (const EnumEntry& en : TypeOf<UIEasing>().enumEntries)
+                        if (NormalizeStyleName(en.name.View()) == want) {
+                            easing = UIEasing(en.value);
+                            found = true;
+                        }
+                    if (!found)
+                        return v.Fail("uiAnimate easing: linear, easeIn, easeOut, easeInOut, back, elastic, bounce");
+                }
+                String error;
+                if (!sys.gameUI || !sys.gameUI->Animate(*w, e, a[0].AsString(), Span<const f32>(to, count), a[2].AsFloat(), easing,
+                                                         a.Size() > 4 && a[4].IsNumber() ? a[4].AsFloat() : 0.0f, &error))
+                    return v.Fail(String::Format("uiAnimate: {}", error));
+                return true;
+            }
+            if (m == "uiPlay") {
+                if (!sys.gameUI || !sys.gameUI->PlayAnimation(*w, e))
+                    return v.Fail("This entity has no UI Animation component");
+                return true;
+            }
+            if (m == "focus") {
+                if (sys.gameUI)
+                    sys.gameUI->Focus(e);
+                return true;
+            }
+            UIElement* el = w->Get<UIElement>(e);
+            if (!el)
+                return v.Fail("This entity has no UI Element");
+            if (a.Empty() || a[0].Type() != ValueType::String)
+                return v.Fail(String::Format("entity.{}(\"className\")", m));
+            const StringView cls = a[0].AsString();
+            // Classes are space-separated words.
+            Array<String> words;
+            {
+                StringView rest = el->styleClass.View();
+                while (!rest.Empty()) {
+                    StringView word, next;
+                    if (!rest.Split(' ', word, next))
+                        next = {};
+                    if (!word.Empty())
+                        words.PushBack(String(word));
+                    rest = next;
+                }
+            }
+            bool has = false;
+            for (const String& wd : words)
+                has = has || wd.EqualsIgnoreCase(cls);
+            if (m == "hasClass") {
+                out = Value(has);
+                return true;
+            }
+            if (m == "addClass" && !has)
+                words.PushBack(String(cls));
+            if (m == "removeClass")
+                words.RemoveIf([&](const String& wd) { return wd.EqualsIgnoreCase(cls); });
+            String joined;
+            for (const String& wd : words) {
+                if (!joined.Empty())
+                    joined += " ";
+                joined += wd;
+            }
+            el->styleClass = joined;
+            return true;
+        }
         if (m == "addForce" || m == "addImpulse" || m == "addTorque") {
             // Rigid Body forces: addForce(newtons), addImpulse(N*s[, worldPoint]), addTorque(N*m).
             if (a.Empty() || a[0].Type() != ValueType::Vec3 || (a.Size() > 1 && a[1].Type() != ValueType::Vec3))
@@ -843,6 +943,22 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
         if (keyMode >= 0) {
             if (a.Size() != 1 || a[0].Type() != ValueType::String)
                 return v.Fail(String::Format("input.{}(\"W\") takes a key name", m));
+            // Gamepad buttons: "GamepadA", "Gamepad Start", "Gamepad Up" (the D-pad), ... (the first gamepad).
+            if (StringView name = a[0].AsString(); name.Size() > 7 && name.Left(7).EqualsIgnoreCase("Gamepad")) {
+                static const char* const PadNames[] = {"a", "b", "x", "y", "lb", "rb", "back", "start", "ls", "rs", "up", "down", "left", "right"};
+                String want;
+                for (char c : name.DropLeft(7))
+                    if (c != ' ')
+                        want += (c >= 'A' && c <= 'Z') ? char(c - 'A' + 'a') : c;
+                for (u32 b = 0; b < ZX_ARRAY_COUNT(PadNames); ++b)
+                    if (want == PadNames[b]) {
+                        const GamepadButton pb = GamepadButton(b);
+                        out = Value(in && (keyMode == 0 ? in->Gamepad(0).buttons[b] : keyMode == 1 ? in->WasGamepadPressed(0, pb) : in->WasGamepadReleased(0, pb)));
+                        return true;
+                    }
+                return v.Fail(String::Format("Unknown gamepad button '{}' (GamepadA, GamepadB, GamepadX, GamepadY, GamepadLB, GamepadRB, "
+                                             "GamepadBack, GamepadStart, GamepadLS, GamepadRS, GamepadUp / Down / Left / Right)", name));
+            }
             const Key k = ParseKey(a[0].AsString());
             if (k == Key::Unknown)
                 return v.Fail(String::Format("Unknown key '{}' (examples: \"W\", \"Space\", \"Shift\", \"Escape\", \"F1\")", a[0].AsString()));
@@ -911,6 +1027,12 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             out = Value(ui && ui->cursorRequested);
         else if (m == "overUI")
             out = Value(ui && ui->MouseOverUI());
+        else if (m == "focused") { // name of the widget with the gamepad / keyboard focus ("" = none)
+            const ecs::World* w = SystemOf(o).context.world;
+            const ecs::Entity f = ui && ui->NavActive() ? ui->NavFocus() : ecs::Entity();
+            const scene::EntityName* n = w && f && w->IsAlive(f) ? w->Get<const scene::EntityName>(f) : nullptr;
+            out = Value(n ? n->value.View() : StringView());
+        }
         else
             return false;
         return true;
@@ -1394,14 +1516,15 @@ void ScriptSystem::DispatchUIEvents(ecs::World& world, Span<const UIEvent> event
         const scene::EntityName* n = world.Get<const scene::EntityName>(ev.entity);
         const bool click = ev.type == UIEvent::Type::Click;
         const bool submit = ev.type == UIEvent::Type::Submit;
-        const StringView fn = click ? "onUIClick" : submit ? "onUISubmit" : "onUIChanged";
+        const bool back = ev.type == UIEvent::Type::Back;
+        const StringView fn = click ? "onUIClick" : submit ? "onUISubmit" : back ? "onUIBack" : "onUIChanged";
         const Value args[2] = {Value(n ? n->value.View() : StringView()), submit ? Value(ev.text.View()) : Value(f64(ev.value))};
         for (ecs::Entity x = ev.entity; world.IsAlive(x);) {
             for (UniquePtr<RunningScript>& rs : m_instances) {
                 if (rs->failed || !rs->started || rs->entity != x || !rs->instance->HasFunction(fn))
                     continue;
                 RebindGlobals(*rs);
-                if (!rs->instance->Call(fn, Span<const Value>(args, click ? 1 : 2))) {
+                if (!rs->instance->Call(fn, Span<const Value>(args, click || back ? 1 : 2))) {
                     Report(m_vm->LastError(), true);
                     rs->failed = true;
                 }

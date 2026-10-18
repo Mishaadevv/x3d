@@ -315,6 +315,8 @@ public:
     PlayState playState = PlayState::Editing;
     // While playing: the game sees the keyboard/mouse (cursor locked) and the view comes from the game Camera.
     bool gameInputCaptured = false; // Shift+F1 releases, a click in the viewport captures again
+    Key simulatedKey = Key::Unknown; // console input.press: held for simulatedFrames frames (automated UI checks)
+    u32 simulatedFrames = 0;
     bool gameCameraEjected = false; // F8: back to the editor camera while the game keeps running
     /// The game camera is shown (playing, not ejected, a Camera exists).
     bool UsingGameCamera();

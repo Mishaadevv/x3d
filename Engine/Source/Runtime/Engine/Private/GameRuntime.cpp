@@ -73,6 +73,8 @@ void TickGame(ecs::World& world, GameSystems& s, f32 realDt, const InputState* i
     const f32 dt = realDt * GameTimeScale(s);
     const bool physicsRunning = s.physics && s.physics->IsRunning();
     TickGameplay(world, dt);
+    if (s.gameUI) // transitions, UI Animations, tweens (real time: menus animate while paused)
+        s.gameUI->Update(world, realDt);
     if (s.inputActionState && s.inputActions)
         s.inputActionState->Update(*s.inputActions, input);
     if (s.scripts && s.Enabled("scripts")) {

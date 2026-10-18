@@ -535,6 +535,7 @@ void DrawViewportPanel(Editor& ed)
                                ed.input.WasMouseReleased(MouseButton::Left), ed.input.MouseWheel());
             ed.gameUI.TypeText(ed.world, ed.input.TypedText(), ed.input.WasKeyPressed(Key::Backspace), ed.input.WasKeyPressed(Key::Enter),
                                ed.input.WasKeyPressed(Key::Escape));
+            ed.gameUI.Navigate(ed.world, ed.input, ed.dt); // gamepad / arrows in menus
         }
         dl.PushClipRect(r);
         ed.gameUI.Draw(ed.world, ed.fonts, dl, [&](asset::AssetId id) { return ed.renderAssets ? ed.renderAssets->GetTextureSrv(id) : 0u; });

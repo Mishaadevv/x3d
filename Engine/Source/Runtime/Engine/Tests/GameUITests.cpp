@@ -9,6 +9,7 @@
 #include "Engine/GameRuntime.h"
 #include "Engine/GameUI.h"
 #include "Engine/Scripting.h"
+#include "Platform/Input.h"
 #include "Scene/Hierarchy.h"
 #include "UI/DrawList.h"
 #include "UI/UI.h"
@@ -349,4 +350,194 @@ ZX_TEST(GameUI, InputFieldTyping)
     ZX_EXPECT_EQ(s.ui.Events()[0].text, String("\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82"));
     ZX_EXPECT(s.world.Get<const UIInputField>(field)->text.Empty());
     ZX_EXPECT(!s.ui.WantsKeyboard());
+}
+
+ZX_TEST(GameUI, StyleSheetParsing)
+{
+    UIStyleSheet sheet;
+    const bool ok = ParseUIStyle(R"css(
+        /* comment */
+        @accent: #3B8CF5;
+        Button, Toggle { color: $accent; corner-radius: 12px; }
+        Panel.menu Button:hover { scale: 1.05; }
+        #Title.big { font-size: 72; }
+        Text { colr }
+    )css",
+                                 sheet);
+    ZX_EXPECT(!ok); // "colr" without a value
+    ZX_REQUIRE(sheet.rules.Size() == 4u);
+    ZX_EXPECT_EQ(sheet.rules[0].selectors.Size(), 2u);
+    ZX_EXPECT(sheet.rules[0].properties[0].name == "color");
+    ZX_EXPECT(sheet.rules[0].properties[0].value == "#3B8CF5"); // the variable
+    ZX_EXPECT(sheet.rules[0].properties[1].name == "cornerradius");
+    const UIStyleSelector& hover = sheet.rules[1].selectors[0];
+    ZX_REQUIRE(hover.parts.Size() == 2u);
+    ZX_EXPECT(hover.parts[0].type == "Panel" && hover.parts[0].classes[0] == "menu");
+    ZX_EXPECT(hover.HasStates());
+    ZX_EXPECT(sheet.rules[2].selectors[0].specificity > hover.specificity); // #id beats classes
+    // Values: CSS order for Vec4, colors, enums.
+    Vec4 pad;
+    ZX_REQUIRE(ParseStyleValue("8 16", TypeOf<Vec4>(), &pad));
+    ZX_EXPECT(pad == Vec4(16.0f, 8.0f, 16.0f, 8.0f));
+    LinearColor c;
+    ZX_REQUIRE(ParseStyleColor("rgba(255, 0, 0, 0.5)", c));
+    ZX_EXPECT(Abs(c.r - 1.0f) < 1e-3f && Abs(c.a - 0.5f) < 0.01f);
+    UIJustify j = UIJustify::Start;
+    ZX_REQUIRE(ParseStyleValue("space-between", TypeOf<UIJustify>(), &j));
+    ZX_EXPECT(j == UIJustify::SpaceBetween);
+}
+
+ZX_TEST(GameUI, StylesApplyByTypeClassAndState)
+{
+    UIScene s;
+    const String root = Path::Join(Path::Normalize(platform::GetTempDirectory()), "zx_gameui_style");
+    platform::CreateDirectoryTree(root);
+    ZX_REQUIRE(fs::WriteTextFile(root + "/Menu.zstyle", R"css(
+        Button { color: #102030; corner-radius: 20; padding: 10 20; }
+        Button:hover { scale: 1.2; color: #FF0000; }
+        Text.title { font-size: 64; weight: Bold; }
+        .faded { opacity: 0.5; }
+        Text { colour: red; }
+    )css"));
+    s.ui.contentRoot = root;
+    s.world.Get<UICanvas>(s.canvas)->style = "Menu.zstyle";
+    UIElement be;
+    be.size = Vec2(200.0f, 60.0f);
+    const ecs::Entity button = s.Widget("Play", be);
+    s.world.Add(button, UIButton{});
+    UIElement te;
+    te.styleClass = "title faded";
+    const ecs::Entity title = s.Widget("Title", te);
+    s.world.Add(title, UIText{});
+    const Rect screen(Vec2(0, 0), Vec2(1920, 1080));
+    s.ui.Layout(s.world, s.fonts, screen);
+    const UIButton& b = *s.world.Get<const UIButton>(button);
+    ZX_EXPECT(Abs(b.cornerRadius - 20.0f) < 1e-4f);
+    ZX_EXPECT(s.world.Get<const UIElement>(button)->padding == Vec4(20.0f, 10.0f, 20.0f, 10.0f));
+    ZX_EXPECT(Abs(s.world.Get<const UIText>(title)->fontSize - 64.0f) < 1e-4f);
+    ZX_EXPECT(s.world.Get<const UIText>(title)->weight == UIFontWeight::Bold);
+    ZX_EXPECT(Abs(s.world.Get<const UIElement>(title)->drawOpacity - 0.5f) < 1e-3f);
+    ZX_EXPECT(!s.ui.StyleErrors().Empty()); // "colour" isn't a property
+    // Hover: the state rule applies for the frame (scale + color), then the widget gets its own values back.
+    const Rect before = s.RectOf(button);
+    s.ui.Interact(s.world, before.Center(), false, false, false);
+    s.ui.Layout(s.world, s.fonts, screen);
+    ZX_EXPECT(s.RectOf(button).Width() > before.Width() * 1.15f); // drawn 1.2x around the center
+    ZX_EXPECT(Abs(s.RectOf(button).Center().x - before.Center().x) < 0.6f);
+    ZX_EXPECT(b.color.r > 0.9f);
+    ui::DrawList dl;
+    dl.Reset(&s.fonts, screen);
+    s.ui.Draw(s.world, s.fonts, dl, {});
+    ZX_EXPECT(b.color.r < 0.1f); // restored after the frame
+    ZX_EXPECT(Abs(s.world.Get<const UIElement>(button)->scale - 1.0f) < 1e-5f);
+    platform::DeleteDirectoryTree(root);
+}
+
+ZX_TEST(GameUI, TransitionsAnimationsAndTweens)
+{
+    UIScene s;
+    UIElement e;
+    e.size = Vec2(100.0f, 100.0f);
+    e.transition = 0.2f;
+    const ecs::Entity box = s.Widget("Box", e);
+    s.world.Add(box, UIPanel{});
+    UIAnimation anim;
+    anim.preset = UIAnimationPreset::FadeIn;
+    anim.duration = 0.5f;
+    const ecs::Entity fading = s.Widget("Fading", e);
+    s.world.Add(fading, anim);
+    const Rect screen(Vec2(0, 0), Vec2(1920, 1080));
+    s.ui.Layout(s.world, s.fonts, screen);
+    // Transition: Scale 2 is reached smoothly while playing.
+    s.world.Get<UIElement>(box)->scale = 2.0f;
+    s.ui.Update(s.world, 0.05f);
+    s.ui.Layout(s.world, s.fonts, screen);
+    s.ui.Update(s.world, 0.05f);
+    const f32 mid = s.world.Get<const UIElement>(box)->shownScale;
+    ZX_EXPECT(mid > 1.1f && mid < 1.9f);
+    for (u32 i = 0; i < 20; ++i)
+        s.ui.Update(s.world, 0.05f);
+    ZX_EXPECT(Abs(s.world.Get<const UIElement>(box)->shownScale - 2.0f) < 0.01f);
+    // Fade In finished after its duration (it started on the first Update).
+    ZX_EXPECT(Abs(s.world.Get<const UIElement>(fading)->animOpacity - 1.0f) < 1e-3f);
+    s.world.Get<UIElement>(fading)->visible = false;
+    s.ui.Update(s.world, 0.05f);
+    s.world.Get<UIElement>(fading)->visible = true; // shown again: plays again
+    s.ui.Update(s.world, 0.1f);
+    ZX_EXPECT(s.world.Get<const UIElement>(fading)->animOpacity < 0.6f);
+    // Tweens: opacity to 0 in 0.4 s (Linear), a color, unknown properties.
+    const f32 zero = 0.0f;
+    ZX_REQUIRE(s.ui.Animate(s.world, box, "opacity", Span<const f32>(&zero, 1), 0.4f, UIEasing::Linear, 0.0f));
+    s.ui.Update(s.world, 0.2f);
+    ZX_EXPECT(Abs(s.world.Get<const UIElement>(box)->opacity - 0.5f) < 0.01f);
+    s.ui.Update(s.world, 0.3f);
+    ZX_EXPECT(s.world.Get<const UIElement>(box)->opacity == 0.0f);
+    const f32 red[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+    ZX_REQUIRE(s.ui.Animate(s.world, box, "background", Span<const f32>(red, 4), 0.0f, UIEasing::Linear, 0.0f));
+    s.ui.Update(s.world, 0.01f);
+    ZX_EXPECT(s.world.Get<const UIPanel>(box)->color.r == 1.0f);
+    String error;
+    ZX_EXPECT(!s.ui.Animate(s.world, box, "wobble", Span<const f32>(&zero, 1), 1.0f, UIEasing::Linear, 0.0f, &error));
+    ZX_EXPECT(!error.Empty());
+    // Easing ends.
+    for (u32 k = 0; k <= u32(UIEasing::Bounce); ++k) {
+        ZX_EXPECT(Abs(ApplyEasing(UIEasing(k), 0.0f)) < 1e-4f);
+        ZX_EXPECT(Abs(ApplyEasing(UIEasing(k), 1.0f) - 1.0f) < 1e-4f);
+    }
+}
+
+ZX_TEST(GameUI, GamepadAndKeyboardNavigation)
+{
+    UIScene s;
+    UIElement row;
+    row.direction = UIDirection::Row;
+    row.gap = 20.0f;
+    const ecs::Entity bar = s.Widget("Row", row);
+    UIElement be;
+    be.size = Vec2(200.0f, 60.0f);
+    const ecs::Entity a = s.Widget("A", be, bar);
+    s.world.Add(a, UIButton{});
+    const ecs::Entity b = s.Widget("B", be, bar);
+    s.world.Add(b, UIButton{});
+    const ecs::Entity slider = s.Widget("Volume", be);
+    s.world.Add(slider, UISlider{});
+    const Rect screen(Vec2(0, 0), Vec2(1920, 1080));
+    InputState input;
+    auto press = [&](Key k) {
+        input.BeginFrame();
+        input.SetKey(k, true);
+        s.ui.Layout(s.world, s.fonts, screen);
+        s.ui.Navigate(s.world, input, 0.016f);
+        input.BeginFrame();
+        input.SetKey(k, false);
+    };
+    s.ui.Layout(s.world, s.fonts, screen);
+    press(Key::Right); // the first press shows the focus on the first widget
+    ZX_EXPECT(s.ui.NavFocus() == a && s.ui.NavActive());
+    ZX_EXPECT(s.world.Get<const UIElement>(a)->focused && s.world.Get<const UIElement>(a)->hovered);
+    press(Key::Right);
+    ZX_EXPECT(s.ui.NavFocus() == b);
+    press(Key::Down);
+    ZX_EXPECT(s.ui.NavFocus() == slider);
+    // Left / right on a slider change its value.
+    const f32 v0 = s.world.Get<const UISlider>(slider)->value;
+    press(Key::Right);
+    ZX_EXPECT(s.world.Get<const UISlider>(slider)->value > v0);
+    press(Key::Up);
+    s.ui.ClearEvents();
+    press(Key::Enter); // presses the focused button
+    bool clicked = false;
+    for (const UIEvent& ev : s.ui.Events())
+        clicked = clicked || (ev.type == UIEvent::Type::Click && (ev.entity == a || ev.entity == b));
+    ZX_EXPECT(clicked);
+    press(Key::Escape);
+    bool back = false;
+    for (const UIEvent& ev : s.ui.Events())
+        back = back || ev.type == UIEvent::Type::Back;
+    ZX_EXPECT(back);
+    // The mouse takes over: the focus ring hides.
+    input.BeginFrame();
+    input.AddMouseDelta(Vec2(5.0f, 0.0f));
+    s.ui.Navigate(s.world, input, 0.016f);
+    ZX_EXPECT(!s.ui.NavActive());
 }

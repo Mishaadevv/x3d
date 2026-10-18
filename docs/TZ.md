@@ -1272,7 +1272,7 @@ Vulkan-бэкенд, HDR-вывод, плагины редактора, ZScript 
 - [x] (0.13.16) Terrain brush v2: Set Height / Ramp / Terrace / Erode / Grass, Square, операции над всем террейном, импорт/экспорт heightmap, Flat Terrain
 - [x] (0.13.16) Первый публичный релиз (Beta): установщик ZXSetup, portable zip, Tools/make_release.ps1
 - [x] (0.13.17) Лицензия: PolyForm Strict + Game Exception (игры можно распространять и продавать)
-- [ ] Стили (`.zstyle`), анимации свойств, навигация геймпадом
+- [x] (0.13.18) Стили (`.zstyle`), анимации свойств, навигация геймпадом
 - [ ] Локализация (`.zloc`, `LOCTEXT`)
 - [ ] UI designer (WYSIWYG в вьюпорте)
 - [ ] ZGraph: формат графа, компиляция в байткод VM, события / flow / переменные / вызовы рефлексированных функций

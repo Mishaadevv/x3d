@@ -35,6 +35,39 @@ ZX_REFLECT_ENUM_BEGIN(UIFontWeight)
     ZX_ENUM_VALUE(Bold)
 ZX_REFLECT_ENUM_END()
 
+ZX_REFLECT_ENUM_BEGIN(UIEasing)
+    ZX_ENUM_VALUE(Linear)
+    ZX_ENUM_VALUE(EaseIn)
+    ZX_ENUM_VALUE(EaseOut)
+    ZX_ENUM_VALUE(EaseInOut)
+    ZX_ENUM_VALUE(Back)
+    ZX_ENUM_VALUE(Elastic)
+    ZX_ENUM_VALUE(Bounce)
+ZX_REFLECT_ENUM_END()
+ZX_REFLECT_ENUM_BEGIN(UIAnimationPreset)
+    ZX_ENUM_VALUE(FadeIn)
+    ZX_ENUM_VALUE(FadeOut)
+    ZX_ENUM_VALUE(SlideInLeft)
+    ZX_ENUM_VALUE(SlideInRight)
+    ZX_ENUM_VALUE(SlideInTop)
+    ZX_ENUM_VALUE(SlideInBottom)
+    ZX_ENUM_VALUE(PopIn)
+    ZX_ENUM_VALUE(Pulse)
+    ZX_ENUM_VALUE(Float)
+    ZX_ENUM_VALUE(Blink)
+    ZX_ENUM_VALUE(Shake)
+ZX_REFLECT_ENUM_END()
+
+ZX_REFLECT_STRUCT_BEGIN(UIAnimation)
+    ZX_FIELD(preset)
+    ZX_FIELD(duration, Meta::Range(0.01, 30), Meta::Units("s"), Meta::Tooltip("Seconds (looping presets: one cycle)"))
+    ZX_FIELD(delay, Meta::Range(0, 30), Meta::Units("s"))
+    ZX_FIELD(easing)
+    ZX_FIELD(distance, Meta::Range(0, 2000), Meta::Tooltip("UI units for slides; Float and Shake move a tenth of it"))
+    ZX_FIELD(playOnShow, Meta::Tooltip("Play when the game starts and every time the element becomes visible"))
+    ZX_FIELD(loop, Meta::Tooltip("Repeat (Pulse, Float and Blink always loop)"))
+ZX_REFLECT_STRUCT_END()
+
 ZX_REFLECT_STRUCT_BEGIN(UICanvas)
     ZX_FIELD(referenceHeight, Meta::Range(100, 4320), Meta::Tooltip("UI units from the top of the screen to the bottom: everything scales with the window height"))
     ZX_FIELD(order, Meta::Tooltip("Canvases with a higher order draw on top"))
@@ -44,6 +77,8 @@ ZX_REFLECT_STRUCT_BEGIN(UICanvas)
     ZX_FIELD(fullSizeDistance, Meta::EditCondition("worldSpace"), Meta::Range(0, 1000), Meta::Units("m"),
              Meta::Tooltip("Full size closer than this, smaller farther away (0 = always full size)"))
     ZX_FIELD(minScale, Meta::EditCondition("worldSpace"), Meta::Range(0.05, 1), Meta::Tooltip("Smallest size far away"))
+    ZX_FIELD(style, Meta::Category("Style"),
+             Meta::Tooltip("A .zstyle sheet in Content (e.g. UI/Menu.zstyle): CSS-like rules for the look of every widget on this canvas"))
 ZX_REFLECT_STRUCT_END()
 
 ZX_REFLECT_STRUCT_BEGIN(UIInputField)
@@ -78,6 +113,12 @@ ZX_REFLECT_STRUCT_BEGIN(UIElement)
     ZX_FIELD(clip, Meta::Tooltip("Cut the children at this box"))
     ZX_FIELD(wrap, Meta::Tooltip("Row: children that don't fit start a new line"))
     ZX_FIELD(scroll, Meta::Tooltip("Column: the children scroll (mouse wheel, scroll bar) instead of squeezing"))
+    ZX_FIELD(styleClass, Meta::Category("Look"), Meta::Tooltip("Classes for the canvas' style sheet, separated by spaces: \"title big\""))
+    ZX_FIELD(opacity, Meta::Range(0, 1))
+    ZX_FIELD(scale, Meta::Range(0, 4), Meta::Tooltip("Drawn bigger / smaller around the center (children too); the layout doesn't change"))
+    ZX_FIELD(translate, Meta::Tooltip("Drawn moved by this many UI units; the layout doesn't change"))
+    ZX_FIELD(transition, Meta::Range(0, 5), Meta::Units("s"), Meta::Tooltip("Seconds to blend Opacity / Scale / Translate changes (style states)"))
+    ZX_FIELD(navigable, Meta::Tooltip("Buttons, sliders, toggles and input fields: the gamepad / keyboard focus can land here"))
 ZX_REFLECT_STRUCT_END()
 
 ZX_REFLECT_STRUCT_BEGIN(UIPanel)
@@ -155,6 +196,7 @@ struct LayoutPass
     ecs::World& world;
     ui::FontSystem& fonts;
     f32 scale = 1.0f;
+    f32 opacity = 1.0f;
 
     /// Children that take part in the layout (UI Element, visible), in order.
     void Children(ecs::Entity e, Array<ecs::Entity>& out) const
@@ -238,9 +280,28 @@ struct LayoutPass
     }
 
     /// Places `e` at `rect` (pixels) and its children (top-down).
-    void Arrange(ecs::Entity e, const Rect& rect)
+    void Arrange(ecs::Entity e, Rect rect)
     {
         UIElement& el = *world.Get<UIElement>(e);
+        // The Look: scaled around the center and moved (children with it), faded.
+        const f32 k = Max(el.shownScale * el.animScale, 0.0f);
+        const Vec2 move = (el.shownTranslate + el.animTranslate) * scale;
+        if (k != 1.0f || move.x != 0.0f || move.y != 0.0f) {
+            const Vec2 c = rect.Center();
+            rect = Rect(c + (rect.min - c) * k + move, c + (rect.max - c) * k + move);
+        }
+        const f32 savedScale = scale, savedOpacity = opacity;
+        scale *= k;
+        opacity *= Saturate(el.shownOpacity * el.animOpacity);
+        el.pixelScale = scale;
+        el.drawOpacity = opacity;
+        ArrangeInside(e, el, rect);
+        scale = savedScale;
+        opacity = savedOpacity;
+    }
+
+    void ArrangeInside(ecs::Entity e, UIElement& el, const Rect& rect)
+    {
         el.rect = rect;
         const Rect inner(rect.min + Vec2(el.padding.x, el.padding.y) * scale, rect.max - Vec2(el.padding.z, el.padding.w) * scale);
         Array<ecs::Entity> kids;
@@ -438,60 +499,67 @@ struct DrawPass
     ecs::Entity focusedInput;
     f32 time = 0.0f;
 
+    bool navActive = false;
+
+    /// The element's color faded by its (and its ancestors') Opacity.
+    static Color Fade(Color c, f32 a) { return Color(c.r, c.g, c.b, u8(f32(c.a) * a + 0.5f)); }
+
     void Draw(ecs::Entity e)
     {
         const UIElement* el = world.Get<const UIElement>(e);
-        if (!el || !el->visible)
+        if (!el || !el->visible || el->drawOpacity <= 0.003f)
             return;
         const Rect r = el->rect;
-        const f32 s = scale;
+        const f32 s = el->pixelScale;
+        const f32 a = el->drawOpacity;
+        auto C = [a](const LinearColor& c) { return Fade(ToDisplayColor(c), a); };
         if (const UIPanel* p = world.Get<const UIPanel>(e)) {
             if (p->shadow > 0.0f)
-                dl.AddShadow(r, Color(0, 0, 0, 110), p->cornerRadius * s, p->shadow * s, Vec2(0.0f, p->shadow * s * 0.25f));
-            dl.AddRect(r, ToDisplayColor(p->color), ui::CornerRadii(p->cornerRadius * s), p->borderWidth * s, ToDisplayColor(p->borderColor));
+                dl.AddShadow(r, Fade(Color(0, 0, 0, 110), a), p->cornerRadius * s, p->shadow * s, Vec2(0.0f, p->shadow * s * 0.25f));
+            dl.AddRect(r, C(p->color), ui::CornerRadii(p->cornerRadius * s), p->borderWidth * s, C(p->borderColor));
         }
         if (const UIButton* b = world.Get<const UIButton>(e)) {
             LinearColor c = !b->interactable ? b->color * LinearColor(0.6f, 0.6f, 0.6f, 0.6f)
                             : el->pressed    ? b->pressedColor
                             : el->hovered    ? b->hoverColor
                                              : b->color;
-            dl.AddRect(r, ToDisplayColor(c), ui::CornerRadii(b->cornerRadius * s));
+            dl.AddRect(r, C(c), ui::CornerRadii(b->cornerRadius * s));
         }
         if (const UIImage* img = world.Get<const UIImage>(e); img && img->texture.IsValid() && textureSrv) {
             const u32 srv = textureSrv(img->texture);
             if (srv != 0 && srv != ~0u)
-                dl.AddImage(srv, r, Vec2(0, 0), Vec2(1, 1), ToDisplayColor(img->tint), img->cornerRadius * s);
+                dl.AddImage(srv, r, Vec2(0, 0), Vec2(1, 1), C(img->tint), img->cornerRadius * s);
         }
         if (const UIProgressBar* p = world.Get<const UIProgressBar>(e)) {
             const ui::CornerRadii radii(Min(p->cornerRadius * s, r.Height() * 0.5f));
-            dl.AddRect(r, ToDisplayColor(p->backColor), radii);
+            dl.AddRect(r, C(p->backColor), radii);
             const f32 v = Clamp(p->value, 0.0f, 1.0f);
             if (v > 0.0f)
-                dl.AddRect(Rect(r.min, Vec2(r.min.x + r.Width() * v, r.max.y)), ToDisplayColor(p->fillColor), radii);
+                dl.AddRect(Rect(r.min, Vec2(r.min.x + r.Width() * v, r.max.y)), C(p->fillColor), radii);
         }
         if (const UISlider* sl = world.Get<const UISlider>(e)) {
             const f32 h = Min(r.Height(), 8.0f * s);
             const Rect track(Vec2(r.min.x + r.Height() * 0.5f, r.Center().y - h * 0.5f), Vec2(r.max.x - r.Height() * 0.5f, r.Center().y + h * 0.5f));
             const f32 t = sl->maxValue > sl->minValue ? Clamp((sl->value - sl->minValue) / (sl->maxValue - sl->minValue), 0.0f, 1.0f) : 0.0f;
             const f32 x = track.min.x + track.Width() * t;
-            dl.AddRect(track, ToDisplayColor(sl->trackColor), ui::CornerRadii(h * 0.5f));
-            dl.AddRect(Rect(track.min, Vec2(x, track.max.y)), ToDisplayColor(sl->fillColor), ui::CornerRadii(h * 0.5f));
+            dl.AddRect(track, C(sl->trackColor), ui::CornerRadii(h * 0.5f));
+            dl.AddRect(Rect(track.min, Vec2(x, track.max.y)), C(sl->fillColor), ui::CornerRadii(h * 0.5f));
             const f32 knob = r.Height() * (el->hovered || el->pressed ? 0.5f : 0.42f);
-            dl.AddShadow(Rect(Vec2(x - knob, r.Center().y - knob), Vec2(x + knob, r.Center().y + knob)), Color(0, 0, 0, 90), knob, 4.0f * s);
-            dl.AddCircle(Vec2(x, r.Center().y), knob, ToDisplayColor(sl->handleColor));
+            dl.AddShadow(Rect(Vec2(x - knob, r.Center().y - knob), Vec2(x + knob, r.Center().y + knob)), Fade(Color(0, 0, 0, 90), a), knob, 4.0f * s);
+            dl.AddCircle(Vec2(x, r.Center().y), knob, C(sl->handleColor));
         }
         if (const UIToggle* tg = world.Get<const UIToggle>(e)) {
             const f32 h = r.Height(), w = Min(r.Width(), h * 1.9f);
             const Rect pill(Vec2(r.min.x, r.min.y), Vec2(r.min.x + w, r.max.y));
-            dl.AddRect(pill, ToDisplayColor(tg->on ? tg->onColor : tg->offColor), ui::CornerRadii(h * 0.5f));
+            dl.AddRect(pill, C(tg->on ? tg->onColor : tg->offColor), ui::CornerRadii(h * 0.5f));
             const f32 knob = h * 0.5f - 3.0f * s;
-            dl.AddCircle(Vec2(tg->on ? pill.max.x - h * 0.5f : pill.min.x + h * 0.5f, pill.Center().y), knob, ToDisplayColor(tg->knobColor));
+            dl.AddCircle(Vec2(tg->on ? pill.max.x - h * 0.5f : pill.min.x + h * 0.5f, pill.Center().y), knob, C(tg->knobColor));
         }
         if (const UIInputField* in = world.Get<const UIInputField>(e)) {
             const bool focused = e == focusedInput;
             const ui::CornerRadii radii(in->cornerRadius * s);
-            dl.AddRect(r, ToDisplayColor(in->backColor), radii, focused ? 2.0f * s : 1.0f * s,
-                       focused ? ToDisplayColor(in->focusColor) : Color(255, 255, 255, el->hovered ? 70 : 35));
+            dl.AddRect(r, C(in->backColor), radii, focused ? 2.0f * s : 1.0f * s,
+                       focused ? C(in->focusColor) : Fade(Color(255, 255, 255, el->hovered ? 70 : 35), a));
             const ui::FontHandle font = FontOf(fonts, UIFontWeight::Regular);
             if (font.IsValid()) {
                 const f32 size = in->fontSize * s;
@@ -508,12 +576,12 @@ struct DrawPass
                 const f32 x = inner.min.x + Min(0.0f, inner.Width() - w - 2.0f * s); // keep the end in view while typing
                 dl.PushClipRect(inner);
                 if (text.Empty() && !focused)
-                    dl.AddText(font, size, Vec2(inner.min.x, y), ToDisplayColor(in->placeholderColor), in->placeholder.View());
+                    dl.AddText(font, size, Vec2(inner.min.x, y), C(in->placeholderColor), in->placeholder.View());
                 else
-                    dl.AddText(font, size, Vec2(x, y), ToDisplayColor(in->textColor), text);
+                    dl.AddText(font, size, Vec2(x, y), C(in->textColor), text);
                 if (focused && Frac(time * 1.6f) < 0.6f) // caret
                     dl.AddRect(Rect(Vec2(x + w + 1.0f * s, y + lineHeight * 0.15f), Vec2(x + w + 3.0f * s, y + lineHeight * 0.85f)),
-                               ToDisplayColor(in->textColor));
+                               C(in->textColor));
                 dl.PopClipRect();
             }
         }
@@ -534,9 +602,9 @@ struct DrawPass
                                                                     : inner.max.x - w;
                     if (t->shadow) {
                         const f32 o = Max(1.0f, size * 0.06f);
-                        dl.AddText(font, size, Vec2(x + o, y + o), Color(0, 0, 0, u8(Clamp(t->color.a, 0.0f, 1.0f) * 150.0f)), line);
+                        dl.AddText(font, size, Vec2(x + o, y + o), Fade(Color(0, 0, 0, u8(Clamp(t->color.a, 0.0f, 1.0f) * 150.0f)), a), line);
                     }
-                    dl.AddText(font, size, Vec2(x, y), ToDisplayColor(t->color), line);
+                    dl.AddText(font, size, Vec2(x, y), C(t->color), line);
                     y += lineHeight;
                 }
             }
@@ -555,7 +623,19 @@ struct DrawPass
             const f32 thumbH = Max(trackH * viewH / el->contentHeight, 24.0f * s);
             const f32 t = el->scrollOffset / Max(el->contentHeight - viewH, 1.0f);
             const f32 top = r.min.y + 4.0f * s + (trackH - thumbH) * t;
-            dl.AddRect(Rect(Vec2(r.max.x - 7.0f * s, top), Vec2(r.max.x - 3.0f * s, top + thumbH)), Color(255, 255, 255, 90), ui::CornerRadii(2.0f * s));
+            dl.AddRect(Rect(Vec2(r.max.x - 7.0f * s, top), Vec2(r.max.x - 3.0f * s, top + thumbH)), Fade(Color(255, 255, 255, 90), a), ui::CornerRadii(2.0f * s));
+        }
+        // Gamepad / keyboard focus ring.
+        if (navActive && el->focused) {
+            f32 radius = 6.0f;
+            if (const UIButton* b = world.Get<const UIButton>(e))
+                radius = b->cornerRadius;
+            else if (const UIInputField* in = world.Get<const UIInputField>(e))
+                radius = in->cornerRadius;
+            else if (world.Has<UIToggle>(e) || world.Has<UISlider>(e))
+                radius = r.Height() * 0.5f / s;
+            const f32 o = 3.0f * s;
+            dl.AddRectOutline(Rect(r.min - Vec2(o), r.max + Vec2(o)), Fade(Color(255, 255, 255, 220), a), 2.0f * s, ui::CornerRadii(radius * s + o));
         }
     }
 };
@@ -582,9 +662,27 @@ void GameUISystem::Layout(ecs::World& world, ui::FontSystem& fonts, const Rect& 
 {
     Array<ecs::Entity> canvases;
     Canvases(world, canvases);
+    // Styles (state rules from the last frame's hover / press / focus are undone first).
+    RestoreOverrides(world);
     for (ecs::Entity c : canvases) {
         if (!world.Has<UIElement>(c))
             world.Add(c, UIElement{});
+        ApplyStyles(world, c);
+    }
+    // The Look's targets; without Update (editing) it snaps there.
+    world.Query<UIElement>().Each([&](ecs::Entity, UIElement& el) {
+        el.targetOpacity = el.opacity;
+        el.targetScale = el.scale;
+        el.targetTranslate = el.translate;
+        if (!m_playing) {
+            el.shownOpacity = el.opacity;
+            el.shownScale = el.scale;
+            el.shownTranslate = el.translate;
+            el.animOpacity = el.animScale = 1.0f;
+            el.animTranslate = Vec2();
+        }
+    });
+    for (ecs::Entity c : canvases) {
         UICanvas& canvas = *world.Get<UICanvas>(c);
         const f32 base = screen.Height() / Max(canvas.referenceHeight, 1.0f);
         if (!canvas.worldSpace) {
@@ -629,13 +727,11 @@ void GameUISystem::Draw(ecs::World& world, ui::FontSystem& fonts, ui::DrawList& 
         const UICanvas& canvas = *world.Get<const UICanvas>(c);
         if (!canvas.onScreen)
             continue;
-        // The canvas' scale: its rect against its reference height (world canvases: their own size).
-        f32 scale = el->rect.Height() / Max(canvas.referenceHeight, 1.0f);
-        if (canvas.worldSpace)
-            scale = el->measured.y > 0.0f ? el->rect.Height() / el->measured.y : 1.0f;
-        DrawPass pass{world, fonts, dl, textureSrv, scale, m_focused, time};
+        DrawPass pass{world, fonts, dl, textureSrv, el->pixelScale, m_focused, time};
+        pass.navActive = m_navActive;
         pass.Draw(c);
     }
+    RestoreOverrides(world); // state styles last only for the frame
 }
 
 void GameUISystem::Interact(ecs::World& world, Vec2 mouse, bool down, bool pressed, bool released, f32 wheel)
@@ -747,6 +843,8 @@ void GameUISystem::TypeText(ecs::World& world, StringView typed, bool backspace,
     }
     if (changed)
         m_events.PushBack(UIEvent{UIEvent::Type::Changed, m_focused, f32(CodepointCount(in->text.View())), {}});
+    if (enter || escape)
+        m_skipNav = true; // the input field used the key
     if (enter) {
         m_events.PushBack(UIEvent{UIEvent::Type::Submit, m_focused, 0.0f, in->text});
         if (in->clearOnSubmit)

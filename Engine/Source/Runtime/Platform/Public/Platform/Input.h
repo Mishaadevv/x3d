@@ -94,6 +94,8 @@ public:
     f32 MouseWheelHorizontal() const { return m_wheelH; }
     KeyModifiers Modifiers() const;
     const GamepadState& Gamepad(u32 index) const { return m_gamepads[index]; }
+    bool WasGamepadPressed(u32 index, GamepadButton b) const { return m_gamepads[index].buttons[u32(b)] && !m_prevGamepads[index].buttons[u32(b)]; }
+    bool WasGamepadReleased(u32 index, GamepadButton b) const { return !m_gamepads[index].buttons[u32(b)] && m_prevGamepads[index].buttons[u32(b)]; }
     /// Text typed this frame (UTF-8).
     StringView TypedText() const { return StringView(m_text, m_textLength); }
 
@@ -123,6 +125,7 @@ private:
     f32 m_wheel = 0.0f;
     f32 m_wheelH = 0.0f;
     GamepadState m_gamepads[MaxGamepads];
+    GamepadState m_prevGamepads[MaxGamepads];
     char m_text[256] = {};
     u32 m_textLength = 0;
 };

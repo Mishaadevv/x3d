@@ -654,11 +654,46 @@ script ThirdPersonCamera {
 )zs"},
 };
 
+/// Style sheet of the templates' game UI (UI Canvas > Style).
+const char* const GameUIStyle = R"css(/* Look of the game UI in the Starter Content templates (UI Canvas > Style = StarterContent/UI/Game.zstyle).
+   Edit and save while the game runs: it updates live.
+
+   Selectors   Button, Text, Panel, Image, Slider, Toggle, ProgressBar, InputField, * (any)
+               .class (UI Element > Style Class), #Name (entity name), "Panel.menu Button" (inside)
+   States      :hover  :pressed  :focused (gamepad / keyboard)  :disabled
+   Properties  the names in Details: color, hover-color, corner-radius, font-size, weight, padding, gap,
+               opacity, scale, translate, transition, ...  Colors: #RRGGBB, #RRGGBBAA, rgba(r, g, b, a) */
+
+@accent: #3B8CF5;
+@text: #E8ECF2;
+@dim: #AEB6C2;
+
+Panel { color: #070A10C7; corner-radius: 14; }
+Panel.menu { color: #0B0E14F0; corner-radius: 20; shadow: 48; border-color: #FFFFFF18; border-width: 1; }
+
+Text { color: $text; }
+Text.title { font-size: 56; weight: Bold; }
+Text.hint { color: $dim; }
+
+Button { color: #1A202BF2; hover-color: #27416B; pressed-color: #1B3460; corner-radius: 12; transition: 0.12; }
+Button:hover { scale: 1.04; }
+Button:pressed { scale: 0.97; }
+Button Text { font-size: 28; weight: SemiBold; shadow: false; }
+Button:hover Text { color: #FFFFFF; }
+Button.primary { color: $accent; hover-color: #5AA2FF; pressed-color: #2A6FD0; }
+
+Slider { fill-color: $accent; }
+Toggle { on-color: $accent; }
+ProgressBar { corner-radius: 6; }
+InputField { focus-color: $accent; corner-radius: 10; }
+)css";
+
 /// Scripts of the Starter Content prefabs (vehicles and gameplay props).
 const StarterScript PropScripts[] = {
-    {"CarHUD.zs", R"zs(// Car HUD on a UI Canvas: speedometer, damage bar, and a pause menu on Tab (time stops, the mouse is free):
-// Resume, Repair, a volume slider. Widgets are found by name: "Speed", "Damage", "Pause Menu", buttons "Resume" /
-// "Repair" and the slider "Volume".
+    {"CarHUD.zs", R"zs(// Car HUD on a UI Canvas: speedometer, damage bar, and a pause menu on Tab / gamepad Start (time stops, the mouse is
+// free; arrows / D-pad and Enter / A work too, Escape / B closes it): Resume, Repair, a volume slider. Widgets are
+// found by name: "Speed", "Damage", "Pause Menu", buttons "Resume" / "Repair" and the slider "Volume". The look
+// comes from StarterContent/UI/Game.zstyle, the pop-in from the menu's UI Animation.
 script CarHUD {
     @tooltip("Name of the car (Soft Body) to show")
     prop car = "Car"
@@ -673,14 +708,21 @@ script CarHUD {
             find("Speed").text = str(floor(abs(c.carSpeed()) * 3.6))
             find("Damage").value = c.carDamage()
         }
-        if input.pressed("Tab") { setPaused(not paused) }
+        if input.pressed("Tab") or input.pressed("GamepadStart") { setPaused(not paused) }
     }
 
     fn setPaused(p) {
         paused = p
         find("Pause Menu").visible = p
         ui.cursor = p
-        if p { time.scale = 0 } else { time.scale = 1 }
+        if p {
+            time.scale = 0
+            find("Resume").focus()
+        } else { time.scale = 1 }
+    }
+
+    fn onUIBack(name) {
+        if paused { setPaused(false) }
     }
 
     fn onUIClick(name) {
@@ -1287,6 +1329,7 @@ u32 WriteStarterContent(StringView contentDir)
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(GameplayScripts, ZX_ARRAY_COUNT(GameplayScripts)));
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(PropScripts, ZX_ARRAY_COUNT(PropScripts)));
     written += WriteSounds(root + "/Sounds");
+    written += fs::WriteTextFile(root + "/UI/Game.zstyle", GameUIStyle) ? 1u : 0u; // the look of the templates' HUDs and menus
     return written;
 }
 

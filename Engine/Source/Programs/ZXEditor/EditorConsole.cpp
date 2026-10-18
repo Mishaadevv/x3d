@@ -386,6 +386,40 @@ ConCommand CmdTerrainOp("terrain.op", "Whole-terrain operation: terrain.op <flat
                                 ZX_LOG_WARN(LogCmd, "terrain.op: unknown operation '{}'", op);
                         });
 
+ConCommand CmdInputPress("input.press", "Presses a key for the game in Play (captures the game input): input.press <Tab|Enter|Escape|Space|Up|Down|Left|Right|A..Z|0..9> [frames]",
+                          [](Span<const StringView> args) {
+                              Editor* ed = Ed();
+                              if (!ed || args.Empty())
+                                  return;
+                              static const struct
+                              {
+                                  const char* name;
+                                  Key key;
+                              } Named[] = {{"tab", Key::Tab},     {"enter", Key::Enter}, {"escape", Key::Escape}, {"space", Key::Space},
+                                           {"up", Key::Up},       {"down", Key::Down},   {"left", Key::Left},     {"right", Key::Right},
+                                           {"backspace", Key::Backspace}};
+                              Key key = Key::Unknown;
+                              for (const auto& n : Named)
+                                  if (args[0].EqualsIgnoreCase(n.name))
+                                      key = n.key;
+                              if (key == Key::Unknown && args[0].Size() == 1) {
+                                  const char c = args[0][0];
+                                  if (c >= 'a' && c <= 'z')
+                                      key = Key(u32(Key::A) + u32(c - 'a'));
+                                  else if (c >= 'A' && c <= 'Z')
+                                      key = Key(u32(Key::A) + u32(c - 'A'));
+                                  else if (c >= '0' && c <= '9')
+                                      key = Key(u32(Key::Num0) + u32(c - '0'));
+                              }
+                              if (key == Key::Unknown) {
+                                  ZX_LOG_WARN(LogCmd, "input.press: unknown key '{}'", args[0]);
+                                  return;
+                              }
+                              ed->SetGameInputCaptured(true);
+                              ed->simulatedKey = key;
+                              ed->simulatedFrames = args.Size() > 1 ? u32(Max<i64>(1, ParseInt(args[1]).ValueOr(2))) : 2u;
+                          });
+
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
     if (Ed())
         Ed()->Undo();

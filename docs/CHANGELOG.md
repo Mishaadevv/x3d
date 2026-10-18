@@ -5,6 +5,26 @@
 одном месте — `project(ZeqouX3D VERSION ...)` в корневом CMakeLists.txt (оттуда его берут `Core/Version.h`, ресурс
 версии ZXEditor.exe, About и лог).
 
+## 0.13.18 — игровой UI: стили .zstyle, анимации, управление геймпадом (2026-10-18)
+- **Стили `.zstyle`** (UI Canvas > Style): CSS-подобные правила задают вид всех виджетов канваса в одном файле
+  - селекторы: по типу (`Button`, `Text`, `Panel`, `Slider`…), классу (UI Element > Style Class: `.title`), имени
+    (`#Play`), вложенности (`Panel.menu Button`), состоянию (`:hover`, `:pressed`, `:focused`, `:disabled`)
+  - свойства — имена из Details (`font-size`, `corner-radius`, `hover-color`, `padding: 10 20`…), переменные
+    `@accent: #3B8CF5;` → `$accent`, цвета `#RRGGBB(AA)` / `rgba()`
+  - файл перечитывается на лету: правишь стиль во время игры — UI сразу меняется; ошибки в Output Log
+  - в Starter Content — готовый `StarterContent/UI/Game.zstyle`, им оформлены HUD и меню шаблона Vehicle
+- **Look у каждого элемента**: Opacity, Scale, Translate (рисуется вокруг центра вместе с детьми, раскладка не
+  двигается) и Transition — плавные переходы (кнопка мягко увеличивается при наведении)
+- **Компонент UI Animation**: Fade In / Out, Slide In (слева, справа, сверху, снизу), Pop In, Pulse, Float, Blink,
+  Shake; задержка, длительность, кривые (EaseOut, Back, Elastic, Bounce…), проигрывается при появлении
+- **Твины из скриптов**: `entity.uiAnimate("opacity", 0, 0.3, "easeOut")` — любое числовое свойство или цвет;
+  `entity.uiPlay()`, `entity.addClass / removeClass / hasClass`
+- **Управление меню геймпадом и клавиатурой** (когда показан курсор `ui.cursor`): стрелки / D-pad / стик двигают
+  фокус к ближайшему виджету в эту сторону, Enter / Space / A — нажать, влево-вправо — слайдер, Escape / B —
+  `onUIBack`; фокус виден рамкой и стилем `:focused`; `entity.focus()`, `ui.focused`
+- Скрипты: `input.pressed("GamepadStart")` и другие кнопки геймпада; меню Vehicle открывается и кнопкой Start
+- Консоль: `input.press <клавиша>` — нажать клавишу в Play (для проверок)
+
 ## 0.13.17 — новая лицензия: на движке можно делать и продавать игры (2026-10-18)
 - **ZeqouX3D License** = PolyForm Strict 1.0.0 + **Game Exception**: игры, сделанные на движке, можно бесплатно
   раздавать и продавать без отчислений, вместе с рантаймом и контентом, которые кладёт в игру Package Project.

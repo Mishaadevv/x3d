@@ -262,6 +262,7 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     m_scripts.Reset(new ScriptSystem());
     m_scripts->SetContentRoot("/Game");
     m_animation->contentRoot = "/Game";
+    m_gameUI.contentRoot = "/Game";
     m_animation->raycast = [this](Vec3 from, Vec3 to, ecs::Entity ignore, Vec3& point, Vec3& normal) {
         const Vec3 d = to - from;
         const f32 dist = Length(d);
@@ -385,6 +386,7 @@ bool Game::Frame()
                           m_input.WasMouseReleased(MouseButton::Left), m_input.MouseWheel());
         m_gameUI.TypeText(m_world, m_input.TypedText(), m_input.WasKeyPressed(Key::Backspace), m_input.WasKeyPressed(Key::Enter),
                           m_input.WasKeyPressed(Key::Escape));
+        m_gameUI.Navigate(m_world, m_input, dt); // gamepad / arrows in menus
     }
 
     if (m_started) {

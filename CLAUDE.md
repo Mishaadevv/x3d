@@ -198,6 +198,12 @@ action view.gameUI), Interact only while the game shows the cursor (ui.cursor); 
 ZXGame: m_fonts + ui::Context (fonts) + UIRenderer pass; Packaging adds Engine/Content/Fonts as pak "Fonts".
 UI v2 (0.13.13): UICanvas::worldSpace (GameUISystem::SetCamera before Layout; onScreen / depth runtime), UIElement
 scroll / wrap, UIInputField (GameUISystem::TypeText, WantsKeyboard gates game input, UIEvent::Submit -> onUISubmit).
+UI styles / look / navigation (0.13.18): Engine/UIStyle.h (ParseUIStyle, ParseStyleValue: .zstyle CSS-like sheets),
+GameUILook.cpp (GameUISystem::ApplyStyles in Layout - base rules write fields, state rules are Overrides undone by
+RestoreOverrides at the end of Draw / start of Update; UIElement opacity / scale / translate / transition -> runtime
+shown* / anim* -> pixelScale / drawOpacity used by DrawPass; UIAnimation presets, Animate tweens, Navigate with focus
+ring; UIEvent::Back -> onUIBack). GameUISystem::contentRoot set by hosts, Update called by TickGame. Starter
+StarterContent/UI/Game.zstyle (Vehicle HUD). Console input.press <key> (simulated key in Play, captures game input).
 time.scale = ScriptSystem::timeScale -> GameTimeScale(); hosts scale particles / animation with it. Tests GameUI.*.
 Engine module depends on UI now.
 Wind (0.13.6): Engine/Wind.h (WindZone / WindResponse components, WindClock singleton advanced by TickWind in the editor

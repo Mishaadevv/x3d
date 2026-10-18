@@ -13,20 +13,32 @@
 //   World Space  a canvas can follow its entity in the 3D world (name plates and health bars over tanks / characters):
 //                drawn at the projected point, shrinking with distance, hidden behind the camera or beyond Max Distance.
 //   Scroll       an element with Scroll on scrolls its children (mouse wheel, scroll bar) and clips them.
+//   Style        a canvas can take its look from a .zstyle sheet (Engine/UIStyle.h): CSS-like rules by widget type,
+//                Style Class and state (hover, pressed, focused, disabled), with transitions.
+//   Look         every element has Opacity, Scale and Translate (drawn around its center, children included; layout
+//                unaffected) - what styles, UI Animation presets and script tweens animate.
+//   Navigation   menus work with a gamepad / the keyboard: arrows / D-pad / left stick move the focus to the nearest
+//                widget in that direction, Enter / Space / A press it, Escape / B sends onUIBack.
 //
 //   GameUISystem::Layout(world, fonts, screenRect);   // every frame (editing too: the canvas previews in the viewport)
 //   GameUISystem::Interact(world, mouse, down, ...);  // while playing: hover, press, drag; events for scripts
 //   GameUISystem::Draw(world, fonts, drawList, textures);
 //   GameUISystem::SetCamera(viewProj, position);     // before Layout: world-space canvases
 //   GameUISystem::TypeText(world, typed, backspace, enter, escape); // keyboard for the focused UI Input Field
-//   Scripts: fn onUIClick(name), fn onUIChanged(name, value), fn onUISubmit(name, text) on the widget or its ancestors;
-//   entity.setText / text, setValue / value, setVisible / visible; ui.cursor (show the mouse cursor while playing).
+//   GameUISystem::Navigate(world, input, dt);         // gamepad / keyboard focus (menus, while the cursor is shown)
+//   GameUISystem::Update(world, dt);                  // while playing: transitions, UI Animations, tweens
+//   Scripts: fn onUIClick(name), fn onUIChanged(name, value), fn onUISubmit(name, text), fn onUIBack(name) on the
+//   widget or its ancestors; entity.setText / text, setValue / value, setVisible / visible, uiAnimate(property, to,
+//   seconds[, easing[, delay]]), uiPlay(), focus(), addClass / removeClass / hasClass; ui.cursor (show the mouse
+//   cursor while playing), ui.focused (name of the widget with the gamepad focus).
 
 #include "Asset/AssetManager.h"
 #include "Core/Containers/Function.h"
 #include "Core/Math/Color.h"
 #include "Core/Math/Geometry.h"
 #include "Core/Reflection/Reflection.h"
+#include "Core/Memory/Pointers.h"
+#include "Engine/UIStyle.h"
 #include "Scene/ECS/World.h"
 
 namespace zx {
@@ -35,6 +47,7 @@ namespace ui {
 class FontSystem;
 class DrawList;
 } // namespace ui
+class InputState;
 
 enum class UIDirection : u8
 {
@@ -73,7 +86,36 @@ ZX_DECLARE_ENUM(UIDirection);
 ZX_DECLARE_ENUM(UIJustify);
 ZX_DECLARE_ENUM(UIAlign);
 ZX_DECLARE_ENUM(UITextAlign);
+enum class UIEasing : u8
+{
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+    Back,    // overshoots a little, then settles
+    Elastic, // springs past the end a few times
+    Bounce,
+};
+enum class UIAnimationPreset : u8
+{
+    FadeIn,
+    FadeOut,
+    SlideInLeft,
+    SlideInRight,
+    SlideInTop,
+    SlideInBottom,
+    PopIn,
+    Pulse, // loops
+    Float, // loops: bobs up and down
+    Blink, // loops
+    Shake,
+};
 ZX_DECLARE_ENUM(UIFontWeight);
+ZX_DECLARE_ENUM(UIEasing);
+ZX_DECLARE_ENUM(UIAnimationPreset);
+
+/// 0..1 -> eased 0..1 (Back / Elastic leave the range on the way).
+f32 ApplyEasing(UIEasing easing, f32 t);
 
 struct UICanvas
 {
@@ -85,6 +127,7 @@ struct UICanvas
     f32 maxDistance = 300.0f;                  // m: hidden farther away
     f32 fullSizeDistance = 15.0f;              // m: closer = full size, farther = smaller (0 = always full size)
     f32 minScale = 0.45f;                      // smallest size far away
+    String style; // .zstyle sheet (Content path, e.g. "UI/Menu.zstyle"): the look of every widget on the canvas
 
     // Runtime (not saved).
     bool onScreen = true;
@@ -111,11 +154,27 @@ struct UIElement
     bool clip = false; // children are cut at the box
     bool wrap = false;   // Row: children that don't fit start a new line (tag lists, inventories)
     bool scroll = false; // Column: children scroll (wheel, scroll bar) instead of squeezing; clipped
+    // Look (drawn around the center with the children; the layout doesn't move).
+    String styleClass;     // classes for the canvas' style sheet: "title big"
+    f32 opacity = 1.0f;
+    f32 scale = 1.0f;
+    Vec2 translate;        // UI units
+    f32 transition = 0.0f; // seconds for Opacity / Scale / Translate changes (styles: hover grows smoothly)
+    bool navigable = true; // a button / slider / toggle / input field the gamepad focus can land on
 
     // Runtime (not saved).
     Rect rect;     // screen pixels after Layout
     Vec2 measured; // UI units (content size)
     bool hovered = false, pressed = false;
+    bool focused = false;   // gamepad / keyboard focus
+    f32 pixelScale = 1.0f;  // pixels per UI unit as drawn (canvas scale x Scale of this and its ancestors)
+    f32 drawOpacity = 1.0f; // Opacity of this and its ancestors
+    f32 shownOpacity = 1.0f, shownScale = 1.0f; // the Look on its way to the target (transition)
+    Vec2 shownTranslate;
+    f32 targetOpacity = 1.0f, targetScale = 1.0f; // the Look after styles (Layout)
+    Vec2 targetTranslate;
+    f32 animOpacity = 1.0f, animScale = 1.0f; // UI Animation preset on top
+    Vec2 animTranslate;
     f32 scrollOffset = 0.0f;  // UI units scrolled (Scroll)
     f32 contentHeight = 0.0f; // UI units of the scrolled content
 };
@@ -201,7 +260,25 @@ struct UIInputField
     bool interactable = true;
 };
 
+/// Plays a ready-made animation of the element's Look (fade, slide, pop, pulse...) when it appears, or from a script
+/// (entity.uiPlay()).
+struct UIAnimation
+{
+    UIAnimationPreset preset = UIAnimationPreset::FadeIn;
+    f32 duration = 0.4f; // seconds (loops: one cycle)
+    f32 delay = 0.0f;
+    UIEasing easing = UIEasing::EaseOut;
+    f32 distance = 80.0f;   // UI units for slides; Float / Shake move a tenth of it
+    bool playOnShow = true; // when the game starts and every time the element becomes visible
+    bool loop = false;      // repeat (Pulse, Float and Blink always loop)
+
+    // Runtime (not saved).
+    f32 time = -1.0f; // < 0: not playing
+    bool wasVisible = false;
+};
+
 ZX_DECLARE_TYPE(UICanvas);
+ZX_DECLARE_TYPE(UIAnimation);
 ZX_DECLARE_TYPE(UIInputField);
 ZX_DECLARE_TYPE(UIElement);
 ZX_DECLARE_TYPE(UIPanel);
@@ -219,6 +296,7 @@ struct UIEvent
         Click,
         Changed,
         Submit, // Enter in a UI Input Field (text = its text)
+        Back,   // Escape / gamepad B in a menu (entity = the focused widget, or none)
     };
     Type type = Type::Click;
     ecs::Entity entity;
@@ -248,6 +326,28 @@ public:
     ecs::Entity FocusedInput() const { return m_focused; }
     /// Seconds for the caret blink (hosts advance it).
     f32 time = 0.0f;
+    /// Where canvas styles are read from (the project's Content folder or "/Game").
+    String contentRoot;
+    /// Gamepad / keyboard: moves the focus, presses the focused widget, Back events. Call after Interact.
+    void Navigate(ecs::World& world, const InputState& input, f32 dt);
+    /// While playing: transitions of the Look, UI Animation presets, tweens.
+    void Update(ecs::World& world, f32 dt);
+    /// Tweens a property of a widget (opacity, scale, x, y, width, height, fontSize, value, color, ... - the style
+    /// property names) to `to` (1 number, or 4 for a color: r g b a) in `seconds`. False + `error` if unknown.
+    bool Animate(ecs::World& world, ecs::Entity e, StringView property, Span<const f32> to, f32 seconds, UIEasing easing, f32 delay,
+                 String* error = nullptr);
+    /// Restarts the entity's UI Animation.
+    bool PlayAnimation(ecs::World& world, ecs::Entity e);
+    /// Gives `e` the gamepad / keyboard focus (shown with a ring).
+    void Focus(ecs::Entity e)
+    {
+        m_navFocus = e;
+        m_navActive = bool(e);
+    }
+    ecs::Entity NavFocus() const { return m_navFocus; }
+    bool NavActive() const { return m_navActive; }
+    /// Problems of the canvases' style sheets ("Menu.zstyle line 3: ...").
+    Span<const String> StyleErrors() const { return m_styleErrors.View(); }
     /// Draws every visible canvas (lowest order first). `textureSrv` resolves UI Image textures (0 / invalid: skip).
     void Draw(ecs::World& world, ui::FontSystem& fonts, ui::DrawList& dl, const Function<u32(asset::AssetId)>& textureSrv);
     /// Events since the last ClearEvents (Interact adds them).
@@ -262,10 +362,46 @@ public:
         m_events.Clear();
         m_pressed = {};
         m_focused = {};
+        m_navFocus = {};
+        m_navActive = false;
+        m_tweens.Clear();
+        m_playing = false;
         cursorRequested = false;
     }
+    GameUISystem();
+    ~GameUISystem();
+    GameUISystem(const GameUISystem&) = delete;
+    GameUISystem& operator=(const GameUISystem&) = delete;
 
 private:
+    struct StyleCache;
+    struct Override;
+    struct Tween
+    {
+        ecs::Entity entity;
+        u32 kind = 0; // widget component (see GameUI.cpp)
+        const FieldInfo* field = nullptr;
+        i32 sub = -1;  // component of a Vec2 field (width, height, x, y)
+        u32 count = 1; // floats (4 = color)
+        f32 from[4] = {}, to[4] = {};
+        f32 duration = 0.0f, delay = 0.0f, elapsed = 0.0f;
+        UIEasing easing = UIEasing::EaseOut;
+    };
+    void ApplyStyles(ecs::World& world, ecs::Entity canvas);
+    void RestoreOverrides(ecs::World& world);
+    UniquePtr<StyleCache> m_styles;
+    Array<UniquePtr<Override>> m_overrides;
+    Array<Tween> m_tweens;
+    Array<String> m_styleErrors;
+    ecs::Entity m_navFocus;
+    bool m_navActive = false;
+    f32 m_navRepeat = 0.0f; // stick auto-repeat timer
+    bool m_stickHeld = false;
+    bool m_skipNav = false; // Enter / Escape went to an input field this frame
+    bool m_padPrev[6] = {}; // D-pad up / down / left / right, A, B last frame
+    f32 m_navPressFlash = 0.0f;
+    bool m_playing = false; // Update runs (transitions animate; otherwise the Look snaps)
+
     Array<UIEvent> m_events;
     ecs::Entity m_pressed;
     ecs::Entity m_focused;

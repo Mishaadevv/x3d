@@ -38,6 +38,8 @@ void InputState::BeginFrame()
 {
     MemCopy(m_prevKeys, m_keys, sizeof(m_keys));
     MemCopy(m_prevMouse, m_mouse, sizeof(m_mouse));
+    for (u32 i = 0; i < MaxGamepads; ++i)
+        m_prevGamepads[i] = m_gamepads[i];
     m_mouseDelta = Vec2();
     m_wheel = 0.0f;
     m_wheelH = 0.0f;
