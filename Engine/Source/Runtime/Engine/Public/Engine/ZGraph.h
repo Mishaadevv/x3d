@@ -119,6 +119,9 @@ struct Graph
     const GraphLink* LinkInto(u32 node, StringView pin) const;
     /// The links out of an output pin.
     void LinksFrom(u32 node, StringView pin, Array<const GraphLink*>& out) const;
+    /// The type a pin carries here (Get / Set Variable take their variable's type).
+    GraphPinType PinType(const GraphNode& node, const GraphPinDef& pin) const;
+    const GraphVariable* FindVariable(StringView name) const;
 };
 
 bool ParseGraph(StringView json, Graph& out, String* error = nullptr);
@@ -129,6 +132,7 @@ struct GraphCompileResult
     String source;          // ZeqouScript
     Array<String> errors;   // "Node 'Set Text' (#12): ..."
     Array<String> warnings; // unconnected nodes and the like
+    Array<u32> errorNodes;  // nodes with errors (the editor outlines them)
     Array<u32> lineNodes;   // node id of every source line (0 = none), 1-based lines -> index line - 1
 };
 

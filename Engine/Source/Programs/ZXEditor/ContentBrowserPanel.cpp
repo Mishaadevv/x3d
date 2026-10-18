@@ -227,6 +227,8 @@ void DrawContentBrowserPanel(Editor& ed)
                     OpenScriptEditor(ed, item.path);
                 else if (Path::HasExtension(item.path, ".zanimgraph"))
                     OpenAnimGraphEditor(ed, item.path);
+                else if (Path::HasExtension(item.path, ".zgraph"))
+                    OpenZGraphEditor(ed, item.path);
                 else if ((Path::HasExtension(item.path, ".wav") || Path::HasExtension(item.path, ".ogg")) && ed.audio)
                     ed.audio->TogglePreview(item.path);
                 else if (Path::HasExtension(item.path, ".zmat") || Path::HasExtension(item.path, ".zmati")) {
@@ -301,8 +303,12 @@ void DrawContentBrowserPanel(Editor& ed)
                 if (IsHdrImage(item.path) && ui::MenuItem(ZX_ICON_CLOUD_SUN "  Use as HDRI Sky", {}, false, !ed.IsPlaying()))
                     ed.UseHdriSky(Path::MakeRelative(item.path, ed.contentRoot));
                 if (Path::HasExtension(item.path, ".zs") || Path::HasExtension(item.path, ".zgraph")) {
-                    if (Path::HasExtension(item.path, ".zs") && ui::MenuItem(ZX_ICON_PENCIL "  Edit"))
-                        OpenScriptEditor(ed, item.path);
+                    if (ui::MenuItem(ZX_ICON_PENCIL "  Edit")) {
+                        if (Path::HasExtension(item.path, ".zs"))
+                            OpenScriptEditor(ed, item.path);
+                        else
+                            OpenZGraphEditor(ed, item.path);
+                    }
                     const bool canAttach = ed.world.IsAlive(ed.selected) && !ed.IsPlaying();
                     if (ui::MenuItem(ZX_ICON_PLUS "  Add to Selected Entity", {}, false, canAttach)) {
                         ed.undo.Begin("Add Script");
@@ -345,6 +351,15 @@ void DrawContentBrowserPanel(Editor& ed)
                     OpenScriptEditor(ed, path);
                 Refresh(ed, true);
             }
+            if (ui::MenuItem(ZX_ICON_WORKFLOW "  New Script Graph")) {
+                String path = Path::Join(b.browserCurrent, "NewGraph.zgraph");
+                for (u32 n = 2; platform::FileExists(path); ++n)
+                    path = Path::Join(b.browserCurrent, String::Format("NewGraph{}.zgraph", n));
+                if (CreateZGraphFile(path))
+                    OpenZGraphEditor(ed, path);
+                Refresh(ed, true);
+            }
+            ui::ItemTooltip("Visual scripting with nodes (like Blueprints): put it on an entity like a script");
             if (ui::MenuItem(ZX_ICON_WORKFLOW "  New Anim Graph")) {
                 CreateAnimGraph(ed, b.browserCurrent);
                 Refresh(ed, true);

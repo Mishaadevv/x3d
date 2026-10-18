@@ -202,6 +202,10 @@ ZGraph (0.13.21): Engine/ZGraph.h (.zgraph JSON: ParseGraph / WriteGraph; GraphN
 templates {pin} {@setting} {#id}; CompileGraph -> ZeqouScript source + lineNodes for errors; MakeExampleGraph).
 ScriptSystem::CheckForChanges compiles .zgraph through it (Script component takes .zs or .zgraph). Tests ZGraph.*
 (every library node must generate compilable script). Console graph.code / graph.new / script.attach.
+ZGraph editor (0.13.22): ZXEditor/ZGraphEditor.cpp (Editor::graphEditor, window "Script Graph"; canvas like the
+Material Editor; snapshot undo = WriteGraph; Graph::PinType gives Get / Set Variable pins their variable's type;
+GraphCompileResult::errorNodes). Console graph.edit. Real-mouse checks: scratchpad uidrag2.py also has "type:text"
+and "click:x,y" tokens.
 UI Designer (0.13.20): EditorTool::UIDesigner (EditorUIDesigner.cpp: UIDesignerScreen preview rect used for
 gameUI.Layout in ViewportPanel, UpdateUIDesigner after gameUI.Draw - PickChain / PickTarget Figma-like picking,
 handles, reorder via scene::Children (all siblings recorded for undo), DrawUIDesignerPanel); Context::SetCursorShape.

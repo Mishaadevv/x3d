@@ -393,6 +393,23 @@ void Graph::LinksFrom(u32 node, StringView pin, Array<const GraphLink*>& out) co
             out.PushBack(&l);
 }
 
+const GraphVariable* Graph::FindVariable(StringView variableName) const
+{
+    for (const GraphVariable& v : variables)
+        if (v.name == variableName)
+            return &v;
+    return nullptr;
+}
+
+GraphPinType Graph::PinType(const GraphNode& node, const GraphPinDef& pin) const
+{
+    if (pin.type == T::Any && (node.type == "pure.getVariable" || node.type == "action.setVariable"))
+        if (const String* var = node.settings.Find("variable"))
+            if (const GraphVariable* v = FindVariable(*var))
+                return v->type;
+    return pin.type;
+}
+
 bool ParseGraph(StringView json, Graph& out, String* error)
 {
     JsonValue root;
@@ -525,6 +542,8 @@ struct Codegen
     {
         const GraphNodeDef* d = n ? FindGraphNode(n->type) : nullptr;
         out.errors.PushBack(n ? String::Format("Node '{}' (#{}): {}", d ? d->title : n->type.View(), n->id, message) : String(message));
+        if (n && out.errorNodes.Find(n->id) == NPos)
+            out.errorNodes.PushBack(n->id);
     }
 
     Function& FunctionFor(StringView signature)
@@ -565,7 +584,9 @@ struct Codegen
                 const String value = Setting(n, d, key.DropLeft(1));
                 if (key == "@event" || key == "@variable") {
                     if (!IsIdentifier(value))
-                        Error(&n, String::Format("'{}' isn't a valid name (letters, digits, _)", value));
+                        Error(&n, value.Empty() ? String("choose a variable") : String::Format("'{}' isn't a valid name (letters, digits, _)", value));
+                    else if (key == "@variable" && !g.FindVariable(value))
+                        Error(&n, String::Format("there's no variable '{}'", value));
                     r += Identifier(value);
                 } else {
                     r += value;
@@ -593,8 +614,9 @@ struct Codegen
                 Error(&n, String::Format("the wire into '{}' comes from a missing pin", pin.name));
                 return String("nil");
             }
-            if (!GraphPinsCompatible(sp->type, pin.type))
-                Error(&n, String::Format("'{}' expects {} but gets {}", pin.name, GraphPinTypeName(pin.type), GraphPinTypeName(sp->type)));
+            const GraphPinType fromType = g.PinType(*src, *sp), toType = g.PinType(n, pin);
+            if (!GraphPinsCompatible(fromType, toType))
+                Error(&n, String::Format("'{}' expects {} but gets {}", pin.name, GraphPinTypeName(toType), GraphPinTypeName(fromType)));
             if (depth > 64) {
                 Error(&n, "the values loop back into themselves");
                 return String("nil");
@@ -606,7 +628,7 @@ struct Codegen
         }
         (void)d;
         const String* typed = n.values.Find(pin.name);
-        return Literal(pin.type, typed ? typed->View() : StringView(pin.defaultValue));
+        return Literal(g.PinType(n, pin), typed ? typed->View() : StringView(pin.defaultValue));
     }
 
     /// Statements along the exec wire leaving `from`.`pin`.
@@ -837,22 +859,22 @@ Graph MakeExampleGraph()
     };
     auto link = [&](u32 a, const char* ap, u32 b, const char* bp) { g.links.PushBack(GraphLink{a, ap, b, bp}); };
     node(1, "event.update", Vec2(0, 0));
-    node(2, "action.rotate", Vec2(320, 0));
-    node(3, "pure.getVariable", Vec2(-40, 160)).settings.InsertOrAssign("variable", "speed");
-    node(4, "pure.multiply", Vec2(140, 160));
-    node(5, "pure.makeVec3", Vec2(300, 180));
+    node(2, "action.rotate", Vec2(800, 0));
+    node(3, "pure.getVariable", Vec2(0, 140)).settings.InsertOrAssign("variable", "speed");
+    node(4, "pure.multiply", Vec2(270, 140));
+    node(5, "pure.makeVec3", Vec2(540, 140));
     link(1, "then", 2, "in");
     link(3, "value", 4, "a");
     link(1, "dt", 4, "b");
     link(4, "result", 5, "y");
     link(5, "vector", 2, "degrees");
-    node(6, "event.keyPressed", Vec2(0, 360)).settings.InsertOrAssign("key", "Space");
-    GraphNode& set = node(7, "action.setVariable", Vec2(320, 360));
+    node(6, "event.keyPressed", Vec2(0, 340)).settings.InsertOrAssign("key", "Space");
+    GraphNode& set = node(7, "action.setVariable", Vec2(540, 340));
     set.settings.InsertOrAssign("variable", "presses");
-    node(8, "pure.getVariable", Vec2(-40, 480)).settings.InsertOrAssign("variable", "presses");
-    node(9, "pure.add", Vec2(140, 480));
-    node(10, "action.print", Vec2(600, 360));
-    node(11, "pure.concat", Vec2(420, 520)).values.InsertOrAssign("a", "Space pressed: ");
+    node(8, "pure.getVariable", Vec2(0, 480)).settings.InsertOrAssign("variable", "presses");
+    node(9, "pure.add", Vec2(270, 480));
+    node(10, "action.print", Vec2(1080, 340));
+    node(11, "pure.concat", Vec2(810, 480)).values.InsertOrAssign("a", "Space pressed: ");
     link(6, "then", 7, "in");
     link(8, "value", 9, "a");
     link(9, "result", 7, "value");

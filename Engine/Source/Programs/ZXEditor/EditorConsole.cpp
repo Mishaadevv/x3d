@@ -471,6 +471,11 @@ ConCommand CmdScriptAttach("script.attach", "Puts a script (.zs) or script graph
                                 ed->undo.End();
                             });
 
+ConCommand CmdGraphEdit("graph.edit", "Opens a script graph in the graph editor: graph.edit <Content path .zgraph>", [](Span<const StringView> args) {
+    if (Editor* ed = Ed(); ed && !args.Empty())
+        OpenZGraphEditor(*ed, Path::Join(ed->contentRoot, args[0]));
+});
+
 ConCommand CmdGraphNew("graph.new", "Writes an example script graph (a spinner): graph.new <Content path .zgraph>", [](Span<const StringView> args) {
     Editor* ed = Ed();
     if (!ed || args.Empty())
