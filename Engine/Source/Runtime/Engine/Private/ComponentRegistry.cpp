@@ -82,6 +82,7 @@ void RegisterEngineComponents()
     RegisterComponent<UIProgressBar>("UI Progress Bar", "\xEE\x86\xBF");             // gauge
     RegisterComponent<UISlider>("UI Slider", "\xEE\x8A\x9A");                        // sliders-horizontal
     RegisterComponent<UIToggle>("UI Toggle", "\xEE\x86\x8B");                        // toggle-left
+    RegisterComponent<UIInputField>("UI Input Field", "\xEE\x89\xA5");             // text-cursor-input
     RegisterComponent<Flammable>("Flammable", "\xEE\x83\x92");                     // flame
     RegisterComponent<Decal>("Decal", "\xEE\x8E\xBB");                                 // stamp
     RegisterComponent<ReflectionProbe>("Reflection Probe", "\xEE\x8D\x85");           // circle-dot

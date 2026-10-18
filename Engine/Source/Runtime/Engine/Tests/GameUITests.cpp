@@ -229,3 +229,124 @@ ZX_TEST(GameUI, ScriptsGetEventsAndSetWidgets)
     ZX_EXPECT(!s.ui.cursorRequested);
     platform::DeleteDirectoryTree(root);
 }
+
+ZX_TEST(GameUI, WorldSpaceCanvasFollowsItsEntity)
+{
+    UIScene s;
+    const ecs::Entity tank = scene::CreateNode(s.world, "Tank", Transform(Vec3(0, 0, 10)));
+    const ecs::Entity plate = scene::CreateNode(s.world, "Plate", Transform(), tank);
+    UICanvas cv;
+    cv.worldSpace = true;
+    cv.worldOffset = Vec3(0, 2, 0);
+    cv.fullSizeDistance = 10.0f;
+    cv.maxDistance = 50.0f;
+    s.world.Add(plate, cv);
+    UIElement root;
+    root.size = Vec2(200, 40);
+    root.pivot = Vec2(0.5f, 1.0f);
+    s.world.Add(plate, root);
+    scene::UpdateWorldTransforms(s.world);
+    const Mat4 proj = Mat4::PerspectiveInfiniteReversedZ(DegToRad(60.0f), 1920.0f / 1080.0f, 0.1f);
+    auto view = [&](Vec3 eye, Vec3 target) { return proj * Mat4::LookAt(eye, target, Vec3::Up()); };
+    const Rect screen(Vec2(0, 0), Vec2(1920, 1080));
+
+    // Looking straight at the point above the tank: centered horizontally, its bottom edge at the screen center.
+    s.ui.SetCamera(view(Vec3(0, 2, 0), Vec3(0, 2, 10)), Vec3(0, 2, 0));
+    s.ui.Layout(s.world, s.fonts, screen);
+    const Rect r = s.RectOf(plate);
+    ZX_EXPECT(s.world.Get<const UICanvas>(plate)->onScreen);
+    ZX_EXPECT(Near(r.Center().x, 960.0f));
+    ZX_EXPECT(Near(r.max.y, 540.0f));
+    ZX_EXPECT(Near(r.Width(), 200.0f)); // 10 m = full size
+    // Twice as far: half the size (still above the tank).
+    s.ui.SetCamera(view(Vec3(0, 2, -10), Vec3(0, 2, 10)), Vec3(0, 2, -10));
+    s.ui.Layout(s.world, s.fonts, screen);
+    ZX_EXPECT(Near(s.RectOf(plate).Width(), 100.0f));
+    // Behind the camera, and beyond Max Distance: hidden.
+    s.ui.SetCamera(view(Vec3(0, 2, 20), Vec3(0, 2, 40)), Vec3(0, 2, 20));
+    s.ui.Layout(s.world, s.fonts, screen);
+    ZX_EXPECT(!s.world.Get<const UICanvas>(plate)->onScreen);
+    s.ui.SetCamera(view(Vec3(0, 2, -60), Vec3(0, 2, 10)), Vec3(0, 2, -60));
+    s.ui.Layout(s.world, s.fonts, screen);
+    ZX_EXPECT(!s.world.Get<const UICanvas>(plate)->onScreen);
+}
+
+ZX_TEST(GameUI, ScrollViewAndWrap)
+{
+    UIScene s;
+    UIElement list;
+    list.size = Vec2(400, 300);
+    list.scroll = true;
+    list.gap = 0.0f;
+    const ecs::Entity view = s.Widget("List", list);
+    ecs::Entity rows[10];
+    for (u32 i = 0; i < 10; ++i) {
+        UIElement row;
+        row.size = Vec2(0, 100);
+        rows[i] = s.Widget(String::Format("Row {}", i), row, view);
+    }
+    const Rect screen(Vec2(0, 0), Vec2(1920, 1080));
+    s.ui.Layout(s.world, s.fonts, screen);
+    ZX_EXPECT(Near(s.RectOf(rows[0]).Height(), 100.0f)); // not squeezed
+    ZX_EXPECT(Near(s.world.Get<const UIElement>(view)->contentHeight, 1000.0f));
+    const f32 top0 = s.RectOf(rows[0]).min.y;
+    // Wheel down over the list: scrolled by 60 units per notch; clamped at the end (1000 - 300).
+    s.ui.Interact(s.world, s.RectOf(view).Center(), false, false, false, -2.0f);
+    s.ui.Layout(s.world, s.fonts, screen);
+    ZX_EXPECT(Near(s.RectOf(rows[0]).min.y, top0 - 120.0f));
+    s.ui.Interact(s.world, s.RectOf(view).Center(), false, false, false, -100.0f);
+    s.ui.Layout(s.world, s.fonts, screen);
+    ZX_EXPECT(Near(s.world.Get<const UIElement>(view)->scrollOffset, 700.0f));
+
+    // Wrap: 5 boxes of 150 in a 400-wide row (gap 10) -> lines of 2, 2, 1.
+    UIElement grid;
+    grid.direction = UIDirection::Row;
+    grid.wrap = true;
+    grid.size = Vec2(400, 0);
+    grid.gap = 10.0f;
+    const ecs::Entity g = s.Widget("Grid", grid);
+    ecs::Entity cells[5];
+    for (u32 i = 0; i < 5; ++i) {
+        UIElement c;
+        c.size = Vec2(150, 50);
+        cells[i] = s.Widget(String::Format("Cell {}", i), c, g);
+    }
+    s.ui.Layout(s.world, s.fonts, screen);
+    ZX_EXPECT(Near(s.RectOf(cells[1]).min.x - s.RectOf(cells[0]).min.x, 160.0f));
+    ZX_EXPECT(Near(s.RectOf(cells[2]).min.x, s.RectOf(cells[0]).min.x));
+    ZX_EXPECT(Near(s.RectOf(cells[2]).min.y - s.RectOf(cells[0]).min.y, 60.0f));
+    ZX_EXPECT(Near(s.RectOf(cells[4]).min.y - s.RectOf(cells[0]).min.y, 120.0f));
+    ZX_EXPECT(Near(s.RectOf(g).Height(), 170.0f)); // 3 lines of 50 + 2 gaps
+}
+
+ZX_TEST(GameUI, InputFieldTyping)
+{
+    UIScene s;
+    UIElement box;
+    box.size = Vec2(400, 50);
+    const ecs::Entity field = s.Widget("Chat", box);
+    UIInputField in;
+    in.maxLength = 8;
+    in.clearOnSubmit = true;
+    s.world.Add(field, in);
+    s.ui.Layout(s.world, s.fonts, Rect(Vec2(0, 0), Vec2(1920, 1080)));
+    // Typing does nothing until the field is clicked.
+    s.ui.TypeText(s.world, "x", false, false, false);
+    ZX_EXPECT(s.world.Get<const UIInputField>(field)->text.Empty());
+    s.ui.Interact(s.world, s.RectOf(field).Center(), true, true, false);
+    ZX_EXPECT(s.ui.WantsKeyboard());
+    s.ui.TypeText(s.world, "\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82!", false, false, false); // "Привет!" (Cyrillic, 2-byte)
+    ZX_EXPECT_EQ(s.world.Get<const UIInputField>(field)->text, String("\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82!"));
+    s.ui.TypeText(s.world, "\x08" "abc", false, false, false); // control characters are ignored; 8 characters max
+    ZX_EXPECT_EQ(s.world.Get<const UIInputField>(field)->text, String("\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82!a"));
+    s.ui.TypeText(s.world, "", true, false, false); // backspace removes one character
+    s.ui.TypeText(s.world, "", true, false, false); // ... a whole 2-byte one
+    ZX_EXPECT_EQ(s.world.Get<const UIInputField>(field)->text, String("\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82"));
+    s.ui.ClearEvents();
+    s.ui.TypeText(s.world, "", false, true, false); // Enter: submitted, cleared, keyboard released
+    ZX_REQUIRE(s.ui.Events().Size() == 1u);
+    ZX_EXPECT(s.ui.Events()[0].type == UIEvent::Type::Submit);
+    ZX_EXPECT_EQ(s.ui.Events()[0].text, String("\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82"));
+    ZX_EXPECT(s.world.Get<const UIInputField>(field)->text.Empty());
+    ZX_EXPECT(!s.ui.WantsKeyboard());
+}

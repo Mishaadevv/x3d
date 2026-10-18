@@ -181,6 +181,8 @@ UIToggle components; GameUISystem Layout -> Interact -> Draw into a ui::DrawList
 ScriptSystem::DispatchUIEvents). Editor: Editor::gameUI drawn in ViewportPanel over the viewport image (showGameUI,
 action view.gameUI), Interact only while the game shows the cursor (ui.cursor); CreateUIWidget / create ui.<kind>.
 ZXGame: m_fonts + ui::Context (fonts) + UIRenderer pass; Packaging adds Engine/Content/Fonts as pak "Fonts".
+UI v2 (0.13.13): UICanvas::worldSpace (GameUISystem::SetCamera before Layout; onScreen / depth runtime), UIElement
+scroll / wrap, UIInputField (GameUISystem::TypeText, WantsKeyboard gates game input, UIEvent::Submit -> onUISubmit).
 time.scale = ScriptSystem::timeScale -> GameTimeScale(); hosts scale particles / animation with it. Tests GameUI.*.
 Engine module depends on UI now.
 Wind (0.13.6): Engine/Wind.h (WindZone / WindResponse components, WindClock singleton advanced by TickWind in the editor

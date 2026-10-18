@@ -1834,8 +1834,55 @@ ecs::Entity Editor::CreateUIWidget(StringView kind)
         el.size = Vec2(64.0f, 34.0f);
         e = widget("Toggle", el);
         world.Add(e, UIToggle{});
+    } else if (kind.EqualsIgnoreCase("input") || kind.EqualsIgnoreCase("inputfield")) {
+        el.size = Vec2(420.0f, 52.0f);
+        e = widget("Input Field", el);
+        world.Add(e, UIInputField{});
+    } else if (kind.EqualsIgnoreCase("scroll") || kind.EqualsIgnoreCase("scrollview")) {
+        el.size = Vec2(480.0f, 360.0f);
+        el.padding = Vec4(16.0f);
+        el.gap = 8.0f;
+        el.scroll = true;
+        e = widget("Scroll View", el);
+        world.Add(e, UIPanel{});
+    } else if (kind.EqualsIgnoreCase("nameplate")) {
+        // A world-space canvas floating over the selected object: a name and a health bar.
+        const ecs::Entity owner = world.IsAlive(selected) && !world.Has<UIElement>(selected) ? selected : ecs::Entity();
+        const ecs::Entity c = CreateEntity("Name Plate", Transform(), owner);
+        UICanvas cv;
+        cv.worldSpace = true;
+        world.Add(c, cv);
+        UIElement root;
+        root.pivot = Vec2(0.5f, 1.0f);
+        root.padding = Vec4(10.0f, 6.0f, 10.0f, 8.0f);
+        root.gap = 4.0f;
+        root.align = UIAlign::Center;
+        world.Add(c, root);
+        EnsureEntityGuid(world, c);
+        const ecs::Entity name = CreateEntity("Name", Transform(), c);
+        world.Add(name, UIElement{});
+        UIText t;
+        t.text = "Name";
+        t.fontSize = 26.0f;
+        t.weight = UIFontWeight::SemiBold;
+        t.align = UITextAlign::Center;
+        world.Add(name, t);
+        EnsureEntityGuid(world, name);
+        const ecs::Entity bar = CreateEntity("Health", Transform(), c);
+        UIElement be;
+        be.size = Vec2(160.0f, 10.0f);
+        world.Add(bar, be);
+        UIProgressBar pb;
+        pb.value = 1.0f;
+        world.Add(bar, pb);
+        EnsureEntityGuid(world, bar);
+        if (created)
+            world.Destroy(created); // no screen canvas needed
+        CommitCreated(c, "Create Name Plate");
+        Select(c);
+        return c;
     } else {
-        ZX_LOG_WARN(LogEditor, "Unknown UI widget '{}' (canvas, panel, text, button, image, progress, slider, toggle)", kind);
+        ZX_LOG_WARN(LogEditor, "Unknown UI widget '{}' (canvas, panel, text, button, image, progress, slider, toggle, input, scroll, nameplate)", kind);
         if (created)
             CommitCreated(created, "Create UI Canvas");
         return created;
@@ -3591,7 +3638,8 @@ bool Editor::Frame()
     if (playState == PlayState::Playing || m_pieStep) {
         const f32 gameDt = m_pieStep ? 1.0f / 60.0f : dt;
         GameSystems systems = GameSystemsForPlay();
-        TickGame(world, systems, gameDt, gameInputCaptured ? &input : nullptr, CurrentListener(), !m_pieStep);
+        // While a UI Input Field has the keyboard the game gets no input (typing doesn't move the player).
+        TickGame(world, systems, gameDt, gameInputCaptured && !gameUI.WantsKeyboard() ? &input : nullptr, CurrentListener(), !m_pieStep);
         m_pieStep = false;
     } else if (audio && !IsPlaying()) {
         audio->TickIdle(dt); // previews

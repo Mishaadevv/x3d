@@ -132,7 +132,8 @@ void DrawMenus(Editor& ed)
         ActionMenuItem(ed, "create.windZone");
         if (ui::BeginMenu(ZX_ICON_MONITOR "  UI")) {
             for (StringView id : {StringView("create.ui.canvas"), StringView("create.ui.panel"), StringView("create.ui.text"), StringView("create.ui.button"),
-                                  StringView("create.ui.image"), StringView("create.ui.progress"), StringView("create.ui.slider"), StringView("create.ui.toggle")})
+                                  StringView("create.ui.image"), StringView("create.ui.progress"), StringView("create.ui.slider"), StringView("create.ui.toggle"), StringView("create.ui.input"),
+                                  StringView("create.ui.scroll"), StringView("create.ui.nameplate")})
                 ActionMenuItem(ed, id);
             ui::EndMenu();
         }

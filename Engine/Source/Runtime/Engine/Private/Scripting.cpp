@@ -249,9 +249,13 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             if (!w || !w->IsAlive(e))
                 return v.Fail("The entity was destroyed");
             if (m == "text") {
+                if (const UIInputField* in = w->Get<const UIInputField>(e)) {
+                    out = Value(in->text.View());
+                    return true;
+                }
                 const UIText* t = w->Get<const UIText>(e);
                 if (!t)
-                    return v.Fail("No UI Text on this entity");
+                    return v.Fail("No UI Text or UI Input Field on this entity");
                 out = Value(t->text.View());
             } else if (m == "visible") {
                 const UIElement* el = w->Get<const UIElement>(e);
@@ -347,10 +351,15 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             if (!w || !w->IsAlive(e))
                 return v.Fail("The entity was destroyed");
             if (m == "text") {
+                const String s = value.Type() == ValueType::String ? String(value.AsString()) : value.ToString();
+                if (UIInputField* in = w->Get<UIInputField>(e)) {
+                    in->text = s;
+                    return true;
+                }
                 UIText* t = w->Get<UIText>(e);
                 if (!t)
-                    return v.Fail("No UI Text on this entity");
-                t->text = value.Type() == ValueType::String ? String(value.AsString()) : value.ToString();
+                    return v.Fail("No UI Text or UI Input Field on this entity");
+                t->text = s;
             } else if (m == "visible") {
                 UIElement* el = w->Get<UIElement>(e);
                 if (!el)
@@ -1384,8 +1393,9 @@ void ScriptSystem::DispatchUIEvents(ecs::World& world, Span<const UIEvent> event
             continue;
         const scene::EntityName* n = world.Get<const scene::EntityName>(ev.entity);
         const bool click = ev.type == UIEvent::Type::Click;
-        const StringView fn = click ? "onUIClick" : "onUIChanged";
-        const Value args[2] = {Value(n ? n->value.View() : StringView()), Value(f64(ev.value))};
+        const bool submit = ev.type == UIEvent::Type::Submit;
+        const StringView fn = click ? "onUIClick" : submit ? "onUISubmit" : "onUIChanged";
+        const Value args[2] = {Value(n ? n->value.View() : StringView()), submit ? Value(ev.text.View()) : Value(f64(ev.value))};
         for (ecs::Entity x = ev.entity; world.IsAlive(x);) {
             for (UniquePtr<RunningScript>& rs : m_instances) {
                 if (rs->failed || !rs->started || rs->entity != x || !rs->instance->HasFunction(fn))

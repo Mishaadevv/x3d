@@ -499,11 +499,16 @@ void DrawViewportPanel(Editor& ed)
     dl.AddImage(ed.viewportTexture->GetSrvIndex(), r);
     // Game UI (UI Canvases) over the view: always over the game camera, as a preview while editing.
     if (ed.showGameUI || ed.UsingGameCamera()) {
+        // World-space canvases follow the camera of the last rendered frame.
+        ed.gameUI.SetCamera(ed.viewport->ViewProjection(), ed.viewport->LastView().position);
+        ed.gameUI.time += ed.dt;
         ed.gameUI.Layout(ed.world, ed.fonts, r);
         if (ed.UsingGameCamera() && ed.gameInputCaptured && ed.gameUI.cursorRequested) {
             const Vec2 mouse = ui::GetMousePos();
             ed.gameUI.Interact(ed.world, mouse, ed.input.IsMouseDown(MouseButton::Left), ed.input.WasMousePressed(MouseButton::Left),
-                               ed.input.WasMouseReleased(MouseButton::Left));
+                               ed.input.WasMouseReleased(MouseButton::Left), ed.input.MouseWheel());
+            ed.gameUI.TypeText(ed.world, ed.input.TypedText(), ed.input.WasKeyPressed(Key::Backspace), ed.input.WasKeyPressed(Key::Enter),
+                               ed.input.WasKeyPressed(Key::Escape));
         }
         dl.PushClipRect(r);
         ed.gameUI.Draw(ed.world, ed.fonts, dl, [&](asset::AssetId id) { return ed.renderAssets ? ed.renderAssets->GetTextureSrv(id) : 0u; });

@@ -208,6 +208,9 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.ui.progress", "UI Progress Bar", "Create", ZX_ICON_GAUGE, "", [](Editor& e) { e.CreateUIWidget("progress"); });
     Add(ed, "create.ui.slider", "UI Slider", "Create", ZX_ICON_SLIDERS_HORIZONTAL, "", [](Editor& e) { e.CreateUIWidget("slider"); });
     Add(ed, "create.ui.toggle", "UI Toggle", "Create", ZX_ICON_TOGGLE_LEFT, "", [](Editor& e) { e.CreateUIWidget("toggle"); });
+    Add(ed, "create.ui.input", "UI Input Field", "Create", ZX_ICON_TEXT_CURSOR_INPUT, "", [](Editor& e) { e.CreateUIWidget("input"); });
+    Add(ed, "create.ui.scroll", "UI Scroll View", "Create", ZX_ICON_FORM_INPUT, "", [](Editor& e) { e.CreateUIWidget("scroll"); });
+    Add(ed, "create.ui.nameplate", "UI Name Plate (World)", "Create", ZX_ICON_TAG, "", [](Editor& e) { e.CreateUIWidget("nameplate"); });
     Add(ed, "create.heightfog", "Create Height Fog", "Create", ZX_ICON_CLOUD_FOG, "", [](Editor& e) { e.CreateHeightFog(); });
     Add(ed, "create.fluidfire", "Create Fluid Fire", "Create", ZX_ICON_FLAME, "", [spawn](Editor& e) { e.CreateFluid(spawn(e), true); });
     Add(ed, "create.fluidsmoke", "Create Fluid Smoke", "Create", ZX_ICON_CLOUD, "", [spawn](Editor& e) { e.CreateFluid(spawn(e), false); });

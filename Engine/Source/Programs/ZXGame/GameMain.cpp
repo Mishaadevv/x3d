@@ -382,7 +382,9 @@ bool Game::Frame()
         const UVec2 size = m_swapChain->GetSize();
         m_gameUI.Layout(m_world, m_fonts, Rect(Vec2(0.0f), Vec2(f32(size.x), f32(size.y))));
         m_gameUI.Interact(m_world, m_input.MousePosition(), m_input.IsMouseDown(MouseButton::Left), m_input.WasMousePressed(MouseButton::Left),
-                          m_input.WasMouseReleased(MouseButton::Left));
+                          m_input.WasMouseReleased(MouseButton::Left), m_input.MouseWheel());
+        m_gameUI.TypeText(m_world, m_input.TypedText(), m_input.WasKeyPressed(Key::Backspace), m_input.WasKeyPressed(Key::Enter),
+                          m_input.WasKeyPressed(Key::Escape));
     }
 
     if (m_started) {
@@ -390,7 +392,8 @@ bool Game::Frame()
                       &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water};
         ListenerPose fallback;
         fallback.position = m_sceneCamera.position;
-        TickGame(m_world, s, dt, m_captured || m_autotest ? &m_input : nullptr, GameListener(m_world, fallback));
+        m_gameUI.time += dt;
+        TickGame(m_world, s, dt, (m_captured || m_autotest) && !m_gameUI.WantsKeyboard() ? &m_input : nullptr, GameListener(m_world, fallback));
     }
     m_terrains.Update(m_world, *m_assets, m_renderAssets.Get());
     TickWind(m_world, dt);
@@ -457,6 +460,7 @@ void Game::Render()
         m_fonts.BeginFrame(++m_uiFrame);
         const Rect screen(Vec2(0.0f), Vec2(f32(size.x), f32(size.y)));
         m_uiList.Reset(&m_fonts, screen);
+        m_gameUI.SetCamera(m_viewport->ViewProjection(), cam.position);
         m_gameUI.Layout(m_world, m_fonts, screen);
         m_gameUI.Draw(m_world, m_fonts, m_uiList, [this](asset::AssetId id) { return m_renderAssets->GetTextureSrv(id); });
         if (m_uiList.PrimitiveCount() > 0) {

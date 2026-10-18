@@ -1267,7 +1267,8 @@ Vulkan-бэкенд, HDR-вывод, плагины редактора, ZScript 
   скрипты `onUIClick / onUIChanged`, `entity.text / value / visible`, `ui.cursor`, `time.scale`; рисуется поверх
   вьюпорта (редактор: превью, Show → Game UI) и кадра ZXGame (шрифты в Content.zpak); Create → UI; HUD и меню паузы в
   Vehicle Playground
-- [ ] Стили (`.zstyle`), анимации свойств, навигация геймпадом, ScrollView, InputField, перенос во флексе, world-space canvas
+- [x] (0.13.13) ScrollView, InputField, перенос во флексе, world-space canvas (таблички над объектами)
+- [ ] Стили (`.zstyle`), анимации свойств, навигация геймпадом
 - [ ] Локализация (`.zloc`, `LOCTEXT`)
 - [ ] UI designer (WYSIWYG в вьюпорте)
 - [ ] ZGraph: формат графа, компиляция в байткод VM, события / flow / переменные / вызовы рефлексированных функций
