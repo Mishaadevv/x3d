@@ -3,6 +3,7 @@
 #include "Core/HAL/PlatformFile.h"
 #include "Core/String/Path.h"
 #include "Core/Testing/Test.h"
+#include "Engine/ZGraph.h"
 #include "Engine/Project.h"
 #include "Engine/ViewportRenderer.h"
 #include "Render/MaterialGraph.h"
@@ -144,6 +145,12 @@ ZX_TEST(Project, SettingsAndStarterContent)
     for (const platform::DirectoryEntry& f : files) {
         String text;
         ZX_EXPECT(fs::ReadTextFile(p->contentDir + "/StarterContent/Scripts/" + f.name, text));
+        if (Path::HasExtension(f.name, ".zgraph")) { // script graphs compile to ZeqouScript first
+            Graph graph;
+            GraphCompileResult generated;
+            ZX_EXPECT(ParseGraph(text, graph) && CompileGraph(graph, generated));
+            text = generated.source;
+        }
         script::CompileError e;
         Result<script::Program*> program = script::Compile(text, f.name, &e);
         if (!program)

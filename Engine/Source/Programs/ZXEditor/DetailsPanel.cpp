@@ -344,7 +344,7 @@ void ListScripts(const String& root, const String& dir, Array<String>& out)
         const String path = Path::Join(dir, e.name);
         if (e.isDirectory)
             ListScripts(root, path, out);
-        else if (Path::HasExtension(e.name, ".zs"))
+        else if (Path::HasExtension(e.name, ".zs") || Path::HasExtension(e.name, ".zgraph"))
             out.PushBack(Path::MakeRelative(path, root));
     }
 }
@@ -354,14 +354,14 @@ bool EditScript(Editor& ed, Script& s)
 {
     bool changed = false;
     const f32 fh = ui::GetFrameHeight() / ui::GetCurrentContext()->GetScale();
-    PropertyLabel("Script", "The ZeqouScript file (.zs) this entity runs. Drop one from the Content Browser.");
+    PropertyLabel("Script", "The ZeqouScript file (.zs) or script graph (.zgraph) this entity runs. Drop one from the Content Browser.");
     ui::SetNextItemWidth(-(fh * 2.0f + 8.0f));
     String shown = s.file.Empty() ? String("None") : String::Format(ZX_ICON_FILE_CODE "  {}", Path::FileName(s.file));
     ui::InputText("##script_file", shown, ui::InputTextFlags::ReadOnly);
     ui::ItemTooltip(s.file.Empty() ? StringView("Drop a script (.zs) from the Content Browser here") : s.file.View());
     if (const void* payload = ui::AcceptDragDropPayload("asset")) {
         const StringView path(static_cast<const char*>(payload));
-        if (Path::HasExtension(path, ".zs")) {
+        if (Path::HasExtension(path, ".zs") || Path::HasExtension(path, ".zgraph")) {
             s.file = Path::MakeRelative(path, ed.contentRoot);
             s.properties.Clear();
             changed = true;

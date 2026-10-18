@@ -198,6 +198,10 @@ action view.gameUI), Interact only while the game shows the cursor (ui.cursor); 
 ZXGame: m_fonts + ui::Context (fonts) + UIRenderer pass; Packaging adds Engine/Content/Fonts as pak "Fonts".
 UI v2 (0.13.13): UICanvas::worldSpace (GameUISystem::SetCamera before Layout; onScreen / depth runtime), UIElement
 scroll / wrap, UIInputField (GameUISystem::TypeText, WantsKeyboard gates game input, UIEvent::Submit -> onUISubmit).
+ZGraph (0.13.21): Engine/ZGraph.h (.zgraph JSON: ParseGraph / WriteGraph; GraphNodeLibrary = node defs with code
+templates {pin} {@setting} {#id}; CompileGraph -> ZeqouScript source + lineNodes for errors; MakeExampleGraph).
+ScriptSystem::CheckForChanges compiles .zgraph through it (Script component takes .zs or .zgraph). Tests ZGraph.*
+(every library node must generate compilable script). Console graph.code / graph.new / script.attach.
 UI Designer (0.13.20): EditorTool::UIDesigner (EditorUIDesigner.cpp: UIDesignerScreen preview rect used for
 gameUI.Layout in ViewportPanel, UpdateUIDesigner after gameUI.Draw - PickChain / PickTarget Figma-like picking,
 handles, reorder via scene::Children (all siblings recorded for undo), DrawUIDesignerPanel); Context::SetCursorShape.

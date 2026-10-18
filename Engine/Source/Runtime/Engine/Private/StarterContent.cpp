@@ -1,5 +1,6 @@
 // Starter Content: example materials and scripts copied into new projects (all plain files the user can edit).
 
+#include "Engine/ZGraph.h"
 #include "Engine/AnimGraph.h"
 #include "Core/CoreInit.h"
 #include "Core/FileSystem/FileSystem.h"
@@ -1371,6 +1372,8 @@ u32 WriteStarterContent(StringView contentDir)
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(GameplayScripts, ZX_ARRAY_COUNT(GameplayScripts)));
     written += WriteScripts(root + "/Scripts", Span<const StarterScript>(PropScripts, ZX_ARRAY_COUNT(PropScripts)));
     written += WriteSounds(root + "/Sounds");
+    // A script graph (ZGraph) example: what a .zs does, as nodes - put it on an entity like a script.
+    written += fs::WriteTextFile(root + "/Scripts/SpinnerGraph.zgraph", WriteGraph(MakeExampleGraph())) ? 1u : 0u;
     written += fs::WriteTextFile(root + "/UI/Game.zstyle", GameUIStyle) ? 1u : 0u; // the look of the templates' HUDs and menus
     // Texts of the templates' UI in English and Russian (UI Text > Key; switch with lang.set or the menu's Language button).
     written += fs::WriteTextFile(root + "/Localization/en.zloc", StarterTextsEn) ? 1u : 0u;

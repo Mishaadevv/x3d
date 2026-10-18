@@ -1,5 +1,7 @@
 #include "Engine/Scripting.h"
 #include "Engine/Localization.h"
+#include "Engine/ZGraph.h"
+#include "Core/String/Path.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/Surfaces.h"
 #include "Core/FileSystem/FileSystem.h"
@@ -1360,10 +1362,28 @@ void ScriptSystem::CheckForChanges()
             cp.errorReported = false;
             continue;
         }
+        // A ZGraph (.zgraph) becomes ZeqouScript source first; its errors name the node they come from.
+        Graph graph;
+        GraphCompileResult generated;
+        const bool isGraph = Path::HasExtension(cp.file, ".zgraph");
+        if (isGraph) {
+            String graphError;
+            if (!ParseGraph(source, graph, &graphError) || !CompileGraph(graph, generated)) {
+                cp.error = String::Format("{}: {}", cp.file, graphError.Empty() ? generated.errors[0] : graphError);
+                cp.errorReported = false;
+                if (m_running) {
+                    Report(cp.error, true);
+                    cp.errorReported = true;
+                }
+                continue;
+            }
+            source = generated.source;
+        }
         script::CompileError ce;
         Result<script::Program*> compiled = script::Compile(source, cp.file, &ce);
         if (!compiled) {
-            cp.error = String::Format("{}:{}:{}: {}", cp.file, ce.line, ce.column, ce.message);
+            cp.error = isGraph ? String::Format("{}: {}", cp.file, DescribeGraphError(graph, generated, ce.line, ce.message))
+                               : String::Format("{}:{}:{}: {}", cp.file, ce.line, ce.column, ce.message);
             cp.errorReported = false;
             if (m_running) {
                 Report(cp.error, true);

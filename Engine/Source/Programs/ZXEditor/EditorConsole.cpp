@@ -2,6 +2,8 @@
 // Render CVars push their value into the viewport settings when set from the console; the viewport toolbar keeps
 // editing the settings directly.
 
+#include "Engine/ZGraph.h"
+#include "Core/FileSystem/FileSystem.h"
 #include "Editor.h"
 #include "EditorActions.h"
 #include "Core/Console/Console.h"
@@ -434,6 +436,48 @@ ConCommand CmdLang("lang", "Game UI language: lang (lists them) / lang <code> (e
                        if (!ed->localization.SetLanguage(args[0]))
                            ZX_LOG_WARN(LogCmd, "lang: no table for '{}' (Content/Localization/{}.zloc)", args[0], args[0]);
                    });
+
+ConCommand CmdGraphCode("graph.code", "Shows the ZeqouScript a script graph compiles to: graph.code <Content path .zgraph>",
+                         [](Span<const StringView> args) {
+                             Editor* ed = Ed();
+                             if (!ed || args.Empty())
+                                 return;
+                             String text;
+                             Graph graph;
+                             String error;
+                             if (!fs::ReadTextFile(Path::Join(ed->contentRoot, args[0]), text) || !ParseGraph(text, graph, &error)) {
+                                 ZX_LOG_WARN(LogCmd, "graph.code: can't read '{}' {}", args[0], error);
+                                 return;
+                             }
+                             GraphCompileResult r;
+                             CompileGraph(graph, r);
+                             for (const String& e : r.errors)
+                                 ZX_LOG_ERROR(LogCmd, "{}", e);
+                             for (const String& w : r.warnings)
+                                 ZX_LOG_WARN(LogCmd, "{}", w);
+                             ZX_LOG_INFO(LogCmd, "{}", r.source);
+                         });
+
+ConCommand CmdScriptAttach("script.attach", "Puts a script (.zs) or script graph (.zgraph) on the selected entity: script.attach <Content path>",
+                            [](Span<const StringView> args) {
+                                Editor* ed = Ed();
+                                if (!ed || args.Empty() || !ed->world.IsAlive(ed->selected)) {
+                                    ZX_LOG_WARN(LogCmd, "script.attach: select an entity first");
+                                    return;
+                                }
+                                ed->undo.Begin("Add Script");
+                                ed->undo.Record(ed->selected);
+                                ed->world.Set(ed->selected, Script{String(args[0]), String()});
+                                ed->undo.End();
+                            });
+
+ConCommand CmdGraphNew("graph.new", "Writes an example script graph (a spinner): graph.new <Content path .zgraph>", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || args.Empty())
+        return;
+    if (fs::WriteTextFile(Path::Join(ed->contentRoot, args[0]), WriteGraph(MakeExampleGraph())))
+        ZX_LOG_INFO(LogCmd, "Wrote {}", args[0]);
+});
 
 ConCommand CmdUndo("undo", "Undoes the last scene edit", [](Span<const StringView>) {
     if (Ed())

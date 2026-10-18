@@ -5,6 +5,29 @@
 одном месте — `project(ZeqouX3D VERSION ...)` в корневом CMakeLists.txt (оттуда его берут `Core/Version.h`, ресурс
 версии ZXEditor.exe, About и лог).
 
+## 0.13.21 — ZGraph, часть 1: визуальные скрипты (формат, ноды, компиляция в VM) (2026-10-18)
+- **Файлы `.zgraph`**: граф из нод и связей (как Blueprints в Unreal) — переменные, ноды с их значениями и
+  настройками, связи. Вешается на сущность тем же компонентом **Script**, что и `.zs`
+- **Компиляция**: граф превращается в код ZeqouScript и собирается в байткод той же VM — поэтому у графов сразу
+  есть всё, что у скриптов: переменные с галочкой Exposed редактируются в Details отдельно для каждой сущности,
+  граф перезагружается на лету во время игры, доступен весь API движка. Ошибки называют ноду:
+  `Node 'Set Position' (#3): 'position' expects vec3 but gets string`
+- **Библиотека нод** (~80):
+  - события: On Start, On Update, On Key Pressed / Released, Every N Seconds, On UI Click / Changed, On Trigger
+    Enter / Exit, On Collision, Custom Event (+ Call Event)
+  - поток: Branch, Sequence, For Loop, Do Once, Flip Flop, Delay
+  - действия: Print, Set Variable, Set Position / World Position / Rotation / Scale, Move, Rotate, Look At,
+    Destroy, Set Text / Visible / UI Value, UI Animate, Show Mouse Cursor, Set Time Scale, Set Language,
+    Play Sound (At), Add Impulse, Set Velocity, Emit Particles, Ignite, Animation Trigger / Parameter,
+    Character Move / Jump
+  - значения: переменные, Self, Find Entity, Child / Parent, позиции и направления, ввод (Key Down, Move
+    Input, Input Action), время, математика, сравнения, логика, векторы, текст, Translate
+- В Starter Content — пример `Scripts/SpinnerGraph.zgraph`; `.zgraph` видны в Content Browser и подходят в слот
+  Script
+- Консоль: `graph.code <файл>` — какой код получается из графа, `graph.new <файл>` — пример, `script.attach <файл>`
+  — повесить скрипт или граф на выбранную сущность
+- Редактор нод (холст, связи мышкой) — следующая версия
+
 ## 0.13.20 — UI Designer: HUD и меню мышкой прямо во вьюпорте (2026-10-18)
 - **Инструмент UI Designer** (U, кнопка на панели инструментов, Tools → UI Designer): игровой UI собирается мышкой
   - клик выбирает виджет (как в Figma: сначала верхний уровень, двойной клик — внутрь, Ctrl+клик — самый

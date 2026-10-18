@@ -46,6 +46,8 @@ FileKind KindOf(const FileItem& item)
         return {ZX_ICON_PACKAGE, Color(0x5A, 0xC8, 0xF0), "Prefab"};
     if (ext.EqualsIgnoreCase(".zs"))
         return {ZX_ICON_FILE_CODE, Color(0x4E, 0xC9, 0xB0), "Script"};
+    if (ext.EqualsIgnoreCase(".zgraph"))
+        return {ZX_ICON_WORKFLOW, Color(0x4E, 0x9C, 0xF0), "Script Graph"};
     if (ext.EqualsIgnoreCase(".zscene"))
         return {ZX_ICON_CLAPPERBOARD, Color(0xF0, 0x8C, 0x4A), "Scene"};
     if (ext.EqualsIgnoreCase(".bin"))
@@ -298,8 +300,8 @@ void DrawContentBrowserPanel(Editor& ed)
                 }
                 if (IsHdrImage(item.path) && ui::MenuItem(ZX_ICON_CLOUD_SUN "  Use as HDRI Sky", {}, false, !ed.IsPlaying()))
                     ed.UseHdriSky(Path::MakeRelative(item.path, ed.contentRoot));
-                if (Path::HasExtension(item.path, ".zs")) {
-                    if (ui::MenuItem(ZX_ICON_PENCIL "  Edit"))
+                if (Path::HasExtension(item.path, ".zs") || Path::HasExtension(item.path, ".zgraph")) {
+                    if (Path::HasExtension(item.path, ".zs") && ui::MenuItem(ZX_ICON_PENCIL "  Edit"))
                         OpenScriptEditor(ed, item.path);
                     const bool canAttach = ed.world.IsAlive(ed.selected) && !ed.IsPlaying();
                     if (ui::MenuItem(ZX_ICON_PLUS "  Add to Selected Entity", {}, false, canAttach)) {
