@@ -117,7 +117,7 @@ Release (0.13.16): `powershell -ExecutionPolicy Bypass -File Tools/make_release.
 shaders from the payload and dxcompiler unpacked to %TEMP%/ZeqouX3D-Setup/bin; SetupWin32.cpp = HKCU uninstall entry,
 shortcuts). Flags: -silent -dir= [-nopacks] [-noshortcuts], -makeinstaller=<stage> -out=<exe> (8.3 paths!),
 -autotest -page=N / -autoinstall -dir=; Uninstall.exe [-silent]. Logs in %TEMP%/ZeqouX3D-Setup/Logs/Setup.log.
-GitHub releases: tag v<version>, prerelease, assets Setup.exe + Portable.zip.
+GitHub releases: tag v<version>, NOT prerelease (links use /releases/latest), assets Setup.exe + Portable.zip.
 Solver islands: PhysicsWorld::Step builds SolverIsland lists (bodies / contacts / joints) and runs phase1 / kinematic
 integration / phase2 per substep, in parallel only when no island holds half the work (stats.parallelIslands); only
 active solver bodies are written (shared static / kinematic ones are read-only). Queries: ClosestPoint (1 mm probe
