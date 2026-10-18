@@ -262,7 +262,7 @@ void TerrainDab(Editor& ed, ecs::Entity terrain, Vec3 point, f32 dt)
                     px[c] = u8(Clamp(Lerp(f32(px[c]), target, k) + (target > f32(px[c]) ? 0.5f : 0.0f), 0.0f, 255.0f));
                 }
             }
-        ed.terrains.MarkDirty(*d);
+        ed.terrains.MarkDirty(*d, x0, z0, x1, z1);
         return;
     }
     // Heights: the total (generated + sculpted) is edited, the offset stored.
@@ -278,7 +278,7 @@ void TerrainDab(Editor& ed, ecs::Entity terrain, Vec3 point, f32 dt)
         for (i32 x = -1; x <= w; ++x)
             before[usize(z + 1) * usize(w + 2) + usize(x + 1)] = total(x0 + x, z0 + z);
     auto prev = [&](i32 x, i32 z) { return before[usize(z - z0 + 1) * usize(w + 2) + usize(x - x0 + 1)]; };
-    const f32 rate = strength * (1.0f + radius * 0.12f); // m/s at the center: bigger brushes move more ground
+    const f32 rate = strength * (2.0f + radius * 0.25f); // m/s at the center: bigger brushes move more ground
     auto hash = [](i32 x, i32 z) {
         u32 v = u32(x) * 0x8DA6B343u ^ u32(z) * 0xD8163841u;
         v ^= v >> 13;
@@ -320,7 +320,8 @@ void TerrainDab(Editor& ed, ecs::Entity terrain, Vec3 point, f32 dt)
             }
             d->sculpt[usize(z) * n + usize(x)] += next - cur;
         }
-    ed.terrains.MarkDirty(*d);
+    ed.terrains.MarkDirty(*d, x0, z0, x1, z1);
+    ed.viewport->Scene().InvalidateShadows(); // the ground's shadows follow the brush
 }
 
 u32 BrushStrokeAt(Editor& ed, Vec3 point, Vec3 normal, bool erase)
@@ -375,8 +376,11 @@ void SetActiveTool(Editor& ed, EditorTool tool)
     ts.active = ts.active == tool ? EditorTool::None : tool;
     ts.painting = false;
     ts.measureCount = 0;
-    if (ts.active != EditorTool::None)
+    if (ts.active != EditorTool::None) {
+        // A tab next to Details (not a window over the viewport).
+        ui::DockWindowWith(ToolTitle, DetailsTitle);
         ui::FocusDockedWindow(ToolTitle);
+    }
 }
 
 bool UpdateViewportTool(Editor& ed, const Ray& mouseRay, bool hovered, const Function<bool(Vec3, Vec2&), 32>& project, ui::DrawList& dl,

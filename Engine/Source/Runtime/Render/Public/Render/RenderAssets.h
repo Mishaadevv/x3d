@@ -92,6 +92,11 @@ public:
     /// Forgets a mesh (its GPU copy is freed once the GPU is done with it); the next GetMesh loads it again. For
     /// memory meshes that were replaced (generated terrain).
     void ReloadMesh(AssetId id);
+    /// Rewrites vertices [firstVertex, firstVertex + count) of a resident mesh in place (uploaded by the next Update) and
+    /// its bounds - for meshes edited live (terrain sculpting) without a reload (no flicker, no probe recapture).
+    /// Returns false if the mesh is not resident (then reload it instead).
+    bool UpdateMeshVertices(AssetId id, u32 firstVertex, Span<const asset::PackedVertex> vertices, const AABB& bounds,
+                            Span<const asset::CookedMeshSection> sections);
     /// Index into the material table; 0 (default material) until the asset is loaded.
     u32 GetMaterialIndex(AssetId id);
     const MaterialInfo& GetMaterialInfo(u32 index) const { return m_materialInfos[index]; }
@@ -190,6 +195,13 @@ private:
     u32 m_paramUsed = 0;
     u32 m_paramDirtyBegin = 0, m_paramDirtyEnd = 0;
     u64 m_uploadBudget = 16ull << 20;
+    struct VertexUpdate
+    {
+        rhi::Buffer* buffer = nullptr;
+        u64 offset = 0;
+        Array<asset::PackedVertex> data;
+    };
+    Array<VertexUpdate> m_vertexUpdates;
     u64 m_contentVersion = 1;
     u32 m_readyShaders = 0;
 };

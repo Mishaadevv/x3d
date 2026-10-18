@@ -287,6 +287,8 @@ ID DockSplitNode(ID node, DockDir dir, f32 ratio, ID* remaining = nullptr);
 void DockWindow(StringView windowTitle, ID node);
 /// Selects a docked window's tab.
 void FocusDockedWindow(StringView windowTitle);
+/// Docks `windowTitle` as a tab next to `otherTitle` unless it is docked already (no-op if the other isn't docked).
+bool DockWindowWith(StringView windowTitle, StringView otherTitle);
 /// Serialized docking layout (text) for all dock spaces; LoadDockLayout replaces the current one.
 String SaveDockLayout();
 bool LoadDockLayout(StringView text);

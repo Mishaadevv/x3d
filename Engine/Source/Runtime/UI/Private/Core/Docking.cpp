@@ -441,6 +441,18 @@ void DockWindow(StringView title, ID nodeId)
     w->dockNodeId = node->id;
 }
 
+bool DockWindowWith(StringView title, StringView otherTitle)
+{
+    Context::Impl& g = G();
+    if (WindowState* w = FindWindow(g, HashWithSeed(title, 0)); w && w->dockNodeId)
+        return true;
+    const WindowState* other = FindWindow(g, HashWithSeed(otherTitle, 0));
+    if (!other || !other->dockNodeId || !g.FindDockNode(other->dockNodeId))
+        return false;
+    DockWindow(title, other->dockNodeId);
+    return true;
+}
+
 void FocusDockedWindow(StringView title)
 {
     Context::Impl& g = G();

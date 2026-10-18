@@ -301,6 +301,7 @@ void RenderAssets::ReloadMesh(AssetId id)
         return;
     MeshEntry* e = found->Get();
     ++m_meshGeneration; // cached GpuMesh pointers die here
+    m_vertexUpdates.RemoveIf([&](const VertexUpdate& u) { return u.buffer == e->mesh.vertexBuffer; });
     m_device.Destroy(e->mesh.vertexBuffer);
     m_device.Destroy(e->mesh.skinBuffer);
     e->mesh.skinBuffer = nullptr;
@@ -403,8 +404,33 @@ bool RenderAssets::TryUploadTexture(AssetId id, TextureEntry& e, u64& budget)
     return true;
 }
 
+bool RenderAssets::UpdateMeshVertices(AssetId id, u32 firstVertex, Span<const asset::PackedVertex> vertices, const AABB& bounds,
+                                      Span<const asset::CookedMeshSection> sections)
+{
+    UniquePtr<MeshEntry>* found = m_meshes.Find(id);
+    MeshEntry* e = found ? found->Get() : nullptr;
+    if (!e || !e->resident || !e->mesh.vertexBuffer || u64(firstVertex) + vertices.Size() > e->mesh.vertexCount ||
+        sections.Size() != e->mesh.sections.Size())
+        return false;
+    GpuMesh& g = e->mesh;
+    VertexUpdate& u = m_vertexUpdates.AddDefaulted();
+    u.buffer = g.vertexBuffer;
+    u.offset = u64(firstVertex) * sizeof(asset::PackedVertex);
+    u.data.Append(vertices);
+    for (usize i = 0; i < vertices.Size() && firstVertex + i < g.cpuPositions.Size(); ++i)
+        g.cpuPositions[firstVertex + i] = vertices[i].position;
+    for (usize i = 0; i < sections.Size(); ++i)
+        g.sections[i].bounds = sections[i].bounds;
+    g.bounds = bounds;
+    g.sphere = Sphere::FromAABB(bounds);
+    return true;
+}
+
 void RenderAssets::Update(CommandList& cmd)
 {
+    for (const VertexUpdate& u : m_vertexUpdates)
+        cmd.UploadBuffer(u.buffer, u.offset, u.data.Data(), u.data.SizeBytes());
+    m_vertexUpdates.Clear();
     u64 budget = m_uploadBudget;
     const usize pendingBefore = m_pendingTextures.Size() + m_pendingMeshes.Size() + m_pendingMaterials.Size();
     // Textures first (materials resolve against them), then meshes.

@@ -173,7 +173,8 @@ AABB LocalBounds(Editor& ed, ecs::Entity e)
 /// Draws and drives the transform gizmo. Returns true if the gizmo owns the mouse this frame.
 bool Gizmo(Editor& ed, const ViewProjector& vp, DrawList& dl, bool hoveredViewport, f32 s)
 {
-    if (!ed.world.IsAlive(ed.selected) || ed.tool == TransformTool::Select || !ed.world.Has<Transform>(ed.selected)) {
+    if (!ed.world.IsAlive(ed.selected) || ed.tool == TransformTool::Select || !ed.world.Has<Transform>(ed.selected) ||
+        ed.tools.active == EditorTool::Terrain) { // painting a terrain: no gizmo in the way
         g_gizmo.hot = g_gizmo.active = -1;
         return false;
     }

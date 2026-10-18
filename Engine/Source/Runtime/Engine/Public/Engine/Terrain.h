@@ -8,6 +8,8 @@
 // for any mesh); PhysicsSystem collides with it as a physics::HeightField.
 
 #include "Asset/AssetManager.h"
+#include "Asset/CookedAssets.h"
+#include "Core/Math/Geometry.h"
 #include "Core/Containers/HashMap.h"
 #include "Core/Reflection/Reflection.h"
 #include "Scene/ECS/World.h"
@@ -80,6 +82,12 @@ public:
         f64 time = 0.0;  // when the mesh was built
         bool editing = false;
         bool dirty = false;
+        // Edited samples since the last mesh update (inclusive; empty when x1 < x0).
+        i32 dirtyX0 = 1 << 30, dirtyZ0 = 1 << 30, dirtyX1 = -1, dirtyZ1 = -1;
+        // The mesh as on the GPU (for in-place updates).
+        Array<asset::PackedVertex> vertices;
+        Array<asset::CookedMeshSection> sections;
+        AABB bounds;
         f32 Height(u32 x, u32 z) const { return base[usize(z) * n + x] + sculpt[usize(z) * n + x]; }
     };
     /// Starts editing a terrain (its data stays live until Commit; the component is not re-read meanwhile).
@@ -87,7 +95,21 @@ public:
     /// Data of a terrain (built by the last Update), or null.
     Data* Find(ecs::World& world, ecs::Entity e);
     /// The mesh needs rebuilding (rebuilt by Update, a few times per second while editing).
-    void MarkDirty(Data& d) { d.dirty = true; }
+    void MarkDirty(Data& d)
+    {
+        d.dirty = true;
+        d.dirtyX0 = d.dirtyZ0 = 0;
+        d.dirtyX1 = d.dirtyZ1 = i32(d.n) - 1;
+    }
+    /// Only samples [x0, x1] x [z0, z1] changed (the mesh is updated in place while editing).
+    void MarkDirty(Data& d, i32 x0, i32 z0, i32 x1, i32 z1)
+    {
+        d.dirty = true;
+        d.dirtyX0 = Min(d.dirtyX0, x0);
+        d.dirtyZ0 = Min(d.dirtyZ0, z0);
+        d.dirtyX1 = Max(d.dirtyX1, x1);
+        d.dirtyZ1 = Max(d.dirtyZ1, z1);
+    }
     /// Writes the edited data into the component (new dataId) and ends editing.
     void Commit(ecs::World& world, ecs::Entity e);
     /// Surface height at world (x, z) over a terrain entity (false outside it).

@@ -84,39 +84,67 @@ f32 Shape(const Terrain& t, f32 x, f32 z)
     return Lerp(smooth, ridged, Saturate(t.ridges));
 }
 
+/// One vertex of the terrain grid (heights `h`, n x n, spacing `s`).
+asset::PackedVertex TerrainVertex(const Terrain& t, const Array<f32>& h, const Array<u8>& paint, u32 n, f32 s, u32 x, u32 z)
+{
+    const f32 half = s * f32(n - 1) * 0.5f;
+    auto at = [&](i32 xx, i32 zz) { return h[usize(Clamp(zz, 0, i32(n) - 1)) * n + usize(Clamp(xx, 0, i32(n) - 1))]; };
+    asset::MeshVertex v;
+    v.position = Vec3(-half + f32(x) * s, at(i32(x), i32(z)), -half + f32(z) * s);
+    const f32 dx = (at(i32(x) + 1, i32(z)) - at(i32(x) - 1, i32(z))) / (2.0f * s);
+    const f32 dz = (at(i32(x), i32(z) + 1) - at(i32(x), i32(z) - 1)) / (2.0f * s);
+    v.normal = Normalize(Vec3(-dx, 1.0f, -dz));
+    // Tangent along +X (u), bitangent towards -Z (v grows that way): w = +1.
+    const Vec3 tangent = Normalize(Vec3(1.0f, dx, 0.0f) - v.normal * Dot(Vec3(1.0f, dx, 0.0f), v.normal));
+    v.tangent = Vec4(tangent, 1.0f);
+    v.uv0 = Vec2(v.position.x, -v.position.z) * 0.25f; // a texture tile every 4 m
+    v.uv1 = Vec2(f32(x) / f32(n - 1), 1.0f - f32(z) / f32(n - 1));
+    // Painted layer weights (rock, dirt, sand) for M_Terrain, stored inverted (unpainted = white: materials that
+    // multiply by the vertex color stay as they are); none without a material.
+    const usize pi = (usize(z) * n + x) * 3;
+    v.color = 0xFFFFFFFFu;
+    if (t.material.IsValid() && paint.Size() >= pi + 3)
+        v.color = u32(255 - paint[pi]) | (u32(255 - paint[pi + 1]) << 8) | (u32(255 - paint[pi + 2]) << 16) | 0xFF000000u;
+    return asset::PackVertex(v);
+}
+
+/// Cells per side of a culling chunk (section): at most 8 x 8 chunks (few draw calls), at least 32 cells wide.
+u32 TerrainChunk(u32 n) { return Max(32u, (n - 1 + 7) / 8); }
+
+/// Section bounds from the vertices (sections are the chunks in z-then-x order).
+void TerrainSectionBounds(const Array<asset::PackedVertex>& vertices, u32 n, Array<asset::CookedMeshSection>& sections, AABB& bounds)
+{
+    const u32 cells = n - 1, chunk = TerrainChunk(n);
+    bounds = AABB();
+    usize si = 0;
+    for (u32 cz = 0; cz < cells; cz += chunk)
+        for (u32 cx = 0; cx < cells; cx += chunk, ++si) {
+            AABB b;
+            for (u32 z = cz; z <= Min(cz + chunk, cells); ++z)
+                for (u32 x = cx; x <= Min(cx + chunk, cells); ++x)
+                    b.Expand(vertices[usize(z) * n + x].position);
+            if (si < sections.Size())
+                sections[si].bounds = b;
+            bounds.Expand(b.min);
+            bounds.Expand(b.max);
+        }
+}
+
 /// The render mesh, cooked directly (a regular grid needs no cache optimization): square chunks of cells become
 /// sections with their own bounds, so the renderer culls what is off screen.
 asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h, const Array<u8>& paint)
 {
     const u32 n = TerrainSamples(t);
-    const f32 s = TerrainSpacing(t), half = t.size * 0.5f;
+    const f32 s = TerrainSpacing(t);
     asset::CookedMesh out;
     out.name = "Terrain";
     out.vertices.ResizeUninitialized(usize(n) * n);
-    auto at = [&](i32 x, i32 z) { return h[usize(Clamp(z, 0, i32(n) - 1)) * n + usize(Clamp(x, 0, i32(n) - 1))]; };
     for (u32 z = 0; z < n; ++z)
         for (u32 x = 0; x < n; ++x) {
-            asset::MeshVertex v;
-            v.position = Vec3(-half + f32(x) * s, at(i32(x), i32(z)), -half + f32(z) * s);
-            const f32 dx = (at(i32(x) + 1, i32(z)) - at(i32(x) - 1, i32(z))) / (2.0f * s);
-            const f32 dz = (at(i32(x), i32(z) + 1) - at(i32(x), i32(z) - 1)) / (2.0f * s);
-            v.normal = Normalize(Vec3(-dx, 1.0f, -dz));
-            // Tangent along +X (u), bitangent towards -Z (v grows that way): w = +1.
-            const Vec3 tangent = Normalize(Vec3(1.0f, dx, 0.0f) - v.normal * Dot(Vec3(1.0f, dx, 0.0f), v.normal));
-            v.tangent = Vec4(tangent, 1.0f);
-            v.uv0 = Vec2(v.position.x, -v.position.z) * 0.25f; // a texture tile every 4 m
-            v.uv1 = Vec2(f32(x) / f32(n - 1), 1.0f - f32(z) / f32(n - 1));
-            // Painted layer weights (rock, dirt, sand) for M_Terrain, stored inverted (unpainted = white: materials that
-            // multiply by the vertex color stay as they are); none without a material.
-            const usize pi = (usize(z) * n + x) * 3;
-            v.color = 0xFFFFFFFFu;
-            if (t.material.IsValid() && paint.Size() >= pi + 3)
-                v.color = u32(255 - paint[pi]) | (u32(255 - paint[pi + 1]) << 8) | (u32(255 - paint[pi + 2]) << 16) | 0xFF000000u;
-            out.vertices[usize(z) * n + x] = asset::PackVertex(v);
-            out.bounds.Expand(v.position);
+            out.vertices[usize(z) * n + x] = TerrainVertex(t, h, paint, n, s, x, z);
+            out.bounds.Expand(out.vertices[usize(z) * n + x].position);
         }
-    // At most 8 x 8 chunks (few draw calls), at least 32 cells wide.
-    const u32 cells = n - 1, chunk = Max(32u, (cells + 7) / 8);
+    const u32 cells = n - 1, chunk = TerrainChunk(n);
     Array<u32> indices;
     indices.Reserve(usize(cells) * cells * 6);
     for (u32 cz = 0; cz < cells; cz += chunk)
@@ -311,12 +339,36 @@ void TerrainSystem::Rebuild(ecs::World& world, ecs::Entity e, Data& d, asset::As
     Array<f32> heights = d.base;
     for (usize i = 0; i < heights.Size(); ++i)
         heights[i] += d.sculpt[i];
+    // While a tool edits it: only the touched rows, written into the resident GPU mesh (no reload: no flicker, no
+    // reflection recapture, a fraction of the work).
+    if (d.editing && renderAssets && d.dirtyX1 >= d.dirtyX0 && d.vertices.Size() == heights.Size()) {
+        const u32 x0 = u32(Max(d.dirtyX0 - 1, 0)), x1 = Min(u32(d.dirtyX1 + 1), d.n - 1);
+        const u32 z0 = u32(Max(d.dirtyZ0 - 1, 0)), z1 = Min(u32(d.dirtyZ1 + 1), d.n - 1);
+        for (u32 z = z0; z <= z1; ++z)
+            for (u32 x = x0; x <= x1; ++x)
+                d.vertices[usize(z) * d.n + x] = TerrainVertex(t, heights, d.paint, d.n, d.spacing, x, z);
+        TerrainSectionBounds(d.vertices, d.n, d.sections, d.bounds);
+        const usize first = usize(z0) * d.n, count = usize(z1 - z0 + 1) * d.n;
+        if (renderAssets->UpdateMeshVertices(d.mesh, u32(first), Span<const asset::PackedVertex>(d.vertices.Data() + first, count), d.bounds,
+                                             d.sections.View())) {
+            d.time = Clock::NowSeconds();
+            d.dirty = false;
+            d.dirtyX0 = d.dirtyZ0 = 1 << 30;
+            d.dirtyX1 = d.dirtyZ1 = -1;
+            return;
+        }
+    }
     asset::CookedMesh cooked = CookTerrainMesh(t, heights, d.paint);
+    d.vertices = cooked.vertices;
+    d.sections = cooked.sections;
+    d.bounds = cooked.bounds;
     assets.AddMemoryMesh(d.mesh, move(cooked));
     if (renderAssets)
         renderAssets->ReloadMesh(d.mesh);
     d.time = Clock::NowSeconds();
     d.dirty = false;
+    d.dirtyX0 = d.dirtyZ0 = 1 << 30;
+    d.dirtyX1 = d.dirtyZ1 = -1;
     ++m_builds;
     if (!d.editing)
         ZX_LOG_INFO(LogTerrain, "Terrain: {} x {} samples built in {:.1f} ms", d.n, d.n, (Clock::NowSeconds() - start) * 1000.0);
@@ -357,7 +409,7 @@ void TerrainSystem::Update(ecs::World& world, asset::AssetManager& assets, rende
             DecodeTerrainPaint(t, d->n, d->paint);
             d->dirty = true;
         }
-        if (d->dirty && (!d->editing || now - d->time > 0.06))
+        if (d->dirty) // every frame while sculpting: the ground follows the brush
             Rebuild(world, e, *d, assets, renderAssets);
         // The Mesh Renderer draws it (and makes picking, shadows and editor tools work as for any mesh).
         MeshRenderer* mr = world.Get<MeshRenderer>(e);
@@ -413,8 +465,7 @@ void TerrainSystem::Commit(ecs::World& world, ecs::Entity e)
     } while (id == 0 || id == t->dataId);
     t->dataId = id;
     d->dataId = id;
-    d->editing = false;
-    d->dirty = true;
+    d->editing = false; // the GPU mesh is already up to date (updated in place while editing)
 }
 
 bool TerrainSystem::HeightAt(ecs::World& world, ecs::Entity e, Vec2 worldXZ, f32& height)

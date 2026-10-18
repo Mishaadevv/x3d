@@ -3807,13 +3807,16 @@ void Editor::RenderFrame()
         lastViewWasGame = UsingGameCamera();
         Array<ecs::Entity> outlined;
         if (!m_screenshotViewport)
-            CollectHierarchy(world, selected, outlined);
+            if (tools.active != EditorTool::Terrain) // the terrain being sculpted isn't outlined
+                CollectHierarchy(world, selected, outlined);
         viewport->SetOutlinedEntities(outlined.View());
         viewport->Outline().thickness = 2.0f * window->GetDpiScale();
         environment.playing = IsPlaying() && playState != PlayState::Paused; // every Fluid Volume simulates
         viewport->AddPasses(graph, world, cam, environment, vp, viewportSize, dt,
                             [this](CommandList& c, const RenderView& view, f32) {
-                                if (showGrid && !m_screenshotViewport) {
+                                bool hasTerrain = false; // the grid would cut through the ground
+                                world.Query<const Terrain>().Each([&](ecs::Entity, const Terrain&) { hasTerrain = true; });
+                                if (showGrid && !m_screenshotViewport && !hasTerrain) {
                                     debugDraw->Grid(Vec3::Zero(), 40.0f, 40, Color(58, 58, 58));
                                     debugDraw->Line(Vec3(-20, 0.002f, 0), Vec3(20, 0.002f, 0), Color(150, 50, 50));
                                     debugDraw->Line(Vec3(0, 0.002f, -20), Vec3(0, 0.002f, 20), Color(50, 80, 160));
