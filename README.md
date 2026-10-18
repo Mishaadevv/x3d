@@ -4,7 +4,7 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12, part o
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a workflow like Unity URP or Unreal Engine 5 that
 runs well on everyday hardware. The development machine is a laptop with Intel UHD 620 graphics.
 
-**Version 0.14.0 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
+**Version 0.15.0 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
 [download](https://github.com/Mishaadevv/x3d/releases/latest)
 
 > [!WARNING]
@@ -43,6 +43,9 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
 ### Rendering
 - **Renderer**: Direct3D 12 with bindless resources and a render graph, plus a GPU-driven path (GPU culling, Hi-Z
   occlusion, ExecuteIndirect).
+  - **ZNano virtual geometry** (like Nanite, without mesh shaders): heavy static meshes are cut into clusters with a
+    LOD hierarchy at import and drawn at the detail the screen needs, with a triangle budget and cluster streaming.
+    A billion source triangles (instanced) run at ~35-40 FPS on Intel UHD 620.
   - Clustered forward+ and deferred PBR.
   - Cascaded shadows with PCSS, contact shadows, GTAO.
   - Screen-space reflections, reflection probes, decals.
@@ -123,6 +126,8 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
 | ![Project Browser](docs/images/project-browser.jpg) | ![Installer](docs/images/installer.jpg) |
 | **ZGraph: visual scripting, paused at a breakpoint** | **Third Person template: a mini game built with ZGraph** |
 | ![ZGraph](docs/images/zgraph.jpg) | ![Mini game](docs/images/mini-game.jpg) |
+| **ZNano: 300 rocks of 1.3M triangles each** | **The same view colored by cluster** |
+| ![ZNano](docs/images/znano.jpg) | ![ZNano clusters](docs/images/znano-clusters.jpg) |
 | **Script Editor** | **HDRI Sky over Sponza** |
 | ![Script Editor](docs/images/script-editor.jpg) | ![HDRI Sky in Sponza](docs/images/hdri-sponza.jpg) |
 
