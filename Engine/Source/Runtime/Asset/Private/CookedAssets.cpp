@@ -1,10 +1,14 @@
 #include "Asset/CookedAssets.h"
+#include "Asset/LightmapUV.h"
 #include "Asset/Nano.h"
 #include "Asset/MeshOptimizer.h"
+#include "Core/Log/Log.h"
 #include "Core/Math/Packing.h"
 #include "Core/Serialization/Binary.h"
 
 namespace zx::asset {
+
+ZX_DEFINE_LOG_CATEGORY_STATIC(LogCook, Info);
 
 const char* AssetTypeName(AssetType type)
 {
@@ -88,6 +92,22 @@ CookedMesh CookMesh(MeshData& mesh, bool generateLods, NanoMode nanoMode)
     const bool nano = staticMesh && (nanoMode == NanoMode::On || (nanoMode == NanoMode::Auto && triangles >= nano::AutoTriangleThreshold));
     if (nano)
         generateLods = false;
+    // Lightmap UVs for static meshes that don't bring their own (before chunks and LODs share the vertices). Virtual
+    // geometry keeps them only when the chart borders mostly follow existing seams (architecture with hard edges):
+    // every new seam pins the cluster simplification, so organic shapes (rocks) take their GI from probes instead.
+    if (staticMesh && (mesh.attributes & MeshAttributes::UV1) == MeshAttributes::None && triangles > 0) {
+        MeshData original;
+        if (nano)
+            original = mesh;
+        const mesh::LightmapUVResult uv = mesh::GenerateLightmapUVs(mesh);
+        mesh.lightmapResolution = uv.resolution;
+        ZX_LOG_INFO(LogCook, "Lightmap UVs for {}: {} charts, {}x{} reference, {:.0f} % filled, +{} vertices ({:.1f} %){}", mesh.name, uv.charts,
+                    uv.resolution, uv.resolution, uv.coverage * 100.0f, uv.addedVertices,
+                    100.0f * f32(uv.addedVertices) / Max(f32(mesh.vertices.Size() - uv.addedVertices), 1.0f),
+                    nano && f32(uv.addedVertices) > 0.05f * f32(original.vertices.Size()) ? " - dropped (virtual geometry)" : "");
+        if (nano && f32(uv.addedVertices) > 0.05f * f32(original.vertices.Size()))
+            mesh = move(original);
+    }
     if (generateLods) {
         mesh::SplitSections(mesh);
         mesh::GenerateLods(mesh);
@@ -101,6 +121,8 @@ CookedMesh CookMesh(MeshData& mesh, bool generateLods, NanoMode nanoMode)
     CookedMesh out;
     out.name = mesh.name;
     out.bounds = mesh.bounds;
+    out.lightmapUVs = (mesh.attributes & MeshAttributes::UV1) != MeshAttributes::None;
+    out.lightmapResolution = mesh.lightmapResolution;
     out.vertices.ResizeUninitialized(mesh.vertices.Size());
     for (usize i = 0; i < mesh.vertices.Size(); ++i)
         out.vertices[i] = PackVertex(mesh.vertices[i]);
@@ -544,6 +566,8 @@ void Serialize(const CookedMesh& m, Array<u8>& out)
     w.WriteArray(m.nano.vertexRemap.View());
     w.Write<u32>(m.nano.levels);
     w.Write<u32>(m.nano.leafTriangles);
+    w.WriteBool(m.lightmapUVs);
+    w.Write<u32>(m.lightmapResolution);
 }
 
 bool Deserialize(ByteSpan data, CookedMesh& m)
@@ -575,6 +599,8 @@ bool Deserialize(ByteSpan data, CookedMesh& m)
     r.ReadArray(m.nano.vertexRemap);
     m.nano.levels = r.Read<u32>();
     m.nano.leafTriangles = r.Read<u32>();
+    m.lightmapUVs = r.ReadBool();
+    m.lightmapResolution = r.Read<u32>();
     for (const NanoClusterHeader& c : m.nano.clusters)
         if (u64(c.triangleStart) + c.triangleCount > m.nano.triangles.Size() || u64(c.vertexStart) + c.vertexCount > m.nano.vertexRemap.Size())
             return false;

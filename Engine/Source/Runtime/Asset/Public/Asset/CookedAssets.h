@@ -133,6 +133,10 @@ struct CookedMesh
     Array<u32> morphDeltas;
     /// Virtual geometry: the cluster DAG (empty for regular meshes).
     NanoMesh nano;
+    /// UV1 holds lightmap UVs (generated or imported); generated ones fit this reference resolution (0 = imported
+    /// UVs of unknown layout).
+    bool lightmapUVs = false;
+    u32 lightmapResolution = 0;
 
     u32 IndexCount() const { return u32(indexData.Size() / (index16 ? 2 : 4)); }
     u32 Index(u32 i) const;
@@ -323,6 +327,6 @@ bool Deserialize(ByteSpan data, Skeleton& out);
 bool Deserialize(ByteSpan data, AnimationClip& out);
 
 /// Bump when any cooked format or cooker output changes (part of every DDC key).
-inline constexpr u32 CookerVersion = 8; // 6: ZNano clusters, 7: fallback LODs cut from the cluster DAG, 8: unique group errors
+inline constexpr u32 CookerVersion = 9; // 6: ZNano clusters, 7: fallback LODs cut from the cluster DAG, 8: unique group errors, 9: lightmap UVs
 
 } // namespace zx::asset

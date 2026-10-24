@@ -203,7 +203,7 @@ struct VSOutput
 {
     float4 position : SV_Position;
 #if !defined(DEPTH_ONLY) || defined(ALPHA_TEST)
-    float2 uv : TEXCOORD0;
+    float4 uv : TEXCOORD0; // xy: UV0, zw: UV1 (lightmaps)
     nointerpolation uint3 drawInfo : DRAWINFO; // instance, material, lod
 #endif
 #ifndef DEPTH_ONLY
@@ -225,7 +225,7 @@ VSOutput MakeVertex(uint vertexBuffer, uint vertexIndex, uint instanceIndex, uin
     VSOutput o;
     o.position = mul(g_View.viewProj, world);
 #if !defined(DEPTH_ONLY) || defined(ALPHA_TEST)
-    o.uv = v.uv0;
+    o.uv = float4(v.uv0, v.uv1);
     o.drawInfo = uint3(instanceIndex, material, lod);
 #endif
 #ifndef DEPTH_ONLY
@@ -257,7 +257,7 @@ VSOutput VSMain(uint vertexId : SV_VertexID)
     const MeshVertex v = LoadMeshVertex(GetBuffer(g_Draw.nanoPool), vertexIndex);
     VSOutput o;
 #ifdef ALPHA_TEST
-    o.uv = v.uv0;
+    o.uv = float4(v.uv0, v.uv1);
     o.drawInfo = uint3(inst.x, material, 0);
 #endif
     const float3 world = mul(LoadInstance(inst.x).world, float4(v.position, 1.0)).xyz;
@@ -310,11 +310,11 @@ float4 ClearTileVS(uint vertexId : SV_VertexID) : SV_Position
 }
 
 #ifdef ZX_GRAPH_MATERIAL
-MaterialInputs GraphInputs(Material m, float2 uv)
+MaterialInputs GraphInputs(Material m, float4 uv)
 {
     MaterialInputs mi = (MaterialInputs)0;
-    mi.uv0 = uv;
-    mi.uv1 = uv; // second UV set is not interpolated yet
+    mi.uv0 = uv.xy;
+    mi.uv1 = uv.zw;
     mi.vertexColor = 1.0;
     mi.normal = float3(0.0, 1.0, 0.0);
     mi.viewDir = float3(0.0, 1.0, 0.0);
@@ -335,7 +335,7 @@ void PSDepth(VSOutput i)
 #ifdef ZX_GRAPH_MATERIAL
     clip(EvaluateGraphMaterial(GraphInputs(m, i.uv)).opacityMask - m.alphaCutoff);
 #else
-    const float alpha = m.baseColor.a * SampleOr(m.baseColorTexture, TransformUV(m, i.uv), 1.0).a;
+    const float alpha = m.baseColor.a * SampleOr(m.baseColorTexture, TransformUV(m, i.uv.xy), 1.0).a;
     clip(alpha - m.alphaCutoff);
 #endif
 #endif
@@ -869,8 +869,12 @@ float3 DecodeOct(float2 e)
 
 /// The material's surface at this pixel (textures / graph, normal map, burn, decals). Shared by the forward and the
 /// G-buffer passes.
+/// UV1 of the surface being shaded (forward path; the lightmap density view reads it).
+static float2 s_lightmapUV = 0.0;
+
 SurfaceData EvaluateSurface(VSOutput i, bool frontFace, out Material m)
 {
+    s_lightmapUV = i.uv.zw;
     m = LoadMaterial(i.drawInfo.y);
     SurfaceData s;
     s.subsurface = 0.0;
@@ -906,7 +910,7 @@ SurfaceData EvaluateSurface(VSOutput i, bool frontFace, out Material m)
         N = normalize(tn.x * T + tn.y * B + tn.z * N);
     }
 #else
-    const float2 uv = TransformUV(m, i.uv);
+    const float2 uv = TransformUV(m, i.uv.xy);
     const float4 baseSample = SampleOr(m.baseColorTexture, uv, 1.0);
     s.baseColor = m.baseColor.rgb * baseSample.rgb * i.color.rgb;
     s.alpha = m.baseColor.a * baseSample.a * i.color.a;
@@ -967,6 +971,13 @@ float4 LightSurface(SurfaceData s, float3 worldPos, float4 svPosition, bool unli
             lit += a * LocalShadow(l, worldPos, N);
         }
         return float4((lit / total).xxx, 1);
+    }
+    case 10: { // lightmap UV density: an 8 x 8 texel checker at 1024 texels per UV unit (UE "Lightmap Density")
+        const float2 cell = floor(s_lightmapUV * 1024.0 / 8.0);
+        const float checker = fmod(cell.x + cell.y, 2.0) == 0.0 ? 0.25 : 0.55;
+        const bool none = all(s_lightmapUV == 0.0);
+        return float4(none ? float3(0.6, 0.1, 0.1) : float3(checker, checker, checker) * float3(0.6, 0.9, 1.0) +
+                                                        float3(frac(s_lightmapUV * 4.0), 0) * 0.15, 1);
     }
     case 9: { // lighting only: indirect diffuse (GI probes or sky) on a white surface
         float3 irr = SkyIrradiance(N);

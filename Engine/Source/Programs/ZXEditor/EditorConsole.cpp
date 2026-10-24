@@ -60,7 +60,7 @@ CVar<i32> CVarGIStride("r.GI.Stride", 2, "One of every N GI probes is updated pe
 CVar<f32> CVarGISpacing("r.GI.Spacing", 1.4f, "Meters between GI probes");
 CVar<bool> CVarProbes("r.ReflectionProbes", true, "Reflection probes and the sky reflection cube");
 CVar<f32> CVarExposure("r.ExposureCompensation", 1.0f, "Exposure compensation in EV (+ = brighter)");
-CVar<i32> CVarViewMode("r.ViewMode", 0, "0 lit, 1 base color, 2 normals, 3 roughness/metallic, 4 LODs, 5 cascades, 6 clusters, 7 AO, 8 local shadows, 9 indirect light (GI)");
+CVar<i32> CVarViewMode("r.ViewMode", 0, "0 lit, 1 base color, 2 normals, 3 roughness/metallic, 4 LODs, 5 cascades, 6 clusters, 7 AO, 8 local shadows, 9 indirect light (GI), 10 lightmap UV density");
 CVar<i32> CVarForceLod("r.ForceLOD", -1, "Force a mesh LOD (-1 = automatic)");
 CVar<f32> CVarCameraSpeed("editor.CameraSpeed", 4.0f, "Viewport fly speed (m/s)");
 CVar<bool> CVarShowGrid("editor.ShowGrid", true, "Viewport grid");
@@ -1173,7 +1173,7 @@ void RegisterEditorConsole(Editor& ed)
         Ed()->viewport->Settings().reflections.sky = v;
     });
     Bind<f32>(CVarExposure, s.post.exposureCompensation, [](f32 v) { Ed()->viewport->Settings().post.exposureCompensation = v; });
-    Bind<i32>(CVarViewMode, i32(s.scene.debugMode), [](i32 v) { Ed()->viewport->Settings().scene.debugMode = u32(Clamp(v, 0, 9)); });
+    Bind<i32>(CVarViewMode, i32(s.scene.debugMode), [](i32 v) { Ed()->viewport->Settings().scene.debugMode = u32(Clamp(v, 0, 10)); });
     Bind<i32>(CVarForceLod, s.scene.forcedLod, [](i32 v) { Ed()->viewport->Settings().scene.forcedLod = v; });
     Bind<f32>(CVarCameraSpeed, ed.camera.moveSpeed, [](f32 v) { Ed()->camera.moveSpeed = Clamp(v, 0.1f, 500.0f); });
     Bind<bool>(CVarShowGrid, ed.showGrid, [](bool v) { Ed()->showGrid = v; });

@@ -72,6 +72,7 @@ struct MeshData
     Array<MeshLod> lods; // lods[0] = full detail
     MeshAttributes attributes = MeshAttributes::None;
     AABB bounds;
+    u32 lightmapResolution = 0; // generated lightmap UVs: reference resolution their gutters fit (0 = none / imported UV1)
 
     /// Triangles drawn at the given LOD (sections without a reduction at that level count their previous LOD).
     u32 TriangleCount(u32 lod = 0) const;
