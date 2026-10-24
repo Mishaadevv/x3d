@@ -48,6 +48,11 @@ struct GISettings
     f32 bounce = 0.95f;          // fraction of the bounced light carried into the next bounce
     f32 maxRayDistance = 40.0f;  // meters
     f32 sunShadowDistance = 60.0f; // meters a hit point looks towards the sun for occluders
+    // Screen-space GI (needs the normal + roughness target: deferred path or SSR).
+    bool screenSpace = false;
+    u32 screenRays = 4;          // per half-resolution pixel and frame
+    f32 screenDistance = 2.5f;   // meters a screen ray marches
+    f32 screenHistory = 0.88f;   // weight of last frame's result
 };
 
 /// A finished bake: probes over a fixed grid (pre-exposed with `exposure`), saved next to the scene as .zgi.
@@ -92,6 +97,9 @@ public:
                  SceneLighting& lighting);
     /// Rebuilds a distance field level if needed, traces the probes' rays and updates them. `lightBuffer` / `lightCount`:
     /// this frame's point / spot lights (SceneRenderer::PreparedLightBuffer), `sky`: the sky's irradiance SH (or null).
+    /// Screen-space GI after the opaque pass (`normals`: octahedral normal + roughness; invalid = skipped). Read by the
+    /// lighting of the next frame (Prepare sets lighting.ssgiTexture).
+    void AddScreenPass(RenderGraph& graph, RGTexture color, RGTexture depth, RGTexture normals, const RenderView& view);
     /// `inputs`: the scene's sun cascades of this frame (hits inside them use the shadow maps).
     void AddPasses(RenderGraph& graph, const SceneLighting& lighting, const SceneRenderer::LightingInputs& inputs, u32 lightBuffer,
                    u32 lightCount, const SkyRenderer* sky);
@@ -178,6 +186,17 @@ private:
     rhi::Pipeline* m_irradiancePipeline = nullptr;
     rhi::Pipeline* m_distancePipeline = nullptr;
     rhi::Pipeline* m_cubePipeline = nullptr;
+    rhi::ShaderBytecode m_ssgiTraceCS, m_ssgiTemporalCS;
+    rhi::Pipeline* m_ssgiTracePipeline = nullptr;
+    rhi::Pipeline* m_ssgiTemporalPipeline = nullptr;
+    rhi::Texture* m_ssgiTrace = nullptr;
+    rhi::Texture* m_ssgi[2] = {};   // accumulated results: [m_ssgiRead] = last frame's
+    UVec2 m_ssgiSize;
+    u32 m_ssgiRead = 0;
+    bool m_ssgiValid = false;
+    bool m_ssgiEnabled = false;     // this frame's settings
+    Mat4 m_ssgiViewProj = Mat4::Identity();
+    u64 m_ssgiFrame = 0;
     // Distance field: three textures with the levels stacked along z, two seed buffers for jump flooding.
     rhi::Texture* m_distance = nullptr;
     rhi::Texture* m_albedo = nullptr;

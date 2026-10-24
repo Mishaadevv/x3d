@@ -97,8 +97,10 @@ GlobalIllumination::~GlobalIllumination()
     for (Buffer* b : m_bake.readback)
         m_device.Destroy(b);
     for (Pipeline* p : {m_clearPipeline, m_voxelizePipeline, m_jumpFloodPipeline, m_finalizePipeline, m_tracePipeline, m_irradiancePipeline,
-                        m_distancePipeline, m_cubePipeline})
+                        m_distancePipeline, m_cubePipeline, m_ssgiTracePipeline, m_ssgiTemporalPipeline})
         m_device.Destroy(p);
+    for (Texture* t : {m_ssgiTrace, m_ssgi[0], m_ssgi[1]})
+        m_device.Destroy(t);
 }
 
 bool GlobalIllumination::Init()
@@ -116,7 +118,9 @@ bool GlobalIllumination::Init()
                 {&m_traceCS, &m_tracePipeline, "/Shaders/GI/DDGI.hlsl", "TraceCS"},
                 {&m_irradianceCS, &m_irradiancePipeline, "/Shaders/GI/DDGI.hlsl", "UpdateIrradianceCS"},
                 {&m_distanceCS, &m_distancePipeline, "/Shaders/GI/DDGI.hlsl", "UpdateDistanceCS"},
-                {&m_cubeCS, &m_cubePipeline, "/Shaders/GI/DDGI.hlsl", "AmbientCubeCS"}};
+                {&m_cubeCS, &m_cubePipeline, "/Shaders/GI/DDGI.hlsl", "AmbientCubeCS"},
+                {&m_ssgiTraceCS, &m_ssgiTracePipeline, "/Shaders/GI/SSGI.hlsl", "TraceCS"},
+                {&m_ssgiTemporalCS, &m_ssgiTemporalPipeline, "/Shaders/GI/SSGI.hlsl", "TemporalCS"}};
     for (const Job& j : jobs) {
         ShaderCompileDesc d;
         d.path = j.path;
@@ -256,6 +260,14 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
     m_voxelDraws.Clear();
     if (m_bake.state == BakeState::Readback)
         FinishBakeReadback();
+    // Screen-space GI of last frame (with baked probes too).
+    m_ssgiEnabled = settings.enabled && settings.screenSpace && m_ssgiTracePipeline;
+    if (m_ssgiEnabled && m_ssgiValid) {
+        lighting.ssgiTexture = m_ssgi[m_ssgiRead]->GetSrvIndex();
+        lighting.ssgiViewProj = m_ssgiViewProj;
+    } else if (!m_ssgiEnabled) {
+        m_ssgiValid = false;
+    }
     const bool baking = m_bake.state == BakeState::Pending || m_bake.state == BakeState::Running || m_bake.state == BakeState::Readback;
     // Baked probes: no tracing at all.
     if (!baking && settings.enabled && settings.mode == GIMode::Baked && m_bakedValid) {
@@ -793,6 +805,108 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
     m_prevExposure = m_exposure;
     if (baking && fieldReady && ++m_bake.iteration >= Max(m_bake.settings.iterations, 1u))
         AddBakeReadback(graph);
+}
+
+// --- Screen-space GI ------------------------------------------------------------------------------------------------
+
+namespace {
+// Keep in sync with SsgiParams (Shaders/GI/SSGI.hlsl).
+struct SsgiParams
+{
+    Mat4 invViewProj, viewProj, prevViewProj;
+    Vec3 cameraPosition;
+    f32 nearZ;
+    Vec3 cameraForward;
+    f32 maxDistance;
+    Vec2 targetSize, sceneSize;
+    u32 color, depth, normals, traceUav, traceSrv, history, output, frame, rays, steps;
+    f32 thickness, historyWeight;
+};
+static_assert(sizeof(SsgiParams) == 288);
+} // namespace
+
+void GlobalIllumination::AddScreenPass(RenderGraph& graph, RGTexture color, RGTexture depth, RGTexture normals, const RenderView& view)
+{
+    if (!m_ssgiEnabled || !normals.IsValid()) {
+        m_ssgiValid = false;
+        return;
+    }
+    const UVec2 size(Max(1u, (view.width + 1) / 2), Max(1u, (view.height + 1) / 2));
+    if (size != m_ssgiSize || !m_ssgiTrace) {
+        for (Texture** t : {&m_ssgiTrace, &m_ssgi[0], &m_ssgi[1]}) {
+            m_device.Destroy(*t);
+            TextureDesc d;
+            d.width = size.x;
+            d.height = size.y;
+            d.format = Format::R16G16B16A16_FLOAT;
+            d.usage = TextureUsage::ShaderResource | TextureUsage::UnorderedAccess;
+            d.debugName = "GI.Screen";
+            *t = m_device.CreateTexture(d);
+        }
+        m_ssgiSize = size;
+        m_ssgiValid = false;
+    }
+    if (!m_ssgiTrace || !m_ssgi[0] || !m_ssgi[1])
+        return;
+    const u32 write = m_ssgiRead ^ 1;
+    SsgiParams p = {};
+    p.invViewProj = Inverse(view.viewProj);
+    p.viewProj = view.viewProj;
+    p.prevViewProj = m_ssgiViewProj;
+    p.cameraPosition = view.position;
+    p.cameraForward = Normalize(Vec3(view.view.columns[0].z, view.view.columns[1].z, view.view.columns[2].z));
+    p.nearZ = view.nearPlane;
+    p.maxDistance = Max(m_settings.screenDistance, 0.1f);
+    p.targetSize = Vec2(f32(size.x), f32(size.y));
+    p.sceneSize = Vec2(f32(view.width), f32(view.height));
+    p.traceUav = m_ssgiTrace->GetUavIndex();
+    p.traceSrv = m_ssgiTrace->GetSrvIndex();
+    p.history = m_ssgiValid ? m_ssgi[m_ssgiRead]->GetSrvIndex() : InvalidDescriptor;
+    p.output = m_ssgi[write]->GetUavIndex();
+    p.frame = u32(++m_ssgiFrame);
+    p.rays = Clamp(m_settings.screenRays, 1u, 16u);
+    p.steps = 12;
+    p.thickness = 0.3f;
+    p.historyWeight = Clamp(m_settings.screenHistory, 0.0f, 0.98f);
+    const RGTexture trace = graph.ImportTexture(m_ssgiTrace, ResourceState::ShaderResource);
+    const RGTexture history = graph.ImportTexture(m_ssgi[m_ssgiRead], ResourceState::ShaderResource);
+    const RGTexture output = graph.ImportTexture(m_ssgi[write], ResourceState::ShaderResource);
+    graph.AddPass(
+        "GI.ScreenTrace", PassType::Compute,
+        [=](PassBuilder& b) {
+            b.ReadTexture(color);
+            b.ReadTexture(depth);
+            b.ReadTexture(normals);
+            b.WriteTexture(trace);
+        },
+        [this, p, color, depth, normals, size](PassContext& ctx) {
+            SsgiParams q = p;
+            q.color = ctx.Texture(color)->GetSrvIndex();
+            q.depth = ctx.Texture(depth)->GetSrvIndex();
+            q.normals = ctx.Texture(normals)->GetSrvIndex();
+            ctx.cmd.SetPipeline(m_ssgiTracePipeline);
+            ctx.cmd.SetConstants(0, &q, sizeof(q));
+            ctx.cmd.Dispatch((size.x + 7) / 8, (size.y + 7) / 8);
+        });
+    graph.AddPass(
+        "GI.ScreenTemporal", PassType::Compute,
+        [=](PassBuilder& b) {
+            b.ReadTexture(trace);
+            b.ReadTexture(history);
+            b.ReadTexture(depth);
+            b.WriteTexture(output);
+            b.SideEffects(); // read by the next frame
+        },
+        [this, p, depth, size](PassContext& ctx) {
+            SsgiParams q = p;
+            q.depth = ctx.Texture(depth)->GetSrvIndex();
+            ctx.cmd.SetPipeline(m_ssgiTemporalPipeline);
+            ctx.cmd.SetConstants(0, &q, sizeof(q));
+            ctx.cmd.Dispatch((size.x + 7) / 8, (size.y + 7) / 8);
+        });
+    m_ssgiRead = write;
+    m_ssgiViewProj = view.viewProj;
+    m_ssgiValid = true;
 }
 
 // --- Baking ---------------------------------------------------------------------------------------------------------

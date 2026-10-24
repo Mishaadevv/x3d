@@ -143,6 +143,9 @@ struct SceneLighting
     f32 ambientFloor = 0.0f;
     /// Dynamic GI probes (GlobalIllumination::Prepare): the diffuse ambient comes from them where they cover the scene.
     GIVolumeConstants gi;
+    /// Screen-space GI of last frame (rgb = bounced light, a = how much of the probes it replaces) and its view.
+    u32 ssgiTexture = rhi::InvalidDescriptor;
+    Mat4 ssgiViewProj = Mat4::Identity();
 };
 
 inline f32 ExposureFromEV100(f32 ev100) { return 1.0f / (1.2f * std::exp2(ev100)); }
@@ -618,6 +621,9 @@ private:
         u32 vsmPagesPerRow;
         f32 vsmPad;
         GIVolumeConstants gi; // Common/DDGI.hlsli
+        u32 ssgiTexture;
+        f32 ssgiPad[3];
+        Mat4 ssgiViewProj;
     } m_viewConstants = {};
     // HLSL constant buffer packing: a matrix starts on a 16-byte boundary.
     static_assert(offsetof(ViewConstants, ssrViewProj) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");

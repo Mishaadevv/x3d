@@ -30,7 +30,8 @@ ZX_TEST(GI, ShadersCompile)
         } entries[] = {{"/Shaders/GI/GlobalSDF.hlsl", "ClearCS"},       {"/Shaders/GI/GlobalSDF.hlsl", "VoxelizeCS"},
                        {"/Shaders/GI/GlobalSDF.hlsl", "JumpFloodCS"},   {"/Shaders/GI/GlobalSDF.hlsl", "FinalizeCS"},
                        {"/Shaders/GI/DDGI.hlsl", "TraceCS"},            {"/Shaders/GI/DDGI.hlsl", "UpdateIrradianceCS"},
-                       {"/Shaders/GI/DDGI.hlsl", "UpdateDistanceCS"},   {"/Shaders/GI/DDGI.hlsl", "AmbientCubeCS"}};
+                       {"/Shaders/GI/DDGI.hlsl", "UpdateDistanceCS"},   {"/Shaders/GI/DDGI.hlsl", "AmbientCubeCS"},
+                       {"/Shaders/GI/SSGI.hlsl", "TraceCS"},            {"/Shaders/GI/SSGI.hlsl", "TemporalCS"}};
         for (const Entry& e : entries) {
             rhi::ShaderCompileDesc d;
             d.path = e.path;

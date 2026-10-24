@@ -1142,6 +1142,8 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
     m_viewConstants.ssrMaxRoughness = lighting.ssrMaxRoughness;
     m_viewConstants.ssrViewProj = lighting.ssrViewProj;
     m_viewConstants.gi = lighting.gi;
+    m_viewConstants.ssgiTexture = lighting.ssgiTexture;
+    m_viewConstants.ssgiViewProj = lighting.ssgiViewProj;
     PrepareDecals(lighting.decals, Frustum::FromMatrix(view.viewProj));
 }
 

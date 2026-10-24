@@ -76,6 +76,7 @@ struct EditorSettings
     bool globalIllumination = true; // dynamic GI: bounced light
     GIModeSetting giMode = GIModeSetting::Default;
     QualityLevel giQuality = QualityLevel::Default;
+    bool screenSpaceGI = true;    // where the profile has it (Full)
     bool reflections = true;      // screen-space reflections (where the profile has them)
     bool volumetricFog = true;
     bool clouds = true;

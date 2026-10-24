@@ -64,6 +64,7 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     s.gi.raysPerProbe = 64;
     s.gi.probeStride = lite ? 8u : 2u;
     s.gi.mode = lite ? render::GIMode::Baked : render::GIMode::Dynamic; // Baked: when the scene has a bake
+    s.gi.screenSpace = !lite; // needs the deferred G-buffer normals (Full)
     s.volumetricFog.slices = lite ? 48u : 64u;
     return m_scene.Init(m_hdrFormat, DepthFormat()) && m_captureScene.Init(m_hdrFormat, DepthFormat()) && m_reflections.Init() && m_gi.Init() && m_sky.Init(m_hdrFormat, DepthFormat()) && m_post.Init(outputFormat) &&
            m_taa.Init() && m_outline.Init(outputFormat) && m_water.Init(m_hdrFormat, DepthFormat(), lite) &&
@@ -496,6 +497,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     {
         render::GISettings gi = m_settings.gi;
         gi.enabled &= features.globalIllumination;
+        gi.screenSpace &= m_settings.scene.debugMode == 0; // it gathers the lit frame: debug views would feed back into it
         m_gi.Prepare(m_instances.View(), view.position, exposure, gi, m_lighting);
     }
     m_scene.Prepare(m_instances.View(), view, m_lighting, m_settings.scene);
@@ -507,6 +509,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         captureLighting.probeBuffer = InvalidDescriptor;
         captureLighting.probeCount = 0;
         captureLighting.ssrTexture = InvalidDescriptor;
+        captureLighting.ssgiTexture = InvalidDescriptor; // traced from the main view
         SceneRenderSettings cs = m_settings.scene;
         cs.normalOutput = false;
         cs.deferred = false;   // small one-off faces: forward is cheaper
@@ -549,6 +552,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     m_scene.AddPasses(graph, sceneColor, sceneDepth, LinearColor(0, 0, 0, 1),
                       [this, &view](RenderGraph& g, RGTexture color, RGTexture depth, RGTexture normals) {
                           m_reflections.AddSsrPass(g, color, depth, normals, view);
+                          m_gi.AddScreenPass(g, color, depth, normals, view);
                       });
     if (m_settings.useSky)
         m_sky.AddSkyPass(graph, sceneColor, sceneDepth);

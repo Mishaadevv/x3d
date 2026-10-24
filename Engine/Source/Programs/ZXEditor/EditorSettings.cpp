@@ -66,6 +66,9 @@ ZX_REFLECT_STRUCT_BEGIN(EditorSettings)
     ZX_FIELD(giQuality, Meta::DisplayName("GI Quality"), Meta::EditCondition("globalIllumination"),
              Meta::Tooltip("How many light probes, how many rays each, how often they update (Default = the engine profile's). "
                            "Higher: finer bounced light that reacts faster, more GPU time"))
+    ZX_FIELD(screenSpaceGI, Meta::DisplayName("Screen Space GI"), Meta::EditCondition("globalIllumination"),
+             Meta::Tooltip("Short-range bounced light from what is on screen (colored objects tint the floor next to them). "
+                           "Full profile; costs GPU time"))
     ZX_FIELD(reflections, Meta::Tooltip("Screen-space reflections (where the profile renders them)"))
     ZX_FIELD(volumetricFog, Meta::Tooltip("Light shafts and glowing fog around lights"))
     ZX_FIELD(clouds, Meta::Tooltip("Volumetric clouds"))
@@ -99,6 +102,7 @@ i32 g_appliedMethod = -1;
 i32 g_appliedContact = -1;
 i32 g_appliedGI = -1;
 i32 g_appliedGIMode = -1;
+i32 g_appliedSSGI = -1;
 f32 g_autosaveTimer = 0.0f;
 
 } // namespace
@@ -197,6 +201,10 @@ void ApplyEditorSettings(Editor& ed)
     if (i32(s.giMode) != g_appliedGIMode) {
         g_appliedGIMode = i32(s.giMode);
         vs.gi.mode = s.giMode == GIModeSetting::Default ? g_defaults.gi.mode : (s.giMode == GIModeSetting::Baked ? render::GIMode::Baked : render::GIMode::Dynamic);
+    }
+    if (i32(s.screenSpaceGI) != g_appliedSSGI) {
+        g_appliedSSGI = i32(s.screenSpaceGI);
+        vs.gi.screenSpace = s.screenSpaceGI && g_defaults.gi.screenSpace;
     }
     if (i32(s.contactShadows) != g_appliedContact) {
         g_appliedContact = i32(s.contactShadows);

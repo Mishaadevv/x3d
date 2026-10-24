@@ -104,6 +104,9 @@ struct ViewData
     float vsmPad;
     // Dynamic GI probes (Common/DDGI.hlsli; irradiance invalid = none).
     DDGIVolume gi;
+    uint ssgiTexture;        // last frame's screen-space GI (Shaders/GI/SSGI.hlsl) or invalid
+    float3 ssgiPad;
+    float4x4 ssgiViewProj;   // the view it was traced with
 };
 ZX_VIEW_CONSTANTS(ViewData, g_View);
 
@@ -836,6 +839,19 @@ float3 SkyIrradiance(float3 n)
            lerp(g_View.groundColor, g_View.skyColor, n.y * 0.5 + 0.5) * (g_View.ambientIntensity * g_View.ambientFloor);
 }
 
+/// Short-range bounce found in screen space last frame, over the probes / sky (rgb = hits, a = their share).
+float3 ApplyScreenSpaceGI(float3 irradiance, float3 worldPos)
+{
+    if (g_View.ssgiTexture == ZX_INVALID_INDEX)
+        return irradiance;
+    const float4 prev = mul(g_View.ssgiViewProj, float4(worldPos, 1.0));
+    const float2 uv = float2(prev.x / prev.w * 0.5 + 0.5, 0.5 - prev.y / prev.w * 0.5);
+    if (prev.w <= 0.0 || any(uv <= 0.0) || any(uv >= 1.0))
+        return irradiance;
+    const float4 s = GetTexture2D(g_View.ssgiTexture).SampleLevel(g_LinearClamp, uv, 0);
+    return irradiance * (1.0 - saturate(s.a)) + s.rgb;
+}
+
 float3 CascadeColor(uint c)
 {
     if (g_View.vsmTable != ZX_INVALID_INDEX) { // virtual shadow levels
@@ -986,7 +1002,7 @@ float4 LightSurface(SurfaceData s, float3 worldPos, float4 svPosition, bool unli
             const float3 gi = DDGIIrradiance(g_View.gi, worldPos, N, normalize(g_View.cameraPosition - worldPos), coverage);
             irr = lerp(irr, gi, coverage);
         }
-        return float4(irr, 1);
+        return float4(ApplyScreenSpaceGI(irr, worldPos), 1);
     }
     case 7: {
         const float a = g_View.aoTexture != ZX_INVALID_INDEX
@@ -1017,6 +1033,7 @@ float4 LightSurface(SurfaceData s, float3 worldPos, float4 svPosition, bool unli
         const float3 gi = DDGIIrradiance(g_View.gi, worldPos, N, V, coverage);
         irradiance = lerp(irradiance, gi, coverage);
     }
+    irradiance = ApplyScreenSpaceGI(irradiance, worldPos);
     const float NoV = max(dot(N, V), 1e-4);
     const float3 f0 = lerp(0.04, s.baseColor, s.metallic);
     // Specular ambient: probes / sky cube / SSR along the reflection (bent towards the normal with roughness).

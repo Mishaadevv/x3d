@@ -238,6 +238,9 @@ returns m_bakedConstants (intensity x exposure / bake exposure) with no passes. 
 (File menu), console gi.bake / gi.clearbake / r.GI.Mode; ZXGame loads <scene>.zgi. Settings giMode.
 Classification (0.16.6): probeData.w = surface within one spacing (RelocateProbe); TraceCS ProbeSkipped -> m_flags (UAV
 in the trace, SRV in the updates gate them).
+SSGI (0.16.7): Shaders/GI/SSGI.hlsl TraceCS / TemporalCS, GlobalIllumination::AddScreenPass (ViewportRenderer afterOpaque,
+next to SSR), SceneLighting / ViewData ssgiTexture + ssgiViewProj, ForwardPBR ApplyScreenSpaceGI; off in debug views
+and probe captures. GISettings screenSpace (Full), r.GI.ScreenSpace, Settings screenSpaceGI.
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
 in one run (switch cvars between stat.gpu samples).
