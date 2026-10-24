@@ -31,7 +31,9 @@ ZX_TEST(GI, ShadersCompile)
                        {"/Shaders/GI/GlobalSDF.hlsl", "JumpFloodCS"},   {"/Shaders/GI/GlobalSDF.hlsl", "FinalizeCS"},
                        {"/Shaders/GI/DDGI.hlsl", "TraceCS"},            {"/Shaders/GI/DDGI.hlsl", "UpdateIrradianceCS"},
                        {"/Shaders/GI/DDGI.hlsl", "UpdateDistanceCS"},   {"/Shaders/GI/DDGI.hlsl", "AmbientCubeCS"},
-                       {"/Shaders/GI/SSGI.hlsl", "TraceCS"},            {"/Shaders/GI/SSGI.hlsl", "TemporalCS"}};
+                       {"/Shaders/GI/SSGI.hlsl", "TraceCS"},            {"/Shaders/GI/SSGI.hlsl", "TemporalCS"},
+                       {"/Shaders/GI/DDGI.hlsl", "LightmapTraceCS"},    {"/Shaders/GI/DDGI.hlsl", "LightmapDilateCS"},
+                       {"/Shaders/GI/DDGI.hlsl", "PixelTraceCS"}};
         for (const Entry& e : entries) {
             rhi::ShaderCompileDesc d;
             d.path = e.path;

@@ -248,6 +248,9 @@ placements (by RenderInstance::id) -> Editor::UpdateLightingBake writes MeshRend
 Instance rows are 208 bytes (192: half4 scale/bias + valid flag, WriteLightmapRow); ForwardPBR EvaluateSurface reads it
 (s_lightmapAtlasUV) when ViewData::lightmapAtlas is set (GIMode::Baked); deferred lighting keeps the probes.
 Built-in shapes no longer set UV1 (the cooker generates lightmap UVs).
+Lumen-lite (0.17.0): DDGI.hlsl PixelTraceCS (screen march, then ShadeRay; a = traced share) into the SSGI trace
+texture, then SSGI TemporalCS; GlobalIllumination::AddScreenPass(…, LightingInputs) with last frame's ProbeParams
+(m_lastProbeParams, m_lastSky); GISettings::lumen (r.GI.Lumen, GI Quality Ultra). M17 closed at 0.17.0.
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
 in one run (switch cvars between stat.gpu samples).

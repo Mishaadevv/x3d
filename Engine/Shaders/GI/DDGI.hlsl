@@ -62,6 +62,21 @@ struct ProbeParams
     uint lmIteration;
     uint lmRays;
     uint pad3;
+    uint pad4;
+    // Lumen-lite pixel traces (PixelTraceCS).
+    float4x4 pxInvViewProj;
+    float4x4 pxViewProj;
+    float3 pxCamera;
+    float pxNearZ;
+    float3 pxForward;
+    float pxScreenDistance; // meters a ray marches in screen space before the distance field takes over
+    uint pxColor;           // this frame's lit opaque scene
+    uint pxDepth;
+    uint pxNormals;
+    uint pxOut;             // UAV, half resolution: rgb = average radiance, a = 1 (it replaces the probes)
+    uint2 pxSize;
+    uint pxFrame;
+    uint pxRays;
 };
 ZX_PASS_CONSTANTS(ProbeParams, g_Probe);
 
@@ -496,4 +511,105 @@ void LightmapDilateCS(uint2 id : SV_DispatchThreadID)
         result = count > 0.0 ? float4(sum / count, 1.0) : 0.0;
     }
     GetRWTexture2D(g_Probe.lmOutUav)[id] = result;
+}
+
+// --- Lumen-lite prototype (GI-2) -------------------------------------------------------------------------------------
+
+float3 PxDecodeOct(float2 e)
+{
+    e = e * 2.0 - 1.0;
+    float3 n = float3(e.xy, 1.0 - abs(e.x) - abs(e.y));
+    const float t = saturate(-n.z);
+    n.xy += float2(n.x >= 0.0 ? -t : t, n.y >= 0.0 ? -t : t);
+    return normalize(n);
+}
+
+float3 PxProject(float3 p)
+{
+    const float4 c = mul(g_Probe.pxViewProj, float4(p, 1.0));
+    return float3(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5, c.w);
+}
+
+/// Per-pixel final gather (half resolution), Lumen style: each ray first marches the depth buffer (exact contact
+/// detail, the lit frame as its radiance); when it leaves the screen or finds nothing, it is traced through the global
+/// distance field and the hit is lit like a probe ray (sun, lights, the probes' radiance cache). The result replaces
+/// the probes' interpolated light for that pixel (a = 1); TemporalCS (SSGI.hlsl) accumulates it over frames.
+[numthreads(8, 8, 1)]
+void PixelTraceCS(uint2 id : SV_DispatchThreadID)
+{
+    if (any(id >= g_Probe.pxSize))
+        return;
+    RWTexture2D<float4> output = GetRWTexture2D(g_Probe.pxOut);
+    const float2 uv = (float2(id) + 0.5) / float2(g_Probe.pxSize);
+    Texture2D<float4> depthTex = GetTexture2D(g_Probe.pxDepth);
+    const float d = depthTex.SampleLevel(g_PointClamp, uv, 0).r;
+    const float4 nr = GetTexture2D(g_Probe.pxNormals).SampleLevel(g_PointClamp, uv, 0);
+    if (d <= 0.0 || nr.a < 0.5) {
+        output[id] = 0;
+        return;
+    }
+    const float3 n = PxDecodeOct(nr.rg);
+    const float4 wp = mul(g_Probe.pxInvViewProj, float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0));
+    const float3 p = wp.xyz / wp.w;
+    const float3 t = normalize(abs(n.y) < 0.99 ? cross(float3(0, 1, 0), n) : cross(float3(1, 0, 0), n));
+    const float3 b = cross(n, t);
+    const float3 s0 = PxProject(p + n * 0.02);
+    Texture2D<float4> colorTex = GetTexture2D(g_Probe.pxColor);
+    Texture2D<float4> normalTex = GetTexture2D(g_Probe.pxNormals);
+    const float voxel = g_Probe.sdf.levelMin[0].w;
+    float3 sum = 0.0;
+    float valid = 0.0;
+    [loop] for (uint r = 0; r < g_Probe.pxRays; ++r) {
+        uint h = (id.x * 73856093u) ^ (id.y * 19349663u) ^ ((g_Probe.pxFrame * 8 + r) * 83492791u);
+        h ^= h >> 13;
+        h *= 0x5bd1e995u;
+        h ^= h >> 15;
+        const float u1 = float(h & 0xFFFFu) / 65536.0, u2 = float(h >> 16) / 65536.0;
+        const float phi = 6.2831853 * u2, radius = sqrt(u1);
+        const float3 dir = normalize(t * (radius * cos(phi)) + b * (radius * sin(phi)) + n * sqrt(max(1.0 - u1, 0.0)));
+        // 1. Screen march (short range).
+        float len = g_Probe.pxScreenDistance;
+        const float startZ = dot(p - g_Probe.pxCamera, g_Probe.pxForward);
+        const float rz = dot(dir, g_Probe.pxForward);
+        if (rz < 0.0)
+            len = min(len, (startZ - g_Probe.pxNearZ * 2.0) / -rz);
+        bool found = false;
+        if (len > 0.05) {
+            const float3 s1 = PxProject(p + dir * len);
+            [loop] for (float i = 1.0; i <= 10.0; i += 1.0) {
+                const float k = (i - 0.5) / 10.0;
+                const float f = k * k;
+                const float2 suv = lerp(s0.xy, s1.xy, f);
+                if (any(suv < 0.0) || any(suv > 1.0))
+                    break;
+                const float rayZ = 1.0 / lerp(1.0 / s0.z, 1.0 / s1.z, f);
+                const float sd = depthTex.SampleLevel(g_PointClamp, suv, 0).r;
+                const float sceneZ = sd > 0.0 ? g_Probe.pxNearZ / sd : 1e9;
+                const float diff = rayZ - sceneZ;
+                if (diff > 0.0 && diff < 0.3 * (1.0 + sceneZ * 0.05)) {
+                    const float3 hn = PxDecodeOct(normalTex.SampleLevel(g_PointClamp, suv, 0).rg);
+                    if (dot(hn, dir) < 0.0) {
+                        sum += colorTex.SampleLevel(g_PointClamp, suv, 0).rgb;
+                        valid += 1.0;
+                        found = true;
+                    }
+                    break;
+                }
+            }
+        }
+        if (found)
+            continue;
+        // 2. The distance field (starting past the surface's own voxels).
+        // (Hits closer than two voxels are too coarse to trust - and back faces mean the ray started inside: the
+        // probes answer for those rays.)
+        float distance;
+        const float3 radiance = ShadeRay(p + n * voxel * 1.5, dir, distance);
+        if (distance >= voxel * 2.0) {
+            sum += radiance;
+            valid += 1.0;
+        }
+    }
+    // Like the SSGI result: rgb = the traced rays' light / all rays, a = their share (the probes light the rest).
+    const float inv = 1.0 / float(max(g_Probe.pxRays, 1u));
+    output[id] = float4(min(sum * inv, 60000.0), valid * inv);
 }

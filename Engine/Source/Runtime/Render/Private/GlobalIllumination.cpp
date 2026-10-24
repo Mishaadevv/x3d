@@ -75,8 +75,16 @@ struct ProbeParams
     UVec2 lmSize;
     u32 lmIteration, lmRays;
     u32 pad3[2];
+    Mat4 pxInvViewProj, pxViewProj;
+    Vec3 pxCamera;
+    f32 pxNearZ;
+    Vec3 pxForward;
+    f32 pxScreenDistance;
+    u32 pxColor, pxDepth, pxNormals, pxOut;
+    UVec2 pxSize;
+    u32 pxFrame, pxRays;
 };
-static_assert(sizeof(ProbeParams) == 752);
+static_assert(sizeof(ProbeParams) == 944);
 
 // Keep in sync with RasterParams (Shaders/GI/Lightmap.hlsl).
 struct LightmapRasterParams
@@ -112,7 +120,7 @@ GlobalIllumination::~GlobalIllumination()
     for (Buffer* b : m_bake.readback)
         m_device.Destroy(b);
     DestroyLightmapTargets();
-    for (Pipeline* p : {m_lmRasterPipeline, m_lmTracePipeline, m_lmDilatePipeline})
+    for (Pipeline* p : {m_lmRasterPipeline, m_lmTracePipeline, m_lmDilatePipeline, m_pixelTracePipeline})
         m_device.Destroy(p);
     for (Pipeline* p : {m_clearPipeline, m_voxelizePipeline, m_jumpFloodPipeline, m_finalizePipeline, m_tracePipeline, m_irradiancePipeline,
                         m_distancePipeline, m_cubePipeline, m_ssgiTracePipeline, m_ssgiTemporalPipeline})
@@ -140,7 +148,8 @@ bool GlobalIllumination::Init()
                 {&m_ssgiTraceCS, &m_ssgiTracePipeline, "/Shaders/GI/SSGI.hlsl", "TraceCS"},
                 {&m_ssgiTemporalCS, &m_ssgiTemporalPipeline, "/Shaders/GI/SSGI.hlsl", "TemporalCS"},
                 {&m_lmTraceCS, &m_lmTracePipeline, "/Shaders/GI/DDGI.hlsl", "LightmapTraceCS"},
-                {&m_lmDilateCS, &m_lmDilatePipeline, "/Shaders/GI/DDGI.hlsl", "LightmapDilateCS"}};
+                {&m_lmDilateCS, &m_lmDilatePipeline, "/Shaders/GI/DDGI.hlsl", "LightmapDilateCS"},
+                {&m_pixelTraceCS, &m_pixelTracePipeline, "/Shaders/GI/DDGI.hlsl", "PixelTraceCS"}};
     for (const Job& j : jobs) {
         ShaderCompileDesc d;
         d.path = j.path;
@@ -306,7 +315,7 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
     if (m_bake.state == BakeState::Readback)
         FinishBakeReadback();
     // Screen-space GI of last frame (with baked probes too).
-    m_ssgiEnabled = settings.enabled && settings.screenSpace && m_ssgiTracePipeline;
+    m_ssgiEnabled = settings.enabled && (settings.screenSpace || settings.lumen) && m_ssgiTracePipeline;
     if (m_ssgiEnabled && m_ssgiValid) {
         lighting.ssgiTexture = m_ssgi[m_ssgiRead]->GetSrvIndex();
         lighting.ssgiViewProj = m_ssgiViewProj;
@@ -779,6 +788,12 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
     }
     p.cubeValid = m_probesValid ? 1u : 0u;
     p.probeDataUav = m_probeData->GetUavIndex();
+    if (!baking) {
+        // The Lumen-lite pass of the next frame lights its distance field hits with these.
+        m_lastProbeParams.ResizeUninitialized(sizeof(ProbeParams));
+        MemCopy(m_lastProbeParams.Data(), &p, sizeof(ProbeParams));
+        m_lastSky = sky;
+    }
     const RGTexture probeData = graph.ImportTexture(m_probeData, ResourceState::ShaderResource);
     RGTexture cubes[6];
     for (u32 i = 0; i < 6; ++i)
@@ -1082,7 +1097,8 @@ struct SsgiParams
 static_assert(sizeof(SsgiParams) == 288);
 } // namespace
 
-void GlobalIllumination::AddScreenPass(RenderGraph& graph, RGTexture color, RGTexture depth, RGTexture normals, const RenderView& view)
+void GlobalIllumination::AddScreenPass(RenderGraph& graph, RGTexture color, RGTexture depth, RGTexture normals, const RenderView& view,
+                                       const SceneRenderer::LightingInputs& inputs)
 {
     if (!m_ssgiEnabled || !normals.IsValid()) {
         m_ssgiValid = false;
@@ -1128,6 +1144,67 @@ void GlobalIllumination::AddScreenPass(RenderGraph& graph, RGTexture color, RGTe
     const RGTexture trace = graph.ImportTexture(m_ssgiTrace, ResourceState::ShaderResource);
     const RGTexture history = graph.ImportTexture(m_ssgi[m_ssgiRead], ResourceState::ShaderResource);
     const RGTexture output = graph.ImportTexture(m_ssgi[write], ResourceState::ShaderResource);
+    // Lumen-lite: per-pixel rays through the screen and the distance field (needs last frame's probe constants).
+    const bool lumen = m_settings.lumen && m_pixelTracePipeline && m_lastProbeParams.Size() == sizeof(ProbeParams) && m_distance && m_cubes[5];
+    if (lumen) {
+        ProbeParams lp;
+        MemCopy(&lp, m_lastProbeParams.Data(), sizeof(ProbeParams));
+        lp.pxInvViewProj = p.invViewProj;
+        lp.pxViewProj = p.viewProj;
+        lp.pxCamera = p.cameraPosition;
+        lp.pxNearZ = p.nearZ;
+        lp.pxForward = p.cameraForward;
+        lp.pxScreenDistance = Max(m_settings.screenDistance, 0.5f);
+        lp.pxOut = m_ssgiTrace->GetUavIndex();
+        lp.pxSize = size;
+        lp.pxFrame = p.frame;
+        lp.pxRays = Clamp(m_settings.lumenRays, 1u, 16u);
+        lp.cascadeCount = inputs.cascadeCount;
+        for (u32 c = 0; c < inputs.cascadeCount; ++c) {
+            lp.shadowMatrices[c] = inputs.shadowMatrices[c];
+            lp.shadowMaps[c] = inputs.shadowMaps[c];
+        }
+        Buffer* skySH = m_lastSky ? m_lastSky->IrradianceSH() : nullptr;
+        const RGBuffer skySHHandle = skySH ? m_lastSky->IrradianceSHHandle() : RGBuffer();
+        const bool hasSky = skySH && skySHHandle.IsValid() && lp.skySH != InvalidDescriptor;
+        if (!hasSky)
+            lp.skySH = InvalidDescriptor;
+        const RGTexture fieldTextures[3] = {graph.ImportTexture(m_distance, ResourceState::ShaderResource),
+                                            graph.ImportTexture(m_albedo, ResourceState::ShaderResource),
+                                            graph.ImportTexture(m_normal, ResourceState::ShaderResource)};
+        RGTexture cubes[6];
+        for (u32 i = 0; i < 6; ++i)
+            cubes[i] = graph.ImportTexture(m_cubes[i], ResourceState::ShaderResource);
+        const SceneRenderer::LightingInputs li = inputs;
+        graph.AddPass(
+            "GI.LumenTrace", PassType::Compute,
+            [=](PassBuilder& b) {
+                b.ReadTexture(color);
+                b.ReadTexture(depth);
+                b.ReadTexture(normals);
+                for (const RGTexture& t : fieldTextures)
+                    b.ReadTexture(t);
+                for (const RGTexture& t : cubes)
+                    b.ReadTexture(t);
+                for (u32 c = 0; c < li.cascadeCount; ++c)
+                    if (li.shadowTextures[c].IsValid())
+                        b.ReadTexture(li.shadowTextures[c]);
+                if (hasSky)
+                    b.ReadBuffer(skySHHandle, ResourceState::ConstantBuffer);
+                b.WriteTexture(trace);
+            },
+            [this, lp, color, depth, normals, size, hasSky, skySH](PassContext& ctx) {
+                ProbeParams q = lp;
+                q.pxColor = ctx.Texture(color)->GetSrvIndex();
+                q.pxDepth = ctx.Texture(depth)->GetSrvIndex();
+                q.pxNormals = ctx.Texture(normals)->GetSrvIndex();
+                ctx.cmd.SetPipeline(m_pixelTracePipeline);
+                ctx.cmd.SetConstants(0, &q, sizeof(q));
+                if (hasSky)
+                    ctx.cmd.SetConstantBuffer(1, skySH->GetGpuAddress());
+                ctx.cmd.Dispatch((size.x + 7) / 8, (size.y + 7) / 8);
+            });
+    } else
     graph.AddPass(
         "GI.ScreenTrace", PassType::Compute,
         [=](PassBuilder& b) {

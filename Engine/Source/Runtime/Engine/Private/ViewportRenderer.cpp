@@ -498,6 +498,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         render::GISettings gi = m_settings.gi;
         gi.enabled &= features.globalIllumination;
         gi.screenSpace &= m_settings.scene.debugMode == 0; // it gathers the lit frame: debug views would feed back into it
+        gi.lumen &= m_settings.scene.debugMode == 0;
         m_gi.Prepare(m_instances.View(), view.position, exposure, gi, m_lighting);
     }
     m_scene.Prepare(m_instances.View(), view, m_lighting, m_settings.scene);
@@ -552,7 +553,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     m_scene.AddPasses(graph, sceneColor, sceneDepth, LinearColor(0, 0, 0, 1),
                       [this, &view](RenderGraph& g, RGTexture color, RGTexture depth, RGTexture normals) {
                           m_reflections.AddSsrPass(g, color, depth, normals, view);
-                          m_gi.AddScreenPass(g, color, depth, normals, view);
+                          m_gi.AddScreenPass(g, color, depth, normals, view, m_scene.GetLightingInputs());
                       });
     if (m_settings.useSky)
         m_sky.AddSkyPass(graph, sceneColor, sceneDepth);

@@ -65,7 +65,7 @@ ZX_REFLECT_STRUCT_BEGIN(EditorSettings)
                            "File > Bake Lighting, no GPU time (dynamic when the scene has no bake). Default = the engine profile's"))
     ZX_FIELD(giQuality, Meta::DisplayName("GI Quality"), Meta::EditCondition("globalIllumination"),
              Meta::Tooltip("How many light probes, how many rays each, how often they update (Default = the engine profile's). "
-                           "Higher: finer bounced light that reacts faster, more GPU time"))
+                           "Higher: finer bounced light that reacts faster, more GPU time. Ultra adds per-pixel rays (Lumen-lite prototype)"))
     ZX_FIELD(screenSpaceGI, Meta::DisplayName("Screen Space GI"), Meta::EditCondition("globalIllumination"),
              Meta::Tooltip("Short-range bounced light from what is on screen (colored objects tint the floor next to them). "
                            "Full profile; costs GPU time"))
@@ -197,6 +197,7 @@ void ApplyEditorSettings(Editor& ed)
         case QualityLevel::High: gi.probeCounts = UVec3(28, 12, 28), gi.probeSpacing = 1.4f, gi.raysPerProbe = 64, gi.probeStride = 2; break;
         case QualityLevel::Ultra: gi.probeCounts = UVec3(32, 14, 32), gi.probeSpacing = 1.2f, gi.raysPerProbe = 128, gi.probeStride = 1; break;
         }
+        gi.lumen = s.giQuality == QualityLevel::Ultra; // per-pixel rays: the most expensive, the most detailed
     }
     if (i32(s.giMode) != g_appliedGIMode) {
         g_appliedGIMode = i32(s.giMode);

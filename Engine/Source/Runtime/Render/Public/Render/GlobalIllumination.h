@@ -53,6 +53,10 @@ struct GISettings
     u32 screenRays = 4;          // per half-resolution pixel and frame
     f32 screenDistance = 2.5f;   // meters a screen ray marches
     f32 screenHistory = 0.88f;   // weight of last frame's result
+    // "Lumen-lite" prototype (GI-2): per-pixel rays (screen first, then the distance field) replace the probes' light
+    // on screen; the probes become the radiance cache of the hits. High-end: off by default.
+    bool lumen = false;
+    u32 lumenRays = 4;           // per half-resolution pixel and frame
 };
 
 /// A finished bake: probes over a fixed grid (pre-exposed with `exposure`), saved next to the scene as .zgi.
@@ -115,7 +119,8 @@ public:
     /// this frame's point / spot lights (SceneRenderer::PreparedLightBuffer), `sky`: the sky's irradiance SH (or null).
     /// Screen-space GI after the opaque pass (`normals`: octahedral normal + roughness; invalid = skipped). Read by the
     /// lighting of the next frame (Prepare sets lighting.ssgiTexture).
-    void AddScreenPass(RenderGraph& graph, RGTexture color, RGTexture depth, RGTexture normals, const RenderView& view);
+    void AddScreenPass(RenderGraph& graph, RGTexture color, RGTexture depth, RGTexture normals, const RenderView& view,
+                       const SceneRenderer::LightingInputs& inputs);
     /// `inputs`: the scene's sun cascades of this frame (hits inside them use the shadow maps).
     void AddPasses(RenderGraph& graph, const SceneLighting& lighting, const SceneRenderer::LightingInputs& inputs, u32 lightBuffer,
                    u32 lightCount, const SkyRenderer* sky);
@@ -229,6 +234,10 @@ private:
     rhi::ShaderBytecode m_ssgiTraceCS, m_ssgiTemporalCS;
     rhi::Pipeline* m_ssgiTracePipeline = nullptr;
     rhi::Pipeline* m_ssgiTemporalPipeline = nullptr;
+    rhi::ShaderBytecode m_pixelTraceCS;
+    rhi::Pipeline* m_pixelTracePipeline = nullptr;
+    Array<u8> m_lastProbeParams;       // last frame's probe constants (the Lumen-lite pass reuses its field / sun / sky)
+    const SkyRenderer* m_lastSky = nullptr;
     rhi::Texture* m_ssgiTrace = nullptr;
     rhi::Texture* m_ssgi[2] = {};   // accumulated results: [m_ssgiRead] = last frame's
     UVec2 m_ssgiSize;

@@ -4,7 +4,7 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12, part o
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a workflow like Unity URP or Unreal Engine 5 that
 runs well on everyday hardware. The development machine is a laptop with Intel UHD 620 graphics.
 
-**Version 0.16.0 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
+**Version 0.17.0 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
 [download](https://github.com/Mishaadevv/x3d/releases/latest)
 
 > [!WARNING]
@@ -47,6 +47,9 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
     LOD hierarchy at import and drawn at the detail the screen needs, with a triangle budget and cluster streaming.
     A billion source triangles (instanced) run at ~35-40 FPS on Intel UHD 620.
   - Clustered forward+ and deferred PBR.
+  - **Global illumination**: light bounces off walls and floors in real time - DDGI probes traced through a
+    GPU-built distance field of the scene, screen-space GI for contact bounce, and a "Lumen-lite" per-pixel prototype
+    for high-end GPUs. Or bake it (File > Bake Lighting): high-quality probes plus lightmaps, free at run time.
   - Virtual shadow maps for the sun (sharp near and far, pages cached until something moves), cascaded shadows with
     PCSS, contact shadows, GTAO.
   - Screen-space reflections, reflection probes, decals.
@@ -130,6 +133,8 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
 | ![ZGraph](docs/images/zgraph.jpg) | ![Mini game](docs/images/mini-game.jpg) |
 | **ZNano: 300 rocks of 1.3M triangles each** | **The same view colored by cluster** |
 | ![ZNano](docs/images/znano.jpg) | ![ZNano clusters](docs/images/znano-clusters.jpg) |
+| **Sponza with global illumination (dynamic sun)** | **The same view without it** |
+| ![Global illumination](docs/images/gi-on.jpg) | ![Without global illumination](docs/images/gi-off.jpg) |
 | **Script Editor** | **HDRI Sky over Sponza** |
 | ![Script Editor](docs/images/script-editor.jpg) | ![HDRI Sky in Sponza](docs/images/hdri-sponza.jpg) |
 
