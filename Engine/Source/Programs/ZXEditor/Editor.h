@@ -12,6 +12,7 @@
 #include "Engine/FlyCamera.h"
 #include "Engine/GameModule.h"
 #include "Engine/InputActions.h"
+#include "Engine/WorldPartition.h"
 #include "Engine/Fire.h"
 #include "Engine/GameRuntime.h"
 #include "Engine/Packaging.h"
@@ -467,6 +468,26 @@ public:
     void RequestRestart(); // quits (asking to save first) and starts the editor again on the same project
     void NewScene();
     bool OpenScene(StringView physicalPath);
+    // World Partition: cells of the open scene stream around the editor camera.
+    WorldPartitionSettings worldPartition;
+    WorldStreamer streamer;
+    String CellDirectory() const;
+    /// Starts / restarts streaming for the open scene (its settings, its cell directory).
+    void ConfigureStreaming();
+    /// Writes a new open-world scene (size x size meters of terrain tiles, `tile` meters each, one World Partition cell
+    /// per tile) with sky, sun and time of day, then opens it. The tiles go straight into cell files.
+    bool CreateOpenWorld(f32 size, f32 tile, i32 seed);
+    /// Streaming check (world.flytest): the camera flies straight on; the main-thread time of the world systems
+    /// (streaming, terrain builds) is recorded per frame.
+    struct FlyTest
+    {
+        bool active = false;
+        f64 remaining = 0.0, warmup = 1.0;
+        f32 speed = 60.0f;
+        f64 maxMs = 0.0, sumMs = 0.0;
+        u32 frames = 0, over50 = 0, over16 = 0;
+    } flyTest;
+    f64 worldUpdateMs = 0.0; // last frame: terrains, presets, wind, clock, lighting bake, streaming
     // Baked lighting (GI-0): probes baked over the static scene, saved next to the scene as <scene>.zgi.
     void BakeLighting(f32 spacing = 0.0f, u32 iterations = 0);
     String BakedLightingPath() const;

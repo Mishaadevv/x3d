@@ -32,6 +32,9 @@ struct Terrain
     f32 roughness = 0.5f;    // amplitude kept per octave (more = rougher detail)
     f32 ridges = 0.25f;      // 0 = rolling hills, 1 = sharp ridged mountains
     f32 flatCenter = 20.0f;  // meters: radius of a flat area in the middle
+    /// Where this terrain sits in a larger landscape (meters): neighbor tiles with the same settings and offsets one
+    /// tile apart continue each other's hills without seams (open worlds are grids of terrain tiles).
+    Vec2 noiseOffset;
     asset::AssetId material;
     bool collision = true;
     // Sculpted / painted (the Terrain tool; hidden in Details): base64 of i16 height offsets (2 cm steps) and of RGBA8
@@ -54,6 +57,10 @@ void DecodeTerrainSculpt(const Terrain& t, u32 n, Array<f32>& offsets);
 void DecodeTerrainPaint(const Terrain& t, u32 n, Array<u8>& rgb);
 void EncodeTerrainSculpt(Terrain& t, const Array<f32>& offsets);
 void EncodeTerrainPaint(Terrain& t, const Array<u8>& rgb);
+/// Generated height (meters, no sculpting) at local (x, z) - also outside the terrain (seamless normals at tile edges).
+f32 GeneratedTerrainHeight(const Terrain& t, f32 localX, f32 localZ);
+/// A coarse copy of the terrain (`samples` per side, skirts on every chunk): far-away stand-ins (World Partition HLOD).
+asset::CookedMesh CookTerrainProxy(const Terrain& t, u32 samples);
 /// Hash of everything that changes the generated shape.
 u64 TerrainShapeHash(const Terrain& t);
 /// The id under which the terrain's mesh is registered (stable per entity guid).
@@ -67,6 +74,8 @@ public:
     void Update(ecs::World& world, asset::AssetManager& assets, render::RenderAssets* renderAssets);
     void Clear() { m_built.Clear(); }
     u32 BuildCount() const { return m_builds; }
+    /// New terrains built per Update (streaming); 0 = all at once.
+    void SetNewBuildsPerUpdate(u32 n) { m_newPerUpdate = n == 0 ? ~0u : n; }
 
     /// Live terrain data for editing tools: generated heights, sculpted offsets, paint (n x n samples, row = +Z).
     struct Data
@@ -121,6 +130,7 @@ private:
     void Rebuild(ecs::World& world, ecs::Entity e, Data& d, asset::AssetManager& assets, render::RenderAssets* renderAssets);
     HashMap<asset::AssetId, Data> m_built; // by mesh id
     u32 m_builds = 0;
+    u32 m_newPerUpdate = 2;
 };
 
 } // namespace zx

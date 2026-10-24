@@ -26,6 +26,8 @@ ZX_REFLECT_STRUCT_BEGIN(Terrain)
     ZX_FIELD(roughness, Meta::Range(0, 1), Meta::Tooltip("How strong the finer layers are"))
     ZX_FIELD(ridges, Meta::Range(0, 1), Meta::Tooltip("0 = rolling hills, 1 = sharp ridged mountains"))
     ZX_FIELD(flatCenter, Meta::Range(0, 2000), Meta::Units("m"), Meta::Tooltip("Radius of a flat area in the middle (0 = none)"))
+    ZX_FIELD(noiseOffset, Meta::Units("m"), Meta::Tooltip("Where this tile sits in a larger landscape: tiles with the same settings whose offsets "
+                                                          "differ by their size continue each other's hills without seams"))
     ZX_FIELD(material, Meta::AssetType("Material"), Meta::Tooltip("Surface material (M_Terrain in Starter Content: grass, rock on slopes, snow on peaks)"))
     ZX_FIELD(collision, Meta::Tooltip("Physics collision (a height field) and Character Controllers walk on it"))
     ZX_FIELD(sculpt, Meta::Hidden())
@@ -85,10 +87,17 @@ f32 Shape(const Terrain& t, f32 x, f32 z)
 }
 
 /// One vertex of the terrain grid (heights `h`, n x n, spacing `s`).
+f32 GeneratedHeightLocal(const Terrain& t, f32 px, f32 pz);
+
 asset::PackedVertex TerrainVertex(const Terrain& t, const Array<f32>& h, const Array<u8>& paint, u32 n, f32 s, u32 x, u32 z)
 {
     const f32 half = s * f32(n - 1) * 0.5f;
-    auto at = [&](i32 xx, i32 zz) { return h[usize(Clamp(zz, 0, i32(n) - 1)) * n + usize(Clamp(xx, 0, i32(n) - 1))]; };
+    // Beyond the edge: the generated landscape continues (tiles of one landscape get matching normals at their seams).
+    auto at = [&](i32 xx, i32 zz) {
+        if (xx < 0 || zz < 0 || xx >= i32(n) || zz >= i32(n))
+            return GeneratedHeightLocal(t, -half + f32(xx) * s, -half + f32(zz) * s);
+        return h[usize(zz) * n + usize(xx)];
+    };
     asset::MeshVertex v;
     v.position = Vec3(-half + f32(x) * s, at(i32(x), i32(z)), -half + f32(z) * s);
     const f32 dx = (at(i32(x) + 1, i32(z)) - at(i32(x) - 1, i32(z))) / (2.0f * s);
@@ -132,7 +141,7 @@ void TerrainSectionBounds(const Array<asset::PackedVertex>& vertices, u32 n, Arr
 
 /// The render mesh, cooked directly (a regular grid needs no cache optimization): square chunks of cells become
 /// sections with their own bounds, so the renderer culls what is off screen.
-asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h, const Array<u8>& paint)
+asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h, const Array<u8>& paint, bool skirtsAtLod0 = false)
 {
     const u32 n = TerrainSamples(t);
     const f32 s = TerrainSpacing(t);
@@ -146,25 +155,80 @@ asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h, const A
         }
     const u32 cells = n - 1, chunk = TerrainChunk(n);
     Array<u32> indices;
-    indices.Reserve(usize(cells) * cells * 6);
+    indices.Reserve(usize(cells) * cells * 8);
+    // Skirt vertices: a copy of a chunk-border sample hanging below it (hides the cracks between chunks drawn at
+    // different LODs). One per border sample, shared by every LOD.
+    HashMap<u32, u32> skirtOf;
+    f32 minHeight = Infinity, maxHeight = -Infinity;
+    for (f32 v : h) {
+        minHeight = Min(minHeight, v);
+        maxHeight = Max(maxHeight, v);
+    }
+    const f32 skirtDepth = Max(s * 4.0f, (maxHeight - minHeight) * 0.05f);
+    auto skirt = [&](u32 i) {
+        const auto r = skirtOf.Insert(i, u32(out.vertices.Size()));
+        if (r.second) {
+            asset::PackedVertex v = out.vertices[i];
+            v.position.y -= skirtDepth;
+            out.vertices.PushBack(v);
+        }
+        return *r.first;
+    };
+    u32 lodCount = 1;
     for (u32 cz = 0; cz < cells; cz += chunk)
         for (u32 cx = 0; cx < cells; cx += chunk) {
             asset::CookedMeshSection section;
             section.firstLod = u32(out.sectionLods.Size());
-            const u32 first = u32(indices.Size());
-            for (u32 z = cz; z < Min(cz + chunk, cells); ++z)
-                for (u32 x = cx; x < Min(cx + chunk, cells); ++x) {
-                    const u32 p00 = z * n + x, p10 = p00 + 1, p01 = p00 + n, p11 = p01 + 1;
-                    // Same diagonal as the physics height field (p00 - p11): what you see is what you collide with.
-                    for (u32 i : {p00, p11, p10, p00, p01, p11}) {
-                        indices.PushBack(i);
-                        section.bounds.Expand(out.vertices[i].position);
+            const u32 x1 = Min(cx + chunk, cells), z1 = Min(cz + chunk, cells);
+            for (u32 z = cz; z <= z1; ++z)
+                for (u32 x = cx; x <= x1; ++x)
+                    section.bounds.Expand(out.vertices[z * n + x].position);
+            // LOD k: every 2^k-th sample (the chunk's far edges always kept), while the chunk stays at least 2 cells wide.
+            for (u32 lod = 0; lod < 5; ++lod) {
+                const u32 step = 1u << lod;
+                if (lod > 0 && (Min(x1 - cx, z1 - cz) / step) < 2)
+                    break;
+                Array<u32> xs, zs;
+                for (u32 x = cx; x < x1; x += step)
+                    xs.PushBack(x);
+                xs.PushBack(x1);
+                for (u32 z = cz; z < z1; z += step)
+                    zs.PushBack(z);
+                zs.PushBack(z1);
+                const u32 first = u32(indices.Size());
+                for (usize zi = 0; zi + 1 < zs.Size(); ++zi)
+                    for (usize xi = 0; xi + 1 < xs.Size(); ++xi) {
+                        const u32 p00 = zs[zi] * n + xs[xi], p10 = zs[zi] * n + xs[xi + 1], p01 = zs[zi + 1] * n + xs[xi], p11 = zs[zi + 1] * n + xs[xi + 1];
+                        // Same diagonal as the physics height field (p00 - p11): what you see is what you collide with.
+                        for (u32 i : {p00, p11, p10, p00, p01, p11})
+                            indices.PushBack(i);
+                    }
+                if (lod > 0 || skirtsAtLod0) {
+                    // Skirts along the chunk's four edges (both windings: seen from either side).
+                    auto edge = [&](u32 a, u32 b) {
+                        const u32 sa = skirt(a), sb = skirt(b);
+                        for (u32 i : {a, b, sb, a, sb, sa, a, sb, b, a, sa, sb})
+                            indices.PushBack(i);
+                    };
+                    for (usize xi = 0; xi + 1 < xs.Size(); ++xi) {
+                        edge(cz * n + xs[xi], cz * n + xs[xi + 1]);
+                        edge(z1 * n + xs[xi], z1 * n + xs[xi + 1]);
+                    }
+                    for (usize zi = 0; zi + 1 < zs.Size(); ++zi) {
+                        edge(zs[zi] * n + cx, zs[zi + 1] * n + cx);
+                        edge(zs[zi] * n + x1, zs[zi + 1] * n + x1);
                     }
                 }
-            out.sectionLods.PushBack(asset::CookedSectionLod{first, u32(indices.Size()) - first, 1.0f, 0.0f});
+                // Switch when the chunk covers less than 1/2^lod of the view height (error ~ spacing x step).
+                const f32 screenSize = lod == 0 ? 1.0f : 0.6f / f32(1u << (lod - 1));
+                out.sectionLods.PushBack(asset::CookedSectionLod{first, u32(indices.Size()) - first, screenSize, s * f32(step)});
+                ++section.lodCount;
+            }
+            section.lodCount = Max(section.lodCount - 1, 1u); // CookedMeshSection starts at 1
+            lodCount = Max(lodCount, section.lodCount);
             out.sections.PushBack(section);
         }
-    out.lodCount = 1;
+    out.lodCount = lodCount;
     out.materialSlotCount = 1;
     out.slotSourceMaterial.PushBack(0);
     out.index16 = out.vertices.Size() <= 0xFFFF;
@@ -187,28 +251,35 @@ u32 TerrainSamples(const Terrain& t) { return u32(Clamp(t.resolution, 9, 1025));
 
 f32 TerrainSpacing(const Terrain& t) { return Max(t.size, 0.01f) / f32(TerrainSamples(t) - 1); }
 
+namespace {
+
+f32 GeneratedHeightLocal(const Terrain& t, f32 px, f32 pz)
+{
+    if (!t.hills)
+        return 0.0f;
+    const f32 ox = t.noiseOffset.x, oz = t.noiseOffset.y;
+    f32 v = Shape(t, px + ox, pz + oz);
+    const f32 flat = Max(t.flatCenter, 0.0f);
+    if (flat > 0.0f) {
+        const f32 blend = Max(flat * 0.6f, TerrainSpacing(t) * 3.0f);
+        const f32 r = Sqrt(px * px + pz * pz);
+        v = Lerp(Shape(t, ox, oz), v, SmoothStep(flat, flat + blend, r));
+    }
+    return v * t.height;
+}
+
+} // namespace
+
+f32 GeneratedTerrainHeight(const Terrain& t, f32 localX, f32 localZ) { return GeneratedHeightLocal(t, localX, localZ); }
+
 void GenerateTerrainHeights(const Terrain& t, Array<f32>& heights)
 {
     const u32 n = TerrainSamples(t);
     const f32 s = TerrainSpacing(t), half = t.size * 0.5f;
     heights.Resize(usize(n) * n);
-    const f32 center = Shape(t, 0.0f, 0.0f);
-    const f32 flat = Max(t.flatCenter, 0.0f);
-    const f32 blend = Max(flat * 0.6f, s * 3.0f);
     for (u32 z = 0; z < n; ++z)
-        for (u32 x = 0; x < n; ++x) {
-            const f32 px = -half + f32(x) * s, pz = -half + f32(z) * s;
-            if (!t.hills) {
-                heights[usize(z) * n + x] = 0.0f;
-                continue;
-            }
-            f32 v = Shape(t, px, pz);
-            if (flat > 0.0f) {
-                const f32 r = Sqrt(px * px + pz * pz);
-                v = Lerp(center, v, SmoothStep(flat, flat + blend, r));
-            }
-            heights[usize(z) * n + x] = v * t.height;
-        }
+        for (u32 x = 0; x < n; ++x)
+            heights[usize(z) * n + x] = GeneratedHeightLocal(t, -half + f32(x) * s, -half + f32(z) * s);
 }
 
 u64 TerrainShapeHash(const Terrain& t)
@@ -226,6 +297,8 @@ u64 TerrainShapeHash(const Terrain& t)
     mix(bits(t.ridges));
     mix(bits(t.flatCenter));
     mix(t.hills ? 1u : 0u);
+    mix(bits(t.noiseOffset.x));
+    mix(bits(t.noiseOffset.y));
     return h;
 }
 
@@ -334,6 +407,19 @@ void EncodeTerrainPaint(Terrain& t, const Array<u8>& rgb)
     t.paint = any ? Base64Encode(ByteSpan(rgb.Data(), rgb.Size())) : String();
 }
 
+asset::CookedMesh CookTerrainProxy(const Terrain& t, u32 samples)
+{
+    Terrain low = t;
+    low.resolution = i32(Clamp(samples, 9u, 1025u));
+    Array<f32> heights;
+    ComputeTerrainHeights(low, heights);
+    Array<u8> paint;
+    DecodeTerrainPaint(low, TerrainSamples(low), paint);
+    asset::CookedMesh mesh = CookTerrainMesh(low, heights, paint, true);
+    mesh.name = "Terrain HLOD";
+    return mesh;
+}
+
 void ComputeTerrainHeights(const Terrain& t, Array<f32>& heights)
 {
     GenerateTerrainHeights(t, heights);
@@ -391,6 +477,7 @@ void TerrainSystem::Update(ecs::World& world, asset::AssetManager& assets, rende
 {
     Array<ecs::Entity> terrains;
     world.Query<const Terrain>().Each([&](ecs::Entity e, const Terrain&) { terrains.PushBack(e); });
+    u32 newBuilds = 0;
     for (ecs::Entity e : terrains) {
         EnsureEntityGuid(world, e);
         const asset::AssetId id = TerrainMeshId(world, e);
@@ -398,7 +485,11 @@ void TerrainSystem::Update(ecs::World& world, asset::AssetManager& assets, rende
         const u64 hash = TerrainShapeHash(t);
         Data* d = m_built.Find(id);
         const f64 now = Clock::NowSeconds();
+        // New terrains (a streamed-in landscape) are built a few per frame: no long frame when many arrive.
+        if (!d && newBuilds >= m_newPerUpdate)
+            continue;
         if (!d) {
+            ++newBuilds;
             m_built.InsertOrAssign(id, Data{});
             d = m_built.Find(id);
             d->mesh = id;

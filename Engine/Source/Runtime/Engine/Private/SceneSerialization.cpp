@@ -194,7 +194,8 @@ JsonValue SaveScene(ecs::World& world, const SceneIOOptions& options, const Json
     Array<ecs::Entity> roots, entities;
     CollectRoots(world, roots);
     for (ecs::Entity r : roots)
-        CollectHierarchy(world, r, entities);
+        if (!options.rootFilter || options.rootFilter(r))
+            CollectHierarchy(world, r, entities);
 
     JsonValue doc = JsonValue::MakeObject();
     doc.Set("format", "zscene");

@@ -272,6 +272,37 @@ ConCommand CmdTime("time", "Time of Day: time <hour 0..24 | dawn | sunrise | mor
                                    clock->dayLength, RadToDeg(Asin(sky.toSun.y)), RadToDeg(Asin(sky.toMoon.y)), sky.moonPhase * 100.0f);
                    });
 
+ConCommand CmdWorldCreate("world.create", "Creates an open world scene streamed with World Partition: world.create [size km = 4] [tile m = 256] [seed]",
+                          [](Span<const StringView> args) {
+                              if (Editor* ed = Ed())
+                                  ed->CreateOpenWorld(args.Size() > 0 ? ParseFloat(args[0]).ValueOr(4.0f) * 1000.0f : 4000.0f,
+                                                      args.Size() > 1 ? ParseFloat(args[1]).ValueOr(256.0f) : 256.0f,
+                                                      args.Size() > 2 ? i32(ParseInt(args[2]).ValueOr(7)) : 7);
+                          });
+
+ConCommand CmdWorldHlod("world.hlod", "Rebuilds the HLOD (far-away stand-in) of every World Partition cell", [](Span<const StringView>) {
+    if (Editor* ed = Ed())
+        ZX_LOG_INFO(LogCmd, "HLOD: {} cells written", ed->streamer.BuildHlods());
+});
+
+ConCommand CmdWorldFly("world.flytest", "Flies the camera straight ahead and measures the streaming hitches: world.flytest [seconds = 30] [speed m/s = 60]",
+                        [](Span<const StringView> args) {
+                            if (Editor* ed = Ed()) {
+                                ed->flyTest = Editor::FlyTest{};
+                                ed->flyTest.active = true;
+                                ed->flyTest.remaining = args.Size() > 0 ? ParseFloat(args[0]).ValueOr(30.0f) : 30.0f;
+                                ed->flyTest.speed = args.Size() > 1 ? ParseFloat(args[1]).ValueOr(60.0f) : 60.0f;
+                            }
+                        });
+
+ConCommand CmdWorldStats("world.stats", "World Partition streaming statistics", [](Span<const StringView>) {
+    if (Editor* ed = Ed()) {
+        const WorldStreamer::Stats& st = ed->streamer.GetStats();
+        ZX_LOG_INFO(LogCmd, "World Partition: {}, {} cells on disk, {} loaded, {} loading, {} as HLOD, work {:.2f} ms (max {:.2f} ms)",
+                    ed->streamer.IsActive() ? "on" : "off", st.cellsOnDisk, st.loaded, st.loading, st.hlods, st.lastWorkMs, st.maxWorkMs);
+    }
+});
+
 ConCommand CmdBakeLighting("gi.bake", "Bakes the lighting of the static scene into probes saved next to the scene: gi.bake [spacing m] [iterations]",
                             [](Span<const StringView> args) {
                                 if (Editor* ed = Ed())

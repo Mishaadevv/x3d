@@ -251,6 +251,13 @@ Built-in shapes no longer set UV1 (the cooker generates lightmap UVs).
 Lumen-lite (0.17.0): DDGI.hlsl PixelTraceCS (screen march, then ShadeRay; a = traced share) into the SSGI trace
 texture, then SSGI TemporalCS; GlobalIllumination::AddScreenPass(…, LightingInputs) with last frame's ProbeParams
 (m_lastProbeParams, m_lastSky); GISettings::lumen (r.GI.Lumen, GI Quality Ultra). M17 closed at 0.17.0.
+World Partition (M18, 0.17.1): Engine/WorldPartition.h (SpatiallyLoaded component, WorldPartitionSettings in scene
+settings "worldPartition", WorldStreamer: cells <scene>_Cells/x_z.zcell = scene fragments, jobs parse, CreateNext one
+root subtree per call within budget, SaveCells loads touched unloaded cells first; HLOD groups of 4x4 cells
+hlod_x_z.zhlod = merged CookTerrainProxy meshes sunk 3 m, HlodProxy entities never saved). SceneIOOptions::rootFilter.
+Editor: worldPartition / streamer / CellDirectory / ConfigureStreaming / CreateOpenWorld (world.create), world.hlod /
+world.stats / world.flytest (FlyTest, worldUpdateMs). ZXGame streams around the game camera. Terrain noiseOffset,
+chunk LODs with skirts, TerrainSystem new builds per Update (2). Tests WorldPartition.*.
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
 in one run (switch cvars between stat.gpu samples).

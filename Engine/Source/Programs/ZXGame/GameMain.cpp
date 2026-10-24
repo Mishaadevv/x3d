@@ -40,6 +40,7 @@
 #include "Engine/GameUI.h"
 #include "Engine/Localization.h"
 #include "Engine/TimeOfDay.h"
+#include "Engine/WorldPartition.h"
 #include "Engine/Wind.h"
 #include "UI/UI.h"
 #include "UI/UIRenderer.h"
@@ -146,6 +147,7 @@ private:
     UniquePtr<AnimationSystem> m_animation;
     FireSystem m_fire;
     TerrainSystem m_terrains;
+    WorldStreamer m_streamer; // World Partition scenes: cells around the game camera
     SoftBodySystem m_softBodies;
     WaterSystem m_water;
     GameUISystem m_gameUI;
@@ -325,6 +327,16 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
         platform::ShowErrorMessageBox(m_config.name.CStr(), "The startup scene could not be loaded.");
         return false;
     }
+    // World Partition: the cells around the start, then streaming around the game camera.
+    if (const WorldPartitionSettings wp = WorldPartitionFromJson(settings.Get("worldPartition")); wp.enabled) {
+        const String dir = Path::Join(Path::Parent(m_config.scene), String(Path::Stem(m_config.scene)) + "_Cells");
+        m_streamer.Configure(dir, wp, SceneIOOptions{m_assets.Get(), "/Game", m_prefabs.Get()});
+        scene::UpdateWorldTransforms(m_world);
+        const ecs::Entity ge = FindGameCamera(m_world);
+        const scene::WorldTransform* wt = m_world.Get<const scene::WorldTransform>(ge);
+        const Vec3 start[] = {wt ? wt->GetPosition() : Vec3()};
+        m_streamer.LoadAllInRange(m_world, start);
+    }
     // Baked lighting next to the scene (<scene>.zgi), if the project baked it.
     {
         render::BakedGI baked;
@@ -410,6 +422,12 @@ bool Game::Frame()
         fallback.position = m_sceneCamera.position;
         m_gameUI.time += dt;
         TickGame(m_world, s, dt, (m_captured || m_autotest) && !m_gameUI.WantsKeyboard() ? &m_input : nullptr, GameListener(m_world, fallback));
+    }
+    if (m_streamer.IsActive()) {
+        const ecs::Entity ge = FindGameCamera(m_world);
+        const scene::WorldTransform* wt = m_world.Get<const scene::WorldTransform>(ge);
+        const Vec3 sources[] = {wt ? wt->GetPosition() : m_sceneCamera.position};
+        m_streamer.Update(m_world, sources, true, 3.0);
     }
     m_terrains.Update(m_world, *m_assets, m_renderAssets.Get());
     TickWind(m_world, dt);

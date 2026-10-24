@@ -18,6 +18,7 @@
 // existing ones get their components replaced, and a null snapshot destroys the entity.
 
 #include "Asset/AssetManager.h"
+#include "Core/Containers/Function.h"
 #include "Core/Hash/Guid.h"
 #include "Core/Serialization/Json.h"
 #include "Scene/Hierarchy.h"
@@ -66,6 +67,8 @@ struct SceneIOOptions
     asset::AssetManager* assets = nullptr; // save: resolves source paths; load: loads them
     String assetRoot;                      // physical directory asset paths are relative to
     PrefabLibrary* prefabs = nullptr;      // save prefab instances as overrides / expand them on load (Prefab.h)
+    /// Save: only these root entities (with their children); null = all.
+    Function<bool(ecs::Entity), 32> rootFilter;
 };
 
 /// Serializes every scene entity (anything with a Transform). `settings` is stored as-is.

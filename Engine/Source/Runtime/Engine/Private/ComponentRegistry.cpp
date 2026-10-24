@@ -5,6 +5,7 @@
 #include "Engine/GameUI.h"
 #include "Engine/TimeOfDay.h"
 #include "Engine/Wind.h"
+#include "Engine/WorldPartition.h"
 #include "Engine/WaterPhysics.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/Fire.h"
@@ -57,6 +58,7 @@ void RegisterEngineComponents()
     RegisterComponent<DirectionalLight>("Directional Light", "\xEE\x85\xB8");     // sun
     RegisterComponent<SkyLight>("Sky Light", "\xEE\x88\x96");                     // cloud-sun
     RegisterComponent<TimeOfDay>("Time of Day", "\xEE\x85\xB8");                  // sun
+    RegisterComponent<SpatiallyLoaded>("Spatially Loaded", "\xEE\x88\x96");       // World Partition streaming
     RegisterComponent<Rotator>("Rotator", "\xEE\x8B\xAA");                            // rotate-3d
     RegisterComponent<Oscillator>("Oscillator", "\xEE\x8A\x83");                      // waves
     RegisterComponent<AudioSource>("Audio Source", "\xEE\x86\xAB");                  // volume-2

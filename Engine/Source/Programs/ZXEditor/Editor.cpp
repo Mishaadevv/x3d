@@ -2040,6 +2040,107 @@ ecs::Entity Editor::CreateUIWidget(StringView kind)
     return e;
 }
 
+bool Editor::CreateOpenWorld(f32 size, f32 tile, i32 seed)
+{
+    EndPlay();
+    size = Clamp(size, 256.0f, 16384.0f);
+    tile = Clamp(tile, 64.0f, 1024.0f);
+    const i32 tiles = Max(1, i32(std::round(size / tile)));
+    platform::CreateDirectoryTree(ScenesDirectory());
+    String path;
+    for (u32 i = 1; i < 1000; ++i) {
+        path = Path::Join(ScenesDirectory(), i == 1 ? String("OpenWorld.zscene") : String::Format("OpenWorld{}.zscene", i));
+        if (!platform::FileExists(path))
+            break;
+    }
+    NewScene();
+    // One terrain tile per cell: the same landscape settings everywhere, each tile reading the noise at its own place.
+    if (WriteTerrainMaterial(contentRoot) && materials)
+        materials->ScanContent();
+    Terrain t;
+    t.size = tile;
+    t.resolution = Clamp(i32(tile / 2.0f) + 1, 9, 1025); // 2 m between samples
+    t.height = 260.0f;
+    t.featureSize = 1600.0f;
+    t.octaves = 8;
+    t.roughness = 0.48f;
+    t.ridges = 0.4f;
+    t.flatCenter = 0.0f;
+    t.seed = seed;
+    const String materialPath = String::Format("{}/StarterContent/Materials/M_Terrain.zmat", contentRoot);
+    if (materials && platform::FileExists(materialPath)) {
+        const MaterialLibrary::Material* m = materials->FindByPath(materialPath);
+        const Guid parent = m ? m->guid : materials->LoadFile(materialPath);
+        t.material = parent;
+        // An instance for mountains: snow only on the high peaks of this landscape.
+        const String instancePath = String::Format("{}/Materials/MI_OpenWorldTerrain.zmati", contentRoot);
+        platform::CreateDirectoryTree(Path::Parent(instancePath));
+        MaterialLibrary::Material* inst = materials->FindByPath(instancePath);
+        const Guid id = inst ? inst->guid : (parent.IsValid() ? materials->CreateInstance(parent, instancePath) : Guid());
+        if (MaterialLibrary::Material* mi = materials->Find(id)) {
+            JsonValue o = JsonValue::MakeObject();
+            JsonValue v = JsonValue::MakeArray();
+            v.PushBack(115.0);
+            o.Set("value", move(v));
+            if (!mi->overrides.IsObject())
+                mi->overrides = JsonValue::MakeObject();
+            mi->overrides.Set("Snow Height", move(o));
+            materials->RebuildInstance(id);
+            materials->Save(id);
+            t.material = id;
+        }
+    }
+    const f32 baseY = -t.height * 0.4f;
+    worldPartition = WorldPartitionSettings{};
+    worldPartition.enabled = true;
+    worldPartition.cellSize = tile;
+    worldPartition.loadRange = Max(tile * 2.5f, 600.0f);
+    scenePath = path;
+    sceneName = Path::Stem(path);
+    const String cells = CellDirectory();
+    platform::DeleteDirectoryTree(cells);
+    platform::CreateDirectoryTree(cells);
+    for (i32 j = 0; j < tiles; ++j)
+        for (i32 i = 0; i < tiles; ++i) {
+            const Vec3 center((f32(i) + 0.5f) * tile - size * 0.5f, baseY, (f32(j) + 0.5f) * tile - size * 0.5f);
+            ecs::World temp;
+            const ecs::Entity e = scene::CreateNode(temp, String::Format("Terrain {}_{}", i, j), Transform(center));
+            Terrain tt = t;
+            tt.noiseOffset = Vec2(center.x, center.z);
+            temp.Add(e, tt);
+            temp.Add(e, SpatiallyLoaded{});
+            EnsureEntityGuid(temp, e);
+            scene::UpdateWorldTransforms(temp);
+            const JsonValue doc = zx::SaveScene(temp, SceneIO());
+            fs::WriteTextFile(Path::Join(cells, WorldCellFileName(WorldCellOf(center, tile))), ToJsonString(doc));
+        }
+    // Always loaded: sky, sun, fog, clouds, wind, the clock.
+    AddAtmosphere(0.0006f, 0.35f);
+    const ecs::Entity clock = CreateEntity("Time of Day", Transform(Vec3(0.0f, 10.0f, 0.0f)));
+    TimeOfDay tod;
+    tod.hour = 9.5f;
+    world.Add(clock, tod);
+    EnsureEntityGuid(world, clock);
+    // Start above the middle of the landscape.
+    Terrain mid = t;
+    mid.noiseOffset = Vec2(0.0f);
+    const f32 ground = GeneratedTerrainHeight(mid, 0.0f, 0.0f) + baseY;
+    camera.position = Vec3(0.0f, ground + 40.0f, 0.0f);
+    camera.yaw = 0.0f;
+    camera.pitch = DegToRad(10.0f);
+    camera.moveSpeed = 40.0f;
+    if (!SaveSceneFile(path, world, SceneIO(), SceneSettings()))
+        return false;
+    ZX_LOG_INFO(LogEditor, "Open world: {:.0f} x {:.0f} m, {} terrain tiles of {:.0f} m -> {}", size, size, tiles * tiles, tile, path);
+    {
+        // HLODs of every cell before streaming starts.
+        WorldStreamer builder;
+        builder.Configure(CellDirectory(), worldPartition, SceneIO());
+        builder.BuildHlods();
+    }
+    return OpenScene(path);
+}
+
 void Editor::CreateTerrain(bool flat)
 {
     // Centered under the scene: the flat middle covers what is already there (meshes within 150 m) and sits just
@@ -3440,6 +3541,8 @@ JsonValue Editor::SceneSettings() const
     JsonValue s = JsonValue::MakeObject();
     s.Set("environment", move(env));
     s.Set("editorCamera", move(cam));
+    if (worldPartition.enabled)
+        s.Set("worldPartition", WorldPartitionToJson(worldPartition));
     return s;
 }
 
@@ -3461,7 +3564,27 @@ void Editor::ApplySceneSettings(const JsonValue& settings)
         camera.pitch = DegToRad(cam.Get("pitch").AsFloat(RadToDeg(camera.pitch)));
         camera.moveSpeed = cam.Get("speed").AsFloat(camera.moveSpeed);
     }
+    worldPartition = WorldPartitionFromJson(settings.Get("worldPartition"));
     viewport->ResetHistory();
+}
+
+String Editor::CellDirectory() const
+{
+    if (scenePath.Empty())
+        return {};
+    return Path::Join(Path::Parent(scenePath), String(Path::Stem(scenePath)) + "_Cells");
+}
+
+void Editor::ConfigureStreaming()
+{
+    if (!worldPartition.enabled || scenePath.Empty()) {
+        streamer.Reset();
+        return;
+    }
+    streamer.Configure(CellDirectory(), worldPartition, SceneIO());
+    // The cells around the camera right away (the view is not empty on open).
+    const Vec3 sources[] = {camera.position};
+    streamer.LoadAllInRange(world, sources);
 }
 
 String Editor::BrowseForScene(bool save)
@@ -3531,6 +3654,8 @@ void Editor::NewScene()
     camera.LookAt(Vec3(0.0f, 0.5f, 0.0f));
     viewport->ResetHistory();
     viewport->GI().CancelBake();
+    streamer.Reset();
+    worldPartition = WorldPartitionSettings{};
     ZX_LOG_INFO(LogEditor, "New scene");
 }
 
@@ -3543,6 +3668,7 @@ bool Editor::OpenScene(StringView physicalPath)
     ApplySceneSettings(settings);
     scenePath = physicalPath;
     sceneName = Path::Stem(physicalPath);
+    ConfigureStreaming();
     undo.Clear();
     UpdateStartupScene(physicalPath);
     waitForAssets = true; // the progress window waits for its assets
@@ -3648,9 +3774,23 @@ bool Editor::SaveScene(bool saveAs)
 bool Editor::SaveSceneTo(StringView physicalPath)
 {
     platform::CreateDirectoryTree(Path::Parent(physicalPath));
-    if (!SaveSceneFile(physicalPath, world, SceneIO(), SceneSettings()))
+    SceneIOOptions io = SceneIO();
+    if (worldPartition.enabled) {
+        // The streamed entities go to their cells, not into the scene file.
+        io.rootFilter = [this](ecs::Entity e) { return !IsSpatialRoot(world, e) && !world.Has<HlodProxy>(e); };
+        if (streamer.IsActive() && physicalPath != scenePath)
+            streamer.LoadAll(world); // saved under a new name: every cell moves along
+    }
+    if (!SaveSceneFile(physicalPath, world, io, SceneSettings()))
         return false;
+    const bool moved = physicalPath != scenePath;
     scenePath = physicalPath;
+    if (worldPartition.enabled) {
+        if (!streamer.IsActive() || moved)
+            streamer.SetDirectory(CellDirectory(), worldPartition, SceneIO());
+        streamer.SaveCells(world);
+        streamer.BuildHlods(); // terrain edits reach the far-away copies too
+    }
     sceneName = Path::Stem(physicalPath);
     undo.MarkSaved();
     UpdateStartupScene(physicalPath);
@@ -3895,6 +4035,11 @@ bool Editor::Frame()
         audio->TickIdle(dt); // previews
     }
     // Terrains: (re)built when one appears or its shape changes. Soft bodies: their mesh, wheels at rest.
+    const f64 worldStart = Clock::NowSeconds();
+    if (flyTest.active) {
+        const Vec3 forward = Normalize(Vec3(Sin(camera.yaw), 0.0f, Cos(camera.yaw)));
+        camera.position += forward * (flyTest.speed * f32(dt));
+    }
     {
         ZX_PROFILE_SCOPE("Terrains");
         terrains.Update(world, *assets, renderAssets.Get());
@@ -3905,6 +4050,30 @@ bool Editor::Frame()
         TickTimeOfDay(world, playState == PlayState::Paused ? 0.0f : dt * (IsPlaying() ? GameTimeScale(GameSystemsForPlay()) : 1.0f), IsPlaying());
     }
     UpdateLightingBake();
+    // World Partition: cells stream around the editor camera while editing (unloading only a saved scene: unsaved
+    // edits stay in memory). Play keeps the cells it starts with.
+    if (streamer.IsActive() && !IsPlaying()) {
+        const Vec3 sources[] = {camera.position};
+        streamer.Update(world, sources, !undo.IsDirty(), 4.0);
+    }
+    worldUpdateMs = (Clock::NowSeconds() - worldStart) * 1000.0;
+    if (flyTest.active) {
+        if (flyTest.warmup > 0.0) {
+            flyTest.warmup -= dt;
+        } else {
+            flyTest.maxMs = Max(flyTest.maxMs, worldUpdateMs);
+            flyTest.sumMs += worldUpdateMs;
+            ++flyTest.frames;
+            flyTest.over50 += worldUpdateMs > 50.0 ? 1u : 0u;
+            flyTest.over16 += worldUpdateMs > 16.0 ? 1u : 0u;
+        }
+        if ((flyTest.remaining -= dt) <= 0.0) {
+            flyTest.active = false;
+            ZX_LOG_INFO(LogEditor, "Fly test: {} frames, world update avg {:.2f} ms, max {:.2f} ms, {} frames > 16 ms, {} > 50 ms - {}",
+                        flyTest.frames, flyTest.sumMs / f64(Max(flyTest.frames, 1u)), flyTest.maxMs, flyTest.over16, flyTest.over50,
+                        flyTest.over50 == 0 ? "PASS" : "FAIL");
+        }
+    }
     // Particles: emitters with Simulate In Editor run live while editing, all of them while playing (frozen when paused).
     if (FeatureEnabled("particles")) {
         scene::UpdateWorldTransforms(world);
