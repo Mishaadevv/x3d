@@ -51,7 +51,9 @@ struct ProbeParams
     uint cubeValid;          // the cubes hold last update's probes
     uint compactStride;      // > 0: group g updates probe g * compactStride + phase (no probe scrolled in this frame)
     uint phase;
-    uint probeDataUav;       // RWTexture2D: probe offsets (relocation), written by UpdateIrradianceCS
+    uint probeDataUav;       // RWTexture2D: probe offsets (relocation) + w = 1 near surfaces, written by UpdateIrradianceCS
+    uint flagsBuffer;        // per probe: 1 = traced this frame (TraceCS writes it: UAV; the updates read it: SRV)
+    uint3 pad3;
 };
 ZX_PASS_CONSTANTS(ProbeParams, g_Probe);
 
@@ -158,13 +160,29 @@ float3 RayDirection(uint i)
     return normalize(float3(dot(g_Probe.rotation[0].xyz, d), dot(g_Probe.rotation[1].xyz, d), dot(g_Probe.rotation[2].xyz, d)));
 }
 
+/// Classification: a probe with no surface within one spacing (open air) lights nothing - no shaded point has it among
+/// its 8 probes - so it is traced only every 8th turn, to notice geometry that appears.
+bool ProbeSkipped(uint probeIndex, uint3 slot)
+{
+    if (g_Probe.baking != 0 || IsNewProbe(slot) || g_Probe.volume.probeData == ZX_INVALID_INDEX)
+        return false;
+    const DDGIVolume v = g_Probe.volume;
+    const bool active = GetTexture2D(v.probeData).Load(int3(slot.x + slot.y * v.counts.x, slot.z, 0)).w > 0.5;
+    return !active && (g_Probe.frame / max(g_Probe.probeStride, 1u) + probeIndex) % 8 != 0;
+}
+
 [numthreads(64, 1, 1)]
 void TraceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
 {
     const uint probe = ProbeOfGroup(group.x);
     const uint ray = group.y * 64 + thread.x;
     const uint3 slot = SlotOfLinear(probe);
-    if (ray >= g_Probe.raysPerProbe || !UpdatesThisFrame(probe, slot))
+    if (!UpdatesThisFrame(probe, slot))
+        return;
+    const bool skipped = ProbeSkipped(probe, slot);
+    if (ray == 0)
+        GetRWBuffer(g_Probe.flagsBuffer).Store(probe * 4, skipped ? 0u : 1u);
+    if (ray >= g_Probe.raysPerProbe || skipped)
         return;
     const DDGIVolume v = g_Probe.volume;
     const float3 origin = DDGIProbePosition(v, WorldOfSlot(v.originIndex, slot)) + (IsNewProbe(slot) ? 0.0 : DDGIProbeOffset(v, slot));
@@ -268,8 +286,10 @@ void RelocateProbe(uint3 slot)
     uint backfaces = 0;
     float closestBack = 1e9, closestFront = 1e9;
     float3 backDir = 0.0, frontDir = 0.0;
+    bool nearSurface = false; // a hit inside the probe's cell (+- one spacing on every axis)
     for (uint i = 0; i < g_Probe.raysPerProbe; ++i) {
         const float d = s_ray[i].w;
+        nearSurface = nearSurface || (abs(d) < v.maxDistance && all(abs(s_dir[i] * abs(d)) < spacing));
         if (d < 0.0) {
             ++backfaces;
             if (-d < closestBack) {
@@ -291,7 +311,7 @@ void RelocateProbe(uint3 slot)
         moved -= frontDir * min(minFront - closestFront, 0.1 * spacing); // step back from a close surface
     if (all(abs(moved) <= 0.45 * spacing))
         offset = moved;
-    data[texel] = float4(offset, 0.0);
+    data[texel] = float4(offset, nearSurface ? 1.0 : 0.0);
 }
 
 [numthreads(8, 8, 1)]
@@ -299,8 +319,8 @@ void UpdateIrradianceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadI
 {
     const uint probe = ProbeOfGroup(group.x);
     const uint3 slot = SlotOfLinear(probe);
-    if (!UpdatesThisFrame(probe, slot))
-        return; // uniform per group
+    if (!UpdatesThisFrame(probe, slot) || GetBuffer(g_Probe.flagsBuffer).Load(probe * 4) == 0)
+        return; // uniform per group (not traced this frame: classified as open air)
     LoadRays(probe, flat, 64);
     const DDGIVolume v = g_Probe.volume;
     const float3 texelDir = TexelDirection(thread.xy, DDGI_IRRADIANCE_TEXELS);
@@ -340,8 +360,8 @@ void UpdateDistanceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID,
 {
     const uint probe = ProbeOfGroup(group.x);
     const uint3 slot = SlotOfLinear(probe);
-    if (!UpdatesThisFrame(probe, slot))
-        return; // uniform per group
+    if (!UpdatesThisFrame(probe, slot) || GetBuffer(g_Probe.flagsBuffer).Load(probe * 4) == 0)
+        return; // uniform per group (not traced this frame: classified as open air)
     LoadRays(probe, flat, 256);
     const DDGIVolume v = g_Probe.volume;
     const float3 texelDir = TexelDirection(thread.xy, DDGI_DISTANCE_TEXELS);

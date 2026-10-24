@@ -68,8 +68,10 @@ struct ProbeParams
     u32 cubeValid;
     u32 compactStride, phase;
     u32 probeDataUav;
+    u32 flagsBuffer;
+    u32 pad3[3];
 };
-static_assert(sizeof(ProbeParams) == 704);
+static_assert(sizeof(ProbeParams) == 720);
 
 constexpr u32 IrradianceTexels = 8, DistanceTexels = 16;
 constexpr u32 SnapVoxels = 16; // levels move in steps of this many voxels
@@ -146,7 +148,7 @@ void GlobalIllumination::DestroyResources()
         m_device.Destroy(t);
         t = nullptr;
     }
-    for (Buffer** b : {&m_seeds[0], &m_seeds[1], &m_rays}) {
+    for (Buffer** b : {&m_seeds[0], &m_seeds[1], &m_rays, &m_flags}) {
         m_device.Destroy(*b);
         *b = nullptr;
     }
@@ -236,6 +238,8 @@ void GlobalIllumination::EnsureResources(const GISettings& settings)
             t = m_device.CreateTexture(cd);
         }
         const u64 probes = u64(counts.x) * counts.y * counts.z;
+        m_device.Destroy(m_flags);
+        m_flags = m_device.CreateBuffer(BufferDesc{probes * 4, BufferUsage::ShaderResource | BufferUsage::UnorderedAccess, MemoryType::GpuOnly, 0, "GI.ProbeFlags"});
         m_rays = m_device.CreateBuffer(
             BufferDesc{probes * rays * 16, BufferUsage::ShaderResource | BufferUsage::UnorderedAccess, MemoryType::GpuOnly, 0, "GI.ProbeRays"});
         m_probeCounts = counts;
@@ -309,7 +313,7 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
     }
     m_settings = s;
     EnsureResources(s);
-    if (!m_distance || !m_albedo || !m_normal || !m_seeds[0] || !m_seeds[1] || !m_irradiance || !m_probeDistance || !m_rays || !m_cubes[5] || !m_probeData) {
+    if (!m_distance || !m_albedo || !m_normal || !m_seeds[0] || !m_seeds[1] || !m_irradiance || !m_probeDistance || !m_rays || !m_cubes[5] || !m_probeData || !m_flags) {
         m_active = false;
         return;
     }
@@ -644,6 +648,7 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
     p.sunIrradiance = lighting.sunColor * (lighting.sunIlluminance * m_exposure);
     p.dirToSun = -Normalize(lighting.sunDirection);
     p.rayBuffer = m_rays->GetUavIndex();
+    p.flagsBuffer = m_flags->GetUavIndex();
     Buffer* skySH = sky ? sky->IrradianceSH() : nullptr;
     const RGBuffer skySHHandle = skySH ? sky->IrradianceSHHandle() : RGBuffer();
     const bool hasSky = skySH && skySHHandle.IsValid() && lighting.skyIrradianceBuffer;
@@ -702,6 +707,7 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
     const RGTexture irradiance = graph.ImportTexture(m_irradiance, ResourceState::ShaderResource);
     const RGTexture probeDistance = graph.ImportTexture(m_probeDistance, ResourceState::ShaderResource);
     const RGBuffer rays = graph.ImportBuffer(m_rays, ResourceState::ShaderResource);
+    const RGBuffer flags = graph.ImportBuffer(m_flags, ResourceState::ShaderResource);
     const u32 probes = m_probeCounts.x * m_probeCounts.y * m_probeCounts.z;
     const u32 rayGroups = (m_rayCount + 63) / 64;
     // Without newly scrolled-in probes only this frame's turn needs thread groups.
@@ -728,6 +734,7 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
                 b.ReadTexture(t);
             b.ReadTexture(probeData);
             b.WriteBuffer(rays);
+            b.WriteBuffer(flags);
         },
         [=, this](PassContext& ctx) {
             ctx.cmd.SetPipeline(m_tracePipeline);
@@ -738,10 +745,12 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
         });
     ProbeParams up = p;
     up.rayBuffer = m_rays->GetSrvIndex();
+    up.flagsBuffer = m_flags->GetSrvIndex();
     graph.AddPass(
         "GI.ProbeIrradiance", PassType::Compute,
         [=](PassBuilder& b) {
             b.ReadBuffer(rays);
+            b.ReadBuffer(flags);
             b.WriteTexture(irradiance);
             b.WriteTexture(probeData);
         },
@@ -754,6 +763,7 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
         "GI.ProbeDistance", PassType::Compute,
         [=](PassBuilder& b) {
             b.ReadBuffer(rays);
+            b.ReadBuffer(flags);
             b.WriteTexture(probeDistance);
         },
         [=, this](PassContext& ctx) {

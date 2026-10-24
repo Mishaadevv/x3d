@@ -236,6 +236,8 @@ frames later) -> TakeBake -> SaveBakedGI (.zgi "ZGI1"). SetBaked creates texture
 returns m_bakedConstants (intensity x exposure / bake exposure) with no passes. Editor BakeLighting / BakedLightingPath
 (<scene>.zgi or Saved/BakedLighting) / UpdateLightingBake (reloads when the path changes), action build.bakeLighting
 (File menu), console gi.bake / gi.clearbake / r.GI.Mode; ZXGame loads <scene>.zgi. Settings giMode.
+Classification (0.16.6): probeData.w = surface within one spacing (RelocateProbe); TraceCS ProbeSkipped -> m_flags (UAV
+in the trace, SRV in the updates gate them).
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
 in one run (switch cvars between stat.gpu samples).
