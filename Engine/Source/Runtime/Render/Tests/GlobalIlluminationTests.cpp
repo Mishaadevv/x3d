@@ -77,6 +77,9 @@ ZX_TEST(GI, BakedProbesRoundTrip)
     b.irradiance.Resize(probes * 8 * 8 * 8, 7);
     b.distance.Resize(probes * 16 * 16 * 4, 9);
     b.probeData.Resize(probes * 8, 11);
+    b.lightmapWidth = 16;
+    b.lightmapHeight = 8;
+    b.lightmap.Resize(16 * 8 * 8, 13);
     ZX_EXPECT(b.IsValid());
     const String path = dir + "/Scene.zgi";
     ZX_REQUIRE(SaveBakedGI(path, b));
@@ -88,6 +91,7 @@ ZX_TEST(GI, BakedProbesRoundTrip)
     ZX_EXPECT_NEAR(back.exposure, 0.25f, 1e-6f);
     ZX_EXPECT(back.irradiance.Size() == b.irradiance.Size() && back.irradiance[17] == 7);
     ZX_EXPECT(back.distance.Size() == b.distance.Size() && back.probeData.Size() == b.probeData.Size());
+    ZX_EXPECT(back.lightmapWidth == 16 && back.lightmapHeight == 8 && back.lightmap.Size() == b.lightmap.Size() && back.lightmap[5] == 13);
     // A truncated or foreign file is refused.
     b.probeData.PopBack();
     ZX_EXPECT(!b.IsValid());

@@ -66,6 +66,16 @@ struct BakedGI
     Array<u8> irradiance; // RGBA16F, (counts.x * counts.y * 8) x (counts.z * 8), tightly packed rows
     Array<u8> distance;   // RG16F, 16 x 16 per probe
     Array<u8> probeData;  // RGBA16F, one texel per probe (relocation offset)
+    // Lightmap atlas (indirect diffuse per UV1 texel, RGBA16F), empty = none. Where each instance went is not saved
+    // here: the bake writes it into the instances' Mesh Renderers (placements, by RenderInstance::id).
+    u32 lightmapWidth = 0, lightmapHeight = 0;
+    Array<u8> lightmap;
+    struct Placement
+    {
+        u64 id;
+        Vec4 scaleBias;
+    };
+    Array<Placement> placements;
     bool IsValid() const;
 };
 bool SaveBakedGI(StringView path, const BakedGI& data);
@@ -77,6 +87,12 @@ struct GIBakeSettings
     u32 maxProbes = 24000;
     u32 raysPerProbe = 256;
     u32 iterations = 48;     // traced updates averaged together
+    // Lightmaps for the static meshes with lightmap UVs (indirect diffuse per texel; the rest uses the probes).
+    bool lightmaps = true;
+    f32 lightmapDensity = 4.0f;  // texels per meter
+    u32 lightmapIterations = 32;
+    u32 lightmapRays = 8;        // per texel and iteration
+    u32 lightmapWidth = 1024;    // atlas width (height grows with the content, up to 8192)
 };
 
 class GlobalIllumination
@@ -151,6 +167,7 @@ private:
         Idle,
         Pending,  // fit the grid on the next Prepare
         Running,  // iterations
+        Lightmaps, // lightmap texels (the probes keep averaging)
         Readback, // copies issued, waiting for the GPU
         Done,
     };
@@ -164,13 +181,32 @@ private:
         f32 spacing = 1.0f;
         u32 iteration = 0;
         u64 copyFrame = 0;
-        u64 pitches[3] = {};
-        rhi::Buffer* readback[3] = {};
+        u64 pitches[4] = {};
+        rhi::Buffer* readback[4] = {}; // irradiance, distance, probe data, lightmap
         BakedGI result;
+        // Lightmaps.
+        struct Item
+        {
+            u64 id;
+            const GpuMesh* mesh;
+            Mat4 world;
+            Vec4 scaleBias;
+        };
+        Array<Item> candidates; // static instances with lightmap UVs (gathered while baking)
+        Array<Item> items;      // placed in the atlas
+        UVec2 lmSize;
+        u32 lmIteration = 0;
+        bool lmRasterized = false;
+        rhi::Texture* lmPosition = nullptr;
+        rhi::Texture* lmNormal = nullptr;
+        rhi::Texture* lmAccum = nullptr;
+        rhi::Texture* lmDilated = nullptr;
     };
 
     void EnsureResources(const GISettings& settings);
     void AddBakeReadback(RenderGraph& graph);
+    bool PlaceLightmaps();
+    void DestroyLightmapTargets();
     void FinishBakeReadback();
     void DestroyResources();
     void AddLevelBuild(RenderGraph& graph, u32 level);
@@ -186,6 +222,10 @@ private:
     rhi::Pipeline* m_irradiancePipeline = nullptr;
     rhi::Pipeline* m_distancePipeline = nullptr;
     rhi::Pipeline* m_cubePipeline = nullptr;
+    rhi::ShaderBytecode m_lmRasterVS, m_lmRasterPS, m_lmTraceCS, m_lmDilateCS;
+    rhi::Pipeline* m_lmRasterPipeline = nullptr;
+    rhi::Pipeline* m_lmTracePipeline = nullptr;
+    rhi::Pipeline* m_lmDilatePipeline = nullptr;
     rhi::ShaderBytecode m_ssgiTraceCS, m_ssgiTemporalCS;
     rhi::Pipeline* m_ssgiTracePipeline = nullptr;
     rhi::Pipeline* m_ssgiTemporalPipeline = nullptr;
@@ -234,7 +274,7 @@ private:
     BakedGI m_bakedData;          // waiting for upload
     bool m_bakedPending = false;
     bool m_bakedValid = false;
-    rhi::Texture* m_bakedTextures[3] = {}; // irradiance, distance, probe data
+    rhi::Texture* m_bakedTextures[4] = {}; // irradiance, distance, probe data, lightmap atlas
     GIVolumeConstants m_bakedConstants;
     f32 m_bakedExposure = 1.0f;
 };

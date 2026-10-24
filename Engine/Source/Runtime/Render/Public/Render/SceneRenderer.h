@@ -37,7 +37,12 @@ struct RenderInstance
     f32 charring = 0.0f;   // 0..1 how black
     f32 burnGlow = 0.0f;   // 0..1 glowing edge of the flames
     f32 embers = 0.0f;     // 0..1 embers in the charred part
+    /// Baked lightmap: UV1 * xy + zw = atlas uv (x = 0: none).
+    Vec4 lightmapScaleBias;
 };
+
+/// Writes the lightmap part of an instance row (SceneRenderer / SceneRendererGpu).
+void WriteLightmapRow(u8* dst, const RenderInstance& inst);
 
 struct RenderView
 {
@@ -146,6 +151,10 @@ struct SceneLighting
     /// Screen-space GI of last frame (rgb = bounced light, a = how much of the probes it replaces) and its view.
     u32 ssgiTexture = rhi::InvalidDescriptor;
     Mat4 ssgiViewProj = Mat4::Identity();
+    /// Baked lightmap atlas (indirect diffuse per texel of UV1; instances with lightmapScaleBias use it instead of the
+    /// probes), invalid = none; values x lightmapIntensity are in the SkyIrradiance convention.
+    u32 lightmapAtlas = rhi::InvalidDescriptor;
+    f32 lightmapIntensity = 1.0f;
 };
 
 inline f32 ExposureFromEV100(f32 ev100) { return 1.0f / (1.2f * std::exp2(ev100)); }
@@ -624,6 +633,9 @@ private:
         u32 ssgiTexture;
         f32 ssgiPad[3];
         Mat4 ssgiViewProj;
+        u32 lightmapAtlas;
+        f32 lightmapIntensity;
+        f32 lightmapPad[2];
     } m_viewConstants = {};
     // HLSL constant buffer packing: a matrix starts on a 16-byte boundary.
     static_assert(offsetof(ViewConstants, ssrViewProj) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");

@@ -21,7 +21,7 @@ using namespace rhi;
 
 namespace {
 
-constexpr u32 InstanceStride = 192; // keep in sync with SceneRenderer.cpp / ForwardPBR.hlsl
+constexpr u32 InstanceStride = 208; // keep in sync with SceneRenderer.cpp / ForwardPBR.hlsl
 constexpr u32 ItemStride = 32, GroupStride = 32, SlotStride = 32;
 constexpr u32 ItemCastsShadow = 1;
 
@@ -363,6 +363,7 @@ void SceneRenderer::PrepareGpu(Span<const RenderInstance> instances, const Rende
             }
             const Vec4 burn(inst.burnOrigin, inst.burnRadius);
             MemCopy(dst + 112, &burn, 16);
+            WriteLightmapRow(dst + 192, inst);
             moved[i] = inst.prevWorld ? 1 : 0;
             if (inst.prevWorld) { // only the velocity pass reads last frame's rows, and only for moved instances
                 const Mat4 prevRows = Transpose(*inst.prevWorld);

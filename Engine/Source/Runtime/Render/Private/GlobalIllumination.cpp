@@ -1,4 +1,5 @@
 #include "Render/GlobalIllumination.h"
+#include "Core/Containers/Algorithm.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/Log/Log.h"
 #include "Core/Serialization/Binary.h"
@@ -7,6 +8,7 @@
 #include "RHI/ShaderCompiler.h"
 
 #include <bit>
+#include <tuple>
 #include <cmath>
 
 namespace zx::render {
@@ -69,9 +71,22 @@ struct ProbeParams
     u32 compactStride, phase;
     u32 probeDataUav;
     u32 flagsBuffer;
-    u32 pad3[3];
+    u32 lmPosition, lmNormal, lmAccumUav, lmAccumSrv, lmOutUav;
+    UVec2 lmSize;
+    u32 lmIteration, lmRays;
+    u32 pad3[2];
 };
-static_assert(sizeof(ProbeParams) == 720);
+static_assert(sizeof(ProbeParams) == 752);
+
+// Keep in sync with RasterParams (Shaders/GI/Lightmap.hlsl).
+struct LightmapRasterParams
+{
+    Vec4 worldRows[3];
+    Vec4 scaleBias;
+    u32 vertexBuffer;
+    u32 pad[3];
+};
+static_assert(sizeof(LightmapRasterParams) <= 128);
 
 constexpr u32 IrradianceTexels = 8, DistanceTexels = 16;
 constexpr u32 SnapVoxels = 16; // levels move in steps of this many voxels
@@ -96,6 +111,9 @@ GlobalIllumination::~GlobalIllumination()
         m_device.Destroy(t);
     for (Buffer* b : m_bake.readback)
         m_device.Destroy(b);
+    DestroyLightmapTargets();
+    for (Pipeline* p : {m_lmRasterPipeline, m_lmTracePipeline, m_lmDilatePipeline})
+        m_device.Destroy(p);
     for (Pipeline* p : {m_clearPipeline, m_voxelizePipeline, m_jumpFloodPipeline, m_finalizePipeline, m_tracePipeline, m_irradiancePipeline,
                         m_distancePipeline, m_cubePipeline, m_ssgiTracePipeline, m_ssgiTemporalPipeline})
         m_device.Destroy(p);
@@ -120,7 +138,9 @@ bool GlobalIllumination::Init()
                 {&m_distanceCS, &m_distancePipeline, "/Shaders/GI/DDGI.hlsl", "UpdateDistanceCS"},
                 {&m_cubeCS, &m_cubePipeline, "/Shaders/GI/DDGI.hlsl", "AmbientCubeCS"},
                 {&m_ssgiTraceCS, &m_ssgiTracePipeline, "/Shaders/GI/SSGI.hlsl", "TraceCS"},
-                {&m_ssgiTemporalCS, &m_ssgiTemporalPipeline, "/Shaders/GI/SSGI.hlsl", "TemporalCS"}};
+                {&m_ssgiTemporalCS, &m_ssgiTemporalPipeline, "/Shaders/GI/SSGI.hlsl", "TemporalCS"},
+                {&m_lmTraceCS, &m_lmTracePipeline, "/Shaders/GI/DDGI.hlsl", "LightmapTraceCS"},
+                {&m_lmDilateCS, &m_lmDilatePipeline, "/Shaders/GI/DDGI.hlsl", "LightmapDilateCS"}};
     for (const Job& j : jobs) {
         ShaderCompileDesc d;
         d.path = j.path;
@@ -139,7 +159,32 @@ bool GlobalIllumination::Init()
         if (!*j.pipeline)
             return false;
     }
-    return true;
+    // Lightmap rasterization (world position + normal per atlas texel).
+    for (auto [out, entry, stage] : {std::tuple{&m_lmRasterVS, "RasterVS", ShaderStage::Vertex}, std::tuple{&m_lmRasterPS, "RasterPS", ShaderStage::Pixel}}) {
+        ShaderCompileDesc d;
+        d.path = "/Shaders/GI/Lightmap.hlsl";
+        d.entryPoint = entry;
+        d.stage = stage;
+        Result<ShaderBytecode> r = ShaderCompiler::Compile(d);
+        if (!r) {
+            ZX_LOG_ERROR(LogGI, "{}", r.GetError().message);
+            return false;
+        }
+        *out = move(*r);
+    }
+    GraphicsPipelineDesc pd;
+    pd.vertexShader = &m_lmRasterVS;
+    pd.pixelShader = &m_lmRasterPS;
+    pd.rasterizer.cullMode = CullMode::None;
+    pd.rasterizer.conservative = m_device.GetCaps().conservativeRasterTier > 0;
+    pd.depthStencil.depthTest = false;
+    pd.depthStencil.depthWrite = false;
+    pd.colorFormats[0] = Format::R32G32B32A32_FLOAT;
+    pd.colorFormats[1] = Format::R16G16B16A16_FLOAT;
+    pd.colorCount = 2;
+    pd.debugName = "LightmapRaster";
+    m_lmRasterPipeline = m_device.CreateGraphicsPipeline(pd);
+    return m_lmRasterPipeline != nullptr;
 }
 
 void GlobalIllumination::DestroyResources()
@@ -268,12 +313,17 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
     } else if (!m_ssgiEnabled) {
         m_ssgiValid = false;
     }
-    const bool baking = m_bake.state == BakeState::Pending || m_bake.state == BakeState::Running || m_bake.state == BakeState::Readback;
+    const bool baking = m_bake.state == BakeState::Pending || m_bake.state == BakeState::Running || m_bake.state == BakeState::Lightmaps ||
+                        m_bake.state == BakeState::Readback;
     // Baked probes: no tracing at all.
     if (!baking && settings.enabled && settings.mode == GIMode::Baked && m_bakedValid) {
         m_active = false;
         lighting.gi = m_bakedConstants;
         lighting.gi.intensity = Max(settings.intensity, 0.0f) * (m_bakedExposure > 0.0f ? exposure / m_bakedExposure : 1.0f);
+        if (m_bakedTextures[3]) {
+            lighting.lightmapAtlas = m_bakedTextures[3]->GetSrvIndex();
+            lighting.lightmapIntensity = lighting.gi.intensity;
+        }
         m_stats.baked = true;
         return;
     }
@@ -314,7 +364,18 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
                         m_bake.settings.raysPerProbe, m_bake.settings.iterations);
         }
     }
-    if (m_bake.state == BakeState::Running || m_bake.state == BakeState::Readback) {
+    if (m_bake.state == BakeState::Running && m_bake.settings.lightmaps) {
+        // Static instances with lightmap UVs: the lightmap part of the bake places them in the atlas.
+        m_bake.candidates.Clear();
+        for (const RenderInstance& inst : instances) {
+            if (!inst.skinMatrices.Empty() || inst.prevWorld)
+                continue;
+            const GpuMesh* mesh = m_assets.GetMesh(inst.mesh);
+            if (mesh && mesh->lightmapUVs && mesh->vertexBuffer && mesh->indexBuffer)
+                m_bake.candidates.PushBack(Bake::Item{inst.id, mesh, inst.world, Vec4()});
+        }
+    }
+    if (m_bake.state == BakeState::Running || m_bake.state == BakeState::Lightmaps || m_bake.state == BakeState::Readback) {
         s.enabled = true;
         s.levels = MaxLevels;
         s.probeCounts = m_bake.counts;
@@ -450,7 +511,7 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
     const IVec3 counts(i32(m_probeCounts.x), i32(m_probeCounts.y), i32(m_probeCounts.z));
     const IVec3 cell = FloorDiv(cameraPosition, spacing);
     m_originIndex = IVec3(cell.x - counts.x / 2 + 1, cell.y - counts.y / 2 + 1, cell.z - counts.z / 2 + 1);
-    if (m_bake.state == BakeState::Running || m_bake.state == BakeState::Readback)
+    if (m_bake.state == BakeState::Running || m_bake.state == BakeState::Lightmaps || m_bake.state == BakeState::Readback)
         m_originIndex = m_bake.origin;
     m_stats.probes = m_probeCounts.x * m_probeCounts.y * m_probeCounts.z;
 
@@ -595,6 +656,16 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
             const SubresourceData init[] = {{sources[i]->Data(), u64(sizes[i].x) * bpp[i], 0}};
             m_bakedTextures[i] = m_device.CreateTexture(d, init);
         }
+        if (b.lightmapWidth > 0) {
+            TextureDesc d;
+            d.width = b.lightmapWidth;
+            d.height = b.lightmapHeight;
+            d.format = Format::R16G16B16A16_FLOAT;
+            d.usage = TextureUsage::ShaderResource;
+            d.debugName = "GI.BakedLightmap";
+            const SubresourceData init[] = {{b.lightmap.Data(), u64(b.lightmapWidth) * 8, 0}};
+            m_bakedTextures[3] = m_device.CreateTexture(d, init);
+        }
         if (!m_bakedTextures[0] || !m_bakedTextures[1] || !m_bakedTextures[2]) {
             ZX_LOG_ERROR(LogGI, "Can't create the baked GI textures");
             m_bakedData = BakedGI{};
@@ -686,7 +757,7 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
     p.energy = Clamp(s.bounce, 0.0f, 1.0f);
     p.cascadeCount = inputs.cascadeCount;
     // Baking: an exact running average over the iterations (no fast-response shortcut, no history before the first).
-    const bool baking = m_bake.state == BakeState::Running;
+    const bool baking = m_bake.state == BakeState::Running || m_bake.state == BakeState::Lightmaps;
     const bool fieldReady = levels == m_levelCount && m_rebuild == ~0u;
     if (baking) {
         if (!fieldReady)
@@ -803,8 +874,194 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
     m_probesValid = true;
     m_updatedOrigin = m_originIndex;
     m_prevExposure = m_exposure;
-    if (baking && fieldReady && ++m_bake.iteration >= Max(m_bake.settings.iterations, 1u))
-        AddBakeReadback(graph);
+    if (baking && fieldReady)
+        ++m_bake.iteration;
+    if (m_bake.state == BakeState::Running && fieldReady && m_bake.iteration >= Max(m_bake.settings.iterations, 1u)) {
+        if (m_bake.settings.lightmaps && PlaceLightmaps()) {
+            m_bake.state = BakeState::Lightmaps;
+            ZX_LOG_INFO(LogGI, "Baking lightmaps: {} instances in a {} x {} atlas", m_bake.items.Size(), m_bake.lmSize.x, m_bake.lmSize.y);
+        } else {
+            AddBakeReadback(graph);
+        }
+    }
+    if (m_bake.state != BakeState::Lightmaps || !fieldReady)
+        return;
+
+    // --- Lightmaps: rasterize once, then one traced iteration per frame, then dilate and read back. ---
+    Bake& bk = m_bake;
+    const RGTexture lmPos = graph.ImportTexture(bk.lmPosition, ResourceState::ShaderResource);
+    const RGTexture lmNrm = graph.ImportTexture(bk.lmNormal, ResourceState::ShaderResource);
+    const RGTexture lmAccum = graph.ImportTexture(bk.lmAccum, ResourceState::ShaderResource);
+    const RGTexture lmDilated = graph.ImportTexture(bk.lmDilated, ResourceState::ShaderResource);
+    const UVec2 lmSize = bk.lmSize;
+    if (!bk.lmRasterized) {
+        bk.lmRasterized = true;
+        graph.AddPass(
+            "GI.LightmapRaster", PassType::Graphics,
+            [=](PassBuilder& b) {
+                b.RenderTarget(lmPos, LoadOp::Clear, LinearColor(0, 0, 0, 0));
+                b.RenderTarget(lmNrm, LoadOp::Clear, LinearColor(0, 0, 0, 0));
+            },
+            [this, lmSize](PassContext& ctx) {
+                ctx.cmd.SetViewport(Viewport{0, 0, f32(lmSize.x), f32(lmSize.y), 0, 1});
+                ctx.cmd.SetScissor(0, 0, lmSize.x, lmSize.y);
+                ctx.cmd.SetPipeline(m_lmRasterPipeline);
+                for (const Bake::Item& it : m_bake.items) {
+                    LightmapRasterParams rp = {};
+                    const Mat4 rows = Transpose(it.world);
+                    for (u32 r = 0; r < 3; ++r)
+                        rp.worldRows[r] = rows.columns[r];
+                    rp.scaleBias = it.scaleBias;
+                    rp.vertexBuffer = it.mesh->vertexBuffer->GetSrvIndex();
+                    ctx.cmd.SetPushConstants(rp);
+                    ctx.cmd.SetIndexBuffer(it.mesh->indexBuffer, it.mesh->index16 ? IndexFormat::UInt16 : IndexFormat::UInt32);
+                    for (const asset::CookedMeshSection& sec : it.mesh->sections) {
+                        const asset::CookedSectionLod& l = it.mesh->SectionLodAt(sec, 0);
+                        if (l.indexCount >= 3)
+                            ctx.cmd.DrawIndexed(l.indexCount, 1, l.indexOffset, 0, 0);
+                    }
+                }
+            });
+    }
+    ProbeParams lp = up;
+    lp.lmPosition = bk.lmPosition->GetSrvIndex();
+    lp.lmNormal = bk.lmNormal->GetSrvIndex();
+    lp.lmAccumUav = bk.lmAccum->GetUavIndex();
+    lp.lmSize = lmSize;
+    lp.lmIteration = bk.lmIteration;
+    lp.lmRays = Clamp(bk.settings.lightmapRays, 1u, 64u);
+    lp.volume.irradiance = m_irradiance->GetSrvIndex();
+    graph.AddPass(
+        "GI.LightmapTrace", PassType::Compute,
+        [=](PassBuilder& b) {
+            b.ReadTexture(lmPos);
+            b.ReadTexture(lmNrm);
+            b.ReadTexture(distance);
+            b.ReadTexture(albedo);
+            b.ReadTexture(normal);
+            for (const RGTexture& t : cubes)
+                b.ReadTexture(t);
+            for (u32 c = 0; c < li.cascadeCount; ++c)
+                if (li.shadowTextures[c].IsValid())
+                    b.ReadTexture(li.shadowTextures[c]);
+            if (hasSky)
+                b.ReadBuffer(skySHHandle, ResourceState::ConstantBuffer);
+            b.WriteTexture(lmAccum);
+            b.SideEffects();
+        },
+        [=, this](PassContext& ctx) {
+            ctx.cmd.SetPipeline(m_lmTracePipeline);
+            ctx.cmd.SetConstants(0, &lp, sizeof(lp));
+            if (hasSky)
+                ctx.cmd.SetConstantBuffer(1, skySH->GetGpuAddress());
+            ctx.cmd.Dispatch((lmSize.x + 7) / 8, (lmSize.y + 7) / 8);
+        });
+    if (++bk.lmIteration < Max(bk.settings.lightmapIterations, 1u))
+        return;
+    // Dilation: accum -> dilated -> accum -> dilated (each pass grows the charts by a texel).
+    for (u32 pass = 0; pass < 3; ++pass) {
+        const bool toDilated = pass % 2 == 0;
+        ProbeParams dp = lp;
+        dp.lmAccumSrv = (toDilated ? bk.lmAccum : bk.lmDilated)->GetSrvIndex();
+        dp.lmOutUav = (toDilated ? bk.lmDilated : bk.lmAccum)->GetUavIndex();
+        const RGTexture src = toDilated ? lmAccum : lmDilated, dst = toDilated ? lmDilated : lmAccum;
+        graph.AddPass(
+            "GI.LightmapDilate", PassType::Compute,
+            [=](PassBuilder& b) {
+                b.ReadTexture(src);
+                b.WriteTexture(dst);
+                b.SideEffects();
+            },
+            [=, this](PassContext& ctx) {
+                ctx.cmd.SetPipeline(m_lmDilatePipeline);
+                ctx.cmd.SetConstants(0, &dp, sizeof(dp));
+                ctx.cmd.Dispatch((lmSize.x + 7) / 8, (lmSize.y + 7) / 8);
+            });
+    }
+    AddBakeReadback(graph);
+}
+
+bool GlobalIllumination::PlaceLightmaps()
+{
+    Bake& bk = m_bake;
+    bk.items.Clear();
+    if (bk.candidates.Empty())
+        return false;
+    const u32 width = Clamp(std::bit_ceil(Max(bk.settings.lightmapWidth, 256u)), 256u, 4096u);
+    const u32 maxHeight = 8192;
+    f32 density = Max(bk.settings.lightmapDensity, 0.1f);
+    // Square rectangles: the mesh's reference resolution (8 texels per mesh meter) scaled by the instance and density.
+    Array<u32> sizes;
+    sizes.Resize(bk.candidates.Size());
+    Array<u32> order;
+    order.Resize(bk.candidates.Size());
+    for (u32 attempt = 0; attempt < 32; ++attempt) {
+        for (u32 i = 0; i < u32(bk.candidates.Size()); ++i) {
+            const Bake::Item& c = bk.candidates[i];
+            const Mat4& w = c.world;
+            const f32 scale = Max(Length(w.columns[0].XYZ()), Max(Length(w.columns[1].XYZ()), Length(w.columns[2].XYZ())));
+            const f32 res = f32(c.mesh->lightmapResolution) * scale * density / 8.0f;
+            sizes[i] = Clamp((u32(std::ceil(res)) + 3u) & ~3u, 8u, Min(512u, width));
+            order[i] = i;
+        }
+        Sort(order, [&](u32 a, u32 b) { return sizes[a] > sizes[b]; });
+        // Shelf packing.
+        u32 x = 0, y = 0, shelf = 0;
+        Array<UVec2> at;
+        at.Resize(sizes.Size());
+        for (u32 i : order) {
+            if (x + sizes[i] > width) {
+                x = 0;
+                y += shelf;
+                shelf = 0;
+            }
+            at[i] = UVec2(x, y);
+            x += sizes[i];
+            shelf = Max(shelf, sizes[i]);
+        }
+        const u32 height = (y + shelf + 63) & ~63u;
+        if (height > maxHeight) {
+            density *= 0.8f;
+            continue;
+        }
+        bk.lmSize = UVec2(width, Max(height, 64u));
+        for (u32 i = 0; i < u32(bk.candidates.Size()); ++i) {
+            Bake::Item it = bk.candidates[i];
+            it.scaleBias = Vec4(f32(sizes[i]) / f32(bk.lmSize.x), f32(sizes[i]) / f32(bk.lmSize.y), f32(at[i].x) / f32(bk.lmSize.x),
+                                f32(at[i].y) / f32(bk.lmSize.y));
+            bk.items.PushBack(it);
+        }
+        break;
+    }
+    if (bk.items.Empty())
+        return false;
+    DestroyLightmapTargets();
+    TextureDesc d;
+    d.width = bk.lmSize.x;
+    d.height = bk.lmSize.y;
+    d.usage = TextureUsage::RenderTarget | TextureUsage::ShaderResource;
+    d.format = Format::R32G32B32A32_FLOAT;
+    d.debugName = "GI.LightmapPosition";
+    bk.lmPosition = m_device.CreateTexture(d);
+    d.format = Format::R16G16B16A16_FLOAT;
+    d.debugName = "GI.LightmapNormal";
+    bk.lmNormal = m_device.CreateTexture(d);
+    d.usage = TextureUsage::ShaderResource | TextureUsage::UnorderedAccess;
+    d.debugName = "GI.LightmapAccum";
+    bk.lmAccum = m_device.CreateTexture(d);
+    d.debugName = "GI.Lightmap";
+    bk.lmDilated = m_device.CreateTexture(d);
+    bk.lmIteration = 0;
+    bk.lmRasterized = false;
+    return bk.lmPosition && bk.lmNormal && bk.lmAccum && bk.lmDilated;
+}
+
+void GlobalIllumination::DestroyLightmapTargets()
+{
+    for (Texture** t : {&m_bake.lmPosition, &m_bake.lmNormal, &m_bake.lmAccum, &m_bake.lmDilated}) {
+        m_device.Destroy(*t);
+        *t = nullptr;
+    }
 }
 
 // --- Screen-space GI ------------------------------------------------------------------------------------------------
@@ -926,6 +1183,9 @@ void GlobalIllumination::CancelBake()
     }
     m_bake.state = BakeState::Idle;
     m_bake.result = BakedGI{};
+    m_bake.candidates.Clear();
+    m_bake.items.Clear();
+    DestroyLightmapTargets();
     m_probesValid = false;
 }
 
@@ -933,7 +1193,9 @@ f32 GlobalIllumination::BakeProgress() const
 {
     switch (m_bake.state) {
     case BakeState::Pending: return 0.0f;
-    case BakeState::Running: return 0.95f * f32(m_bake.iteration) / f32(Max(m_bake.settings.iterations, 1u));
+    case BakeState::Running:
+        return (m_bake.settings.lightmaps ? 0.5f : 0.95f) * f32(m_bake.iteration) / f32(Max(m_bake.settings.iterations, 1u));
+    case BakeState::Lightmaps: return 0.5f + 0.45f * f32(m_bake.lmIteration) / f32(Max(m_bake.settings.lightmapIterations, 1u));
     case BakeState::Readback: return 0.97f;
     case BakeState::Done: return 1.0f;
     default: return 0.0f;
@@ -942,10 +1204,11 @@ f32 GlobalIllumination::BakeProgress() const
 
 void GlobalIllumination::AddBakeReadback(RenderGraph& graph)
 {
-    Texture* sources[3] = {m_irradiance, m_probeDistance, m_probeData};
-    const u32 bpp[3] = {8, 4, 8};
-    RGTexture handles[3];
-    for (u32 i = 0; i < 3; ++i) {
+    Texture* sources[4] = {m_irradiance, m_probeDistance, m_probeData, m_bake.lmDilated};
+    const u32 bpp[4] = {8, 4, 8, 8};
+    const u32 count = m_bake.lmDilated && !m_bake.items.Empty() ? 4u : 3u;
+    RGTexture handles[4];
+    for (u32 i = 0; i < count; ++i) {
         const TextureDesc& d = sources[i]->GetDesc();
         const u64 pitch = (u64(d.width) * bpp[i] + 255) & ~u64(255);
         m_device.Destroy(m_bake.readback[i]);
@@ -955,12 +1218,12 @@ void GlobalIllumination::AddBakeReadback(RenderGraph& graph)
     graph.AddPass(
         "GI.BakeReadback", PassType::Copy,
         [=](PassBuilder& b) {
-            for (const RGTexture& t : handles)
-                b.ReadTexture(t, ResourceState::CopySource);
+            for (u32 i = 0; i < count; ++i)
+                b.ReadTexture(handles[i], ResourceState::CopySource);
             b.SideEffects();
         },
-        [this, sources](PassContext& ctx) {
-            for (u32 i = 0; i < 3; ++i)
+        [this, sources, count](PassContext& ctx) {
+            for (u32 i = 0; i < count; ++i)
                 m_bake.pitches[i] = ctx.cmd.CopyTextureToBuffer(m_bake.readback[i], 0, sources[i]);
         });
     m_bake.copyFrame = m_frame;
@@ -971,16 +1234,25 @@ void GlobalIllumination::AddBakeReadback(RenderGraph& graph)
     r.spacing = m_bake.spacing;
     r.maxDistance = Max(m_settings.maxRayDistance, m_bake.spacing);
     r.exposure = m_exposure;
+    r.placements.Clear();
+    if (count == 4) {
+        r.lightmapWidth = m_bake.lmSize.x;
+        r.lightmapHeight = m_bake.lmSize.y;
+        for (const Bake::Item& it : m_bake.items)
+            r.placements.PushBack(BakedGI::Placement{it.id, it.scaleBias});
+    }
 }
 
 void GlobalIllumination::FinishBakeReadback()
 {
     if (m_frame < m_bake.copyFrame + FramesInFlight + 1)
         return; // the copies may not have run yet
-    Texture* sources[3] = {m_irradiance, m_probeDistance, m_probeData};
-    const u32 bpp[3] = {8, 4, 8};
-    Array<u8>* outs[3] = {&m_bake.result.irradiance, &m_bake.result.distance, &m_bake.result.probeData};
-    for (u32 i = 0; i < 3; ++i) {
+    Texture* sources[4] = {m_irradiance, m_probeDistance, m_probeData, m_bake.lmDilated};
+    const u32 bpp[4] = {8, 4, 8, 8};
+    Array<u8>* outs[4] = {&m_bake.result.irradiance, &m_bake.result.distance, &m_bake.result.probeData, &m_bake.result.lightmap};
+    for (u32 i = 0; i < 4; ++i) {
+        if (!m_bake.readback[i])
+            continue;
         const TextureDesc& d = sources[i]->GetDesc();
         const u64 row = u64(d.width) * bpp[i];
         const u8* data = static_cast<const u8*>(m_bake.readback[i]->GetMappedData());
@@ -991,6 +1263,9 @@ void GlobalIllumination::FinishBakeReadback()
         m_bake.readback[i] = nullptr;
     }
     m_bake.state = BakeState::Done;
+    m_bake.candidates.Clear();
+    m_bake.items.Clear();
+    DestroyLightmapTargets();
     m_probesValid = false; // the dynamic probes go back to the camera grid
     ZX_LOG_INFO(LogGI, "Lighting baked: {} probes", m_bake.counts.x * m_bake.counts.y * m_bake.counts.z);
 }
@@ -1020,12 +1295,12 @@ bool BakedGI::IsValid() const
     const u64 probes = u64(counts.x) * counts.y * counts.z;
     return probes > 0 && counts.x <= 64 && counts.y <= 32 && counts.z <= 64 && spacing > 0.0f &&
            irradiance.Size() == probes * IrradianceTexels * IrradianceTexels * 8 && distance.Size() == probes * DistanceTexels * DistanceTexels * 4 &&
-           probeData.Size() == probes * 8;
+           probeData.Size() == probes * 8 && lightmap.Size() == u64(lightmapWidth) * lightmapHeight * 8;
 }
 
 namespace {
 constexpr u32 BakedMagic = 0x3149475A; // "ZGI1"
-constexpr u32 BakedVersion = 1;
+constexpr u32 BakedVersion = 2; // 2: lightmap atlas
 } // namespace
 
 bool SaveBakedGI(StringView path, const BakedGI& d)
@@ -1046,6 +1321,9 @@ bool SaveBakedGI(StringView path, const BakedGI& d)
     w.WriteArray(d.irradiance.View());
     w.WriteArray(d.distance.View());
     w.WriteArray(d.probeData.View());
+    w.Write<u32>(d.lightmapWidth);
+    w.Write<u32>(d.lightmapHeight);
+    w.WriteArray(d.lightmap.View());
     return fs::WriteFile(path, bytes.View());
 }
 
@@ -1055,7 +1333,10 @@ bool LoadBakedGI(StringView path, BakedGI& d)
     if (!fs::ReadFile(path, bytes))
         return false;
     BinaryReader r(bytes.View());
-    if (r.Read<u32>() != BakedMagic || r.Read<u32>() != BakedVersion)
+    if (r.Read<u32>() != BakedMagic)
+        return false;
+    const u32 version = r.Read<u32>();
+    if (version < 1 || version > BakedVersion)
         return false;
     d.originIndex.x = r.Read<i32>();
     d.originIndex.y = r.Read<i32>();
@@ -1069,6 +1350,11 @@ bool LoadBakedGI(StringView path, BakedGI& d)
     r.ReadArray(d.irradiance);
     r.ReadArray(d.distance);
     r.ReadArray(d.probeData);
+    if (version >= 2) {
+        d.lightmapWidth = r.Read<u32>();
+        d.lightmapHeight = r.Read<u32>();
+        r.ReadArray(d.lightmap);
+    }
     return !r.HasError() && d.IsValid();
 }
 

@@ -3605,6 +3605,25 @@ void Editor::UpdateLightingBake()
     render::BakedGI data;
     if (!gi.TakeBake(data))
         return;
+    // Lightmap placements into the Mesh Renderers (undoable, saved with the scene); the rest loses its old ones.
+    undo.Begin("Bake Lighting");
+    world.Query<MeshRenderer>().Each([&](ecs::Entity e, MeshRenderer& mr) {
+        if (mr.lightmapScaleBias.x != 0.0f) {
+            undo.Record(e);
+            mr.lightmapScaleBias = Vec4();
+        }
+    });
+    for (const render::BakedGI::Placement& pl : data.placements) {
+        const ecs::Entity e = ecs::Entity::Unpack(pl.id);
+        if (world.IsAlive(e))
+            if (world.Get<MeshRenderer>(e)) {
+                undo.Record(e);
+                world.Get<MeshRenderer>(e)->lightmapScaleBias = pl.scaleBias;
+            }
+    }
+    undo.End();
+    if (!data.placements.Empty())
+        ZX_LOG_INFO(LogEditor, "Lightmaps: {} objects, {} x {} atlas", data.placements.Size(), data.lightmapWidth, data.lightmapHeight);
     const String path = BakedLightingPath();
     bakedLightingFor = path;
     platform::CreateDirectoryTree(Path::Parent(path));

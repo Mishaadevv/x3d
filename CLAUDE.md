@@ -91,8 +91,8 @@ PostSettings::colorLut (applied after tonemapping). LUT PNGs must not be block-c
 Flipbooks: ParticleEmitter::flipbook (Content path, resolved by ViewportRenderer through decalTextures); GpuParticle
 flags / texture / packed shape (shape | cols << 8 | rows << 16), seed = animation position. Atlases baked by
 Tools/bake_flipbooks.py into Engine/Content/StarterContent/Flipbooks (copied into new projects).
-Velocity: RenderInstance::id/prevWorld (ViewportRenderer pairs instances by entity), instance stride 192 (prev world
-rows at +128), SceneRenderer Velocity pass (Shaders/Forward/Velocity.hlsl, RG16F, sentinel -1000 = use the camera) only
+Velocity: RenderInstance::id/prevWorld (ViewportRenderer pairs instances by entity), instance stride 208 (prev world
+rows at +128, lightmap at +192), SceneRenderer Velocity pass (Shaders/Forward/Velocity.hlsl, RG16F, sentinel -1000 = use the camera) only
 for moved instances; read by MotionBlurCS and TAA. -exec chains accept "wait N".
 Convex hulls: Physics/Private/ConvexHull.h (quickhull, <= 32 vertices, GJK), ShapeType::ConvexHull (PhysicsWorld::
 CreateConvexHull); Collide.cpp Poly = box / hull / triangle (SAT + clipping), PolyRounded for spheres/capsules.
@@ -241,6 +241,13 @@ in the trace, SRV in the updates gate them).
 SSGI (0.16.7): Shaders/GI/SSGI.hlsl TraceCS / TemporalCS, GlobalIllumination::AddScreenPass (ViewportRenderer afterOpaque,
 next to SSR), SceneLighting / ViewData ssgiTexture + ssgiViewProj, ForwardPBR ApplyScreenSpaceGI; off in debug views
 and probe captures. GISettings screenSpace (Full), r.GI.ScreenSpace, Settings screenSpaceGI.
+Lightmaps (0.16.8): GIBakeSettings lightmaps; BakeState::Lightmaps after the probe iterations (PlaceLightmaps = shelf
+packing of candidates with GpuMesh::lightmapUVs; GI.LightmapRaster = Shaders/GI/Lightmap.hlsl, conservative; DDGI.hlsl
+ShadeRay shared by TraceCS / LightmapTraceCS (a = valid ray count), LightmapDilateCS x3) -> BakedGI lightmap +
+placements (by RenderInstance::id) -> Editor::UpdateLightingBake writes MeshRenderer::lightmapScaleBias (undoable).
+Instance rows are 208 bytes (192: half4 scale/bias + valid flag, WriteLightmapRow); ForwardPBR EvaluateSurface reads it
+(s_lightmapAtlasUV) when ViewData::lightmapAtlas is set (GIMode::Baked); deferred lighting keeps the probes.
+Built-in shapes no longer set UV1 (the cooker generates lightmap UVs).
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
 in one run (switch cvars between stat.gpu samples).

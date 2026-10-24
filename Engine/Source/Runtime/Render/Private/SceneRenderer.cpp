@@ -1,4 +1,5 @@
 #include "Render/SceneRenderer.h"
+#include "Core/Math/Packing.h"
 #include "Core/Containers/Algorithm.h"
 #include "Core/Log/Log.h"
 #include "Core/Profiler/Profiler.h"
@@ -11,11 +12,20 @@ ZX_DEFINE_LOG_CATEGORY_STATIC(LogSceneRenderer, Info);
 
 namespace zx::render {
 
+/// Instance row bytes 192..207: lightmap scale / bias (half4), page (unused: one atlas), valid flag.
+void WriteLightmapRow(u8* dst, const RenderInstance& inst)
+{
+    const u32 row[4] = {PackHalf2(Vec2(inst.lightmapScaleBias.x, inst.lightmapScaleBias.y)),
+                        PackHalf2(Vec2(inst.lightmapScaleBias.z, inst.lightmapScaleBias.w)), 0u,
+                        inst.lightmapScaleBias.x > 0.0f ? 1u : 0u};
+    MemCopy(dst, row, 16);
+}
+
 using namespace rhi;
 
 namespace {
 
-constexpr u32 InstanceStride = 192; // keep in sync with ForwardPBR.hlsl (+ previous world rows at 128, Velocity.hlsl)
+constexpr u32 InstanceStride = 208; // keep in sync with ForwardPBR.hlsl (+ previous world rows at 128, Velocity.hlsl; lightmap at 192)
 constexpr u32 MaxLights = 1024;
 constexpr u32 MaxDecals = 256;
 
@@ -922,6 +932,7 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
             // Last frame's world rows (velocity of moving objects).
             const Mat4 prevRows = Transpose(inst.prevWorld ? *inst.prevWorld : inst.world);
             MemCopy(dst + 128, &prevRows, 64);
+            WriteLightmapRow(dst + 192, inst);
             // Skinned meshes always have motion (their pose changes) once last frame's pose exists.
             const bool moved = inst.prevWorld != nullptr || (skin && skin->previous != skin->current);
             const u32 vertexOverride = skin ? skin->current : InvalidIndex;
@@ -1144,6 +1155,8 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
     m_viewConstants.gi = lighting.gi;
     m_viewConstants.ssgiTexture = lighting.ssgiTexture;
     m_viewConstants.ssgiViewProj = lighting.ssgiViewProj;
+    m_viewConstants.lightmapAtlas = lighting.lightmapAtlas;
+    m_viewConstants.lightmapIntensity = lighting.lightmapIntensity;
     PrepareDecals(lighting.decals, Frustum::FromMatrix(view.viewProj));
 }
 

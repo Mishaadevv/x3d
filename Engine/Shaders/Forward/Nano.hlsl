@@ -61,7 +61,7 @@ struct NanoParams
 };
 ZX_PASS_CONSTANTS(NanoParams, g_Nano);
 
-static const uint HeaderStride = 80, InstanceStride = 32, ArgsStride = 24, CounterStride = 16, RowStride = 192;
+static const uint HeaderStride = 80, InstanceStride = 32, ArgsStride = 24, CounterStride = 16, RowStride = 208;
 static const float RootError = 1.0e38;
 static const uint PageBytes = 131040, PageVertices = 3640; // asset::nano::PageBytes
 

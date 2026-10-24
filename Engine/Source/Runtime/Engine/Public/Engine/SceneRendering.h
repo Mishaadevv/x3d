@@ -23,6 +23,8 @@ struct MeshRenderer
     Array<asset::AssetId> materials; // per mesh material slot
     bool visible = true;
     bool collision = true; // blocks Character Controllers (world-space box until the physics milestone)
+    /// Baked lightmap placement (written by Bake Lighting): UV1 * xy + zw = atlas uv; x = 0 means none.
+    Vec4 lightmapScaleBias;
 };
 
 /// Point light at the entity's world position (physical units).

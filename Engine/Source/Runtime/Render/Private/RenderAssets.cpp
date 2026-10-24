@@ -345,6 +345,8 @@ bool RenderAssets::TryUploadMesh(AssetId id, MeshEntry& e, u64& budget)
     budget -= Min(budget, bytes);
     GpuMesh& g = e.mesh;
     g.sections = m->sections;
+    g.lightmapUVs = m->lightmapUVs && m->lightmapResolution > 0;
+    g.lightmapResolution = m->lightmapResolution;
     g.sectionLods = m->sectionLods;
     g.lodCount = m->lodCount;
     g.index16 = m->index16;

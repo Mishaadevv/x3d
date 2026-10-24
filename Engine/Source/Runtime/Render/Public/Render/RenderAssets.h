@@ -36,6 +36,8 @@ struct GpuMesh
     AABB bounds;
     Sphere sphere;
     u32 materialSlots = 0;
+    bool lightmapUVs = false;     // UV1 is a lightmap layout (CookedMesh::lightmapUVs)
+    u32 lightmapResolution = 0;   // its reference resolution (8 texels per mesh meter), 0 = unknown
     u64 bytes = 0;
     // ZNano virtual geometry (CookedMesh::nano). The cluster headers stay resident (page-relative offsets, see
     // asset::nano::BuildGpuPages); the clusters' vertices and triangles stream in pages through RenderAssets' page pool,

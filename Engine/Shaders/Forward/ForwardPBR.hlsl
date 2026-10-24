@@ -107,6 +107,9 @@ struct ViewData
     uint ssgiTexture;        // last frame's screen-space GI (Shaders/GI/SSGI.hlsl) or invalid
     float3 ssgiPad;
     float4x4 ssgiViewProj;   // the view it was traced with
+    uint lightmapAtlas;      // baked indirect diffuse per UV1 texel (Texture2D) or invalid
+    float lightmapIntensity;
+    float2 lightmapPad;
 };
 ZX_VIEW_CONSTANTS(ViewData, g_View);
 
@@ -135,7 +138,7 @@ ZX_PUSH_CONSTANTS(DrawData, g_Draw);
 #define MATERIAL_ALPHA_TEST 2u
 #define MATERIAL_DOUBLE_SIDED 4u
 #define MATERIAL_GRAPH 8u
-#define INSTANCE_STRIDE 192 // world, normal + burn rows, burn sphere, previous world (Velocity.hlsl)
+#define INSTANCE_STRIDE 208 // world, normal + burn rows, burn sphere, previous world (Velocity.hlsl), lightmap
 
 struct Material
 {
@@ -885,12 +888,21 @@ float3 DecodeOct(float2 e)
 
 /// The material's surface at this pixel (textures / graph, normal map, burn, decals). Shared by the forward and the
 /// G-buffer passes.
-/// UV1 of the surface being shaded (forward path; the lightmap density view reads it).
+/// UV1 of the surface being shaded (forward path; the lightmap density view reads it) and, for lightmapped instances,
+/// the atlas uv (z < 0: none).
 static float2 s_lightmapUV = 0.0;
+static float3 s_lightmapAtlasUV = float3(0, 0, -1);
 
 SurfaceData EvaluateSurface(VSOutput i, bool frontFace, out Material m)
 {
     s_lightmapUV = i.uv.zw;
+    if (g_View.lightmapAtlas != ZX_INVALID_INDEX) {
+        const uint4 row = GetBuffer(g_View.instanceBuffer).Load4(i.drawInfo.x * INSTANCE_STRIDE + 192);
+        if (row.w != 0) {
+            const float4 sb = float4(f16tof32(row.x & 0xFFFF), f16tof32(row.x >> 16), f16tof32(row.y & 0xFFFF), f16tof32(row.y >> 16));
+            s_lightmapAtlasUV = float3(i.uv.zw * sb.xy + sb.zw, 1.0);
+        }
+    }
     m = LoadMaterial(i.drawInfo.y);
     SurfaceData s;
     s.subsurface = 0.0;
@@ -1002,6 +1014,8 @@ float4 LightSurface(SurfaceData s, float3 worldPos, float4 svPosition, bool unli
             const float3 gi = DDGIIrradiance(g_View.gi, worldPos, N, normalize(g_View.cameraPosition - worldPos), coverage);
             irr = lerp(irr, gi, coverage);
         }
+        if (s_lightmapAtlasUV.z > 0.0)
+            irr = GetTexture2D(g_View.lightmapAtlas).SampleLevel(g_LinearClamp, s_lightmapAtlasUV.xy, 0).rgb * g_View.lightmapIntensity;
         return float4(ApplyScreenSpaceGI(irr, worldPos), 1);
     }
     case 7: {
@@ -1033,6 +1047,9 @@ float4 LightSurface(SurfaceData s, float3 worldPos, float4 svPosition, bool unli
         const float3 gi = DDGIIrradiance(g_View.gi, worldPos, N, V, coverage);
         irradiance = lerp(irradiance, gi, coverage);
     }
+    // Baked lightmap (forward path): the instance's own texels replace the probes.
+    if (s_lightmapAtlasUV.z > 0.0)
+        irradiance = GetTexture2D(g_View.lightmapAtlas).SampleLevel(g_LinearClamp, s_lightmapAtlasUV.xy, 0).rgb * g_View.lightmapIntensity;
     irradiance = ApplyScreenSpaceGI(irradiance, worldPos);
     const float NoV = max(dot(N, V), 1e-4);
     const float3 f0 = lerp(0.04, s.baseColor, s.metallic);

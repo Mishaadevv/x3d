@@ -53,7 +53,15 @@ struct ProbeParams
     uint phase;
     uint probeDataUav;       // RWTexture2D: probe offsets (relocation) + w = 1 near surfaces, written by UpdateIrradianceCS
     uint flagsBuffer;        // per probe: 1 = traced this frame (TraceCS writes it: UAV; the updates read it: SRV)
-    uint3 pad3;
+    uint lmPosition;         // lightmap bake: texel world positions (w = covered), normals, accumulation, dilation
+    uint lmNormal;
+    uint lmAccumUav;
+    uint lmAccumSrv;
+    uint lmOutUav;
+    uint2 lmSize;
+    uint lmIteration;
+    uint lmRays;
+    uint pad3;
 };
 ZX_PASS_CONSTANTS(ProbeParams, g_Probe);
 
@@ -171,25 +179,14 @@ bool ProbeSkipped(uint probeIndex, uint3 slot)
     return !active && (g_Probe.frame / max(g_Probe.probeStride, 1u) + probeIndex) % 8 != 0;
 }
 
-[numthreads(64, 1, 1)]
-void TraceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
+/// Light arriving along a ray from `origin` (unit `dir`): the lit surface it hits through the distance field (sun,
+/// lights, bounced light from the probes' ambient cubes) or the sky. `distance` < 0: it hit the back of a surface.
+float3 ShadeRay(float3 origin, float3 dir, out float distance)
 {
-    const uint probe = ProbeOfGroup(group.x);
-    const uint ray = group.y * 64 + thread.x;
-    const uint3 slot = SlotOfLinear(probe);
-    if (!UpdatesThisFrame(probe, slot))
-        return;
-    const bool skipped = ProbeSkipped(probe, slot);
-    if (ray == 0)
-        GetRWBuffer(g_Probe.flagsBuffer).Store(probe * 4, skipped ? 0u : 1u);
-    if (ray >= g_Probe.raysPerProbe || skipped)
-        return;
     const DDGIVolume v = g_Probe.volume;
-    const float3 origin = DDGIProbePosition(v, WorldOfSlot(v.originIndex, slot)) + (IsNewProbe(slot) ? 0.0 : DDGIProbeOffset(v, slot));
-    const float3 dir = RayDirection(ray);
     const SdfHit hit = SdfTrace(g_Probe.sdf, origin, dir, v.maxDistance, 96);
     float3 radiance = 0.0;
-    float distance = v.maxDistance;
+    distance = v.maxDistance;
     if (!hit.hit) {
         radiance = SkyLight(dir);
     } else {
@@ -233,6 +230,27 @@ void TraceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
             radiance = albedo * (direct / 3.14159265 + indirect * g_Probe.energy);
         }
     }
+    return radiance;
+}
+
+[numthreads(64, 1, 1)]
+void TraceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
+{
+    const uint probe = ProbeOfGroup(group.x);
+    const uint ray = group.y * 64 + thread.x;
+    const uint3 slot = SlotOfLinear(probe);
+    if (!UpdatesThisFrame(probe, slot))
+        return;
+    const bool skipped = ProbeSkipped(probe, slot);
+    if (ray == 0)
+        GetRWBuffer(g_Probe.flagsBuffer).Store(probe * 4, skipped ? 0u : 1u);
+    if (ray >= g_Probe.raysPerProbe || skipped)
+        return;
+    const DDGIVolume v = g_Probe.volume;
+    const float3 origin = DDGIProbePosition(v, WorldOfSlot(v.originIndex, slot)) + (IsNewProbe(slot) ? 0.0 : DDGIProbeOffset(v, slot));
+    const float3 dir = RayDirection(ray);
+    float distance;
+    const float3 radiance = ShadeRay(origin, dir, distance);
     GetRWBuffer(g_Probe.rayBuffer).Store4((probe * g_Probe.raysPerProbe + ray) * 16, asuint(float4(radiance, distance)));
 }
 
@@ -401,4 +419,81 @@ void AmbientCubeCS(uint3 id : SV_DispatchThreadID)
     const float3 dirs[6] = {float3(1, 0, 0), float3(-1, 0, 0), float3(0, 1, 0), float3(0, -1, 0), float3(0, 0, 1), float3(0, 0, -1)};
     const float4 irr = GetTexture2D(v.irradiance).SampleLevel(g_LinearClamp, DDGIProbeUV(v, slot, dirs[axis], DDGI_IRRADIANCE_TEXELS, v.invIrradianceSize), 0);
     g_RWTexture3D[NonUniformResourceIndex(CubeUav(axis))][slot] = float4(irr.rgb * irr.a, irr.a);
+}
+
+// --- Lightmap baking ---------------------------------------------------------------------------------------------------
+
+/// One iteration for every covered atlas texel: lmRays cosine-distributed rays from the surface; the running average of
+/// their radiance is the texel's indirect diffuse irradiance (SkyIrradiance convention). Rays that start inside
+/// geometry (back faces) count as dark.
+[numthreads(8, 8, 1)]
+void LightmapTraceCS(uint2 id : SV_DispatchThreadID)
+{
+    if (any(id >= g_Probe.lmSize))
+        return;
+    const float4 pos = GetTexture2D(g_Probe.lmPosition).Load(int3(id, 0));
+    if (pos.w <= 0.0) {
+        if (g_Probe.lmIteration == 0)
+            GetRWTexture2D(g_Probe.lmAccumUav)[id] = 0.0; // not covered (the dilation fills it)
+        return;
+    }
+    float3 n = GetTexture2D(g_Probe.lmNormal).Load(int3(id, 0)).xyz;
+    n = dot(n, n) > 1e-6 ? normalize(n) : float3(0, 1, 0);
+    const float3 t = normalize(abs(n.y) < 0.99 ? cross(float3(0, 1, 0), n) : cross(float3(1, 0, 0), n));
+    const float3 b = cross(n, t);
+    const float voxel = g_Probe.sdf.levelMin[0].w;
+    // Start past the surface's own voxels (the field is 1 voxel thick there; a ray starting inside would hit itself).
+    const float3 origin = pos.xyz + n * voxel * 1.5;
+    float3 sum = 0.0;
+    float valid = 0.0;
+    for (uint r = 0; r < g_Probe.lmRays; ++r) {
+        uint h = (id.x * 73856093u) ^ (id.y * 19349663u) ^ ((g_Probe.lmIteration * 16 + r) * 83492791u);
+        h ^= h >> 13;
+        h *= 0x5bd1e995u;
+        h ^= h >> 15;
+        const float u1 = float(h & 0xFFFFu) / 65536.0, u2 = float(h >> 16) / 65536.0;
+        const float phi = 6.2831853 * u2, radius = sqrt(u1);
+        const float3 dir = normalize(t * (radius * cos(phi)) + b * (radius * sin(phi)) + n * sqrt(max(1.0 - u1, 0.0)));
+        float distance;
+        const float3 radiance = ShadeRay(origin, dir, distance);
+        // A back face: the ray started inside geometry (texels where walls meet floors) - it says nothing.
+        if (distance >= 0.0) {
+            sum += radiance;
+            valid += 1.0;
+        }
+    }
+    // Running average weighted by the rays that counted; a = their number (0: nothing yet - the dilation fills it).
+    RWTexture2D<float4> accum = GetRWTexture2D(g_Probe.lmAccumUav);
+    const float4 prev = g_Probe.lmIteration == 0 ? 0.0 : accum[id];
+    const float count = prev.a + valid;
+    accum[id] = count > 0.0 ? float4((prev.rgb * prev.a + sum) / count, count) : 0.0;
+}
+
+/// Fills uncovered texels (gutters, texels no triangle center reached) with the average of covered neighbors, so
+/// bilinear filtering at chart borders never pulls in black. a = 1: covered / filled.
+[numthreads(8, 8, 1)]
+void LightmapDilateCS(uint2 id : SV_DispatchThreadID)
+{
+    if (any(id >= g_Probe.lmSize))
+        return;
+    Texture2D<float4> src = GetTexture2D(g_Probe.lmAccumSrv);
+    const float4 c = src.Load(int3(id, 0));
+    float4 result = c;
+    if (c.a <= 0.0) {
+        float3 sum = 0.0;
+        float count = 0.0;
+        [unroll] for (int y = -1; y <= 1; ++y)
+            [unroll] for (int x = -1; x <= 1; ++x) {
+                const int2 q = int2(id) + int2(x, y);
+                if (any(q < 0) || any(q >= int2(g_Probe.lmSize)))
+                    continue;
+                const float4 s = src.Load(int3(q, 0));
+                if (s.a > 0.0) {
+                    sum += s.rgb;
+                    count += 1.0;
+                }
+            }
+        result = count > 0.0 ? float4(sum / count, 1.0) : 0.0;
+    }
+    GetRWTexture2D(g_Probe.lmOutUav)[id] = result;
 }

@@ -20,7 +20,6 @@ struct Builder
         v.position = p;
         v.normal = n;
         v.uv0 = uv;
-        v.uv1 = uv;
         mesh.vertices.PushBack(v);
         return u32(mesh.vertices.Size() - 1);
     }
@@ -165,7 +164,8 @@ asset::MeshData GenerateShapeMesh(BuiltinShape shape)
     asset::MeshSection section;
     section.indexCount = u32(b.mesh.lods[0].indices.Size());
     b.mesh.lods[0].sections.PushBack(section);
-    b.mesh.attributes = asset::MeshAttributes::Normals | asset::MeshAttributes::UV0 | asset::MeshAttributes::UV1;
+    // No UV1: the cooker generates lightmap UVs (UV0 of a box overlaps on every face).
+    b.mesh.attributes = asset::MeshAttributes::Normals | asset::MeshAttributes::UV0;
     asset::mesh::GenerateTangents(b.mesh);
     b.mesh.attributes |= asset::MeshAttributes::Tangents;
     b.mesh.ComputeBounds();
