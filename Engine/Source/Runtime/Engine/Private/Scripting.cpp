@@ -14,6 +14,7 @@
 #include "Engine/Fire.h"
 #include "Engine/Gameplay.h"
 #include "Engine/InputActions.h"
+#include "Engine/Navigation.h"
 #include "Engine/Particles.h"
 #include "Platform/Input.h"
 #include "Scene/Hierarchy.h"
@@ -491,6 +492,32 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
                 return v.Fail("The entity was destroyed");
             sys.m_moves.RemoveIf([&](const MoveTween& mt) { return mt.entity == e; });
             sys.m_moves.PushBack(MoveTween{e, t->position, a[0].AsVec3(), a.Size() > 1 ? Max(a[1].AsFloat(), 0.0f) : 1.0f, 0.0f});
+            return true;
+        }
+        if (m == "navTo" || m == "navStop" || m == "navStatus" || m == "navRemaining") {
+            // Nav Mesh Agent: navTo(position) walks there on the navigation mesh (false: no agent / mesh), navStop(),
+            // navStatus() = "idle" / "moving" / "arrived" / "partial" (unreachable, going as close as possible) /
+            // "nomesh", navRemaining() = meters still to walk.
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = sys.context.world;
+            if (!w || !w->IsAlive(e))
+                return v.Fail("The entity was destroyed");
+            NavMeshAgent* agent = w->Get<NavMeshAgent>(e);
+            if (!agent)
+                return v.Fail("This entity has no Nav Mesh Agent component (Add Component > Nav Mesh Agent)");
+            if (m == "navTo") {
+                if (a.Size() != 1 || a[0].Type() != ValueType::Vec3)
+                    return v.Fail("entity.navTo(position: vec3)");
+                out = Value(sys.navigation && sys.navigation->HasMesh() && sys.navigation->SetDestination(*w, e, a[0].AsVec3()));
+            } else if (m == "navStop") {
+                if (sys.navigation)
+                    sys.navigation->Stop(*w, e);
+            } else if (m == "navStatus") {
+                out = Value(StringView(NavAgentStatusName(agent->status)));
+            } else {
+                out = Value(f64(NavigationSystem::RemainingDistance(*w, e)));
+            }
             return true;
         }
         if (m == "uiAnimate" || m == "uiPlay" || m == "focus" || m == "addClass" || m == "removeClass" || m == "hasClass") {

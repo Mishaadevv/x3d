@@ -262,6 +262,11 @@ Foliage (0.17.2): Engine/Foliage.h (Foliage parts from FoliagePartsFromPrefab, b
 DecodeFoliage into runtime `instances`, ScatterFoliage rules); GatherRenderInstances(world, out, animation, viewer)
 emits one RenderInstance per instance part within cullDistance; SaveScene lists foliage sources. world.create copies
 the StylizedNature pack (project path Content/Packs/StylizedNature/<model>.gltf, no Models subfolder) and scatters.
+Navigation (0.17.3): Runtime/Nav (NavMesh.h: voxelize -> filters -> chamfer erosion -> rectangles + links; FindPath = A* +
+funnel + Raycast shortcut; .znav), Engine/Navigation.h (NavMeshBounds / NavMeshAgent, NavigationSystem Build / Tick / Save /
+Load, GatherNavGeometry: collision Mesh Renderers + terrain heights), GameSystems::navigation (BeginGame builds if no mesh),
+scripts entity.navTo / navStop / navStatus / navRemaining; editor build.navigation, Show > Navigation, nav.* console,
+create navbounds|navagent; ZXGame loads <scene>.znav. Tests NavMesh.*, Navigation.*.
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
 in one run (switch cvars between stat.gpu samples).

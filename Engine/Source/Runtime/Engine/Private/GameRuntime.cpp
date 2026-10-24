@@ -8,6 +8,7 @@
 #include "Engine/GameModule.h"
 #include "Engine/Gameplay.h"
 #include "Engine/InputActions.h"
+#include "Engine/Navigation.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/Scripting.h"
@@ -52,6 +53,9 @@ void BeginGame(ecs::World& world, GameSystems& s)
     }
     if (s.water)
         s.water->Reset();
+    // Navigation: the mesh baked next to the scene (loaded by the host), else built now from the loaded geometry.
+    if (s.navigation && !s.navigation->HasMesh() && world.Query<const NavMeshBounds>().Count() > 0)
+        s.navigation->Build(world, s.renderAssets);
     if (s.fire) {
         s.fire->Clear();
         render::RenderAssets* assets = s.renderAssets;
@@ -83,6 +87,7 @@ void TickGame(ecs::World& world, GameSystems& s, f32 realDt, const InputState* i
         s.scripts->particles = s.particles;
         s.scripts->animation = s.animation;
         s.scripts->softBodies = s.softBodies;
+        s.scripts->navigation = s.navigation;
         if (s.animation) // last frame's footsteps and authored events
             s.scripts->DispatchAnimEvents(world, s.animation->Events());
         s.scripts->gameUI = s.gameUI;
@@ -99,6 +104,11 @@ void TickGame(ecs::World& world, GameSystems& s, f32 realDt, const InputState* i
         context.audio = s.audio;
         context.physics = physicsRunning ? s.physics : nullptr;
         s.game->Tick(world, dt, context);
+    }
+    // Nav Mesh Agents follow their paths (characters among them get their move for this frame).
+    if (s.navigation && s.Enabled("navigation")) {
+        scene::UpdateWorldTransforms(world);
+        s.navigation->Tick(world, dt);
     }
     // Characters move as the scripts asked (character.move / jump), sweeping through the physics world; then the
     // physics steps (their capsules and kinematic bodies follow, teleports apply).

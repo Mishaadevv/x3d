@@ -80,6 +80,7 @@ void DrawMenus(Editor& ed)
         ActionMenuItem(ed, "file.import");
         ui::Separator();
         ActionMenuItem(ed, "build.bakeLighting");
+        ActionMenuItem(ed, "build.navigation");
         ActionMenuItem(ed, "file.package");
         ui::Separator();
         ActionMenuItem(ed, "file.settings");
@@ -134,6 +135,8 @@ void DrawMenus(Editor& ed)
         ActionMenuItem(ed, "create.terrain");
         ActionMenuItem(ed, "create.terrainFlat");
         ActionMenuItem(ed, "create.windZone");
+        ActionMenuItem(ed, "create.navMeshBounds");
+        ActionMenuItem(ed, "create.navAgent");
         if (ui::BeginMenu(ZX_ICON_MONITOR "  UI")) {
             for (StringView id : {StringView("create.ui.canvas"), StringView("create.ui.panel"), StringView("create.ui.text"), StringView("create.ui.button"),
                                   StringView("create.ui.image"), StringView("create.ui.progress"), StringView("create.ui.slider"), StringView("create.ui.toggle"), StringView("create.ui.input"),

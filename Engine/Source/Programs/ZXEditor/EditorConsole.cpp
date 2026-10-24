@@ -310,6 +310,48 @@ ConCommand CmdBakeLighting("gi.bake", "Bakes the lighting of the static scene in
                                                      args.Size() > 1 ? u32(ParseInt(args[1]).ValueOr(0)) : 0u);
                             });
 
+ConCommand CmdNavBuild("nav.build", "Builds the navigation mesh of every Nav Mesh Bounds (saved next to the scene as .znav)", [](Span<const StringView>) {
+    if (Editor* ed = Ed()) {
+        ed->BuildNavigation();
+        ed->showNavigation = true;
+    }
+});
+
+ConCommand CmdNavShow("nav.show", "Shows / hides the navigation mesh and agent paths: nav.show [0|1]", [](Span<const StringView> args) {
+    if (Editor* ed = Ed())
+        ed->showNavigation = args.Empty() ? !ed->showNavigation : ParseInt(args[0]).ValueOr(1) != 0;
+});
+
+ConCommand CmdNavStats("nav.stats", "Navigation mesh statistics and agent states", [](Span<const StringView>) {
+    Editor* ed = Ed();
+    if (!ed)
+        return;
+    u32 polys = 0, links = 0;
+    for (const NavigationSystem::Volume& v : ed->navigation.Volumes()) {
+        polys += u32(v.mesh.Polys().Size());
+        links += u32(v.mesh.Links().Size());
+    }
+    ZX_LOG_INFO(LogCmd, "Navigation: {} volume(s), {} polygons, {} links", ed->navigation.Volumes().Size(), polys, links);
+    ed->world.Query<const NavMeshAgent, const scene::WorldTransform>().Each([&](ecs::Entity e, const NavMeshAgent& a, const scene::WorldTransform& wt) {
+        const Vec3 p = wt.GetPosition();
+        ZX_LOG_INFO(LogCmd, "  agent {} at ({:.1f}, {:.1f}, {:.1f}): {}, {:.1f} m to go", e.index, p.x, p.y, p.z, NavAgentStatusName(a.status),
+                    NavigationSystem::RemainingDistance(ed->world, e));
+    });
+});
+
+ConCommand CmdNavGoto("nav.goto", "Sends every Nav Mesh Agent (in Play) to a point: nav.goto x y z", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || args.Size() < 3)
+        return;
+    const Vec3 target(ParseFloat(args[0]).ValueOr(0.0f), ParseFloat(args[1]).ValueOr(0.0f), ParseFloat(args[2]).ValueOr(0.0f));
+    u32 sent = 0;
+    Array<ecs::Entity> agents;
+    ed->world.Query<const NavMeshAgent>().Each([&](ecs::Entity e, const NavMeshAgent&) { agents.PushBack(e); });
+    for (ecs::Entity e : agents)
+        sent += ed->navigation.SetDestination(ed->world, e, target) ? 1u : 0u;
+    ZX_LOG_INFO(LogCmd, "nav.goto: {} agent(s) sent{}", sent, ed->IsPlaying() ? "" : " (they walk in Play)");
+});
+
 ConCommand CmdClearBake("gi.clearbake", "Deletes the scene's baked lighting", [](Span<const StringView>) {
     if (Editor* ed = Ed()) {
         platform::DeleteFileAt(ed->BakedLightingPath());
@@ -921,6 +963,10 @@ ConCommand CmdCreate("create", "Creates an object in front of the camera: create
         ed->CreateTerrain(args.Size() > 1 && args[1].EqualsIgnoreCase("flat"));
     else if (kind.EqualsIgnoreCase("wind") || kind.EqualsIgnoreCase("windzone"))
         ed->CreateWindZone();
+    else if (kind.EqualsIgnoreCase("navbounds") || kind.EqualsIgnoreCase("navmeshbounds"))
+        ed->CreateNavMeshBounds(at);
+    else if (kind.EqualsIgnoreCase("navagent") || kind.EqualsIgnoreCase("agent"))
+        ed->CreateNavAgent(at);
     else if (kind.StartsWith("ui."))
         ed->CreateUIWidget(kind.SubStr(3));
     else if (kind.EqualsIgnoreCase("heightfog") || kind.EqualsIgnoreCase("fog"))

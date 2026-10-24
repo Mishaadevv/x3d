@@ -30,6 +30,7 @@ class RenderAssets;
 class SoftBodySystem;
 class GameUISystem;
 class WaterSystem;
+class NavigationSystem;
 
 struct GameSystems
 {
@@ -47,7 +48,8 @@ struct GameSystems
     AnimationSystem* animation = nullptr; // Animators (scripts set graph parameters / play clips)
     SoftBodySystem* softBodies = nullptr; // soft-body vehicles (simulated with the physics)
     GameUISystem* gameUI = nullptr;
-    WaterSystem* water = nullptr;         // wave heights, buoyancy, splashes       // UI events (clicks, changes) go to scripts; the host lays out and draws
+    WaterSystem* water = nullptr;         // wave heights, buoyancy, splashes
+    NavigationSystem* navigation = nullptr; // nav meshes + Nav Mesh Agents (scripts: entity.navTo)
 
     bool Enabled(StringView feature) const { return !featureEnabled || featureEnabled(feature); }
 };

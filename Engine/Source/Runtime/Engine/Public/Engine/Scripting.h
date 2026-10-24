@@ -35,6 +35,7 @@ class ParticleSystem;
 class GameUISystem;
 struct UIEvent;
 class SoftBodySystem;
+class NavigationSystem;
 class AnimationSystem;
 struct AnimEvent;
 struct PhysicsEvent;
@@ -93,6 +94,7 @@ public:
     /// Animators for entity.animParam / animTrigger / playAnim / animState (null = no animation control).
     AnimationSystem* animation = nullptr;
     SoftBodySystem* softBodies = nullptr; // vehicles: entity.carInput / carSpeed / ...
+    NavigationSystem* navigation = nullptr; // Nav Mesh Agents: entity.navTo / navStop / navStatus / navRemaining
     /// Game UI for ui.cursor / ui.overUI (null = no UI).
     GameUISystem* gameUI = nullptr;
     /// tr(key, ...) and lang (null = tr returns the key).

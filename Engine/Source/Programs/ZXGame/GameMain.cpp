@@ -21,6 +21,7 @@
 #include "Engine/AudioSystem.h"
 #include "Engine/BuiltinAssets.h"
 #include "Engine/ComponentRegistry.h"
+#include "Engine/Navigation.h"
 #include "Engine/Fire.h"
 #include "Engine/GameModule.h"
 #include "Engine/GameRuntime.h"
@@ -150,6 +151,7 @@ private:
     WorldStreamer m_streamer; // World Partition scenes: cells around the game camera
     SoftBodySystem m_softBodies;
     WaterSystem m_water;
+    NavigationSystem m_navigation;
     GameUISystem m_gameUI;
     Localization m_localization;
     ui::FontSystem m_fonts;
@@ -343,6 +345,9 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
         if (render::LoadBakedGI(Path::ChangeExtension(m_config.scene, ".zgi"), baked))
             m_viewport->GI().SetBaked(&baked);
     }
+    // Navigation baked next to the scene (<scene>.znav); without it BeginGame builds from the loaded geometry.
+    if (m_navigation.Load(Path::ChangeExtension(m_config.scene, ".znav")))
+        ZX_LOG_INFO(LogGame, "Navigation: {} volume(s)", m_navigation.Volumes().Size());
     const JsonValue& env = settings.Get("environment");
     m_environment.night = env.Get("night").AsBool(false);
     m_environment.sunElevation = DegToRad(env.Get("sunElevation").AsFloat(60.0f));
@@ -391,7 +396,7 @@ bool Game::Frame()
     }
     if (!m_started && ready) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation};
         BeginGame(m_world, s);
         m_started = true;
         m_startFrame = m_frame;
@@ -417,7 +422,7 @@ bool Game::Frame()
 
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation};
         ListenerPose fallback;
         fallback.position = m_sceneCamera.position;
         m_gameUI.time += dt;
@@ -436,7 +441,7 @@ bool Game::Frame()
     scene::UpdateWorldTransforms(m_world);
     {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation};
         const f32 gameDt = m_started ? dt * GameTimeScale(s) : dt; // time.scale (pause menus)
         m_particles.Tick(m_world, gameDt, m_started);
         m_animation->Tick(m_world, gameDt, m_started);
@@ -535,7 +540,7 @@ void Game::Shutdown()
     }
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, {}, nullptr, &m_softBodies, &m_gameUI, &m_water};
+                      &m_inputActions, &m_inputActionState, {}, nullptr, &m_softBodies, &m_gameUI, &m_water, &m_navigation};
         EndGame(s);
     }
     ClearScene(m_world);

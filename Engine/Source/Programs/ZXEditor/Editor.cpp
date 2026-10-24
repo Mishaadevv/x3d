@@ -1899,6 +1899,101 @@ void Editor::DrawPhysicsDebug()
     }
 }
 
+void Editor::DrawNavigationDebug()
+{
+    // Nav Mesh Bounds boxes of the selection; with Show > Navigation: polygons (teal), portals and agent paths.
+    if (world.IsAlive(selected))
+        if (const NavMeshBounds* b = world.Get<const NavMeshBounds>(selected)) {
+            const Vec3 c = scene::ComputeWorldMatrix(world, selected).GetTranslation();
+            debugDraw->Box(AABB::FromCenterExtents(c, b->size * 0.5f), Mat4::Identity(), Color(90, 200, 255));
+        }
+    if (!showNavigation)
+        return;
+    const Vec3 lift(0.0f, 0.06f, 0.0f);
+    const Vec3 eye = camera.position;
+    for (const NavigationSystem::Volume& v : navigation.Volumes())
+        for (const nav::Poly& p : v.mesh.Polys()) {
+            const Vec3 center = (p.corners[0] + p.corners[2]) * 0.5f;
+            if (LengthSq(center - eye) > 150.0f * 150.0f)
+                continue; // keep the line count sane on big meshes
+            for (u32 k = 0; k < 4; ++k)
+                debugDraw->Line(p.corners[k] + lift, p.corners[(k + 1) % 4] + lift, Color(40, 190, 170));
+        }
+    world.Query<const NavMeshAgent>().Each([&](ecs::Entity, const NavMeshAgent& a) {
+        if (!a.hasDestination)
+            return;
+        for (usize i = a.corner; i < a.path.Size(); ++i) {
+            if (i > 0)
+                debugDraw->Line(a.path[i - 1] + lift * 2.0f, a.path[i] + lift * 2.0f, Color(255, 220, 60));
+            debugDraw->Sphere(a.path[i] + lift * 2.0f, 0.08f, Color(255, 220, 60), 8);
+        }
+    });
+}
+
+String Editor::NavigationPath() const
+{
+    if (!scenePath.Empty())
+        return Path::ChangeExtension(scenePath, ".znav");
+    return fs::ToPhysicalPath(String::Format("/Saved/Navigation/{}.znav", sceneName.Empty() ? StringView("Untitled") : sceneName.View()));
+}
+
+bool Editor::BuildNavigation()
+{
+    EndPlay(); // the edited scene, not the play state
+    NavBuildReport r;
+    if (!navigation.Build(world, renderAssets.Get(), &r)) {
+        ZX_LOG_WARN(LogEditor, "Navigation: nothing walkable{} (add a Nav Mesh Bounds over the level: Add Component > Nav Mesh Bounds)",
+                       r.volumes == 0 && world.Query<const NavMeshBounds>().Count() == 0 ? " - no Nav Mesh Bounds" : "");
+        return false;
+    }
+    const String path = NavigationPath();
+    navigationFor = path;
+    platform::CreateDirectoryTree(Path::Parent(path));
+    const bool saved = navigation.Save(path);
+    ZX_LOG_INFO(LogEditor, "Navigation built: {} volume(s), {} polygons from {} triangles in {:.0f} ms{}", r.volumes, r.polys, r.triangles,
+                r.milliseconds, saved ? String::Format(" -> {}", Path::FileName(path)).View() : StringView(" (not saved)"));
+    return true;
+}
+
+void Editor::UpdateNavigation()
+{
+    if (IsPlaying())
+        return;
+    String path = NavigationPath();
+    if (path == navigationFor)
+        return;
+    navigationFor = move(path);
+    if (platform::FileExists(navigationFor) && navigation.Load(navigationFor))
+        ZX_LOG_INFO(LogEditor, "Navigation: {} volume(s) ({})", navigation.Volumes().Size(), Path::FileName(navigationFor));
+    else
+        navigation.Clear();
+}
+
+void Editor::CreateNavMeshBounds(Vec3 position)
+{
+    const ecs::Entity e = CreateEntity("Nav Mesh Bounds", Transform(position));
+    world.Add(e, NavMeshBounds{});
+    CommitCreated(e, "Create Nav Mesh Bounds");
+    Select(e);
+}
+
+void Editor::CreateNavAgent(Vec3 position)
+{
+    const ecs::Entity e = CreateEntity("AI Agent", Transform(position));
+    world.Add(e, NavMeshAgent{});
+    const ecs::Entity body = CreateEntity("Body", Transform(Vec3(0, 0.9f, 0), Quat::Identity(), Vec3(0.7f, 1.8f, 0.7f)), e);
+    MeshRenderer mr;
+    mr.mesh = builtin::Mesh(BuiltinShape::Cylinder);
+    mr.collision = false;
+    world.Add(body, mr);
+    const ecs::Entity nose = CreateEntity("Nose", Transform(Vec3(0, 1.5f, 0.35f), Quat::Identity(), Vec3(0.25f, 0.15f, 0.3f)), e);
+    MeshRenderer nm = mr;
+    nm.mesh = builtin::Mesh(BuiltinShape::Cube);
+    world.Add(nose, nm);
+    CommitCreated(e, "Create AI Agent");
+    Select(e);
+}
+
 void Editor::CreateWindZone()
 {
     const Vec3 f = SafeNormalize(Vec3(camera.Forward().x, 0.0f, camera.Forward().z), Vec3(0, 0, 1));
@@ -2912,6 +3007,7 @@ GameSystems Editor::GameSystemsForPlay()
     s.softBodies = &softBodies;
     s.gameUI = &gameUI;
     s.water = &waterSystem;
+    s.navigation = &navigation;
     s.renderAssets = renderAssets.Get();
     s.inputActions = &inputActions;
     s.inputActionState = &inputActionState;
@@ -4120,6 +4216,7 @@ bool Editor::Frame()
         TickTimeOfDay(world, playState == PlayState::Paused ? 0.0f : dt * (IsPlaying() ? GameTimeScale(GameSystemsForPlay()) : 1.0f), IsPlaying());
     }
     UpdateLightingBake();
+    UpdateNavigation();
     // World Partition: cells stream around the editor camera while editing (unloading only a saved scene: unsaved
     // edits stay in memory). Play keeps the cells it starts with.
     if (streamer.IsActive() && !IsPlaying()) {
@@ -4312,6 +4409,8 @@ void Editor::RenderFrame()
                                 DrawToolOverlay(*this, *debugDraw);
                                 if (showPhysicsDebug && physics.IsRunning() && !m_screenshotViewport)
                                     DrawPhysicsDebug();
+                                if (!m_screenshotViewport)
+                                    DrawNavigationDebug();
                                 if (world.IsAlive(selected) && !m_screenshotViewport) {
                                     const Mat4 m = scene::ComputeWorldMatrix(world, selected);
                                     // Colliders of the selection (and its children): green wireframes.

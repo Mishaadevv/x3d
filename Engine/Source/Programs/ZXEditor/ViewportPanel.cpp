@@ -416,6 +416,7 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
     if (ui::BeginPopup("##showflags")) {
         ui::MenuItem("Grid", {}, &ed.showGrid);
         ui::MenuItem("Physics Debug", {}, &ed.showPhysicsDebug);
+        ui::MenuItem("Navigation", {}, &ed.showNavigation);
         ui::MenuItem("Game UI", {}, &ed.showGameUI);
         ui::MenuItem("Sky & Fog", {}, &vs.useSky);
         ui::MenuItem("Sun Shadows", {}, &vs.scene.shadows.enabled);

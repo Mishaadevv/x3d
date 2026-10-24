@@ -201,6 +201,8 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.terrain", "Create Terrain", "Create", ZX_ICON_MOUNTAIN, "", [](Editor& e) { e.CreateTerrain(); });
     Add(ed, "create.terrainFlat", "Create Flat Terrain", "Create", ZX_ICON_SQUARE, "", [](Editor& e) { e.CreateTerrain(true); });
     Add(ed, "create.windZone", "Create Wind Zone", "Create", ZX_ICON_WIND, "", [](Editor& e) { e.CreateWindZone(); });
+    Add(ed, "create.navMeshBounds", "Create Nav Mesh Bounds", "Create", ZX_ICON_ROUTE, "", [spawn](Editor& e) { e.CreateNavMeshBounds(spawn(e)); });
+    Add(ed, "create.navAgent", "Create AI Agent", "Create", ZX_ICON_BOT, "", [spawn](Editor& e) { e.CreateNavAgent(spawn(e)); });
     Add(ed, "create.ui.canvas", "UI Canvas", "Create", ZX_ICON_MONITOR, "", [](Editor& e) { e.CreateUIWidget("canvas"); });
     Add(ed, "create.ui.panel", "UI Panel", "Create", ZX_ICON_RECTANGLE_HORIZONTAL, "", [](Editor& e) { e.CreateUIWidget("panel"); });
     Add(ed, "create.ui.text", "UI Text", "Create", ZX_ICON_TYPE, "", [](Editor& e) { e.CreateUIWidget("text"); });
@@ -230,6 +232,11 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "file.package", "Package Project...", "File", ZX_ICON_PACKAGE, "", [](Editor& e) { e.showPackageWindow = true; });
     Add(ed, "build.bakeLighting", "Bake Lighting", "Build", ZX_ICON_SUN, "",
         [](Editor& e) { e.BakeLighting(); });
+    Add(ed, "build.navigation", "Build Navigation", "Build", ZX_ICON_ROUTE, "", [](Editor& e) {
+        e.BuildNavigation();
+        e.showNavigation = true;
+    });
+    Add(ed, "view.navigation", "Toggle Navigation Debug", "View", ZX_ICON_ROUTE, "", [](Editor& e) { e.showNavigation = !e.showNavigation; });
     Add(ed, "file.settings", "Settings...", "File", ZX_ICON_SETTINGS, "Ctrl+,", [](Editor& e) { e.showSettings = !e.showSettings; });
     Add(ed, "window.localization", "Localization", "Window", ZX_ICON_LANGUAGES, "", [](Editor& e) { e.showLocalization = !e.showLocalization; });
     Add(ed, "window.inputActions", "Input Actions", "Window", ZX_ICON_GAMEPAD_2, "", [](Editor& e) { e.showInputActions = !e.showInputActions; });

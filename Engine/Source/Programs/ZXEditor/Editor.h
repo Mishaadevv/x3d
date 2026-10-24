@@ -13,6 +13,7 @@
 #include "Engine/GameModule.h"
 #include "Engine/InputActions.h"
 #include "Engine/WorldPartition.h"
+#include "Engine/Navigation.h"
 #include "Engine/Fire.h"
 #include "Engine/GameRuntime.h"
 #include "Engine/Packaging.h"
@@ -270,6 +271,7 @@ public:
     TerrainSystem terrains;               // builds Terrain meshes (edit and Play)
     SoftBodySystem softBodies;            // soft-body vehicles (meshes while editing, simulation in Play)
     WaterSystem waterSystem;              // wave heights for gameplay, buoyancy, splashes
+    NavigationSystem navigation;          // nav meshes (built here, saved as <scene>.znav) + agents in Play
     ZGraphEditorState graphEditor; // script graphs (.zgraph)
     Localization localization;            // Localization/*.zloc: game texts per language (Window > Localization)
     bool showLocalization = false;
@@ -335,6 +337,7 @@ public:
     void ToggleEject();
     bool showGrid = true;
     bool showPhysicsDebug = false; // while playing: body bounds by island (grey = asleep), contacts, joints
+    bool showNavigation = false;   // navigation mesh polygons, portals and agent paths
     bool showGameUI = true;        // UI Canvases over the viewport (always over the game camera while playing)
     // Viewport show flags for post-processing (motion blur only while playing).
     bool showPostVolumes = true, showDepthOfField = true, showMotionBlur = true;
@@ -422,6 +425,8 @@ public:
     ecs::Entity CreateUIWidget(StringView kind);
     /// A directional Wind Zone blowing the way the camera looks (level).
     void CreateWindZone();
+    void CreateNavMeshBounds(Vec3 position);
+    void CreateNavAgent(Vec3 position); // a capsule-like stand-in with a Nav Mesh Agent (pivot at the feet)
     void CreateTerrain(bool flat = false);                     // 200 m terrain under the scene (flat: no hills, to sculpt from scratch)
     void DrawPhysicsDebug();
     void CreateHeightFog(f32 density = 0.0f);                  // replaces the scene's one; density 0 = default
@@ -496,6 +501,12 @@ public:
     /// Saves a finished bake and switches to it; loads the .zgi of a scene that changed (every frame; cheap).
     void UpdateLightingBake();
     String bakedLightingFor; // the .zgi path last loaded (or looked for)
+    // Navigation: meshes of the Nav Mesh Bounds, saved next to the scene as <scene>.znav.
+    String NavigationPath() const;
+    bool BuildNavigation();
+    void UpdateNavigation(); // loads the .znav of a scene that changed
+    void DrawNavigationDebug();
+    String navigationFor;
     bool SaveScene(bool saveAs);
     bool SaveSceneTo(StringView physicalPath);
 

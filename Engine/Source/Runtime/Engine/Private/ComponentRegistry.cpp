@@ -7,6 +7,7 @@
 #include "Engine/Wind.h"
 #include "Engine/WorldPartition.h"
 #include "Engine/Foliage.h"
+#include "Engine/Navigation.h"
 #include "Engine/WaterPhysics.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/Fire.h"
