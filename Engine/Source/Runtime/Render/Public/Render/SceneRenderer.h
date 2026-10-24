@@ -90,6 +90,24 @@ struct DecalDesc
     i32 sortOrder = 0; // higher draws on top
 };
 
+/// Dynamic GI probes as the shaders see them (Shaders/Common/DDGI.hlsli DDGIVolume, 80 bytes; GlobalIllumination fills it).
+struct GIVolumeConstants
+{
+    IVec3 originIndex;
+    u32 irradiance = rhi::InvalidDescriptor; // invalid: no GI (the open sky lights everything)
+    Vec3 spacing = Vec3(1.0f);
+    u32 distance = rhi::InvalidDescriptor;
+    UVec3 counts;
+    f32 intensity = 1.0f;
+    f32 normalBias = 0.0f;
+    f32 viewBias = 0.0f;
+    Vec2 invIrradianceSize;
+    Vec2 invDistanceSize;
+    f32 maxDistance = 0.0f;
+    f32 pad = 0.0f;
+};
+static_assert(sizeof(GIVolumeConstants) == 80);
+
 /// Scene lighting in physical units; the renderer pre-exposes everything (exposure = 1 / (1.2 * 2^EV100)).
 struct SceneLighting
 {
@@ -123,6 +141,8 @@ struct SceneLighting
     /// Night: the hemispherical skyColor / groundColor x skyLuminance ambient is added on top of the SH sky with this
     /// weight (the physical sky goes dark after sunset; this is the moon- and starlight around).
     f32 ambientFloor = 0.0f;
+    /// Dynamic GI probes (GlobalIllumination::Prepare): the diffuse ambient comes from them where they cover the scene.
+    GIVolumeConstants gi;
 };
 
 inline f32 ExposureFromEV100(f32 ev100) { return 1.0f / (1.2f * std::exp2(ev100)); }
@@ -263,6 +283,9 @@ public:
         RGBuffer clusters;
     };
     const LightingInputs& GetLightingInputs() const { return m_lightingInputs; }
+    /// This frame's point / spot lights (GpuLight buffer SRV, count), valid after Prepare.
+    u32 PreparedLightBuffer() const { return m_viewConstants.lightCount ? m_viewConstants.lightBuffer : rhi::InvalidDescriptor; }
+    u32 PreparedLightCount() const { return m_viewConstants.lightCount; }
 
     /// Camera matrices without jitter (this frame and last) for the velocity of moving objects.
     /// Indices (into the next Prepare's instances) of the instances whose world matrix changed since last frame.
@@ -594,11 +617,13 @@ private:
         Vec2 vsmInvAtlasSize;
         u32 vsmPagesPerRow;
         f32 vsmPad;
+        GIVolumeConstants gi; // Common/DDGI.hlsli
     } m_viewConstants = {};
     // HLSL constant buffer packing: a matrix starts on a 16-byte boundary.
     static_assert(offsetof(ViewConstants, ssrViewProj) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
     static_assert(offsetof(ViewConstants, cascadeDepthRange) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
     static_assert(offsetof(ViewConstants, invViewProj) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
+    static_assert(offsetof(ViewConstants, gi) % 16 == 0, "pad ViewConstants (and ViewData in ForwardPBR.hlsl)");
     // Local shadow atlas state.
     struct LocalSlot
     {

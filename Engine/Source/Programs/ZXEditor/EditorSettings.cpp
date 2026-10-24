@@ -52,6 +52,11 @@ ZX_REFLECT_STRUCT_BEGIN(EditorSettings)
                                           "Ultra = soft shadows that harden at the contact)"))
     ZX_FIELD(contactShadows, Meta::Tooltip("Short screen-space shadows where objects touch (a Directional Light can switch them off too)"))
     ZX_FIELD(ambientOcclusion, Meta::Tooltip("Contact darkening in corners and creases"))
+    ZX_FIELD(globalIllumination, Meta::Tooltip("Light bounces off walls, floors and objects in real time: lit rooms, dark corners, "
+                                               "color bleeding (dynamic GI probes)"))
+    ZX_FIELD(giQuality, Meta::DisplayName("GI Quality"), Meta::EditCondition("globalIllumination"),
+             Meta::Tooltip("How many light probes, how many rays each, how often they update (Default = the engine profile's). "
+                           "Higher: finer bounced light that reacts faster, more GPU time"))
     ZX_FIELD(reflections, Meta::Tooltip("Screen-space reflections (where the profile renders them)"))
     ZX_FIELD(volumetricFog, Meta::Tooltip("Light shafts and glowing fog around lights"))
     ZX_FIELD(clouds, Meta::Tooltip("Volumetric clouds"))
@@ -74,6 +79,7 @@ struct ProfileDefaults
     bool captured = false;
     f32 renderScale = 1.0f;
     render::ShadowSettings shadows;
+    render::GISettings gi;
 };
 ProfileDefaults g_defaults;
 
@@ -82,6 +88,7 @@ i32 g_section = 0;
 i32 g_appliedQuality = -1;
 i32 g_appliedMethod = -1;
 i32 g_appliedContact = -1;
+i32 g_appliedGI = -1;
 f32 g_autosaveTimer = 0.0f;
 
 } // namespace
@@ -124,6 +131,7 @@ void ApplyEditorSettings(Editor& ed)
         g_defaults.captured = true;
         g_defaults.renderScale = vs.renderScale;
         g_defaults.shadows = vs.scene.shadows;
+        g_defaults.gi = vs.gi;
     }
     if (!vs.dynamicResolution.enabled)
         vs.renderScale = s.renderScale > 0 ? Clamp(f32(s.renderScale) / 100.0f, 0.25f, 2.0f) : g_defaults.renderScale;
@@ -163,6 +171,19 @@ void ApplyEditorSettings(Editor& ed)
         g_appliedMethod = i32(s.shadowMethod);
         sh.virtualShadows = s.shadowMethod == ShadowMethod::Default ? g_defaults.shadows.virtualShadows : s.shadowMethod == ShadowMethod::Virtual;
     }
+    if (i32(s.giQuality) != g_appliedGI) {
+        g_appliedGI = i32(s.giQuality);
+        // Probe grid (count x spacing = reach around the camera), rays per update, one of N probes per frame.
+        render::GISettings& gi = vs.gi;
+        const render::GISettings& d = g_defaults.gi;
+        switch (s.giQuality) {
+        case QualityLevel::Default: gi.probeCounts = d.probeCounts, gi.probeSpacing = d.probeSpacing, gi.raysPerProbe = d.raysPerProbe, gi.probeStride = d.probeStride; break;
+        case QualityLevel::Low: gi.probeCounts = UVec3(16, 8, 16), gi.probeSpacing = 2.0f, gi.raysPerProbe = 32, gi.probeStride = 8; break;
+        case QualityLevel::Medium: gi.probeCounts = UVec3(20, 10, 20), gi.probeSpacing = 1.6f, gi.raysPerProbe = 64, gi.probeStride = 4; break;
+        case QualityLevel::High: gi.probeCounts = UVec3(28, 12, 28), gi.probeSpacing = 1.4f, gi.raysPerProbe = 64, gi.probeStride = 2; break;
+        case QualityLevel::Ultra: gi.probeCounts = UVec3(32, 14, 32), gi.probeSpacing = 1.2f, gi.raysPerProbe = 128, gi.probeStride = 1; break;
+        }
+    }
     if (i32(s.contactShadows) != g_appliedContact) {
         g_appliedContact = i32(s.contactShadows);
         vs.scene.contactShadows.enabled = s.contactShadows;
@@ -171,6 +192,7 @@ void ApplyEditorSettings(Editor& ed)
     ViewportFeatures& f = ed.viewport->features;
     f.temporalAA &= s.antiAliasing == AntiAliasing::Temporal;
     f.ambientOcclusion &= s.ambientOcclusion;
+    f.globalIllumination &= s.globalIllumination;
     f.screenSpaceReflections &= s.reflections;
     f.volumetricFog &= s.volumetricFog;
     f.clouds &= s.clouds;

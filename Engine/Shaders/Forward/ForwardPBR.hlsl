@@ -5,6 +5,7 @@
 // the fixed metallic-roughness sampling; its parameters live in the material parameter buffer.
 
 #include "Common/BRDF.hlsli"
+#include "Common/DDGI.hlsli"
 #include "Common/Bindless.hlsli"
 #include "Common/Lights.hlsli"
 #include "Common/Mesh.hlsli"
@@ -101,6 +102,8 @@ struct ViewData
     float2 vsmInvAtlasSize;
     uint vsmPagesPerRow;
     float vsmPad;
+    // Dynamic GI probes (Common/DDGI.hlsli; irradiance invalid = none).
+    DDGIVolume gi;
 };
 ZX_VIEW_CONSTANTS(ViewData, g_View);
 
@@ -965,6 +968,15 @@ float4 LightSurface(SurfaceData s, float3 worldPos, float4 svPosition, bool unli
         }
         return float4((lit / total).xxx, 1);
     }
+    case 9: { // lighting only: indirect diffuse (GI probes or sky) on a white surface
+        float3 irr = SkyIrradiance(N);
+        if (g_View.gi.irradiance != ZX_INVALID_INDEX) {
+            float coverage;
+            const float3 gi = DDGIIrradiance(g_View.gi, worldPos, N, normalize(g_View.cameraPosition - worldPos), coverage);
+            irr = lerp(irr, gi, coverage);
+        }
+        return float4(irr, 1);
+    }
     case 7: {
         const float a = g_View.aoTexture != ZX_INVALID_INDEX
                             ? GetTexture2D(g_View.aoTexture).SampleLevel(g_LinearClamp, svPosition.xy * g_View.invRenderSize, 0).r
@@ -986,8 +998,14 @@ float4 LightSurface(SurfaceData s, float3 worldPos, float4 svPosition, bool unli
 
     const float3 V = normalize(g_View.cameraPosition - worldPos);
     float3 color = EvaluateDirectLight(s, V, -g_View.lightDirection, g_View.lightColor * (g_View.lightIntensity * shadow));
-    // Ambient: sky irradiance (SH9) + specular image-based lighting.
-    const float3 irradiance = SkyIrradiance(N);
+    // Ambient: the GI probes where they cover the scene (bounced light, dark interiors), else the sky irradiance (SH9);
+    // plus specular image-based lighting.
+    float3 irradiance = SkyIrradiance(N);
+    if (g_View.gi.irradiance != ZX_INVALID_INDEX) {
+        float coverage;
+        const float3 gi = DDGIIrradiance(g_View.gi, worldPos, N, V, coverage);
+        irradiance = lerp(irradiance, gi, coverage);
+    }
     const float NoV = max(dot(N, V), 1e-4);
     const float3 f0 = lerp(0.04, s.baseColor, s.metallic);
     // Specular ambient: probes / sky cube / SSR along the reflection (bent towards the normal with roughness).

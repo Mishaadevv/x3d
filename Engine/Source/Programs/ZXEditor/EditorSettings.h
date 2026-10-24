@@ -65,6 +65,8 @@ struct EditorSettings
     QualityLevel shadowQuality = QualityLevel::Default;
     bool contactShadows = true;
     bool ambientOcclusion = true;
+    bool globalIllumination = true; // dynamic GI: bounced light
+    QualityLevel giQuality = QualityLevel::Default;
     bool reflections = true;      // screen-space reflections (where the profile has them)
     bool volumetricFog = true;
     bool clouds = true;

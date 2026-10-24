@@ -217,6 +217,17 @@ in ViewportRenderer (per-frame copy); EditorSettings shadowMethod / shadowQualit
 fast path, gathers for blockers, coarser level for wide penumbras), MarkCS softLevels marks 2 coarser levels (strided).
 ComputeDayTimes / HourOf(DayMoment) in TimeOfDay.h; Details extras EditTimeOfDayPresets (DetailsPanel.cpp).
 ZXTests may fail to create dirs under %TEMP% in the Claude sandbox: run with TEMP/TMP = Saved/TestTemp.
+Dynamic GI (M17, 0.16.2): Render/GlobalIllumination.h (.cpp): Prepare (level placement / content keys / voxel draw
+list, sets SceneLighting::gi = GIVolumeConstants from the last update) before SceneRenderer::Prepare; AddPasses at
+the end of the frame (after reflections): AddLevelBuild (Shaders/GI/GlobalSDF.hlsl Clear / Voxelize / JumpFlood /
+Finalize; levels stacked along z in R8 distance + RGBA8 albedo / normal 3D textures, Shaders/GI/GlobalSDF.hlsli
+SdfTrace / SdfShadow / SdfSurface), then Shaders/GI/DDGI.hlsl TraceCS / UpdateIrradianceCS / UpdateDistanceCS (group
+shared rays) / AmbientCubeCS (6 RGBA16F 3D textures, wrap sampling = world order). Shared Common/DDGI.hlsli
+(DDGIVolume = ViewData::gi, DDGIIrradiance used by ForwardPBR LightSurface and r.ViewMode 9). Compact dispatch
+(compactStride / phase) unless probes scrolled in. ViewportSettings::gi (Lite 20x10x20 stride 8, Full 28x12x28
+stride 2), ViewportFeatures::globalIllumination (Features "globalIllumination", eras 2011/2008 off), EditorSettings
+globalIllumination / giQuality, cvars r.GI*. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
+in one run (switch cvars between stat.gpu samples).
 ZNano virtual geometry (M15, 0.14.1): Asset/Nano.h (Build = cluster DAG, AppendFallbackLods, SelectCut /
 ProjectedError on the CPU, MakeDetailedRock), CookedMesh::nano (NanoClusterHeader 80 B, sorted by parentError desc),
 CookMesh NanoMode (Auto >= 50k static triangles, .zmeta virtualGeometry). GPU: GpuMesh::nano* (RenderAssets),

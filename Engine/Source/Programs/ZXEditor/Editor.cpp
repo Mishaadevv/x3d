@@ -3949,6 +3949,7 @@ void Editor::RenderFrame()
         vf.volumetricFog = FeatureEnabled("volumetricFog");
         vf.clouds = FeatureEnabled("clouds");
         vf.fluids = FeatureEnabled("fluids");
+        vf.globalIllumination = FeatureEnabled("globalIllumination");
         ApplyEditorSettings(*this); // File > Settings: quality of this viewport, audio, autosave
         ViewportCamera cam{camera.ViewMatrix(), camera.position, camera.fovY, camera.nearPlane};
         if (UsingGameCamera()) {

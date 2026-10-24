@@ -53,9 +53,14 @@ CVar<bool> CVarOcclusion("r.OcclusionCulling", true, "Two-phase HiZ occlusion cu
 CVar<i32> CVarShadowFilter("r.ShadowFilter", 1, "Sun shadow filter: 0 hard, 1 4 taps, 2 9 taps, 3 PCSS (soft, contact-hardening)");
 CVar<bool> CVarContactShadows("r.ContactShadows", true, "Screen-space contact shadows of the sun");
 CVar<i32> CVarRendererPath("r.Renderer.Path", 0, "Opaque rendering path: 0 forward+ (clustered), 1 deferred (G-buffer + lighting pass)");
+CVar<bool> CVarGI("r.GI", true, "Dynamic global illumination: light bounces off surfaces (probes traced through a distance field of the scene)");
+CVar<f32> CVarGIIntensity("r.GI.Intensity", 1.0f, "Multiplies the bounced (indirect) diffuse light");
+CVar<i32> CVarGIRays("r.GI.Rays", 64, "Rays per GI probe update (16..256)");
+CVar<i32> CVarGIStride("r.GI.Stride", 2, "One of every N GI probes is updated per frame (1 = all: fastest response, most GPU time)");
+CVar<f32> CVarGISpacing("r.GI.Spacing", 1.4f, "Meters between GI probes");
 CVar<bool> CVarProbes("r.ReflectionProbes", true, "Reflection probes and the sky reflection cube");
 CVar<f32> CVarExposure("r.ExposureCompensation", 1.0f, "Exposure compensation in EV (+ = brighter)");
-CVar<i32> CVarViewMode("r.ViewMode", 0, "0 lit, 1 base color, 2 normals, 3 roughness/metallic, 4 LODs, 5 cascades, 6 clusters, 7 AO");
+CVar<i32> CVarViewMode("r.ViewMode", 0, "0 lit, 1 base color, 2 normals, 3 roughness/metallic, 4 LODs, 5 cascades, 6 clusters, 7 AO, 8 local shadows, 9 indirect light (GI)");
 CVar<i32> CVarForceLod("r.ForceLOD", -1, "Force a mesh LOD (-1 = automatic)");
 CVar<f32> CVarCameraSpeed("editor.CameraSpeed", 4.0f, "Viewport fly speed (m/s)");
 CVar<bool> CVarShowGrid("editor.ShowGrid", true, "Viewport grid");
@@ -148,6 +153,12 @@ ConCommand CmdStatScene("stat.scene", "Prints viewport and scene statistics", []
         ZX_LOG_INFO(LogCmd, "  Virtual shadows: {} pages resident, {} needed, {} rendered this frame ({} draws), {} waiting{}",
                     st.vsmMappedPages, st.vsmRequestedPages, st.vsmRenderedPages, st.vsmDraws, st.vsmPendingPages,
                     st.vsmBuilding ? " (rebuilding for the turned sun)" : "");
+    if (const render::GlobalIllumination::Stats& gi = ed->viewport->GI().GetStats(); gi.active)
+        ZX_LOG_INFO(LogCmd, "  GI: {} probes ({} updated, {} rays this frame), distance field {:.2f} m voxels{}", gi.probes, gi.probesUpdated,
+                    gi.rays, gi.finestVoxel,
+                    gi.levelRebuilt != ~0u ? String::Format(", level {} rebuilt ({} sections, {} triangles)", gi.levelRebuilt, gi.voxelizedSections,
+                                                            gi.voxelizedTriangles)
+                                           : String());
     ZX_LOG_INFO(LogCmd, "  GPU assets: {} meshes ({:.1f} MB), {} textures ({:.1f} MB), {} materials", ra.meshes,
                 f64(ra.meshBytes) / (1024.0 * 1024.0), ra.textures, f64(ra.textureBytes) / (1024.0 * 1024.0), ra.materials);
 });
@@ -1152,12 +1163,17 @@ void RegisterEditorConsole(Editor& ed)
     Bind<i32>(CVarShadowFilter, i32(s.scene.shadows.filter), [](i32 v) { Ed()->viewport->Settings().scene.shadows.filter = u32(Clamp(v, 0, 3)); });
     Bind<bool>(CVarContactShadows, s.scene.contactShadows.enabled, [](bool v) { Ed()->viewport->Settings().scene.contactShadows.enabled = v; });
     Bind<i32>(CVarRendererPath, s.scene.deferred ? 1 : 0, [](i32 v) { Ed()->viewport->Settings().scene.deferred = v == 1; });
+    Bind<bool>(CVarGI, s.gi.enabled, [](bool v) { Ed()->viewport->Settings().gi.enabled = v; });
+    Bind<f32>(CVarGIIntensity, s.gi.intensity, [](f32 v) { Ed()->viewport->Settings().gi.intensity = Clamp(v, 0.0f, 10.0f); });
+    Bind<i32>(CVarGIRays, i32(s.gi.raysPerProbe), [](i32 v) { Ed()->viewport->Settings().gi.raysPerProbe = u32(Clamp(v, 16, 256)); });
+    Bind<i32>(CVarGIStride, i32(s.gi.probeStride), [](i32 v) { Ed()->viewport->Settings().gi.probeStride = u32(Clamp(v, 1, 16)); });
+    Bind<f32>(CVarGISpacing, s.gi.probeSpacing, [](f32 v) { Ed()->viewport->Settings().gi.probeSpacing = Clamp(v, 0.25f, 16.0f); });
     Bind<bool>(CVarProbes, s.reflections.probes, [](bool v) {
         Ed()->viewport->Settings().reflections.probes = v;
         Ed()->viewport->Settings().reflections.sky = v;
     });
     Bind<f32>(CVarExposure, s.post.exposureCompensation, [](f32 v) { Ed()->viewport->Settings().post.exposureCompensation = v; });
-    Bind<i32>(CVarViewMode, i32(s.scene.debugMode), [](i32 v) { Ed()->viewport->Settings().scene.debugMode = u32(Clamp(v, 0, 7)); });
+    Bind<i32>(CVarViewMode, i32(s.scene.debugMode), [](i32 v) { Ed()->viewport->Settings().scene.debugMode = u32(Clamp(v, 0, 9)); });
     Bind<i32>(CVarForceLod, s.scene.forcedLod, [](i32 v) { Ed()->viewport->Settings().scene.forcedLod = v; });
     Bind<f32>(CVarCameraSpeed, ed.camera.moveSpeed, [](f32 v) { Ed()->camera.moveSpeed = Clamp(v, 0.1f, 500.0f); });
     Bind<bool>(CVarShowGrid, ed.showGrid, [](bool v) { Ed()->showGrid = v; });
@@ -1171,7 +1187,9 @@ void UnregisterEditorConsole()
                         static_cast<CVarBase*>(&CVarShadows), static_cast<CVarBase*>(&CVarSky), static_cast<CVarBase*>(&CVarBloom), static_cast<CVarBase*>(&CVarSSR), static_cast<CVarBase*>(&CVarTSR),
                         static_cast<CVarBase*>(&CVarDynRes), static_cast<CVarBase*>(&CVarDynResTarget), static_cast<CVarBase*>(&CVarDynResMin), static_cast<CVarBase*>(&CVarProbes),
                         static_cast<CVarBase*>(&CVarGpuDriven), static_cast<CVarBase*>(&CVarRendererPath), static_cast<CVarBase*>(&CVarShadowFilter), static_cast<CVarBase*>(&CVarContactShadows), static_cast<CVarBase*>(&CVarOcclusion), static_cast<CVarBase*>(&CVarUISounds),
-                        static_cast<CVarBase*>(&CVarExposure), static_cast<CVarBase*>(&CVarViewMode),
+                        static_cast<CVarBase*>(&CVarExposure), static_cast<CVarBase*>(&CVarViewMode), static_cast<CVarBase*>(&CVarGI),
+                        static_cast<CVarBase*>(&CVarGIIntensity), static_cast<CVarBase*>(&CVarGIRays), static_cast<CVarBase*>(&CVarGIStride),
+                        static_cast<CVarBase*>(&CVarGISpacing),
                         static_cast<CVarBase*>(&CVarForceLod), static_cast<CVarBase*>(&CVarCameraSpeed),
                         static_cast<CVarBase*>(&CVarShowGrid)})
         c->SetOnChanged(nullptr);

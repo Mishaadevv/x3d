@@ -454,6 +454,7 @@ void Game::Render()
         vf.volumetricFog = FeatureEnabled("volumetricFog");
         vf.clouds = FeatureEnabled("clouds");
         vf.fluids = FeatureEnabled("fluids");
+        vf.globalIllumination = FeatureEnabled("globalIllumination");
         m_viewport->graphicsEra = ParseGraphicsEra(m_config.graphicsEra.View());
         ViewportCamera cam = m_sceneCamera;
         const ecs::Entity ge = FindGameCamera(m_world);

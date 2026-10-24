@@ -13,7 +13,7 @@ using namespace rhi;
 using namespace render;
 
 ViewportRenderer::ViewportRenderer(Device& device, RenderAssets& assets)
-    : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_particleRenderer(device), m_volumetric(device), m_clouds(device), m_fluids(device), m_taa(device), m_reflections(device), m_captureScene(device, assets), m_post(device), m_outline(device)
+    : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_particleRenderer(device), m_volumetric(device), m_gi(device, assets), m_clouds(device), m_fluids(device), m_taa(device), m_reflections(device), m_captureScene(device, assets), m_post(device), m_outline(device)
 {
 }
 
@@ -58,8 +58,13 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     s.reflections.maxProbes = lite ? 8 : 16;
     s.reflections.ssr = !lite; // Lite: probes + sky only (the iGPU is bandwidth bound)
     s.volumetricFog.tileSize = lite ? 16u : 10u;
+    // Dynamic GI: Lite traces fewer probes per frame (the light settles over a few more frames).
+    s.gi.probeCounts = lite ? UVec3(20, 10, 20) : UVec3(28, 12, 28);
+    s.gi.probeSpacing = lite ? 1.6f : 1.4f;
+    s.gi.raysPerProbe = 64;
+    s.gi.probeStride = lite ? 8u : 2u;
     s.volumetricFog.slices = lite ? 48u : 64u;
-    return m_scene.Init(m_hdrFormat, DepthFormat()) && m_captureScene.Init(m_hdrFormat, DepthFormat()) && m_reflections.Init() && m_sky.Init(m_hdrFormat, DepthFormat()) && m_post.Init(outputFormat) &&
+    return m_scene.Init(m_hdrFormat, DepthFormat()) && m_captureScene.Init(m_hdrFormat, DepthFormat()) && m_reflections.Init() && m_gi.Init() && m_sky.Init(m_hdrFormat, DepthFormat()) && m_post.Init(outputFormat) &&
            m_taa.Init() && m_outline.Init(outputFormat) && m_water.Init(m_hdrFormat, DepthFormat(), lite) &&
            m_particleRenderer.Init(m_hdrFormat) && m_volumetric.Init(m_hdrFormat) &&
            m_clouds.Init(m_hdrFormat, lite) && m_fluids.Init(m_hdrFormat);
@@ -199,6 +204,8 @@ void ApplyGraphicsEra(ViewportSettings& s, ViewportFeatures& f, GraphicsEra era)
         return;
     render::ShadowSettings& sh = s.scene.shadows;
     f.fluids = false; // real-time GPU fluid simulation came later
+    if (era != GraphicsEra::Y2017)
+        f.globalIllumination = false; // real-time bounced light: precomputed / probe GI from the mid 2010s
     sh.filter = Min(sh.filter, 2u); // contact-hardening (PCSS) shadows: late 2010s
     if (era == GraphicsEra::Y2017) {
         // Battlefield 1, Horizon Zero Dawn, UE 4.18: all of it, a little coarser.
@@ -484,6 +491,12 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     m_lighting.cloudShadow = m_clouds.ShadowMap();
     m_lighting.cloudShadowOrigin = m_clouds.ShadowOrigin();
     m_lighting.cloudShadowExtent = render::CloudRenderer::ShadowExtent;
+    // Dynamic GI: the probes as last updated light this frame's surfaces (updated again at the end of the frame).
+    {
+        render::GISettings gi = m_settings.gi;
+        gi.enabled &= features.globalIllumination;
+        m_gi.Prepare(m_instances.View(), view.position, exposure, gi, m_lighting);
+    }
     m_scene.Prepare(m_instances.View(), view, m_lighting, m_settings.scene);
     // One face of a reflection probe per frame, rendered by a second scene renderer (sky reflections only, no SSR/AO).
     RGTexture faceColor, faceDepth;
@@ -603,6 +616,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     // After every pass that samples the cubes: sky cube update, the probe face, prefiltering.
     m_reflections.AddUpdatePasses(graph, m_settings.useSky ? m_sky.SkyViewTexture() : RGTexture(), m_sky.SkyRadianceScale(), faceColor,
                                   faceDepth, exposure, m_settings.useSky ? &m_settings.sky.hdri : nullptr);
+    m_gi.AddPasses(graph, m_lighting, m_scene.GetLightingInputs(), m_scene.PreparedLightBuffer(), m_scene.PreparedLightCount(), m_settings.useSky ? &m_sky : nullptr);
     if (overlay) {
         graph.AddPass(
             "Overlay", PassType::Graphics,

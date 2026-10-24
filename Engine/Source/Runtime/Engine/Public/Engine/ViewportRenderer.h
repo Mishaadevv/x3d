@@ -11,6 +11,7 @@
 
 #include "Engine/SceneRendering.h"
 #include "Render/Particles.h"
+#include "Render/GlobalIllumination.h"
 #include "Render/PostProcess.h"
 #include "Render/Reflections.h"
 #include "Render/RenderGraph.h"
@@ -64,6 +65,7 @@ struct ViewportFeatures
     bool volumetricFog = true;
     bool clouds = true;
     bool fluids = true;
+    bool globalIllumination = true; // dynamic GI probes (bounced light)
 };
 
 /// Dynamic resolution: the render scale follows the GPU frame time towards a target (5 % steps, 4 times a second).
@@ -87,6 +89,7 @@ struct ViewportSettings
     render::ReflectionSettings reflections;
     bool useSky = true; // physical sky + fog
     render::VolumetricFogSettings volumetricFog;
+    render::GISettings gi;
     f32 renderScale = 1.0f; // below 1 with TAA: ZTSR temporal upscaling to the output resolution
     DynamicResolutionSettings dynamicResolution;
 };
@@ -149,6 +152,8 @@ public:
     const render::PostSettings& LastPostSettings() const { return m_lastPost; }
     void ResetHistory() { m_taa.Reset(); }
     render::ReflectionRenderer& Reflections() { return m_reflections; }
+    const render::GlobalIllumination& GI() const { return m_gi; }
+    render::GlobalIllumination& GI() { return m_gi; }
     /// Content-relative texture path (+ normal map flag) -> texture asset, for decals and the HDRI Sky (the editor resolves
     /// it through the project's material library). Unset = solid-color decals, no HDRI sky.
     Function<asset::AssetId(StringView path, bool normalMap)> decalTextures;
@@ -175,6 +180,7 @@ private:
     render::WaterRenderer m_water;
     render::ParticleRenderer m_particleRenderer;
     render::VolumetricFogRenderer m_volumetric;
+    render::GlobalIllumination m_gi;
     render::CloudRenderer m_clouds;
     render::FluidRenderer m_fluids;
     Array<render::FluidVolumeDesc> m_fluidVolumes;
