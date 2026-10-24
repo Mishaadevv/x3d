@@ -4,7 +4,7 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12, part o
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a workflow like Unity URP or Unreal Engine 5 that
 runs well on everyday hardware. The development machine is a laptop with Intel UHD 620 graphics.
 
-**Version 0.17.0 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
+**Version 0.17.3 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
 [download](https://github.com/Mishaadevv/x3d/releases/latest)
 
 > [!WARNING]
@@ -78,6 +78,13 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
   - A sculpt brush: raise, lower, smooth, flatten, set height, ramp, terrace, erode, noise.
   - Painted layers (grass, rock, dirt, sand), paint by slope, heightmap import and export.
   - Collisions with physics.
+- **Open worlds**:
+  - World Partition: the scene is split into cells that stream in and out around the camera or player.
+  - HLOD stand-ins for far-away cells, seamless terrain tiles (a 4 x 4 km world generator: `world.create`).
+  - Foliage: forests, bushes, rocks and grass as instanced plants, scattered by slope / height / patch rules.
+- **AI navigation**:
+  - A navigation mesh built from the scene (Recast-style voxelization, agent radius / height / step / slope).
+  - Shortest paths (A* + funnel), Nav Mesh Agents that walk characters to a destination; `entity.navTo(pos)` in scripts.
 - **Physics (ZPhys)**, an engine of its own:
   - Rigid bodies, convex hulls, meshes, height fields and joints.
   - Triggers, queries and collision events.
@@ -163,7 +170,7 @@ Binaries go to `Binaries/Win64/<Debug|Development|Shipping>/`:
 
 | Path | Contents |
 |---|---|
-| `Engine/Source/Runtime` | Engine modules: Core, Platform, RHI, RHI_D3D12, Asset, Scene, Render, Physics, Script, Audio, Engine, UI |
+| `Engine/Source/Runtime` | Engine modules: Core, Platform, RHI, RHI_D3D12, Asset, Scene, Render, Physics, Nav, Script, Audio, Engine, UI |
 | `Engine/Source/Programs` | `ZXEditor` (the editor), `ZXGame` (packaged game runtime), `ZXSetup` (installer) |
 | `Engine/Source/GameSDK` | Single-header SDK for C++ game modules |
 | `Engine/Shaders` | HLSL shaders (compiled with DXC at runtime) |
