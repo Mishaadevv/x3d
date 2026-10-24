@@ -73,3 +73,33 @@ ZX_TEST(TimeOfDay, MoonPhaseAndClock)
     ZX_EXPECT_NEAR(FindTimeOfDay(world)->hour, 0.5f, 1e-3f);
     ZX_EXPECT(FormatHour(13.75f) == "13:45");
 }
+
+ZX_TEST(TimeOfDay, SunriseSunsetAndMoments)
+{
+    TimeOfDay t;
+    t.latitude = 45.0f;
+    t.dayOfYear = 80; // equinox: about 12 hours of daylight (a little more: refraction and the disk)
+    DayTimes d = ComputeDayTimes(t);
+    ZX_EXPECT(!d.polarDay && !d.polarNight);
+    ZX_EXPECT(Abs(d.sunrise - 5.9f) < 0.15f);
+    ZX_EXPECT(Abs(d.sunset - 18.1f) < 0.15f);
+    t.dayOfYear = 172; // midsummer at 45 N: about 15.5 hours
+    d = ComputeDayTimes(t);
+    ZX_EXPECT(Abs((d.sunset - d.sunrise) - 15.5f) < 0.3f);
+    // The sun really is at the horizon then.
+    t.hour = d.sunrise;
+    ZX_EXPECT(Abs(ElevationDeg(ComputeCelestial(t).toSun) + 0.83f) < 0.3f);
+    // Presets: golden hour is a low sun before sunset, dusk is after it.
+    t.hour = HourOf(t, DayMoment::GoldenHour);
+    const f32 golden = ElevationDeg(ComputeCelestial(t).toSun);
+    ZX_EXPECT(golden > 2.0f && golden < 12.0f);
+    t.hour = HourOf(t, DayMoment::Dusk);
+    ZX_EXPECT(ElevationDeg(ComputeCelestial(t).toSun) < -1.0f);
+    ZX_EXPECT(DayMomentName(DayMoment::GoldenHour) == StringView("Golden Hour"));
+    // The Arctic: midnight sun in summer, polar night in winter.
+    t.latitude = 78.0f;
+    ZX_EXPECT(ComputeDayTimes(t).polarDay);
+    t.dayOfYear = 355;
+    ZX_EXPECT(ComputeDayTimes(t).polarNight);
+    ZX_EXPECT_NEAR(HourOf(t, DayMoment::Noon), 12.0f, 1e-5f);
+}

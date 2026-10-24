@@ -19,7 +19,8 @@ struct MarkParams
     float maxDistance;
     float4 buildRows[3]; // light space of the generation being built (the sun turned)
     uint building;       // 1: mark its pages too (second half of the requests)
-    uint3 pad;
+    uint softLevels;     // soft shadows: also mark this many coarser levels (wide penumbras are filtered there)
+    uint2 pad;
 };
 ZX_PASS_CONSTANTS(MarkParams, g_Mark);
 
@@ -38,7 +39,10 @@ void Request(uint gen, uint level, float2 l)
     if (any(page < 0) || any(page >= int(VsmWindowPages)))
         return;
     const uint bit = uint(page.y) * VsmWindowPages + uint(page.x);
-    GetRWBuffer(g_Mark.requests).InterlockedOr(((gen * g_Mark.levels + level) * 512 + bit / 32) * 4, 1u << (bit & 31));
+    const uint address = ((gen * g_Mark.levels + level) * 512 + bit / 32) * 4;
+    // Most neighbors ask for the same page: a plain read skips the contended atomic when the bit is already set.
+    if ((GetRWBuffer(g_Mark.requests).Load(address) & (1u << (bit & 31))) == 0)
+        GetRWBuffer(g_Mark.requests).InterlockedOr(address, 1u << (bit & 31));
 }
 
 void RequestWithNeighbor(uint gen, uint level, float2 l)
@@ -67,8 +71,17 @@ void MarkCS(uint3 id : SV_DispatchThreadID)
     const float distance = length(world - g_Mark.camera);
     if (distance > g_Mark.maxDistance)
         return;
-    const uint level = VsmLevel(distance, g_Mark.pixelScale, g_Mark.texel0, g_Mark.levels);
-    RequestWithNeighbor(0, level, VsmLightSpace(g_Mark.lightRows, world).xy);
-    if (g_Mark.building)
-        RequestWithNeighbor(1, level, VsmLightSpace(g_Mark.buildRows, world).xy);
+    const uint first = VsmLevel(distance, g_Mark.pixelScale, g_Mark.texel0, g_Mark.levels);
+    const uint last = min(first + g_Mark.softLevels, g_Mark.levels - 1);
+    const float2 l = VsmLightSpace(g_Mark.lightRows, world).xy;
+    const float2 lb = VsmLightSpace(g_Mark.buildRows, world).xy;
+    for (uint level = first; level <= last; ++level) {
+        // Coarser levels have pages 2x, 4x... wider: every 2nd / 4th thread per axis is enough to find them all.
+        const uint stride = (1u << (level - first)) - 1u;
+        if (((id.x | id.y) & stride) != 0)
+            continue;
+        RequestWithNeighbor(0, level, l);
+        if (g_Mark.building)
+            RequestWithNeighbor(1, level, lb);
+    }
 }

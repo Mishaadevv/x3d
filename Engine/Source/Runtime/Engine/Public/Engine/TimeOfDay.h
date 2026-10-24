@@ -37,8 +37,35 @@ struct CelestialState
     f32 moonPhase = 1; // lit fraction of the disk, 0 (new moon) .. 1 (full)
 };
 
+/// Sunrise and sunset of the component's day and place (the sun's center 0.83 degrees below the horizon, as almanacs
+/// count it). Near the poles the sun may not set (polarDay) or rise (polarNight) at all.
+struct DayTimes
+{
+    f32 sunrise = 6.0f;  // hours
+    f32 sunset = 18.0f;
+    bool polarDay = false;
+    bool polarNight = false;
+};
+
+/// Named moments of the day for presets: hours relative to this day's sunrise and sunset.
+enum class DayMoment : u8
+{
+    Dawn,       // twilight before sunrise
+    Sunrise,
+    Morning,
+    Noon,
+    GoldenHour, // low warm sun before sunset
+    Sunset,
+    Dusk,       // blue hour after sunset
+    Midnight,
+};
+
 /// Sun and moon for the component's clock and place.
 CelestialState ComputeCelestial(const TimeOfDay& t);
+DayTimes ComputeDayTimes(const TimeOfDay& t);
+/// The hour of a named moment on the component's day (polar days / nights fall back to fixed hours).
+f32 HourOf(const TimeOfDay& t, DayMoment moment);
+const char* DayMomentName(DayMoment moment);
 const TimeOfDay* FindTimeOfDay(ecs::World& world);
 /// Advances the clock of every Time of Day (while playing, or always with runInEditor).
 void TickTimeOfDay(ecs::World& world, f32 dt, bool playing);

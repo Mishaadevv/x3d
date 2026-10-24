@@ -5,6 +5,7 @@
 #include "Core/String/Parse.h"
 #include "Core/String/Path.h"
 #include "Engine/ComponentRegistry.h"
+#include "Engine/TimeOfDay.h"
 
 namespace zx::editor {
 
@@ -687,6 +688,39 @@ bool PropertyEditor(const TypeInfo& type, void* object, StringView idPrefix, Str
     return changed;
 }
 
+/// Time of Day extras above its fields: one-click moments of the day, then sunrise / sunset and the sky right now.
+static bool EditTimeOfDayPresets(TimeOfDay& clock)
+{
+    bool changed = false;
+    const f32 s = ui::GetCurrentContext()->GetScale();
+    constexpr DayMoment Moments[] = {DayMoment::Dawn,       DayMoment::Sunrise, DayMoment::Morning, DayMoment::Noon,
+                                     DayMoment::GoldenHour, DayMoment::Sunset,  DayMoment::Dusk,    DayMoment::Midnight};
+    // Two rows of four.
+    const f32 width = Max(Floor((ui::GetContentRegionAvail().x / s - 12.0f) / 4.0f), 40.0f);
+    for (u32 i = 0; i < ZX_ARRAY_COUNT(Moments); ++i) {
+        if (i % 4 != 0)
+            ui::SameLine(0.0f, 4.0f);
+        const f32 hour = HourOf(clock, Moments[i]);
+        const StringView label = Moments[i] == DayMoment::GoldenHour ? StringView("Golden") : StringView(DayMomentName(Moments[i]));
+        if (ui::Button(label, Vec2(width, 0.0f), Abs(clock.hour - hour) < 0.01f ? ui::ButtonVariant::Primary : ui::ButtonVariant::Default)) {
+            clock.hour = hour;
+            changed = true;
+        }
+        ui::ItemTooltip(String::Format("{}: set the clock to {}", DayMomentName(Moments[i]), FormatHour(hour)));
+    }
+    const DayTimes d = ComputeDayTimes(clock);
+    const CelestialState sky = ComputeCelestial(clock);
+    const String day = d.polarDay ? String("Midnight sun: the sun does not set today")
+                       : d.polarNight ? String("Polar night: the sun does not rise today")
+                                      : String::Format("Sunrise {}   Sunset {}   ({:.1f} h of daylight)", FormatHour(d.sunrise), FormatHour(d.sunset),
+                                                       d.sunset - d.sunrise);
+    ui::TextDisabled(day);
+    ui::TextDisabled(String::Format("Now {}: sun {:.0f} deg, moon {:.0f} deg ({:.0f} % lit)", FormatHour(clock.hour), RadToDeg(Asin(Clamp(sky.toSun.y, -1.0f, 1.0f))),
+                                    RadToDeg(Asin(Clamp(sky.toMoon.y, -1.0f, 1.0f))), sky.moonPhase * 100.0f));
+    ui::Spacing();
+    return changed;
+}
+
 void DrawDetailsPanel(Editor& ed)
 {
     if (!ui::Begin(DetailsTitle, &ed.showDetails)) {
@@ -820,6 +854,8 @@ void DrawDetailsPanel(Editor& ed)
                 edited = EditNativeScript(ed, *static_cast<NativeScript*>(data));
             else if (ct.type == &TypeOf<AudioSource>())
                 edited = EditAudioSourceClip(ed, *static_cast<AudioSource*>(data)) | PropertyEditor(*ct.type, data);
+            else if (ct.type == &TypeOf<TimeOfDay>())
+                edited = EditTimeOfDayPresets(*static_cast<TimeOfDay*>(data)) | PropertyEditor(*ct.type, data);
             else
                 edited = PropertyEditor(*ct.type, data);
             if (edited) {

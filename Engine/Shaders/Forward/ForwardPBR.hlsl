@@ -403,9 +403,110 @@ float SampleCascade(uint cascade, float3 worldPos, float3 N, float noise)
     return sum / 9.0;
 }
 
+/// Taps of one virtual shadow level around a pixel: the page under the pixel ("home") is looked up once, so the taps
+/// that stay inside it (nearly all) cost no table reads.
+struct VsmTaps
+{
+    uint level;
+    float pageWorld;
+    int2 window;     // window origin, pages
+    int2 homePage;   // window-relative
+    float2 homeOrigin;
+    bool home;       // the home page is resident
+};
+
+VsmTaps VsmBeginTaps(ByteAddressBuffer table, uint level, float2 center)
+{
+    const uint4 header = table.Load4(level * 16);
+    VsmTaps v;
+    v.level = level;
+    v.pageWorld = asfloat(header.z);
+    v.window = int2(header.xy);
+    v.homePage = int2(floor(center / v.pageWorld)) - v.window;
+    v.homeOrigin = 0;
+    v.home = false;
+    if (all(v.homePage >= 0) && all(v.homePage < int(VsmWindowPages))) {
+        const uint entry = table.Load(VsmTableEntries + (level * VsmWindowPages * VsmWindowPages + uint(v.homePage.y) * VsmWindowPages + uint(v.homePage.x)) * 4);
+        v.home = entry != 0;
+        v.homeOrigin = float2((entry - 1) % g_View.vsmPagesPerRow, (entry - 1) / g_View.vsmPagesPerRow) * VsmPageTexels;
+    }
+    return v;
+}
+
+/// Atlas texel position of light-space point `lxy`: on the taps' level, or (page not resident) the first coarser level
+/// whose page is.
+bool VsmTapTexel(ByteAddressBuffer table, VsmTaps v, float2 lxy, out float2 atlasTexel)
+{
+    const float2 pagePos = lxy / v.pageWorld;
+    const int2 page = int2(floor(pagePos)) - v.window;
+    const float2 inPage = clamp((pagePos - floor(pagePos)) * VsmPageTexels, 0.5, VsmPageTexels - 0.5);
+    atlasTexel = v.homeOrigin + inPage;
+    if (v.home && all(page == v.homePage))
+        return true;
+    [loop] for (uint level = v.level; level < g_View.vsmLevels; ++level) {
+        uint phys;
+        float2 local;
+        if (VsmLookup(table, level, lxy, phys, local)) {
+            atlasTexel = float2(phys % g_View.vsmPagesPerRow, phys / g_View.vsmPagesPerRow) * VsmPageTexels + clamp(local * VsmPageTexels, 0.5, VsmPageTexels - 0.5);
+            return true;
+        }
+    }
+    return false;
+}
+
+uint VsmLevelForTexel(uint baseLevel, float meters)
+{
+    const float baseTexel = g_View.vsmTexel0 * exp2(float(baseLevel));
+    return min(baseLevel + uint(max(ceil(log2(max(meters / baseTexel, 1e-6))), 0.0)), g_View.vsmLevels - 1);
+}
+
+/// Soft virtual shadows (filter 3, like the cascades' PCSS): blockers found around the pixel give the blocker-receiver
+/// distance, the sun's angular size turns it into the penumbra. Wide penumbras are filtered on coarser levels (so the
+/// tap count stays fixed); taps that leave the pixel's page look theirs up, so they cross page borders freely.
+float VirtualSunShadowSoft(ByteAddressBuffer table, Texture2D<float4> atlas, uint baseLevel, float3 worldPos, float3 N, float noise)
+{
+    const float phi = noise * 6.2831853;
+    const float maxTexels = g_View.pcssMaxTexels;
+    // Search region: the penumbra of a blocker 8 m above the receiver.
+    const float searchMeters = max(g_View.sunSourceTan * 8.0, 1e-4);
+    const uint searchLevel = VsmLevelForTexel(baseLevel, searchMeters / maxTexels);
+    const float searchTexel = g_View.vsmTexel0 * exp2(float(searchLevel));
+    const float3 ls = VsmLightSpace(g_View.vsmLightRows, worldPos + N * (g_View.vsmNormalBias * searchTexel));
+    const float depthS = 0.5 - ls.z * g_View.vsmDepthScale;
+    const VsmTaps search = VsmBeginTaps(table, searchLevel, ls.xy);
+    float blockerSum = 0.0, blockers = 0.0;
+    // 4 gathers = 16 depths (2x2 texels each).
+    [unroll] for (uint i = 0; i < 4; ++i) {
+        float2 t;
+        if (!VsmTapTexel(table, search, ls.xy + VogelDisk(i, 4, phi) * searchMeters, t))
+            continue;
+        const float4 z = atlas.GatherRed(g_PointClamp, clamp(t, floor(t / VsmPageTexels) * VsmPageTexels + 1.0, floor(t / VsmPageTexels) * VsmPageTexels + VsmPageTexels - 1.0) * g_View.vsmInvAtlasSize);
+        const float4 blocking = float4(z > depthS); // nearer to the sun
+        blockerSum += dot(z, blocking);
+        blockers += dot(blocking, 1.0);
+    }
+    if (blockers == 0.0)
+        return 1.0;
+    const float distance = (blockerSum / blockers - depthS) / g_View.vsmDepthScale;
+    const float radius = g_View.sunSourceTan * distance;
+    const uint level = VsmLevelForTexel(baseLevel, radius / maxTexels);
+    const float texel = g_View.vsmTexel0 * exp2(float(level));
+    const float3 l = VsmLightSpace(g_View.vsmLightRows, worldPos + N * (g_View.vsmNormalBias * texel));
+    const float depth = 0.5 - l.z * g_View.vsmDepthScale;
+    const float r = max(radius, 0.75 * texel);
+    const VsmTaps taps = VsmBeginTaps(table, level, l.xy);
+    float sum = 0.0;
+    [unroll] for (uint j = 0; j < 8; ++j) { // each compare tap filters 2x2 texels; TAA resolves the pattern
+        float2 t;
+        sum += VsmTapTexel(table, taps, l.xy + VogelDisk(j, 8, phi + 1.3) * r, t)
+                   ? atlas.SampleCmpLevelZero(g_ShadowSampler, t * g_View.vsmInvAtlasSize, depth) : 1.0;
+    }
+    return sum / 8.0;
+}
+
 /// Sun visibility from the virtual shadow map: the level matching the pixel's footprint, or the first coarser one whose
 /// page is resident. level: the one used (debug view), levels = none.
-float VirtualSunShadow(float3 worldPos, float3 N, out uint usedLevel)
+float VirtualSunShadow(float3 worldPos, float3 N, float noise, out uint usedLevel)
 {
     usedLevel = g_View.vsmLevels;
     const float distance = length(worldPos - g_View.cameraPosition);
@@ -425,6 +526,9 @@ float VirtualSunShadow(float3 worldPos, float3 N, out uint usedLevel)
         const float2 texelPos = clamp(inPage * VsmPageTexels, 1.0, VsmPageTexels - 1.0);
         const float depth = 0.5 - l.z * g_View.vsmDepthScale;
         usedLevel = level;
+        const float fade = saturate((g_View.vsmMaxDistance - distance) / (g_View.vsmMaxDistance * 0.1));
+        if (g_View.shadowFilter == 3)
+            return lerp(1.0, VirtualSunShadowSoft(table, atlas, level, worldPos, N, noise), fade);
         if (g_View.shadowFilter == 0)
             return atlas.SampleCmpLevelZero(g_ShadowSampler, (origin + texelPos) * g_View.vsmInvAtlasSize, depth);
         float sum = 0.0;
@@ -433,7 +537,7 @@ float VirtualSunShadow(float3 worldPos, float3 N, out uint usedLevel)
             sum += atlas.SampleCmpLevelZero(g_ShadowSampler, (origin + clamp(texelPos + o, 0.5, VsmPageTexels - 0.5)) * g_View.vsmInvAtlasSize, depth);
         }
         // Fade out over the last 10 % of the distance.
-        return lerp(1.0, sum * 0.25, saturate((g_View.vsmMaxDistance - distance) / (g_View.vsmMaxDistance * 0.1)));
+        return lerp(1.0, sum * 0.25, fade);
     }
     return 1.0;
 }
@@ -446,7 +550,7 @@ float SunShadow(float3 worldPos, float3 N, float2 pixel, out uint cascade)
     cascade = 4;
     if (g_View.vsmTable != ZX_INVALID_INDEX) {
         uint level;
-        const float s = VirtualSunShadow(worldPos, N, level);
+        const float s = VirtualSunShadow(worldPos, N, noise, level);
         cascade = level; // the debug view colors levels
         return s;
     }

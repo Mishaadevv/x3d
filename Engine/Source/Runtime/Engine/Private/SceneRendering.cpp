@@ -24,7 +24,17 @@ ZX_REFLECT_STRUCT_END()
 ZX_REFLECT_STRUCT_BEGIN(DirectionalLight)
     ZX_FIELD(intensity, Meta::Range(0, 10), Meta::Tooltip("1 = the real sun; rotate the entity to move it (it shines along +Z)"))
     ZX_FIELD(color, Meta::Color())
-    ZX_FIELD(castShadows)
+    ZX_FIELD(castShadows, Meta::Category("Shadows"))
+    ZX_FIELD(sourceAngle, Meta::Range(0, 10), Meta::Units("deg"),
+             Meta::Tooltip("Apparent size of the sun: larger = softer shadows away from the contact (0.53 = the real sun). "
+                           "Needs soft shadows (Shadow Quality Ultra, or the Full profile)"))
+    ZX_FIELD(shadowDistance, Meta::Range(0, 2000), Meta::Units("m"),
+             Meta::Tooltip("How far from the camera the sun casts shadows (0 = the engine profile's: 120 m cascades, 250 m virtual)"))
+    ZX_FIELD(shadowBias, Meta::Range(0, 8),
+             Meta::Tooltip("Pushes shadow lookups off the surface: raise against stripes (acne), lower if shadows detach from objects"))
+    ZX_FIELD(contactShadows, Meta::Hidden()) // the checkbox in front of Contact Shadow Length
+    ZX_FIELD(contactShadowLength, Meta::DisplayName("Contact Shadows"), Meta::Range(0.01, 2), Meta::Units("m"), Meta::EditCondition("contactShadows"),
+             Meta::Tooltip("Short screen-space shadows where objects touch the ground (fine detail the shadow map misses)"))
 ZX_REFLECT_STRUCT_END()
 
 ZX_REFLECT_STRUCT_BEGIN(SkyLight)

@@ -14,6 +14,12 @@ ZX_REFLECT_ENUM_BEGIN(AntiAliasing)
     ZX_ENUM_VALUE(None)
 ZX_REFLECT_ENUM_END()
 
+ZX_REFLECT_ENUM_BEGIN(ShadowMethod)
+    ZX_ENUM_VALUE(Default)
+    ZX_ENUM_VALUE(Cascades)
+    ZX_ENUM_VALUE(Virtual)
+ZX_REFLECT_ENUM_END()
+
 ZX_REFLECT_ENUM_BEGIN(QualityLevel)
     ZX_ENUM_VALUE(Default)
     ZX_ENUM_VALUE(Low)
@@ -40,7 +46,11 @@ ZX_REFLECT_STRUCT_BEGIN(EditorSettings)
     ZX_FIELD(renderScale, Meta::Category("Rendering (this computer)"), Meta::Range(0, 200), Meta::Units("%"),
              Meta::Tooltip("Resolution of the 3D view (0 = the engine profile's: Lite 70 %, Full 100 %)"))
     ZX_FIELD(antiAliasing, Meta::Tooltip("Temporal: smoothest. FXAA: sharper, cheaper. None: jagged edges"))
-    ZX_FIELD(shadowQuality, Meta::Tooltip("Resolution, reach and softness of the sun's shadows (Default = the engine profile's)"))
+    ZX_FIELD(shadowMethod, Meta::Tooltip("Sun shadows: Cascades = cheap, softer far away; Virtual = sharp near and far "
+                                         "(virtual shadow maps; best on dedicated GPUs). Default = the engine profile's"))
+    ZX_FIELD(shadowQuality, Meta::Tooltip("Resolution, reach and softness of the sun's shadows (Default = the engine profile's; "
+                                          "Ultra = soft shadows that harden at the contact)"))
+    ZX_FIELD(contactShadows, Meta::Tooltip("Short screen-space shadows where objects touch (a Directional Light can switch them off too)"))
     ZX_FIELD(ambientOcclusion, Meta::Tooltip("Contact darkening in corners and creases"))
     ZX_FIELD(reflections, Meta::Tooltip("Screen-space reflections (where the profile renders them)"))
     ZX_FIELD(volumetricFog, Meta::Tooltip("Light shafts and glowing fog around lights"))
@@ -68,6 +78,10 @@ struct ProfileDefaults
 ProfileDefaults g_defaults;
 
 i32 g_section = 0;
+// The shadow settings last applied: they are written only when the setting changes, so r.* cvars keep working.
+i32 g_appliedQuality = -1;
+i32 g_appliedMethod = -1;
+i32 g_appliedContact = -1;
 f32 g_autosaveTimer = 0.0f;
 
 } // namespace
@@ -114,17 +128,44 @@ void ApplyEditorSettings(Editor& ed)
     if (!vs.dynamicResolution.enabled)
         vs.renderScale = s.renderScale > 0 ? Clamp(f32(s.renderScale) / 100.0f, 0.25f, 2.0f) : g_defaults.renderScale;
     render::ShadowSettings& sh = vs.scene.shadows;
-    switch (s.shadowQuality) {
-    case QualityLevel::Default:
-        sh.cascades = g_defaults.shadows.cascades;
-        sh.resolution = g_defaults.shadows.resolution;
-        sh.distance = g_defaults.shadows.distance;
-        sh.filter = g_defaults.shadows.filter;
-        break;
-    case QualityLevel::Low: sh.cascades = 2, sh.resolution = 1024, sh.distance = 50.0f, sh.filter = 1; break;
-    case QualityLevel::Medium: sh.cascades = 3, sh.resolution = 1024, sh.distance = 80.0f, sh.filter = 2; break;
-    case QualityLevel::High: sh.cascades = 4, sh.resolution = 2048, sh.distance = 120.0f, sh.filter = 2; break;
-    case QualityLevel::Ultra: sh.cascades = 4, sh.resolution = 2048, sh.distance = 200.0f, sh.filter = 3; break;
+    if (i32(s.shadowQuality) != g_appliedQuality) {
+        g_appliedQuality = i32(s.shadowQuality);
+        // Cascades: count, resolution, reach, filter; virtual maps: texels per pixel footprint, reach, pages per frame.
+        switch (s.shadowQuality) {
+        case QualityLevel::Default:
+            sh.cascades = g_defaults.shadows.cascades;
+            sh.resolution = g_defaults.shadows.resolution;
+            sh.distance = g_defaults.shadows.distance;
+            sh.filter = g_defaults.shadows.filter;
+            sh.vsmResolution = g_defaults.shadows.vsmResolution;
+            sh.vsmDistance = g_defaults.shadows.vsmDistance;
+            sh.vsmPagesPerFrame = g_defaults.shadows.vsmPagesPerFrame;
+            break;
+        case QualityLevel::Low:
+            sh.cascades = 2, sh.resolution = 1024, sh.distance = 50.0f, sh.filter = 1;
+            sh.vsmResolution = 0.5f, sh.vsmDistance = 120.0f, sh.vsmPagesPerFrame = 24;
+            break;
+        case QualityLevel::Medium:
+            sh.cascades = 3, sh.resolution = 1024, sh.distance = 80.0f, sh.filter = 2;
+            sh.vsmResolution = 0.75f, sh.vsmDistance = 180.0f, sh.vsmPagesPerFrame = 32;
+            break;
+        case QualityLevel::High:
+            sh.cascades = 4, sh.resolution = 2048, sh.distance = 120.0f, sh.filter = 2;
+            sh.vsmResolution = 1.0f, sh.vsmDistance = 250.0f, sh.vsmPagesPerFrame = 48;
+            break;
+        case QualityLevel::Ultra:
+            sh.cascades = 4, sh.resolution = 2048, sh.distance = 200.0f, sh.filter = 3;
+            sh.vsmResolution = 1.0f, sh.vsmDistance = 400.0f, sh.vsmPagesPerFrame = 64;
+            break;
+        }
+    }
+    if (i32(s.shadowMethod) != g_appliedMethod) {
+        g_appliedMethod = i32(s.shadowMethod);
+        sh.virtualShadows = s.shadowMethod == ShadowMethod::Default ? g_defaults.shadows.virtualShadows : s.shadowMethod == ShadowMethod::Virtual;
+    }
+    if (i32(s.contactShadows) != g_appliedContact) {
+        g_appliedContact = i32(s.contactShadows);
+        vs.scene.contactShadows.enabled = s.contactShadows;
     }
     vs.post.fxaa = s.antiAliasing != AntiAliasing::None;
     ViewportFeatures& f = ed.viewport->features;

@@ -348,8 +348,16 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         }
         m_settings.sky.sunIlluminanceTop *= Max(sun->intensity, 0.0f);
         m_settings.sky.sunColor = m_settings.sky.sunColor * sun->color;
+        render::ShadowSettings& sh = m_settings.scene.shadows;
         if (!sun->castShadows)
-            m_settings.scene.shadows.enabled = false;
+            sh.enabled = false;
+        sh.sourceAngle = Clamp(sun->sourceAngle, 0.0f, 10.0f);
+        if (sun->shadowDistance > 0.0f)
+            sh.distance = sh.vsmDistance = Clamp(sun->shadowDistance, 5.0f, 2000.0f);
+        sh.normalBias *= Clamp(sun->shadowBias, 0.0f, 8.0f);
+        sh.vsmNormalBias *= Clamp(sun->shadowBias, 0.0f, 8.0f);
+        m_settings.scene.contactShadows.enabled &= sun->contactShadows;
+        m_settings.scene.contactShadows.length = Clamp(sun->contactShadowLength, 0.01f, 2.0f);
     }
     if (const SkyLight* skyLight = FindSkyLight(world))
         m_settings.sky.skyBrightness *= Max(skyLight->skyBrightness, 0.0f);

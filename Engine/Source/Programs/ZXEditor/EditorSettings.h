@@ -24,6 +24,14 @@ enum class AntiAliasing : u8
 };
 ZX_DECLARE_ENUM(AntiAliasing);
 
+enum class ShadowMethod : u8
+{
+    Default,  // what the engine profile picks (Full: virtual, Lite: cascades)
+    Cascades, // a few shadow maps of growing size around the camera: cheap, softer far away
+    Virtual,  // virtual shadow maps: sharp shadows near and far, pages cached until something moves
+};
+ZX_DECLARE_ENUM(ShadowMethod);
+
 enum class QualityLevel : u8
 {
     Default, // what the engine profile picks (Lite / Full)
@@ -53,7 +61,9 @@ struct EditorSettings
     // Rendering (this computer, the editor viewport).
     i32 renderScale = 0;          // % of the viewport resolution (0 = the profile's)
     AntiAliasing antiAliasing = AntiAliasing::Temporal;
+    ShadowMethod shadowMethod = ShadowMethod::Default;
     QualityLevel shadowQuality = QualityLevel::Default;
+    bool contactShadows = true;
     bool ambientOcclusion = true;
     bool reflections = true;      // screen-space reflections (where the profile has them)
     bool volumetricFog = true;

@@ -48,7 +48,8 @@ struct MarkParams // VirtualShadows.hlsl
     f32 maxDistance;
     Vec4 buildRows[3];
     u32 building;
-    u32 pad[3];
+    u32 softLevels;
+    u32 pad[2];
 };
 static_assert(sizeof(MarkParams) == 224); // HLSL constant buffer layout
 
@@ -646,6 +647,7 @@ void SceneRenderer::AddVsmMarkPass(RenderGraph& graph, RGTexture depth)
     p.size = m_renderSize;
     p.maxDistance = m_settings.shadows.vsmDistance;
     p.building = m_vsmBuilding ? 1u : 0u;
+    p.softLevels = m_settings.shadows.filter == 3 ? 2u : 0u;
     for (u32 r = 0; r < 3; ++r)
         p.buildRows[r] = m_vsmBuildRows[r];
     const RGBuffer requests = graph.ImportBuffer(m_vsmRequests, ResourceState::UnorderedAccess);

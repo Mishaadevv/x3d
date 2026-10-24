@@ -52,6 +52,12 @@ struct DirectionalLight
     f32 intensity = 1.0f;          // 1 = the real sun (~110 000 lux at noon before the atmosphere)
     Vec3 color = Vec3(1.0f, 1.0f, 1.0f);
     bool castShadows = true;
+    // Shadows (UE-style; the quality itself - cascades or virtual maps, resolution - is in File > Settings).
+    f32 sourceAngle = 1.5f;        // apparent sun diameter, degrees: softness of soft shadows (the real sun: 0.53)
+    f32 shadowDistance = 0.0f;     // meters of sun shadows around the camera (0 = the engine profile's)
+    f32 shadowBias = 1.0f;         // multiplier of the receiver offset (more: no acne, less: no peter-panning)
+    bool contactShadows = true;    // short screen-space shadows where objects touch
+    f32 contactShadowLength = 0.3f; // meters
 };
 
 /// Light from the sky (the first one counts): how bright the ambient light and the sky itself are.

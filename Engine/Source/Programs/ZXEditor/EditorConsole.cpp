@@ -43,6 +43,7 @@ CVar<bool> CVarSSR("r.SSR", false, "Screen-space reflections (on by default in t
 CVar<bool> CVarGpuDriven("r.GPUDriven", true, "GPU culling + ExecuteIndirect for opaque geometry (CPU draw lists when off)");
 CVar<bool> CVarVsm("r.Shadows.Virtual", false, "Virtual shadow maps for the sun: sharp shadows near and far, pages cached until something moves");
 CVar<f32> CVarVsmNormalBias("r.Shadows.Virtual.NormalBias", 1.5f, "Virtual shadow receiver offset along the normal, texels");
+CVar<f32> CVarVsmDistance("r.Shadows.Virtual.Distance", 250.0f, "Reach of the virtual shadow maps around the camera, meters (a Directional Light's Shadow Distance wins)");
 CVar<f32> CVarVsmResolution("r.Shadows.Virtual.Resolution", 1.0f, "Virtual shadow texels per pixel footprint (< 1 coarser, Lite 0.5)");
 CVar<f32> CVarNanoShadowError("r.Nano.ShadowPixelError", 2.0f, "Virtual geometry LOD error allowed in shadow maps, texels");
 CVar<bool> CVarNano("r.Nano", true, "Virtual geometry: meshes cooked with clusters are drawn cluster by cluster (fallback LODs when off)");
@@ -65,12 +66,17 @@ Editor* Ed()
     return g_editor;
 }
 
+/// The entity with this name (any case; '_' stands for a space, since console arguments split at spaces).
 ecs::Entity FindNamed(StringView name)
 {
+    String spaced(name);
+    for (char& c : spaced)
+        if (c == '_')
+            c = ' ';
     ecs::Entity found;
     if (Editor* ed = Ed())
         ed->world.Query<const scene::EntityName>().Each([&](ecs::Entity e, const scene::EntityName& n) {
-            if (!found && n.value.View().EqualsIgnoreCase(name))
+            if (!found && (n.value.View().EqualsIgnoreCase(name) || n.value.View().EqualsIgnoreCase(spaced)))
                 found = e;
         });
     return found;
@@ -218,7 +224,7 @@ ConCommand CmdStressNano("stress.nano",
                               ZX_LOG_INFO(LogCmd, "Spawned {} rocks", n);
                           });
 
-ConCommand CmdTime("time", "Time of Day: time <hour 0..24> [day length in minutes] - adds a Time of Day to the scene if it has none",
+ConCommand CmdTime("time", "Time of Day: time <hour 0..24 | dawn | sunrise | morning | noon | golden | sunset | dusk | midnight> [day length in minutes] - adds a Time of Day to the scene if it has none",
                    [](Span<const StringView> args) {
                        Editor* ed = Ed();
                        if (!ed)
@@ -235,8 +241,14 @@ ConCommand CmdTime("time", "Time of Day: time <hour 0..24> [day length in minute
                        }
                        if (!clock)
                            return;
-                       if (!args.Empty())
+                       if (!args.Empty()) {
+                           // A number, or a moment of the day: dawn, sunrise, morning, noon, golden, sunset, dusk, midnight.
                            clock->hour = Clamp(ParseFloat(args[0]).ValueOr(clock->hour), 0.0f, 24.0f);
+                           for (u32 m = 0; m <= u32(DayMoment::Midnight); ++m)
+                               if (const StringView name = DayMomentName(DayMoment(m));
+                                   !args[0].Empty() && args[0].Size() <= name.Size() && name.Left(args[0].Size()).EqualsIgnoreCase(args[0]))
+                                   clock->hour = HourOf(*clock, DayMoment(m));
+                       }
                        if (args.Size() > 1)
                            clock->dayLength = Max(ParseFloat(args[1]).ValueOr(clock->dayLength), 0.0f);
                        const CelestialState sky = ComputeCelestial(*clock);
@@ -1128,6 +1140,7 @@ void RegisterEditorConsole(Editor& ed)
     Bind<bool>(CVarGpuDriven, s.scene.gpuDriven, [](bool v) { Ed()->viewport->Settings().scene.gpuDriven = v; });
     Bind<bool>(CVarVsm, s.scene.shadows.virtualShadows, [](bool v) { Ed()->viewport->Settings().scene.shadows.virtualShadows = v; });
     Bind<f32>(CVarVsmNormalBias, s.scene.shadows.vsmNormalBias, [](f32 v) { Ed()->viewport->Settings().scene.shadows.vsmNormalBias = Clamp(v, 0.0f, 16.0f); });
+    Bind<f32>(CVarVsmDistance, s.scene.shadows.vsmDistance, [](f32 v) { Ed()->viewport->Settings().scene.shadows.vsmDistance = Clamp(v, 5.0f, 2000.0f); });
     Bind<f32>(CVarVsmResolution, s.scene.shadows.vsmResolution, [](f32 v) { Ed()->viewport->Settings().scene.shadows.vsmResolution = Clamp(v, 0.125f, 4.0f); });
     Bind<f32>(CVarNanoShadowError, s.scene.nano.shadowPixelError, [](f32 v) { Ed()->viewport->Settings().scene.nano.shadowPixelError = Clamp(v, 0.25f, 32.0f); });
     Bind<bool>(CVarNano, s.scene.nano.enabled, [](bool v) { Ed()->viewport->Settings().scene.nano.enabled = v; });

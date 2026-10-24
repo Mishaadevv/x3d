@@ -32,6 +32,57 @@ Vec3 SkyDirection(f32 hourAngle, f32 dec, f32 lat, f32 northAngle)
 
 } // namespace
 
+namespace {
+
+f32 SunDeclination(i32 dayOfYear) { return DegToRad(-23.44f) * Cos(2.0f * Pi / 365.0f * (f32(Clamp(dayOfYear, 1, 365)) + 10.0f)); }
+
+} // namespace
+
+DayTimes ComputeDayTimes(const TimeOfDay& t)
+{
+    const f32 lat = DegToRad(Clamp(t.latitude, -89.5f, 89.5f));
+    const f32 dec = SunDeclination(t.dayOfYear);
+    // Hour angle at which the sun's center is 0.833 degrees below the horizon (refraction + the disk's radius).
+    const f32 cosH = (Sin(DegToRad(-0.833f)) - Sin(lat) * Sin(dec)) / (Cos(lat) * Cos(dec));
+    DayTimes d;
+    if (cosH <= -1.0f) {
+        d.polarDay = true;
+        d.sunrise = 0.0f;
+        d.sunset = 24.0f;
+    } else if (cosH >= 1.0f) {
+        d.polarNight = true;
+        d.sunrise = d.sunset = 12.0f;
+    } else {
+        const f32 halfDay = RadToDeg(std::acos(cosH)) / 15.0f;
+        d.sunrise = 12.0f - halfDay;
+        d.sunset = 12.0f + halfDay;
+    }
+    return d;
+}
+
+f32 HourOf(const TimeOfDay& t, DayMoment moment)
+{
+    const DayTimes d = ComputeDayTimes(t);
+    const bool normal = !d.polarDay && !d.polarNight;
+    switch (moment) {
+    case DayMoment::Dawn: return normal ? d.sunrise - 0.4f : 3.0f;
+    case DayMoment::Sunrise: return normal ? d.sunrise + 0.15f : 6.0f;
+    case DayMoment::Morning: return normal ? Min(d.sunrise + 2.5f, 10.0f) : 9.0f;
+    case DayMoment::Noon: return 12.0f;
+    case DayMoment::GoldenHour: return normal ? d.sunset - 0.75f : 17.0f;
+    case DayMoment::Sunset: return normal ? d.sunset - 0.15f : 18.0f; // the disk touching the horizon
+    case DayMoment::Dusk: return normal ? d.sunset + 0.45f : 21.0f;
+    case DayMoment::Midnight: return 0.0f;
+    }
+    return t.hour;
+}
+
+const char* DayMomentName(DayMoment moment)
+{
+    static const char* const Names[] = {"Dawn", "Sunrise", "Morning", "Noon", "Golden Hour", "Sunset", "Dusk", "Midnight"};
+    return Names[u32(moment)];
+}
+
 CelestialState ComputeCelestial(const TimeOfDay& t)
 {
     const f32 lat = DegToRad(Clamp(t.latitude, -89.5f, 89.5f));
@@ -40,7 +91,7 @@ CelestialState ComputeCelestial(const TimeOfDay& t)
     const f32 north = DegToRad(t.northAngle);
     CelestialState s;
     // Sun: declination over the year, hour angle 15 degrees per hour from solar noon.
-    const f32 sunDec = DegToRad(-23.44f) * Cos(2.0f * Pi / 365.0f * (day + 10.0f));
+    const f32 sunDec = SunDeclination(t.dayOfYear);
     s.toSun = SkyDirection(DegToRad(15.0f * (hour - 12.0f)), sunDec, lat, north);
     // Moon: a 29.5-day cycle; it lags the sun by the phase angle (full moon = opposite the sun), on a path tilted
     // about 5 degrees from the sun's.

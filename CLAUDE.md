@@ -210,7 +210,13 @@ VsmLookup), Lighting/VirtualShadows.hlsl (MarkCS), ForwardPBR VirtualSunShadow +
 Nano.hlsl vsm replication (bin | page << 16). ShadowSettings::virtualShadows (Full on), cvars r.Shadows.Virtual*.
 Time of Day (0.16.0): Engine/TimeOfDay.h (component, ComputeCelestial, TickTimeOfDay in the editor and ZXGame),
 ViewportRenderer timeOfDay branch of ApplyEnvironment (sky fade, moon light, ambientFloor, min EV), SkySettings moon /
-stars / night (Sky.hlsl NightSky). Console `time <hour> [day minutes]`. Tests TimeOfDay.*.
+stars / night (Sky.hlsl NightSky). Console `time <hour|dawn|golden|sunset|...> [day minutes]`. Tests TimeOfDay.*.
+Shadow settings UI (0.16.1): DirectionalLight sourceAngle / shadowDistance / shadowBias / contactShadows(+Length) applied
+in ViewportRenderer (per-frame copy); EditorSettings shadowMethod / shadowQuality / contactShadows applied only on change
+(g_applied* in EditorSettings.cpp) so r.* cvars survive. Soft VSM = filter 3: VirtualSunShadowSoft (VsmTaps home-page
+fast path, gathers for blockers, coarser level for wide penumbras), MarkCS softLevels marks 2 coarser levels (strided).
+ComputeDayTimes / HourOf(DayMoment) in TimeOfDay.h; Details extras EditTimeOfDayPresets (DetailsPanel.cpp).
+ZXTests may fail to create dirs under %TEMP% in the Claude sandbox: run with TEMP/TMP = Saved/TestTemp.
 ZNano virtual geometry (M15, 0.14.1): Asset/Nano.h (Build = cluster DAG, AppendFallbackLods, SelectCut /
 ProjectedError on the CPU, MakeDetailedRock), CookedMesh::nano (NanoClusterHeader 80 B, sorted by parentError desc),
 CookMesh NanoMode (Auto >= 50k static triangles, .zmeta virtualGeometry). GPU: GpuMesh::nano* (RenderAssets),
