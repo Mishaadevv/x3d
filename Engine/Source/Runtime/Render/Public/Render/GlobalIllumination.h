@@ -14,6 +14,11 @@
 //
 //   gi.Prepare(instances, view, settings, lighting);  // before SceneRenderer::Prepare: sets lighting.gi
 //   gi.AddPasses(graph, lighting, ...);               // after the scene: rebuilds / traces / updates (used next frame)
+//
+// Baked GI ("GI-0"): StartBake runs the same probes over a fixed grid around the whole static scene - every probe,
+// 256 rays, an exact running average over many iterations - and reads the result back (TakeBake). SetBaked loads it;
+// in GIMode::Baked the surfaces then take their diffuse ambient from those probes with no tracing at all (moving
+// objects too: they are the light probes for dynamic objects).
 
 #include "Core/Containers/Array.h"
 #include "Render/RenderGraph.h"
@@ -22,9 +27,16 @@
 
 namespace zx::render {
 
+enum class GIMode : u8
+{
+    Dynamic, // probes traced every frame around the camera
+    Baked,   // the scene's baked probes (no GPU time); falls back to Dynamic when the scene has none
+};
+
 struct GISettings
 {
     bool enabled = true;
+    GIMode mode = GIMode::Dynamic;
     f32 voxelSize = 0.25f;       // finest distance field level (meters per voxel)
     u32 levels = 3;              // nested levels, each twice as coarse (1..4)
     UVec3 probeCounts = UVec3(24, 12, 24);
@@ -36,6 +48,30 @@ struct GISettings
     f32 bounce = 0.95f;          // fraction of the bounced light carried into the next bounce
     f32 maxRayDistance = 40.0f;  // meters
     f32 sunShadowDistance = 60.0f; // meters a hit point looks towards the sun for occluders
+};
+
+/// A finished bake: probes over a fixed grid (pre-exposed with `exposure`), saved next to the scene as .zgi.
+struct BakedGI
+{
+    IVec3 originIndex;
+    UVec3 counts;
+    f32 spacing = 1.0f;
+    f32 maxDistance = 40.0f;
+    f32 exposure = 1.0f;
+    Array<u8> irradiance; // RGBA16F, (counts.x * counts.y * 8) x (counts.z * 8), tightly packed rows
+    Array<u8> distance;   // RG16F, 16 x 16 per probe
+    Array<u8> probeData;  // RGBA16F, one texel per probe (relocation offset)
+    bool IsValid() const;
+};
+bool SaveBakedGI(StringView path, const BakedGI& data);
+bool LoadBakedGI(StringView path, BakedGI& data);
+
+struct GIBakeSettings
+{
+    f32 spacing = 1.0f;      // meters (grows when the scene would need more than maxProbes)
+    u32 maxProbes = 24000;
+    u32 raysPerProbe = 256;
+    u32 iterations = 48;     // traced updates averaged together
 };
 
 class GlobalIllumination
@@ -62,6 +98,18 @@ public:
     /// Forgets the probes and the distance field (scene switch).
     void Reset();
 
+    // --- Baking ---
+    /// Starts baking the static scene of the next frames (the grid is fitted to it on the next Prepare).
+    void StartBake(const GIBakeSettings& settings);
+    void CancelBake();
+    bool IsBaking() const { return m_bake.state != BakeState::Idle && m_bake.state != BakeState::Done; }
+    f32 BakeProgress() const;
+    /// Moves a finished bake out (once); false while none is ready.
+    bool TakeBake(BakedGI& out);
+    /// Probes used in GIMode::Baked (null = none). Uploaded on the next AddPasses.
+    void SetBaked(const BakedGI* data);
+    bool HasBaked() const { return m_bakedValid || m_bakedPending; }
+
     struct Stats
     {
         bool active = false;
@@ -72,6 +120,7 @@ public:
         u32 voxelizedSections = 0;
         u64 voxelizedTriangles = 0;
         f32 finestVoxel = 0.0f;
+        bool baked = false;     // lighting from the baked probes
     };
     const Stats& GetStats() const { return m_stats; }
 
@@ -89,7 +138,32 @@ private:
         u32 vertexBuffer, indexBuffer, firstIndex, triangleCount, index16, material;
     };
 
+    enum class BakeState : u8
+    {
+        Idle,
+        Pending,  // fit the grid on the next Prepare
+        Running,  // iterations
+        Readback, // copies issued, waiting for the GPU
+        Done,
+    };
+    struct Bake
+    {
+        BakeState state = BakeState::Idle;
+        GIBakeSettings settings;
+        Vec3 center;
+        IVec3 origin;
+        UVec3 counts;
+        f32 spacing = 1.0f;
+        u32 iteration = 0;
+        u64 copyFrame = 0;
+        u64 pitches[3] = {};
+        rhi::Buffer* readback[3] = {};
+        BakedGI result;
+    };
+
     void EnsureResources(const GISettings& settings);
+    void AddBakeReadback(RenderGraph& graph);
+    void FinishBakeReadback();
     void DestroyResources();
     void AddLevelBuild(RenderGraph& graph, u32 level);
 
@@ -135,6 +209,14 @@ private:
     Mat4 m_rotation = Mat4::Identity();
     u64 m_seed = 0x2545F4914F6CDD1Dull;
     Stats m_stats;
+    Bake m_bake;
+    // Baked probes (GIMode::Baked).
+    BakedGI m_bakedData;          // waiting for upload
+    bool m_bakedPending = false;
+    bool m_bakedValid = false;
+    rhi::Texture* m_bakedTextures[3] = {}; // irradiance, distance, probe data
+    GIVolumeConstants m_bakedConstants;
+    f32 m_bakedExposure = 1.0f;
 };
 
 } // namespace zx::render

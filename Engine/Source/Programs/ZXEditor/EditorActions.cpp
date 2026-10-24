@@ -228,6 +228,8 @@ void RegisterEditorActions(Editor& ed)
         [spawn](Editor& e) { e.CreatePostProcessVolume(spawn(e)); });
     Add(ed, "window.audioMixer", "Audio Mixer", "Window", ZX_ICON_SLIDERS_VERTICAL, "", [](Editor& e) { e.showMixer = !e.showMixer; });
     Add(ed, "file.package", "Package Project...", "File", ZX_ICON_PACKAGE, "", [](Editor& e) { e.showPackageWindow = true; });
+    Add(ed, "build.bakeLighting", "Bake Lighting", "Build", ZX_ICON_SUN, "",
+        [](Editor& e) { e.BakeLighting(); });
     Add(ed, "file.settings", "Settings...", "File", ZX_ICON_SETTINGS, "Ctrl+,", [](Editor& e) { e.showSettings = !e.showSettings; });
     Add(ed, "window.localization", "Localization", "Window", ZX_ICON_LANGUAGES, "", [](Editor& e) { e.showLocalization = !e.showLocalization; });
     Add(ed, "window.inputActions", "Input Actions", "Window", ZX_ICON_GAMEPAD_2, "", [](Editor& e) { e.showInputActions = !e.showInputActions; });

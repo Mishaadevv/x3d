@@ -60,3 +60,38 @@ ZX_TEST(GI, VolumeConstantsMatchTheShaderLayout)
     SceneLighting lighting;
     ZX_EXPECT_EQ(lighting.gi.irradiance, rhi::InvalidDescriptor);
 }
+
+ZX_TEST(GI, BakedProbesRoundTrip)
+{
+    fs::Initialize(1);
+    const String dir = platform::GetTempDirectory() + "/zx_gi_bake_test";
+    platform::CreateDirectoryTree(dir);
+    BakedGI b;
+    b.originIndex = IVec3(-3, 0, 5);
+    b.counts = UVec3(4, 2, 3);
+    b.spacing = 1.5f;
+    b.maxDistance = 30.0f;
+    b.exposure = 0.25f;
+    const u64 probes = 4 * 2 * 3;
+    b.irradiance.Resize(probes * 8 * 8 * 8, 7);
+    b.distance.Resize(probes * 16 * 16 * 4, 9);
+    b.probeData.Resize(probes * 8, 11);
+    ZX_EXPECT(b.IsValid());
+    const String path = dir + "/Scene.zgi";
+    ZX_REQUIRE(SaveBakedGI(path, b));
+    BakedGI back;
+    ZX_REQUIRE(LoadBakedGI(path, back));
+    ZX_EXPECT(back.originIndex == b.originIndex);
+    ZX_EXPECT(back.counts == b.counts);
+    ZX_EXPECT_NEAR(back.spacing, 1.5f, 1e-6f);
+    ZX_EXPECT_NEAR(back.exposure, 0.25f, 1e-6f);
+    ZX_EXPECT(back.irradiance.Size() == b.irradiance.Size() && back.irradiance[17] == 7);
+    ZX_EXPECT(back.distance.Size() == b.distance.Size() && back.probeData.Size() == b.probeData.Size());
+    // A truncated or foreign file is refused.
+    b.probeData.PopBack();
+    ZX_EXPECT(!b.IsValid());
+    ZX_EXPECT(!SaveBakedGI(path + "2", b));
+    ZX_EXPECT(!LoadBakedGI(dir + "/missing.zgi", back));
+    fs::Shutdown();
+    platform::DeleteDirectoryTree(dir);
+}

@@ -53,6 +53,7 @@ CVar<bool> CVarOcclusion("r.OcclusionCulling", true, "Two-phase HiZ occlusion cu
 CVar<i32> CVarShadowFilter("r.ShadowFilter", 1, "Sun shadow filter: 0 hard, 1 4 taps, 2 9 taps, 3 PCSS (soft, contact-hardening)");
 CVar<bool> CVarContactShadows("r.ContactShadows", true, "Screen-space contact shadows of the sun");
 CVar<i32> CVarRendererPath("r.Renderer.Path", 0, "Opaque rendering path: 0 forward+ (clustered), 1 deferred (G-buffer + lighting pass)");
+CVar<i32> CVarGIMode("r.GI.Mode", 0, "0 dynamic probes (traced every frame), 1 baked probes (gi.bake; no GPU time; dynamic when the scene has none)");
 CVar<bool> CVarGI("r.GI", true, "Dynamic global illumination: light bounces off surfaces (probes traced through a distance field of the scene)");
 CVar<f32> CVarGIIntensity("r.GI.Intensity", 1.0f, "Multiplies the bounced (indirect) diffuse light");
 CVar<i32> CVarGIRays("r.GI.Rays", 64, "Rays per GI probe update (16..256)");
@@ -153,6 +154,8 @@ ConCommand CmdStatScene("stat.scene", "Prints viewport and scene statistics", []
         ZX_LOG_INFO(LogCmd, "  Virtual shadows: {} pages resident, {} needed, {} rendered this frame ({} draws), {} waiting{}",
                     st.vsmMappedPages, st.vsmRequestedPages, st.vsmRenderedPages, st.vsmDraws, st.vsmPendingPages,
                     st.vsmBuilding ? " (rebuilding for the turned sun)" : "");
+    if (ed->viewport->GI().GetStats().baked)
+        ZX_LOG_INFO(LogCmd, "  GI: baked probes (no tracing)");
     if (const render::GlobalIllumination::Stats& gi = ed->viewport->GI().GetStats(); gi.active)
         ZX_LOG_INFO(LogCmd, "  GI: {} probes ({} updated, {} rays this frame), distance field {:.2f} m voxels{}", gi.probes, gi.probesUpdated,
                     gi.rays, gi.finestVoxel,
@@ -266,6 +269,21 @@ ConCommand CmdTime("time", "Time of Day: time <hour 0..24 | dawn | sunrise | mor
                        ZX_LOG_INFO(LogCmd, "Time {} (day length {} min), sun {:.1f} deg, moon {:.1f} deg ({:.0f} % lit)", FormatHour(clock->hour),
                                    clock->dayLength, RadToDeg(Asin(sky.toSun.y)), RadToDeg(Asin(sky.toMoon.y)), sky.moonPhase * 100.0f);
                    });
+
+ConCommand CmdBakeLighting("gi.bake", "Bakes the lighting of the static scene into probes saved next to the scene: gi.bake [spacing m] [iterations]",
+                            [](Span<const StringView> args) {
+                                if (Editor* ed = Ed())
+                                    ed->BakeLighting(args.Size() > 0 ? ParseFloat(args[0]).ValueOr(0.0f) : 0.0f,
+                                                     args.Size() > 1 ? u32(ParseInt(args[1]).ValueOr(0)) : 0u);
+                            });
+
+ConCommand CmdClearBake("gi.clearbake", "Deletes the scene's baked lighting", [](Span<const StringView>) {
+    if (Editor* ed = Ed()) {
+        platform::DeleteFileAt(ed->BakedLightingPath());
+        ed->viewport->GI().SetBaked(nullptr);
+        ZX_LOG_INFO(LogCmd, "Baked lighting removed");
+    }
+});
 
 ConCommand CmdStressParticles("stress.particles",
                                "Adds a GPU-simulated spark fountain in front of the camera keeping about N particles alive (bouncing off the scene): stress.particles 200000",
@@ -1163,6 +1181,7 @@ void RegisterEditorConsole(Editor& ed)
     Bind<i32>(CVarShadowFilter, i32(s.scene.shadows.filter), [](i32 v) { Ed()->viewport->Settings().scene.shadows.filter = u32(Clamp(v, 0, 3)); });
     Bind<bool>(CVarContactShadows, s.scene.contactShadows.enabled, [](bool v) { Ed()->viewport->Settings().scene.contactShadows.enabled = v; });
     Bind<i32>(CVarRendererPath, s.scene.deferred ? 1 : 0, [](i32 v) { Ed()->viewport->Settings().scene.deferred = v == 1; });
+    Bind<i32>(CVarGIMode, i32(s.gi.mode), [](i32 v) { Ed()->viewport->Settings().gi.mode = v == 1 ? render::GIMode::Baked : render::GIMode::Dynamic; });
     Bind<bool>(CVarGI, s.gi.enabled, [](bool v) { Ed()->viewport->Settings().gi.enabled = v; });
     Bind<f32>(CVarGIIntensity, s.gi.intensity, [](f32 v) { Ed()->viewport->Settings().gi.intensity = Clamp(v, 0.0f, 10.0f); });
     Bind<i32>(CVarGIRays, i32(s.gi.raysPerProbe), [](i32 v) { Ed()->viewport->Settings().gi.raysPerProbe = u32(Clamp(v, 16, 256)); });
@@ -1187,7 +1206,7 @@ void UnregisterEditorConsole()
                         static_cast<CVarBase*>(&CVarShadows), static_cast<CVarBase*>(&CVarSky), static_cast<CVarBase*>(&CVarBloom), static_cast<CVarBase*>(&CVarSSR), static_cast<CVarBase*>(&CVarTSR),
                         static_cast<CVarBase*>(&CVarDynRes), static_cast<CVarBase*>(&CVarDynResTarget), static_cast<CVarBase*>(&CVarDynResMin), static_cast<CVarBase*>(&CVarProbes),
                         static_cast<CVarBase*>(&CVarGpuDriven), static_cast<CVarBase*>(&CVarRendererPath), static_cast<CVarBase*>(&CVarShadowFilter), static_cast<CVarBase*>(&CVarContactShadows), static_cast<CVarBase*>(&CVarOcclusion), static_cast<CVarBase*>(&CVarUISounds),
-                        static_cast<CVarBase*>(&CVarExposure), static_cast<CVarBase*>(&CVarViewMode), static_cast<CVarBase*>(&CVarGI),
+                        static_cast<CVarBase*>(&CVarExposure), static_cast<CVarBase*>(&CVarViewMode), static_cast<CVarBase*>(&CVarGI), static_cast<CVarBase*>(&CVarGIMode),
                         static_cast<CVarBase*>(&CVarGIIntensity), static_cast<CVarBase*>(&CVarGIRays), static_cast<CVarBase*>(&CVarGIStride),
                         static_cast<CVarBase*>(&CVarGISpacing),
                         static_cast<CVarBase*>(&CVarForceLod), static_cast<CVarBase*>(&CVarCameraSpeed),

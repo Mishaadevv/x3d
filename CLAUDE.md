@@ -229,6 +229,13 @@ stride 2), ViewportFeatures::globalIllumination (Features "globalIllumination", 
 globalIllumination / giQuality, cvars r.GI*. Lightmap UVs (0.16.4): Asset/LightmapUV.h GenerateLightmapUVs (CookMesh: static meshes without UV1; nano meshes keep
 them only if < 5 % vertices are added; CookedMesh::lightmapUVs / lightmapResolution, CookerVersion 9). VSOutput.uv is
 float4 (uv0, uv1); r.ViewMode 10 = lightmap UV density. Sponza (nano, 12k charts) has none: it will use baked probes.
+Baked GI (0.16.5): GlobalIllumination StartBake / BakeState (Pending fits a fixed grid to static bounds in Prepare,
+Running = all probes, levels 4, hysteresis i/(i+1), ProbeParams::baking disables the fast-response shortcut;
+AddBakeReadback copies irradiance / distance / probeData to readback buffers, FinishBakeReadback FramesInFlight + 1
+frames later) -> TakeBake -> SaveBakedGI (.zgi "ZGI1"). SetBaked creates textures with initial data; GIMode::Baked
+returns m_bakedConstants (intensity x exposure / bake exposure) with no passes. Editor BakeLighting / BakedLightingPath
+(<scene>.zgi or Saved/BakedLighting) / UpdateLightingBake (reloads when the path changes), action build.bakeLighting
+(File menu), console gi.bake / gi.clearbake / r.GI.Mode; ZXGame loads <scene>.zgi. Settings giMode.
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
 in one run (switch cvars between stat.gpu samples).

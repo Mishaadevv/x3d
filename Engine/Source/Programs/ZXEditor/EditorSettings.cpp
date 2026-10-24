@@ -20,6 +20,12 @@ ZX_REFLECT_ENUM_BEGIN(ShadowMethod)
     ZX_ENUM_VALUE(Virtual)
 ZX_REFLECT_ENUM_END()
 
+ZX_REFLECT_ENUM_BEGIN(GIModeSetting)
+    ZX_ENUM_VALUE(Default)
+    ZX_ENUM_VALUE(Dynamic)
+    ZX_ENUM_VALUE(Baked)
+ZX_REFLECT_ENUM_END()
+
 ZX_REFLECT_ENUM_BEGIN(QualityLevel)
     ZX_ENUM_VALUE(Default)
     ZX_ENUM_VALUE(Low)
@@ -54,6 +60,9 @@ ZX_REFLECT_STRUCT_BEGIN(EditorSettings)
     ZX_FIELD(ambientOcclusion, Meta::Tooltip("Contact darkening in corners and creases"))
     ZX_FIELD(globalIllumination, Meta::Tooltip("Light bounces off walls, floors and objects in real time: lit rooms, dark corners, "
                                                "color bleeding (dynamic GI probes)"))
+    ZX_FIELD(giMode, Meta::DisplayName("GI Mode"), Meta::EditCondition("globalIllumination"),
+             Meta::Tooltip("Dynamic: probes traced every frame (moving sun and lights). Baked: the lighting baked with "
+                           "File > Bake Lighting, no GPU time (dynamic when the scene has no bake). Default = the engine profile's"))
     ZX_FIELD(giQuality, Meta::DisplayName("GI Quality"), Meta::EditCondition("globalIllumination"),
              Meta::Tooltip("How many light probes, how many rays each, how often they update (Default = the engine profile's). "
                            "Higher: finer bounced light that reacts faster, more GPU time"))
@@ -89,6 +98,7 @@ i32 g_appliedQuality = -1;
 i32 g_appliedMethod = -1;
 i32 g_appliedContact = -1;
 i32 g_appliedGI = -1;
+i32 g_appliedGIMode = -1;
 f32 g_autosaveTimer = 0.0f;
 
 } // namespace
@@ -183,6 +193,10 @@ void ApplyEditorSettings(Editor& ed)
         case QualityLevel::High: gi.probeCounts = UVec3(28, 12, 28), gi.probeSpacing = 1.4f, gi.raysPerProbe = 64, gi.probeStride = 2; break;
         case QualityLevel::Ultra: gi.probeCounts = UVec3(32, 14, 32), gi.probeSpacing = 1.2f, gi.raysPerProbe = 128, gi.probeStride = 1; break;
         }
+    }
+    if (i32(s.giMode) != g_appliedGIMode) {
+        g_appliedGIMode = i32(s.giMode);
+        vs.gi.mode = s.giMode == GIModeSetting::Default ? g_defaults.gi.mode : (s.giMode == GIModeSetting::Baked ? render::GIMode::Baked : render::GIMode::Dynamic);
     }
     if (i32(s.contactShadows) != g_appliedContact) {
         g_appliedContact = i32(s.contactShadows);

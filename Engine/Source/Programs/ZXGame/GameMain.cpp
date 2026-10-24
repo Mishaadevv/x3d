@@ -325,6 +325,12 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
         platform::ShowErrorMessageBox(m_config.name.CStr(), "The startup scene could not be loaded.");
         return false;
     }
+    // Baked lighting next to the scene (<scene>.zgi), if the project baked it.
+    {
+        render::BakedGI baked;
+        if (render::LoadBakedGI(Path::ChangeExtension(m_config.scene, ".zgi"), baked))
+            m_viewport->GI().SetBaked(&baked);
+    }
     const JsonValue& env = settings.Get("environment");
     m_environment.night = env.Get("night").AsBool(false);
     m_environment.sunElevation = DegToRad(env.Get("sunElevation").AsFloat(60.0f));

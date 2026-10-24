@@ -32,6 +32,14 @@ enum class ShadowMethod : u8
 };
 ZX_DECLARE_ENUM(ShadowMethod);
 
+enum class GIModeSetting : u8
+{
+    Default, // the engine profile's (Lite: baked when the scene has a bake, Full: dynamic)
+    Dynamic, // traced every frame: follows moving lights and a moving sun
+    Baked,   // File > Bake Lighting: free at run time, fixed lighting
+};
+ZX_DECLARE_ENUM(GIModeSetting);
+
 enum class QualityLevel : u8
 {
     Default, // what the engine profile picks (Lite / Full)
@@ -66,6 +74,7 @@ struct EditorSettings
     bool contactShadows = true;
     bool ambientOcclusion = true;
     bool globalIllumination = true; // dynamic GI: bounced light
+    GIModeSetting giMode = GIModeSetting::Default;
     QualityLevel giQuality = QualityLevel::Default;
     bool reflections = true;      // screen-space reflections (where the profile has them)
     bool volumetricFog = true;

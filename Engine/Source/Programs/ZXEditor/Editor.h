@@ -467,6 +467,14 @@ public:
     void RequestRestart(); // quits (asking to save first) and starts the editor again on the same project
     void NewScene();
     bool OpenScene(StringView physicalPath);
+    // Baked lighting (GI-0): probes baked over the static scene, saved next to the scene as <scene>.zgi.
+    void BakeLighting(f32 spacing = 0.0f, u32 iterations = 0);
+    String BakedLightingPath() const;
+    /// Loads the scene's .zgi (or clears the baked probes when it has none).
+    void LoadBakedLighting();
+    /// Saves a finished bake and switches to it; loads the .zgi of a scene that changed (every frame; cheap).
+    void UpdateLightingBake();
+    String bakedLightingFor; // the .zgi path last loaded (or looked for)
     bool SaveScene(bool saveAs);
     bool SaveSceneTo(StringView physicalPath);
 

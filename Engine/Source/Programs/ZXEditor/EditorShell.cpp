@@ -79,6 +79,7 @@ void DrawMenus(Editor& ed)
         ui::Separator();
         ActionMenuItem(ed, "file.import");
         ui::Separator();
+        ActionMenuItem(ed, "build.bakeLighting");
         ActionMenuItem(ed, "file.package");
         ui::Separator();
         ActionMenuItem(ed, "file.settings");

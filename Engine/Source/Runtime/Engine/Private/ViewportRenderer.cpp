@@ -63,6 +63,7 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
     s.gi.probeSpacing = lite ? 1.6f : 1.4f;
     s.gi.raysPerProbe = 64;
     s.gi.probeStride = lite ? 8u : 2u;
+    s.gi.mode = lite ? render::GIMode::Baked : render::GIMode::Dynamic; // Baked: when the scene has a bake
     s.volumetricFog.slices = lite ? 48u : 64u;
     return m_scene.Init(m_hdrFormat, DepthFormat()) && m_captureScene.Init(m_hdrFormat, DepthFormat()) && m_reflections.Init() && m_gi.Init() && m_sky.Init(m_hdrFormat, DepthFormat()) && m_post.Init(outputFormat) &&
            m_taa.Init() && m_outline.Init(outputFormat) && m_water.Init(m_hdrFormat, DepthFormat(), lite) &&

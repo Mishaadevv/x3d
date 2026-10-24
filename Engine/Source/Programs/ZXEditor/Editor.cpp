@@ -3530,6 +3530,7 @@ void Editor::NewScene()
     camera.position = Vec3(0.0f, 2.0f, -6.0f);
     camera.LookAt(Vec3(0.0f, 0.5f, 0.0f));
     viewport->ResetHistory();
+    viewport->GI().CancelBake();
     ZX_LOG_INFO(LogEditor, "New scene");
 }
 
@@ -3547,6 +3548,73 @@ bool Editor::OpenScene(StringView physicalPath)
     waitForAssets = true; // the progress window waits for its assets
     ZX_LOG_INFO(LogEditor, "Opened scene '{}' ({} entities)", physicalPath, world.EntityCount());
     return true;
+}
+
+String Editor::BakedLightingPath() const
+{
+    if (!scenePath.Empty())
+        return Path::ChangeExtension(scenePath, ".zgi");
+    return fs::ToPhysicalPath(String::Format("/Saved/BakedLighting/{}.zgi", sceneName.Empty() ? StringView("Untitled") : sceneName.View()));
+}
+
+void Editor::LoadBakedLighting()
+{
+    render::BakedGI data;
+    const String path = BakedLightingPath();
+    if (platform::FileExists(path) && render::LoadBakedGI(path, data)) {
+        viewport->GI().SetBaked(&data);
+        ZX_LOG_INFO(LogEditor, "Baked lighting: {} probes ({})", data.counts.x * data.counts.y * data.counts.z, Path::FileName(path));
+    } else {
+        viewport->GI().SetBaked(nullptr);
+    }
+}
+
+void Editor::BakeLighting(f32 spacing, u32 iterations)
+{
+    EndPlay(); // bake the edited scene, not the play state
+    render::GIBakeSettings s;
+    if (spacing > 0.0f)
+        s.spacing = spacing;
+    if (iterations > 0)
+        s.iterations = iterations;
+    viewport->GI().StartBake(s);
+    ZX_LOG_INFO(LogEditor, "Baking lighting...");
+}
+
+void Editor::UpdateLightingBake()
+{
+    render::GlobalIllumination& gi = viewport->GI();
+    if (!gi.IsBaking()) {
+        // Another scene (opened, imported, saved under a new name): its own baked lighting, if any.
+        String path = BakedLightingPath();
+        if (path != bakedLightingFor) {
+            bakedLightingFor = move(path);
+            LoadBakedLighting();
+        }
+    }
+    static i32 s_lastPercent = -1;
+    if (gi.IsBaking()) {
+        const i32 percent = i32(gi.BakeProgress() * 10.0f) * 10;
+        if (percent != s_lastPercent) {
+            s_lastPercent = percent;
+            ZX_LOG_INFO(LogEditor, "Baking lighting: {} %", percent);
+        }
+    } else {
+        s_lastPercent = -1;
+    }
+    render::BakedGI data;
+    if (!gi.TakeBake(data))
+        return;
+    const String path = BakedLightingPath();
+    bakedLightingFor = path;
+    platform::CreateDirectoryTree(Path::Parent(path));
+    if (render::SaveBakedGI(path, data))
+        ZX_LOG_INFO(LogEditor, "Lighting baked -> {} ({:.1f} MB)", path,
+                    f64(data.irradiance.Size() + data.distance.Size() + data.probeData.Size()) / (1024.0 * 1024.0));
+    else
+        ZX_LOG_ERROR(LogEditor, "Can't write {}", path);
+    gi.SetBaked(&data);
+    PlayUISound("Confirm");
 }
 
 bool Editor::SaveScene(bool saveAs)
@@ -3817,6 +3885,7 @@ bool Editor::Frame()
         TickWind(world, playState == PlayState::Paused ? 0.0f : dt * (IsPlaying() ? GameTimeScale(GameSystemsForPlay()) : 1.0f));
         TickTimeOfDay(world, playState == PlayState::Paused ? 0.0f : dt * (IsPlaying() ? GameTimeScale(GameSystemsForPlay()) : 1.0f), IsPlaying());
     }
+    UpdateLightingBake();
     // Particles: emitters with Simulate In Editor run live while editing, all of them while playing (frozen when paused).
     if (FeatureEnabled("particles")) {
         scene::UpdateWorldTransforms(world);

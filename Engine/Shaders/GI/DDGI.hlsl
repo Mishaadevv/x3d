@@ -43,7 +43,7 @@ struct ProbeParams
     float sunShadowDistance;
     float energy;            // fraction of bounced light kept per bounce (< 1 keeps feedback stable)
     uint cascadeCount;       // the scene's sun cascades (this frame), 0 = none
-    float pad;
+    uint baking;             // 1: exact running average (no fast-response shortcut)
     float4x4 shadowMatrices[4];
     uint4 shadowMaps;
     uint4 cubeSrv[2];        // ambient cube textures +X -X +Y -Y +Z -Z (SRV; .zw of [1] unused)
@@ -330,7 +330,7 @@ void UpdateIrradianceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadI
     // Big changes (a light switched on, the sun moved a lot) converge faster.
     const float change = max(abs(result.r - history.r), max(abs(result.g - history.g), abs(result.b - history.b)));
     const float scale = max(max(result.r, max(result.g, result.b)), max(history.r, max(history.g, history.b)));
-    if (change > 0.5 * scale)
+    if (change > 0.5 * scale && g_Probe.baking == 0)
         h = min(h, 0.8);
     tex[texel] = float4(lerp(result, history, h), usable);
 }

@@ -1,5 +1,7 @@
 #include "Render/GlobalIllumination.h"
+#include "Core/FileSystem/FileSystem.h"
 #include "Core/Log/Log.h"
+#include "Core/Serialization/Binary.h"
 #include "Core/Math/Quat.h"
 #include "Core/Math/Random.h"
 #include "RHI/ShaderCompiler.h"
@@ -58,7 +60,7 @@ struct ProbeParams
     u32 lightBuffer, lightCount, historyValid;
     f32 sunShadowDistance, energy;
     u32 cascadeCount;
-    f32 pad;
+    u32 baking;
     Mat4 shadowMatrices[SceneRenderer::MaxCascades];
     u32 shadowMaps[SceneRenderer::MaxCascades];
     u32 cubeSrv[8];
@@ -88,6 +90,10 @@ GlobalIllumination::GlobalIllumination(Device& device, RenderAssets& assets) : m
 GlobalIllumination::~GlobalIllumination()
 {
     DestroyResources();
+    for (Texture* t : m_bakedTextures)
+        m_device.Destroy(t);
+    for (Buffer* b : m_bake.readback)
+        m_device.Destroy(b);
     for (Pipeline* p : {m_clearPipeline, m_voxelizePipeline, m_jumpFloodPipeline, m_finalizePipeline, m_tracePipeline, m_irradiancePipeline,
                         m_distancePipeline, m_cubePipeline})
         m_device.Destroy(p);
@@ -244,11 +250,65 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
     m_stats = Stats{};
     m_rebuild = ~0u;
     m_voxelDraws.Clear();
-    m_active = settings.enabled && m_tracePipeline;
+    if (m_bake.state == BakeState::Readback)
+        FinishBakeReadback();
+    const bool baking = m_bake.state == BakeState::Pending || m_bake.state == BakeState::Running || m_bake.state == BakeState::Readback;
+    // Baked probes: no tracing at all.
+    if (!baking && settings.enabled && settings.mode == GIMode::Baked && m_bakedValid) {
+        m_active = false;
+        lighting.gi = m_bakedConstants;
+        lighting.gi.intensity = Max(settings.intensity, 0.0f) * (m_bakedExposure > 0.0f ? exposure / m_bakedExposure : 1.0f);
+        m_stats.baked = true;
+        return;
+    }
+    m_active = (settings.enabled || baking) && m_tracePipeline;
     if (!m_active)
         return;
-    m_settings = settings;
-    EnsureResources(settings);
+    GISettings s = settings;
+    if (m_bake.state == BakeState::Pending) {
+        // Fit the bake grid around the static, resident scene.
+        AABB bounds;
+        for (const RenderInstance& inst : instances) {
+            if (!inst.skinMatrices.Empty() || inst.prevWorld)
+                continue;
+            if (const GpuMesh* mesh = m_assets.GetMesh(inst.mesh))
+                bounds.Expand(mesh->bounds.Transformed(inst.world));
+        }
+        if (bounds.min.x > bounds.max.x) {
+            ZX_LOG_WARN(LogGI, "Bake: no static meshes to light");
+            m_bake.state = BakeState::Idle;
+        } else {
+            const Vec3 extent = bounds.max - bounds.min;
+            f32 spacing = Max(m_bake.settings.spacing, 0.25f);
+            UVec3 counts;
+            for (u32 guard = 0; guard < 200; ++guard) {
+                counts = UVec3(u32(std::ceil(extent.x / spacing)) + 3, u32(std::ceil(extent.y / spacing)) + 3, u32(std::ceil(extent.z / spacing)) + 3);
+                if (counts.x <= 64 && counts.y <= 32 && counts.z <= 64 && u64(counts.x) * counts.y * counts.z <= m_bake.settings.maxProbes)
+                    break;
+                spacing *= 1.1f;
+            }
+            counts = UVec3(Clamp(counts.x, 2u, 64u), Clamp(counts.y, 2u, 32u), Clamp(counts.z, 2u, 64u));
+            m_bake.spacing = spacing;
+            m_bake.counts = counts;
+            m_bake.origin = FloorDiv(bounds.min, spacing) - IVec3(1, 1, 1);
+            m_bake.center = (bounds.min + bounds.max) * 0.5f;
+            m_bake.iteration = 0;
+            m_bake.state = BakeState::Running;
+            ZX_LOG_INFO(LogGI, "Baking lighting: {} x {} x {} probes, {:.2f} m apart, {} rays x {} iterations", counts.x, counts.y, counts.z, spacing,
+                        m_bake.settings.raysPerProbe, m_bake.settings.iterations);
+        }
+    }
+    if (m_bake.state == BakeState::Running || m_bake.state == BakeState::Readback) {
+        s.enabled = true;
+        s.levels = MaxLevels;
+        s.probeCounts = m_bake.counts;
+        s.probeSpacing = m_bake.spacing;
+        s.raysPerProbe = m_bake.settings.raysPerProbe;
+        s.probeStride = 1;
+        cameraPosition = m_bake.center;
+    }
+    m_settings = s;
+    EnsureResources(s);
     if (!m_distance || !m_albedo || !m_normal || !m_seeds[0] || !m_seeds[1] || !m_irradiance || !m_probeDistance || !m_rays || !m_cubes[5] || !m_probeData) {
         m_active = false;
         return;
@@ -335,21 +395,21 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
             const GpuMesh& mesh = *c.mesh;
             const f32 scale = Max(Length(inst.world.columns[0].XYZ()), Max(Length(inst.world.columns[1].XYZ()), Length(inst.world.columns[2].XYZ())));
             const Mat4 rows = Transpose(inst.world);
-            for (const asset::CookedMeshSection& s : mesh.sections) {
-                const AABB sb = s.bounds.Transformed(inst.world);
+            for (const asset::CookedMeshSection& sec : mesh.sections) {
+                const AABB sb = sec.bounds.Transformed(inst.world);
                 if (sb.max.x < lo.x || sb.max.y < lo.y || sb.max.z < lo.z || sb.min.x > hi.x || sb.min.y > hi.y || sb.min.z > hi.z)
                     continue;
                 u32 materialIndex = InvalidIndex;
-                if (s.materialSlot < inst.materials.Size()) {
-                    materialIndex = m_assets.GetMaterialIndex(inst.materials[s.materialSlot]);
+                if (sec.materialSlot < inst.materials.Size()) {
+                    materialIndex = m_assets.GetMaterialIndex(inst.materials[sec.materialSlot]);
                     if (m_assets.GetMaterialInfo(materialIndex).blend == MaterialBlend::Translucent)
                         continue;
                 }
                 // The coarsest LOD whose error stays under half a voxel.
                 u32 lod = 0;
-                while (lod + 1 < s.lodCount && mesh.SectionLodAt(s, lod + 1).error * scale < voxel * 0.5f)
+                while (lod + 1 < sec.lodCount && mesh.SectionLodAt(sec, lod + 1).error * scale < voxel * 0.5f)
                     ++lod;
-                const asset::CookedSectionLod& sl = mesh.SectionLodAt(s, lod);
+                const asset::CookedSectionLod& sl = mesh.SectionLodAt(sec, lod);
                 if (sl.indexCount < 3)
                     continue;
                 VoxelDraw d;
@@ -370,10 +430,12 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
     }
 
     // Probe grid: centered on the camera, in whole probe steps.
-    const f32 spacing = Clamp(settings.probeSpacing, 0.25f, 16.0f);
+    const f32 spacing = Clamp(s.probeSpacing, 0.25f, 16.0f);
     const IVec3 counts(i32(m_probeCounts.x), i32(m_probeCounts.y), i32(m_probeCounts.z));
     const IVec3 cell = FloorDiv(cameraPosition, spacing);
     m_originIndex = IVec3(cell.x - counts.x / 2 + 1, cell.y - counts.y / 2 + 1, cell.z - counts.z / 2 + 1);
+    if (m_bake.state == BakeState::Running || m_bake.state == BakeState::Readback)
+        m_originIndex = m_bake.origin;
     m_stats.probes = m_probeCounts.x * m_probeCounts.y * m_probeCounts.z;
 
     // Shading reads the maps as the last update left them.
@@ -384,12 +446,12 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
         g.distance = m_probeDistance->GetSrvIndex();
         g.spacing = Vec3(spacing);
         g.counts = m_probeCounts;
-        g.intensity = Max(settings.intensity, 0.0f);
+        g.intensity = Max(s.intensity, 0.0f);
         g.normalBias = 0.25f * spacing;
         g.viewBias = 0.1f * spacing;
         g.invIrradianceSize = Vec2(1.0f / f32(m_probeCounts.x * m_probeCounts.y * IrradianceTexels), 1.0f / f32(m_probeCounts.z * IrradianceTexels));
         g.invDistanceSize = Vec2(1.0f / f32(m_probeCounts.x * m_probeCounts.y * DistanceTexels), 1.0f / f32(m_probeCounts.z * DistanceTexels));
-        g.maxDistance = Max(settings.maxRayDistance, spacing);
+        g.maxDistance = Max(s.maxRayDistance, spacing);
         g.probeData = m_probeData->GetSrvIndex();
     }
 }
@@ -494,6 +556,51 @@ void GlobalIllumination::AddLevelBuild(RenderGraph& graph, u32 level)
 void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& lighting, const SceneRenderer::LightingInputs& inputs,
                                    u32 lightBuffer, u32 lightCount, const SkyRenderer* sky)
 {
+    if (m_bakedPending) {
+        // Upload the baked probes (used from the next frame on).
+        m_bakedPending = false;
+        for (Texture*& t : m_bakedTextures) {
+            m_device.Destroy(t);
+            t = nullptr;
+        }
+        const BakedGI& b = m_bakedData;
+        const u32 w = b.counts.x * b.counts.y, h = b.counts.z;
+        const UVec2 sizes[3] = {UVec2(w * IrradianceTexels, h * IrradianceTexels), UVec2(w * DistanceTexels, h * DistanceTexels), UVec2(w, h)};
+        const Format formats[3] = {Format::R16G16B16A16_FLOAT, Format::R16G16_FLOAT, Format::R16G16B16A16_FLOAT};
+        const u32 bpp[3] = {8, 4, 8};
+        const Array<u8>* sources[3] = {&b.irradiance, &b.distance, &b.probeData};
+        for (u32 i = 0; i < 3; ++i) {
+            TextureDesc d;
+            d.width = sizes[i].x;
+            d.height = sizes[i].y;
+            d.format = formats[i];
+            d.usage = TextureUsage::ShaderResource;
+            d.debugName = "GI.Baked";
+            const SubresourceData init[] = {{sources[i]->Data(), u64(sizes[i].x) * bpp[i], 0}};
+            m_bakedTextures[i] = m_device.CreateTexture(d, init);
+        }
+        if (!m_bakedTextures[0] || !m_bakedTextures[1] || !m_bakedTextures[2]) {
+            ZX_LOG_ERROR(LogGI, "Can't create the baked GI textures");
+            m_bakedData = BakedGI{};
+            return;
+        }
+        GIVolumeConstants& g = m_bakedConstants;
+        g = GIVolumeConstants{};
+        g.originIndex = b.originIndex;
+        g.irradiance = m_bakedTextures[0]->GetSrvIndex();
+        g.distance = m_bakedTextures[1]->GetSrvIndex();
+        g.probeData = m_bakedTextures[2]->GetSrvIndex();
+        g.spacing = Vec3(b.spacing);
+        g.counts = b.counts;
+        g.normalBias = 0.25f * b.spacing;
+        g.viewBias = 0.1f * b.spacing;
+        g.invIrradianceSize = Vec2(1.0f / f32(sizes[0].x), 1.0f / f32(sizes[0].y));
+        g.invDistanceSize = Vec2(1.0f / f32(sizes[1].x), 1.0f / f32(sizes[1].y));
+        g.maxDistance = b.maxDistance;
+        m_bakedExposure = b.exposure;
+        m_bakedValid = true;
+        m_bakedData = BakedGI{}; // the GPU has its copy
+    }
     if (!m_active)
         return;
     if (m_rebuild != ~0u)
@@ -561,6 +668,18 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
     p.sunShadowDistance = Max(s.sunShadowDistance, 1.0f);
     p.energy = Clamp(s.bounce, 0.0f, 1.0f);
     p.cascadeCount = inputs.cascadeCount;
+    // Baking: an exact running average over the iterations (no fast-response shortcut, no history before the first).
+    const bool baking = m_bake.state == BakeState::Running;
+    const bool fieldReady = levels == m_levelCount && m_rebuild == ~0u;
+    if (baking) {
+        if (!fieldReady)
+            m_bake.iteration = 0; // the field changed: start over
+        p.baking = 1;
+        p.historyValid = m_bake.iteration > 0 ? 1u : 0u;
+        p.prevOriginIndex = m_originIndex;
+        p.hysteresis = f32(m_bake.iteration) / f32(m_bake.iteration + 1);
+        p.compactStride = 0;
+    }
     for (u32 c = 0; c < inputs.cascadeCount; ++c) {
         p.shadowMatrices[c] = inputs.shadowMatrices[c];
         p.shadowMaps[c] = inputs.shadowMaps[c];
@@ -662,6 +781,171 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
     m_probesValid = true;
     m_updatedOrigin = m_originIndex;
     m_prevExposure = m_exposure;
+    if (baking && fieldReady && ++m_bake.iteration >= Max(m_bake.settings.iterations, 1u))
+        AddBakeReadback(graph);
+}
+
+// --- Baking ---------------------------------------------------------------------------------------------------------
+
+void GlobalIllumination::StartBake(const GIBakeSettings& settings)
+{
+    CancelBake();
+    m_bake.settings = settings;
+    m_bake.state = BakeState::Pending;
+}
+
+void GlobalIllumination::CancelBake()
+{
+    for (Buffer*& b : m_bake.readback) {
+        m_device.Destroy(b);
+        b = nullptr;
+    }
+    m_bake.state = BakeState::Idle;
+    m_bake.result = BakedGI{};
+    m_probesValid = false;
+}
+
+f32 GlobalIllumination::BakeProgress() const
+{
+    switch (m_bake.state) {
+    case BakeState::Pending: return 0.0f;
+    case BakeState::Running: return 0.95f * f32(m_bake.iteration) / f32(Max(m_bake.settings.iterations, 1u));
+    case BakeState::Readback: return 0.97f;
+    case BakeState::Done: return 1.0f;
+    default: return 0.0f;
+    }
+}
+
+void GlobalIllumination::AddBakeReadback(RenderGraph& graph)
+{
+    Texture* sources[3] = {m_irradiance, m_probeDistance, m_probeData};
+    const u32 bpp[3] = {8, 4, 8};
+    RGTexture handles[3];
+    for (u32 i = 0; i < 3; ++i) {
+        const TextureDesc& d = sources[i]->GetDesc();
+        const u64 pitch = (u64(d.width) * bpp[i] + 255) & ~u64(255);
+        m_device.Destroy(m_bake.readback[i]);
+        m_bake.readback[i] = m_device.CreateBuffer(BufferDesc{pitch * d.height, BufferUsage::CopyDest, MemoryType::Readback, 0, "GI.BakeReadback"});
+        handles[i] = graph.ImportTexture(sources[i], ResourceState::ShaderResource);
+    }
+    graph.AddPass(
+        "GI.BakeReadback", PassType::Copy,
+        [=](PassBuilder& b) {
+            for (const RGTexture& t : handles)
+                b.ReadTexture(t, ResourceState::CopySource);
+            b.SideEffects();
+        },
+        [this, sources](PassContext& ctx) {
+            for (u32 i = 0; i < 3; ++i)
+                m_bake.pitches[i] = ctx.cmd.CopyTextureToBuffer(m_bake.readback[i], 0, sources[i]);
+        });
+    m_bake.copyFrame = m_frame;
+    m_bake.state = BakeState::Readback;
+    BakedGI& r = m_bake.result;
+    r.originIndex = m_bake.origin;
+    r.counts = m_bake.counts;
+    r.spacing = m_bake.spacing;
+    r.maxDistance = Max(m_settings.maxRayDistance, m_bake.spacing);
+    r.exposure = m_exposure;
+}
+
+void GlobalIllumination::FinishBakeReadback()
+{
+    if (m_frame < m_bake.copyFrame + FramesInFlight + 1)
+        return; // the copies may not have run yet
+    Texture* sources[3] = {m_irradiance, m_probeDistance, m_probeData};
+    const u32 bpp[3] = {8, 4, 8};
+    Array<u8>* outs[3] = {&m_bake.result.irradiance, &m_bake.result.distance, &m_bake.result.probeData};
+    for (u32 i = 0; i < 3; ++i) {
+        const TextureDesc& d = sources[i]->GetDesc();
+        const u64 row = u64(d.width) * bpp[i];
+        const u8* data = static_cast<const u8*>(m_bake.readback[i]->GetMappedData());
+        outs[i]->ResizeUninitialized(row * d.height);
+        for (u32 y = 0; y < d.height; ++y)
+            MemCopy(outs[i]->Data() + row * y, data + m_bake.pitches[i] * y, row);
+        m_device.Destroy(m_bake.readback[i]);
+        m_bake.readback[i] = nullptr;
+    }
+    m_bake.state = BakeState::Done;
+    m_probesValid = false; // the dynamic probes go back to the camera grid
+    ZX_LOG_INFO(LogGI, "Lighting baked: {} probes", m_bake.counts.x * m_bake.counts.y * m_bake.counts.z);
+}
+
+bool GlobalIllumination::TakeBake(BakedGI& out)
+{
+    if (m_bake.state != BakeState::Done)
+        return false;
+    out = move(m_bake.result);
+    m_bake.result = BakedGI{};
+    m_bake.state = BakeState::Idle;
+    return true;
+}
+
+void GlobalIllumination::SetBaked(const BakedGI* data)
+{
+    m_bakedValid = false;
+    m_bakedPending = data && data->IsValid();
+    if (m_bakedPending)
+        m_bakedData = *data;
+    else
+        m_bakedData = BakedGI{};
+}
+
+bool BakedGI::IsValid() const
+{
+    const u64 probes = u64(counts.x) * counts.y * counts.z;
+    return probes > 0 && counts.x <= 64 && counts.y <= 32 && counts.z <= 64 && spacing > 0.0f &&
+           irradiance.Size() == probes * IrradianceTexels * IrradianceTexels * 8 && distance.Size() == probes * DistanceTexels * DistanceTexels * 4 &&
+           probeData.Size() == probes * 8;
+}
+
+namespace {
+constexpr u32 BakedMagic = 0x3149475A; // "ZGI1"
+constexpr u32 BakedVersion = 1;
+} // namespace
+
+bool SaveBakedGI(StringView path, const BakedGI& d)
+{
+    if (!d.IsValid())
+        return false;
+    Array<u8> bytes;
+    BinaryWriter w(bytes);
+    w.Write<u32>(BakedMagic);
+    w.Write<u32>(BakedVersion);
+    for (i32 v : {d.originIndex.x, d.originIndex.y, d.originIndex.z})
+        w.Write<i32>(v);
+    for (u32 v : {d.counts.x, d.counts.y, d.counts.z})
+        w.Write<u32>(v);
+    w.Write<f32>(d.spacing);
+    w.Write<f32>(d.maxDistance);
+    w.Write<f32>(d.exposure);
+    w.WriteArray(d.irradiance.View());
+    w.WriteArray(d.distance.View());
+    w.WriteArray(d.probeData.View());
+    return fs::WriteFile(path, bytes.View());
+}
+
+bool LoadBakedGI(StringView path, BakedGI& d)
+{
+    Array<u8> bytes;
+    if (!fs::ReadFile(path, bytes))
+        return false;
+    BinaryReader r(bytes.View());
+    if (r.Read<u32>() != BakedMagic || r.Read<u32>() != BakedVersion)
+        return false;
+    d.originIndex.x = r.Read<i32>();
+    d.originIndex.y = r.Read<i32>();
+    d.originIndex.z = r.Read<i32>();
+    d.counts.x = r.Read<u32>();
+    d.counts.y = r.Read<u32>();
+    d.counts.z = r.Read<u32>();
+    d.spacing = r.Read<f32>();
+    d.maxDistance = r.Read<f32>();
+    d.exposure = r.Read<f32>();
+    r.ReadArray(d.irradiance);
+    r.ReadArray(d.distance);
+    r.ReadArray(d.probeData);
+    return !r.HasError() && d.IsValid();
 }
 
 } // namespace zx::render
