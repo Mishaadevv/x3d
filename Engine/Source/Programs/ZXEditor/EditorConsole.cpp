@@ -352,6 +352,35 @@ ConCommand CmdNavGoto("nav.goto", "Sends every Nav Mesh Agent (in Play) to a poi
     ZX_LOG_INFO(LogCmd, "nav.goto: {} agent(s) sent{}", sent, ed->IsPlaying() ? "" : " (they walk in Play)");
 });
 
+ConCommand CmdBtStatus("bt.status", "Behaviour tree of every AI: running nodes and blackboard", [](Span<const StringView>) {
+    Editor* ed = Ed();
+    if (!ed)
+        return;
+    ed->world.Query<const BehaviorTree>().Each([&](ecs::Entity e, const BehaviorTree& bt) {
+        const BehaviorTreeAsset* tree = ed->behavior.Load(bt.tree.View());
+        String running;
+        if (tree)
+            for (usize i = 0; i < bt.states.Size() && i < tree->nodes.Size(); ++i)
+                if (bt.states[i].status == BTStatus::Running)
+                    running += String::Format("{}{}", running.Empty() ? "" : " > ", tree->nodes[i].name.Empty() ? StringView(BTNodeTypeName(tree->nodes[i].type)) : tree->nodes[i].name.View());
+        String bb;
+        for (const auto& [key, v] : bt.blackboard) {
+            String value = v.type == BBType::Bool ? String(v.number != 0.0 ? "true" : "false")
+                         : v.type == BBType::Number ? String::Format("{}", v.number)
+                         : v.type == BBType::Vec3 ? String::Format("({:.1f}, {:.1f}, {:.1f})", v.vec.x, v.vec.y, v.vec.z)
+                         : v.type == BBType::Entity ? String::Format("entity {}", v.entity.index)
+                                                    : v.text;
+            bb += String::Format(" {}={}", key, value);
+        }
+        ZX_LOG_INFO(LogCmd, "AI {} ({}): {} |{}", e.index, bt.tree, running.Empty() ? String("idle") : running, bb);
+    });
+});
+
+ConCommand CmdBtReload("bt.reload", "Reloads behaviour tree files (after editing a .zbt by hand)", [](Span<const StringView>) {
+    if (Editor* ed = Ed())
+        ed->behavior.Reload();
+});
+
 ConCommand CmdClearBake("gi.clearbake", "Deletes the scene's baked lighting", [](Span<const StringView>) {
     if (Editor* ed = Ed()) {
         platform::DeleteFileAt(ed->BakedLightingPath());

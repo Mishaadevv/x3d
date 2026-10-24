@@ -22,6 +22,7 @@
 #include "Engine/BuiltinAssets.h"
 #include "Engine/ComponentRegistry.h"
 #include "Engine/Navigation.h"
+#include "Engine/BehaviorTree.h"
 #include "Engine/Fire.h"
 #include "Engine/GameModule.h"
 #include "Engine/GameRuntime.h"
@@ -152,6 +153,7 @@ private:
     SoftBodySystem m_softBodies;
     WaterSystem m_water;
     NavigationSystem m_navigation;
+    BehaviorSystem m_behavior;
     GameUISystem m_gameUI;
     Localization m_localization;
     ui::FontSystem m_fonts;
@@ -270,6 +272,7 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     m_scripts->SetContentRoot("/Game");
     m_animation->contentRoot = "/Game";
     m_gameUI.contentRoot = "/Game";
+    m_behavior.contentRoot = "/Game";
     // Texts in the player's language (their choice is remembered in Saved/Config/Language.txt).
     m_localization.preferenceFile = Path::Join(GetSavedDirectory(), "Config/Language.txt");
     m_localization.Load("/Game");
@@ -396,7 +399,7 @@ bool Game::Frame()
     }
     if (!m_started && ready) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation, &m_behavior};
         BeginGame(m_world, s);
         m_started = true;
         m_startFrame = m_frame;
@@ -422,7 +425,7 @@ bool Game::Frame()
 
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation, &m_behavior};
         ListenerPose fallback;
         fallback.position = m_sceneCamera.position;
         m_gameUI.time += dt;
@@ -441,7 +444,7 @@ bool Game::Frame()
     scene::UpdateWorldTransforms(m_world);
     {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation, &m_behavior};
         const f32 gameDt = m_started ? dt * GameTimeScale(s) : dt; // time.scale (pause menus)
         m_particles.Tick(m_world, gameDt, m_started);
         m_animation->Tick(m_world, gameDt, m_started);
@@ -540,7 +543,7 @@ void Game::Shutdown()
     }
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, {}, nullptr, &m_softBodies, &m_gameUI, &m_water, &m_navigation};
+                      &m_inputActions, &m_inputActionState, {}, nullptr, &m_softBodies, &m_gameUI, &m_water, &m_navigation, &m_behavior};
         EndGame(s);
     }
     ClearScene(m_world);

@@ -31,6 +31,7 @@ class SoftBodySystem;
 class GameUISystem;
 class WaterSystem;
 class NavigationSystem;
+class BehaviorSystem;
 
 struct GameSystems
 {
@@ -50,6 +51,7 @@ struct GameSystems
     GameUISystem* gameUI = nullptr;
     WaterSystem* water = nullptr;         // wave heights, buoyancy, splashes
     NavigationSystem* navigation = nullptr; // nav meshes + Nav Mesh Agents (scripts: entity.navTo)
+    BehaviorSystem* behavior = nullptr;     // Behavior Tree components (AI decisions, sight)
 
     bool Enabled(StringView feature) const { return !featureEnabled || featureEnabled(feature); }
 };

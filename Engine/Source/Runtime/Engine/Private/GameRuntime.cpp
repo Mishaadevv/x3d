@@ -9,6 +9,7 @@
 #include "Engine/Gameplay.h"
 #include "Engine/InputActions.h"
 #include "Engine/Navigation.h"
+#include "Engine/BehaviorTree.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/Scripting.h"
@@ -56,6 +57,8 @@ void BeginGame(ecs::World& world, GameSystems& s)
     // Navigation: the mesh baked next to the scene (loaded by the host), else built now from the loaded geometry.
     if (s.navigation && !s.navigation->HasMesh() && world.Query<const NavMeshBounds>().Count() > 0)
         s.navigation->Build(world, s.renderAssets);
+    if (s.behavior)
+        s.behavior->Reset(world);
     if (s.fire) {
         s.fire->Clear();
         render::RenderAssets* assets = s.renderAssets;
@@ -105,7 +108,16 @@ void TickGame(ecs::World& world, GameSystems& s, f32 realDt, const InputState* i
         context.physics = physicsRunning ? s.physics : nullptr;
         s.game->Tick(world, dt, context);
     }
-    // Nav Mesh Agents follow their paths (characters among them get their move for this frame).
+    // Behaviour trees decide (they send Nav Mesh Agents, fire onAIEvent), then the agents follow their paths
+    // (characters among them get their move for this frame).
+    if (s.behavior && s.Enabled("ai")) {
+        scene::UpdateWorldTransforms(world);
+        s.behavior->navigation = s.navigation;
+        s.behavior->physics = physicsRunning ? s.physics : nullptr;
+        s.behavior->Tick(world, dt);
+        if (s.scripts && s.Enabled("scripts"))
+            s.scripts->DispatchAIEvents(world, s.behavior->Events());
+    }
     if (s.navigation && s.Enabled("navigation")) {
         scene::UpdateWorldTransforms(world);
         s.navigation->Tick(world, dt);

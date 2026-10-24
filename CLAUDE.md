@@ -267,6 +267,11 @@ funnel + Raycast shortcut; .znav), Engine/Navigation.h (NavMeshBounds / NavMeshA
 Load, GatherNavGeometry: collision Mesh Renderers + terrain heights), GameSystems::navigation (BeginGame builds if no mesh),
 scripts entity.navTo / navStop / navStatus / navRemaining; editor build.navigation, Show > Navigation, nav.* console,
 create navbounds|navagent; ZXGame loads <scene>.znav. Tests NavMesh.*, Navigation.*.
+Behaviour Trees (0.17.4): Engine/BehaviorTree.h (.zbt ParseBehaviorTree / WriteBehaviorTree / MakeGuardTree, BehaviorTree
+component with runtime states + blackboard, BehaviorSystem::Tick before NavigationSystem::Tick in TickGame, sight ->
+target / targetVisible / targetLastSeen, Events -> ScriptSystem::DispatchAIEvents = onAIEvent; scripts bbGet / bbSet).
+Starter StarterContent/AI/Guard.zbt; Editor::behavior, CreateNavAgent adds the Guard tree + "Waypoints"; console bt.status /
+bt.reload. Tests BehaviorTree.*. Python heredocs turn "\xEE" into raw bytes: put icon literals in with the Edit tool.
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
 in one run (switch cvars between stat.gpu samples).

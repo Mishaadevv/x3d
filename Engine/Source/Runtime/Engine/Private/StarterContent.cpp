@@ -2,6 +2,7 @@
 
 #include "Engine/ZGraph.h"
 #include "Engine/AnimGraph.h"
+#include "Engine/BehaviorTree.h"
 #include "Core/CoreInit.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
@@ -1372,6 +1373,9 @@ u32 WriteStarterContent(StringView contentDir)
     written += CopyLibrary("Characters", root + "/Characters"); // skinned, animated models (glTF)
     // Locomotion state machine for them (Idle / Walk / Run by speed, jump): an editable .zanimgraph.
     written += fs::WriteTextFile(root + "/Characters/Locomotion.zanimgraph", WriteAnimGraph(MakeLocomotionGraph())) ? 1u : 0u;
+    // AI: a guard that patrols waypoints, chases the Player while it sees it and searches where it lost it.
+    platform::CreateDirectoryTree(root + "/AI");
+    written += fs::WriteTextFile(root + "/AI/Guard.zbt", WriteBehaviorTree(MakeGuardTree())) ? 1u : 0u;
     const render::MaterialGraph textured[] = {MakeReliefMaterial("M_Bricks", "T_Bricks", 2.0f, 0.04f, 0.85f),
                                               MakeReliefMaterial("M_Cobblestone", "T_Cobble", 1.0f, 0.05f, 0.75f),
                                               MakeLeavesMaterial(), MakeTerrainMaterial()};

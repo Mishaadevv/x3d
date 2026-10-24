@@ -14,6 +14,7 @@
 #include "Engine/InputActions.h"
 #include "Engine/WorldPartition.h"
 #include "Engine/Navigation.h"
+#include "Engine/BehaviorTree.h"
 #include "Engine/Fire.h"
 #include "Engine/GameRuntime.h"
 #include "Engine/Packaging.h"
@@ -272,6 +273,7 @@ public:
     SoftBodySystem softBodies;            // soft-body vehicles (meshes while editing, simulation in Play)
     WaterSystem waterSystem;              // wave heights for gameplay, buoyancy, splashes
     NavigationSystem navigation;          // nav meshes (built here, saved as <scene>.znav) + agents in Play
+    BehaviorSystem behavior;              // Behavior Tree components in Play (trees from contentRoot)
     ZGraphEditorState graphEditor; // script graphs (.zgraph)
     Localization localization;            // Localization/*.zloc: game texts per language (Window > Localization)
     bool showLocalization = false;

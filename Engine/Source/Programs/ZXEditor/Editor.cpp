@@ -250,6 +250,7 @@ bool Editor::Initialize()
     scripts->onGraphTrace = [this](StringView file, ecs::Entity e, u32 node) { ZGraphTrace(*this, file, e, node); };
     animation->contentRoot = contentRoot; // Animator graphs (.zanimgraph)
     gameUI.contentRoot = contentRoot;     // UI Canvas styles (.zstyle)
+    behavior.contentRoot = contentRoot;   // Behavior Tree files (.zbt)
     localization.Load(contentRoot);       // Localization/*.zloc (the editor previews; the player's choice isn't saved here)
     gameUI.localization = &localization;
     scripts->localization = &localization;
@@ -425,6 +426,8 @@ bool Editor::OpenProject(StringView descriptorPath)
     if (animation) {
         animation->contentRoot = contentRoot;
         gameUI.contentRoot = contentRoot;
+        behavior.contentRoot = contentRoot;
+        behavior.Reload();
         localization.Load(contentRoot);
         animation->Clear();
     }
@@ -1969,9 +1972,19 @@ void Editor::UpdateNavigation()
         navigation.Clear();
 }
 
+/// The ground under `p` (scene meshes, else the y = 0 plane): where navigation objects are placed.
+static Vec3 GroundBelow(Editor& ed, Vec3 p)
+{
+    RaycastHit hit;
+    if (RaycastMeshes(ed.world, *ed.renderAssets, Ray(p + Vec3(0.0f, 1.0f, 0.0f), Vec3(0.0f, -1.0f, 0.0f)), hit, 10000.0f))
+        return hit.point;
+    return Vec3(p.x, p.y > 0.0f ? 0.0f : p.y, p.z);
+}
+
 void Editor::CreateNavMeshBounds(Vec3 position)
 {
-    const ecs::Entity e = CreateEntity("Nav Mesh Bounds", Transform(position));
+    // Centered a little above the ground, so the floor and what stands on it are inside.
+    const ecs::Entity e = CreateEntity("Nav Mesh Bounds", Transform(GroundBelow(*this, position) + Vec3(0.0f, NavMeshBounds{}.size.y * 0.3f, 0.0f)));
     world.Add(e, NavMeshBounds{});
     CommitCreated(e, "Create Nav Mesh Bounds");
     Select(e);
@@ -1979,6 +1992,7 @@ void Editor::CreateNavMeshBounds(Vec3 position)
 
 void Editor::CreateNavAgent(Vec3 position)
 {
+    position = GroundBelow(*this, position);
     const ecs::Entity e = CreateEntity("AI Agent", Transform(position));
     world.Add(e, NavMeshAgent{});
     const ecs::Entity body = CreateEntity("Body", Transform(Vec3(0, 0.9f, 0), Quat::Identity(), Vec3(0.7f, 1.8f, 0.7f)), e);
@@ -1990,6 +2004,20 @@ void Editor::CreateNavAgent(Vec3 position)
     MeshRenderer nm = mr;
     nm.mesh = builtin::Mesh(BuiltinShape::Cube);
     world.Add(nose, nm);
+    // The starter Guard tree: patrol the "Waypoints" children, chase the Player while it is seen.
+    BehaviorTree bt;
+    bt.tree = "StarterContent/AI/Guard.zbt";
+    world.Add(e, bt);
+    bool hasWaypoints = false;
+    world.Query<const scene::EntityName>().Each([&](ecs::Entity, const scene::EntityName& n) { hasWaypoints |= n.value == "Waypoints"; });
+    if (!hasWaypoints) {
+        // A root of its own (the agent walks, the points stay); its own undo step.
+        const ecs::Entity group = CreateEntity("Waypoints", Transform(position));
+        const Vec3 corners[4] = {Vec3(-4, 0, -4), Vec3(4, 0, -4), Vec3(4, 0, 4), Vec3(-4, 0, 4)};
+        for (u32 i = 0; i < 4; ++i)
+            CreateEntity(String::Format("Waypoint {}", i + 1), Transform(corners[i]), group);
+        CommitCreated(group, "Create Waypoints");
+    }
     CommitCreated(e, "Create AI Agent");
     Select(e);
 }
@@ -3008,6 +3036,7 @@ GameSystems Editor::GameSystemsForPlay()
     s.gameUI = &gameUI;
     s.water = &waterSystem;
     s.navigation = &navigation;
+    s.behavior = &behavior;
     s.renderAssets = renderAssets.Get();
     s.inputActions = &inputActions;
     s.inputActionState = &inputActionState;

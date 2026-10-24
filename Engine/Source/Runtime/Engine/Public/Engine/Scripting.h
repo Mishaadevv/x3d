@@ -19,6 +19,7 @@
 #include "Core/Memory/Pointers.h"
 #include "Core/Reflection/Reflection.h"
 #include "Core/Serialization/Json.h"
+#include "Engine/BehaviorTree.h"
 #include "Scene/ECS/World.h"
 #include "Script/ZeqouScript.h"
 
@@ -107,6 +108,8 @@ public:
     void DispatchPhysicsEvents(ecs::World& world, Span<const PhysicsEvent> events);
     /// Calls onAnimEvent(name) on the scripts of each event's entity and its ancestors (the player above its mesh).
     void DispatchAnimEvents(ecs::World& world, Span<const AnimEvent> events);
+    /// Behaviour tree Event nodes: fn onAIEvent(name) on the entity and its ancestors.
+    void DispatchAIEvents(ecs::World& world, Span<const BehaviorSystem::AIEvent> events);
     /// Calls onUIClick(name) / onUIChanged(name, value) on the widget's scripts and its ancestors' (the canvas).
     void DispatchUIEvents(ecs::World& world, Span<const UIEvent> events);
 

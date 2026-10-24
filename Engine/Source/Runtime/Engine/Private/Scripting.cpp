@@ -494,6 +494,54 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             sys.m_moves.PushBack(MoveTween{e, t->position, a[0].AsVec3(), a.Size() > 1 ? Max(a[1].AsFloat(), 0.0f) : 1.0f, 0.0f});
             return true;
         }
+        if (m == "bbGet" || m == "bbSet") {
+            // Behavior Tree blackboard: bbGet(key) -> value (nil if unset), bbSet(key, value) (nil clears it).
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = sys.context.world;
+            if (!w || !w->IsAlive(e))
+                return v.Fail("The entity was destroyed");
+            BehaviorTree* bt = w->Get<BehaviorTree>(e);
+            if (!bt)
+                return v.Fail("This entity has no Behavior Tree component (Add Component > Behavior Tree)");
+            if (a.Empty() || a[0].Type() != ValueType::String || (m == "bbSet" && a.Size() != 2))
+                return v.Fail(m == "bbGet" ? "entity.bbGet(key)" : "entity.bbSet(key, value)");
+            const String key(a[0].AsString());
+            if (m == "bbGet") {
+                const BBValue* bb = bt->blackboard.Find(key);
+                if (!bb)
+                    out = Value();
+                else if (bb->type == BBType::Bool)
+                    out = Value(bb->number != 0.0);
+                else if (bb->type == BBType::Number)
+                    out = Value(bb->number);
+                else if (bb->type == BBType::Vec3)
+                    out = Value(bb->vec);
+                else if (bb->type == BBType::String)
+                    out = Value(bb->text.View());
+                else if (bb->type == BBType::Entity && w->IsAlive(bb->entity))
+                    out = script::MakeNative(*o.nativeType, o.handle, bb->entity.Pack());
+                else
+                    out = Value();
+                return true;
+            }
+            const Value& val = a[1];
+            if (val.Type() == ValueType::Nil)
+                bt->blackboard.Remove(key);
+            else if (val.Type() == ValueType::Bool)
+                bt->blackboard.InsertOrAssign(key, BBValue::Bool(val.AsBool()));
+            else if (val.IsNumber())
+                bt->blackboard.InsertOrAssign(key, BBValue::Number(val.AsNumber()));
+            else if (val.Type() == ValueType::Vec3)
+                bt->blackboard.InsertOrAssign(key, BBValue::Vector(val.AsVec3()));
+            else if (val.Type() == ValueType::String)
+                bt->blackboard.InsertOrAssign(key, BBValue::Text(val.AsString()));
+            else if (val.Type() == ValueType::Native && static_cast<const script::NativeObject*>(val.AsObject())->nativeType == o.nativeType)
+                bt->blackboard.InsertOrAssign(key, BBValue::Of(ecs::Entity::Unpack(static_cast<const script::NativeObject*>(val.AsObject())->id)));
+            else
+                return v.Fail("entity.bbSet: the value must be nil, a bool, a number, a vec3, a string or an entity");
+            return true;
+        }
         if (m == "navTo" || m == "navStop" || m == "navStatus" || m == "navRemaining") {
             // Nav Mesh Agent: navTo(position) walks there on the navigation mesh (false: no agent / mesh), navStop(),
             // navStatus() = "idle" / "moving" / "arrived" / "partial" (unreachable, going as close as possible) /
@@ -1747,6 +1795,31 @@ void ScriptSystem::DispatchAnimEvents(ecs::World& world, Span<const AnimEvent> e
                     continue;
                 RebindGlobals(*rs);
                 if (!rs->instance->Call("onAnimEvent", Span<const Value>(args, 1))) {
+                    Report(m_vm->LastError(), true);
+                    rs->failed = true;
+                }
+            }
+            const scene::Parent* p = world.Get<const scene::Parent>(x);
+            if (!p)
+                break;
+            x = p->entity;
+        }
+    }
+}
+
+void ScriptSystem::DispatchAIEvents(ecs::World& world, Span<const BehaviorSystem::AIEvent> events)
+{
+    if (!m_running || events.Empty())
+        return;
+    context.world = &world;
+    for (const BehaviorSystem::AIEvent& ev : events) {
+        const Value args[1] = {Value(ev.name.View())};
+        for (ecs::Entity x = ev.entity; world.IsAlive(x);) {
+            for (UniquePtr<RunningScript>& rs : m_instances) {
+                if (rs->failed || !rs->started || rs->entity != x || !rs->instance->HasFunction("onAIEvent"))
+                    continue;
+                RebindGlobals(*rs);
+                if (!rs->instance->Call("onAIEvent", Span<const Value>(args, 1))) {
                     Report(m_vm->LastError(), true);
                     rs->failed = true;
                 }
