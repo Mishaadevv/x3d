@@ -226,7 +226,8 @@ shared rays) / AmbientCubeCS (6 RGBA16F 3D textures, wrap sampling = world order
 (DDGIVolume = ViewData::gi, DDGIIrradiance used by ForwardPBR LightSurface and r.ViewMode 9). Compact dispatch
 (compactStride / phase) unless probes scrolled in. ViewportSettings::gi (Lite 20x10x20 stride 8, Full 28x12x28
 stride 2), ViewportFeatures::globalIllumination (Features "globalIllumination", eras 2011/2008 off), EditorSettings
-globalIllumination / giQuality, cvars r.GI*. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
+globalIllumination / giQuality, cvars r.GI*. Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
+(DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
 in one run (switch cvars between stat.gpu samples).
 ZNano virtual geometry (M15, 0.14.1): Asset/Nano.h (Build = cluster DAG, AppendFallbackLods, SelectCut /
 ProjectedError on the CPU, MakeDetailedRock), CookedMesh::nano (NanoClusterHeader 80 B, sorted by parentError desc),

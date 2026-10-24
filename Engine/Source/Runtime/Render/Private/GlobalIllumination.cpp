@@ -65,7 +65,7 @@ struct ProbeParams
     u32 cubeUav[8];
     u32 cubeValid;
     u32 compactStride, phase;
-    f32 pad2;
+    u32 probeDataUav;
 };
 static_assert(sizeof(ProbeParams) == 704);
 
@@ -132,7 +132,7 @@ bool GlobalIllumination::Init()
 
 void GlobalIllumination::DestroyResources()
 {
-    for (Texture** t : {&m_distance, &m_albedo, &m_normal, &m_irradiance, &m_probeDistance}) {
+    for (Texture** t : {&m_distance, &m_albedo, &m_normal, &m_irradiance, &m_probeDistance, &m_probeData}) {
         m_device.Destroy(*t);
         *t = nullptr;
     }
@@ -211,6 +211,12 @@ void GlobalIllumination::EnsureResources(const GISettings& settings)
         d.format = Format::R16G16_FLOAT;
         d.debugName = "GI.ProbeDistance";
         m_probeDistance = m_device.CreateTexture(d);
+        m_device.Destroy(m_probeData);
+        d.width = counts.x * counts.y;
+        d.height = counts.z;
+        d.format = Format::R16G16B16A16_FLOAT;
+        d.debugName = "GI.ProbeData";
+        m_probeData = m_device.CreateTexture(d);
         for (Texture*& t : m_cubes) {
             m_device.Destroy(t);
             TextureDesc cd;
@@ -243,7 +249,7 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
         return;
     m_settings = settings;
     EnsureResources(settings);
-    if (!m_distance || !m_albedo || !m_normal || !m_seeds[0] || !m_seeds[1] || !m_irradiance || !m_probeDistance || !m_rays || !m_cubes[5]) {
+    if (!m_distance || !m_albedo || !m_normal || !m_seeds[0] || !m_seeds[1] || !m_irradiance || !m_probeDistance || !m_rays || !m_cubes[5] || !m_probeData) {
         m_active = false;
         return;
     }
@@ -384,6 +390,7 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
         g.invIrradianceSize = Vec2(1.0f / f32(m_probeCounts.x * m_probeCounts.y * IrradianceTexels), 1.0f / f32(m_probeCounts.z * IrradianceTexels));
         g.invDistanceSize = Vec2(1.0f / f32(m_probeCounts.x * m_probeCounts.y * DistanceTexels), 1.0f / f32(m_probeCounts.z * DistanceTexels));
         g.maxDistance = Max(settings.maxRayDistance, spacing);
+        g.probeData = m_probeData->GetSrvIndex();
     }
 }
 
@@ -513,6 +520,7 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
     v.invIrradianceSize = Vec2(1.0f / f32(m_probeCounts.x * m_probeCounts.y * IrradianceTexels), 1.0f / f32(m_probeCounts.z * IrradianceTexels));
     v.invDistanceSize = Vec2(1.0f / f32(m_probeCounts.x * m_probeCounts.y * DistanceTexels), 1.0f / f32(m_probeCounts.z * DistanceTexels));
     v.maxDistance = Max(s.maxRayDistance, spacing);
+    v.probeData = m_probesValid ? m_probeData->GetSrvIndex() : InvalidDescriptor;
     for (u32 k = 0; k < MaxLevels; ++k)
         p.sdf.levelMin[k] = Vec4(m_levels[k].min, m_voxel * f32(1u << k));
     p.sdf.distanceTex = m_distance->GetSrvIndex();
@@ -563,6 +571,8 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
         p.cubeUav[i] = m_cubes[i]->GetUavIndex();
     }
     p.cubeValid = m_probesValid ? 1u : 0u;
+    p.probeDataUav = m_probeData->GetUavIndex();
+    const RGTexture probeData = graph.ImportTexture(m_probeData, ResourceState::ShaderResource);
     RGTexture cubes[6];
     for (u32 i = 0; i < 6; ++i)
         cubes[i] = graph.ImportTexture(m_cubes[i], ResourceState::ShaderResource);
@@ -597,6 +607,7 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
                     b.ReadTexture(li.shadowTextures[c]);
             for (const RGTexture& t : cubes)
                 b.ReadTexture(t);
+            b.ReadTexture(probeData);
             b.WriteBuffer(rays);
         },
         [=, this](PassContext& ctx) {
@@ -613,6 +624,7 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
         [=](PassBuilder& b) {
             b.ReadBuffer(rays);
             b.WriteTexture(irradiance);
+            b.WriteTexture(probeData);
         },
         [=, this](PassContext& ctx) {
             ctx.cmd.SetPipeline(m_irradiancePipeline);

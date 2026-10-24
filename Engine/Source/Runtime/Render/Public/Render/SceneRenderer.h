@@ -104,7 +104,7 @@ struct GIVolumeConstants
     Vec2 invIrradianceSize;
     Vec2 invDistanceSize;
     f32 maxDistance = 0.0f;
-    f32 pad = 0.0f;
+    u32 probeData = rhi::InvalidDescriptor; // probe offsets (relocation)
 };
 static_assert(sizeof(GIVolumeConstants) == 80);
 

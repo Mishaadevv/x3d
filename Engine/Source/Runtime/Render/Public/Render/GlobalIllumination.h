@@ -113,6 +113,7 @@ private:
     rhi::Texture* m_irradiance = nullptr;
     rhi::Texture* m_probeDistance = nullptr;
     rhi::Buffer* m_rays = nullptr;
+    rhi::Texture* m_probeData = nullptr; // per slot: offset from the grid point (relocation)
     rhi::Texture* m_cubes[6] = {}; // ambient cube per probe slot: +X -X +Y -Y +Z -Z (bounces of the rays)
     UVec3 m_probeCounts;
     u32 m_levelCount = 0;

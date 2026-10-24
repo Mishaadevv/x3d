@@ -31,7 +31,7 @@ struct DDGIVolume
     float2 invIrradianceSize;
     float2 invDistanceSize;
     float maxDistance;  // meters a probe's rays travel
-    float pad;
+    uint probeData;     // Texture2D SRV, one texel per slot (x + y * countX, z): xyz = offset from the grid point (relocation)
 };
 
 // --- Octahedral mapping ----------------------------------------------------------------------------------------------
@@ -76,6 +76,14 @@ float2 DDGIProbeUV(DDGIVolume v, uint3 slot, float3 dir, uint texels, float2 inv
 
 float3 DDGIProbePosition(DDGIVolume v, int3 world) { return float3(world) * v.spacing; }
 
+/// How far the probe in `slot` moved off its grid point (out of walls, away from surfaces).
+float3 DDGIProbeOffset(DDGIVolume v, uint3 slot)
+{
+    if (v.probeData == ZX_INVALID_INDEX)
+        return 0.0;
+    return GetTexture2D(v.probeData).Load(int3(slot.x + slot.y * v.counts.x, slot.z, 0)).xyz;
+}
+
 // --- Irradiance lookup -----------------------------------------------------------------------------------------------
 
 /// Indirect diffuse light at `worldPos` with normal `n` (`toCamera`: unit vector towards the viewer). `coverage`: 1
@@ -104,7 +112,7 @@ float3 DDGIIrradianceEx(DDGIVolume v, float3 worldPos, float3 n, float3 toCamera
         const int3 offset = int3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
         const int3 world = v.originIndex + base + offset;
         const uint3 slot = DDGISlot(v, world);
-        const float3 probe = DDGIProbePosition(v, world);
+        const float3 probe = DDGIProbePosition(v, world) + DDGIProbeOffset(v, slot);
         const float3 trilinear = lerp(1.0 - alpha, alpha, float3(offset));
         float weight = trilinear.x * trilinear.y * trilinear.z;
         // Facing the probe (smooth backface term, never quite zero).

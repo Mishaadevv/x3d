@@ -51,7 +51,7 @@ struct ProbeParams
     uint cubeValid;          // the cubes hold last update's probes
     uint compactStride;      // > 0: group g updates probe g * compactStride + phase (no probe scrolled in this frame)
     uint phase;
-    float pad2;
+    uint probeDataUav;       // RWTexture2D: probe offsets (relocation), written by UpdateIrradianceCS
 };
 ZX_PASS_CONSTANTS(ProbeParams, g_Probe);
 
@@ -167,7 +167,7 @@ void TraceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
     if (ray >= g_Probe.raysPerProbe || !UpdatesThisFrame(probe, slot))
         return;
     const DDGIVolume v = g_Probe.volume;
-    const float3 origin = DDGIProbePosition(v, WorldOfSlot(v.originIndex, slot));
+    const float3 origin = DDGIProbePosition(v, WorldOfSlot(v.originIndex, slot)) + (IsNewProbe(slot) ? 0.0 : DDGIProbeOffset(v, slot));
     const float3 dir = RayDirection(ray);
     const SdfHit hit = SdfTrace(g_Probe.sdf, origin, dir, v.maxDistance, 96);
     float3 radiance = 0.0;
@@ -181,8 +181,8 @@ void TraceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
         if (dot(n, n) < 0.5)
             n = -dir;
         if (dot(n, dir) > 0.2) {
-            // The back of a surface: the probe is inside something (shrink the distance so the probe looks walled in).
-            distance = -hit.t * 0.2;
+            // The back of a surface: the probe is inside something (negative = back face; relocation moves it out).
+            distance = -hit.t;
         } else {
             const float voxel = g_Probe.sdf.levelMin[hit.level].w;
             const float3 p = hit.position + n * voxel * 0.75;
@@ -258,6 +258,42 @@ void LoadRays(uint probe, uint thread, uint threads)
     GroupMemoryBarrierWithGroupSync();
 }
 
+/// Moves a probe off its grid point (RTXGI-style relocation, from this update's rays): out through the nearest back face
+/// when it is inside geometry, away from a surface that is too close; never more than 45 % of the spacing.
+void RelocateProbe(uint3 slot)
+{
+    const DDGIVolume v = g_Probe.volume;
+    const float spacing = min(v.spacing.x, min(v.spacing.y, v.spacing.z));
+    const float minFront = 0.25 * spacing; // keep this far from surfaces
+    uint backfaces = 0;
+    float closestBack = 1e9, closestFront = 1e9;
+    float3 backDir = 0.0, frontDir = 0.0;
+    for (uint i = 0; i < g_Probe.raysPerProbe; ++i) {
+        const float d = s_ray[i].w;
+        if (d < 0.0) {
+            ++backfaces;
+            if (-d < closestBack) {
+                closestBack = -d;
+                backDir = s_dir[i];
+            }
+        } else if (d < closestFront) {
+            closestFront = d;
+            frontDir = s_dir[i];
+        }
+    }
+    RWTexture2D<float4> data = GetRWTexture2D(g_Probe.probeDataUav);
+    const uint2 texel = uint2(slot.x + slot.y * v.counts.x, slot.z);
+    float3 offset = IsNewProbe(slot) ? 0.0 : data[texel].xyz;
+    float3 moved = offset;
+    if (float(backfaces) > 0.25 * float(g_Probe.raysPerProbe) && closestBack < spacing)
+        moved += backDir * (closestBack + minFront * 0.5); // through the wall
+    else if (closestFront < minFront)
+        moved -= frontDir * min(minFront - closestFront, 0.1 * spacing); // step back from a close surface
+    if (all(abs(moved) <= 0.45 * spacing))
+        offset = moved;
+    data[texel] = float4(offset, 0.0);
+}
+
 [numthreads(8, 8, 1)]
 void UpdateIrradianceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID, uint flat : SV_GroupIndex)
 {
@@ -282,6 +318,8 @@ void UpdateIrradianceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadI
         weightSum += w;
     }
     const float3 result = weightSum > 1e-4 ? sum / weightSum : 0.0;
+    if (flat == 0 && g_Probe.probeDataUav != ZX_INVALID_INDEX)
+        RelocateProbe(slot);
     // A probe whose rays mostly hit back faces sits inside geometry.
     const float usable = float(backfaces) < 0.25 * float(g_Probe.raysPerProbe) ? 1.0 : 0.0;
     const uint2 texel = DDGITile(v, slot, DDGI_IRRADIANCE_TEXELS) + thread.xy;
@@ -317,7 +355,8 @@ void UpdateDistanceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID,
         w *= w;
         w *= w;
         w *= w; // c^16
-        const float d = min(abs(s_ray[i].w), v.maxDistance);
+        // Back faces count as close walls (the probe looks walled in until relocation moves it out).
+        const float d = min(s_ray[i].w < 0.0 ? -s_ray[i].w * 0.2 : s_ray[i].w, v.maxDistance);
         sum += float2(d, d * d) * w;
         weightSum += w;
     }
