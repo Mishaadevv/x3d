@@ -258,6 +258,10 @@ hlod_x_z.zhlod = merged CookTerrainProxy meshes sunk 3 m, HlodProxy entities nev
 Editor: worldPartition / streamer / CellDirectory / ConfigureStreaming / CreateOpenWorld (world.create), world.hlod /
 world.stats / world.flytest (FlyTest, worldUpdateMs). ZXGame streams around the game camera. Terrain noiseOffset,
 chunk LODs with skirts, TerrainSystem new builds per Update (2). Tests WorldPartition.*.
+Foliage (0.17.2): Engine/Foliage.h (Foliage parts from FoliagePartsFromPrefab, base64 instances EncodeFoliage /
+DecodeFoliage into runtime `instances`, ScatterFoliage rules); GatherRenderInstances(world, out, animation, viewer)
+emits one RenderInstance per instance part within cullDistance; SaveScene lists foliage sources. world.create copies
+the StylizedNature pack (project path Content/Packs/StylizedNature/<model>.gltf, no Models subfolder) and scatters.
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
 in one run (switch cvars between stat.gpu samples).

@@ -1,4 +1,5 @@
 #include "Engine/SceneRendering.h"
+#include "Engine/Foliage.h"
 #include "Engine/Animation.h"
 #include "Engine/SoftBody.h"
 #include "Engine/Wind.h"
@@ -342,7 +343,7 @@ Entity InstantiatePrefab(World& world, const asset::PrefabAsset& prefab, const T
     return root;
 }
 
-void GatherRenderInstances(World& world, Array<render::RenderInstance>& out, const AnimationSystem* animation)
+void GatherRenderInstances(World& world, Array<render::RenderInstance>& out, const AnimationSystem* animation, const Vec3* viewer)
 {
     // Plain mesh renderers (almost all of them): visible ones counted per chunk, then the chunks fill their ranges in
     // parallel. Flammable ones (few) follow, serially.
@@ -386,6 +387,36 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out, con
         jobs::ParallelFor(u32(chunks.Size()), 1, fill);
     else
         fill(0, u32(chunks.Size()));
+    // Foliage: every plant within its cull distance, one instance per model part.
+    world.Query<const WorldTransform, Foliage>().Each([&](Entity e, const WorldTransform& wt, Foliage& f) {
+        if (f.parts.Empty())
+            return;
+        DecodeFoliage(f);
+        const f32 cull2 = f.cullDistance * f.cullDistance;
+        const Vec3 origin = wt.matrix.GetTranslation();
+        Array<Mat4> partMatrices;
+        for (const FoliagePart& p : f.parts)
+            partMatrices.PushBack(p.local.ToMatrix());
+        const u64 base = HashMix64(e.Pack());
+        for (usize i = 0; i < f.instances.Size(); ++i) {
+            const FoliageInstance& in = f.instances[i];
+            const Vec3 p = origin + in.position;
+            if (viewer) {
+                const Vec3 d = p - *viewer;
+                if (Dot(d, d) > cull2)
+                    continue;
+            }
+            const Mat4 m = wt.matrix * Mat4::TRS(in.position, Quat::FromAxisAngle(Vec3(0, 1, 0), in.yaw), Vec3(in.scale));
+            for (usize k = 0; k < f.parts.Size(); ++k) {
+                render::RenderInstance& inst = out.AddDefaulted();
+                inst.world = m * partMatrices[k];
+                inst.id = base ^ (u64(i) * 0x9E3779B97F4A7C15ull) ^ k;
+                inst.mesh = f.parts[k].mesh;
+                inst.materials = f.parts[k].materials.View();
+                inst.castShadows = f.castShadows;
+            }
+        }
+    });
     // Skinned meshes (few): their pose this frame.
     world.Query<const WorldTransform, const MeshRenderer, const Animator>().Each([&](Entity e, const WorldTransform& wt, const MeshRenderer& mr, const Animator&) {
         if (!mr.visible || !mr.mesh.IsValid())

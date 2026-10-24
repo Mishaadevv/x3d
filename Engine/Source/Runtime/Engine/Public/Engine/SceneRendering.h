@@ -299,7 +299,9 @@ ecs::Entity InstantiatePrefab(ecs::World& world, const asset::PrefabAsset& prefa
 /// Appends one RenderInstance per visible MeshRenderer. The materials spans point into the components, so the world
 /// must not change structurally until the frame's render passes have been recorded.
 /// Skinned meshes (Animator) take their skinning matrices from `animation` (none: drawn in the bind pose).
-void GatherRenderInstances(ecs::World& world, Array<render::RenderInstance>& out, const class AnimationSystem* animation = nullptr);
+/// `viewer` (optional): foliage farther than its cull distance from it is skipped.
+void GatherRenderInstances(ecs::World& world, Array<render::RenderInstance>& out, const class AnimationSystem* animation = nullptr,
+                           const Vec3* viewer = nullptr);
 /// Appends a LightDesc per PointLight/SpotLight entity (needs WorldTransform).
 void GatherLights(ecs::World& world, Array<render::LightDesc>& out);
 /// Appends a WaterSurface per Water entity (needs WorldTransform; scale is removed from the matrix).

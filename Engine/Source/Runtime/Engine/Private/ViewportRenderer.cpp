@@ -401,7 +401,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     {
         ZX_PROFILE_SCOPE("GatherInstances");
         m_instances.Clear();
-        GatherRenderInstances(world, m_instances, m_animation);
+        GatherRenderInstances(world, m_instances, m_animation, &camera.position);
     }
     {
         // Object motion: pair each instance with its world matrix of last frame (none after a cut).

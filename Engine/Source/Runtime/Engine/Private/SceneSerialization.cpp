@@ -1,4 +1,5 @@
 #include "Engine/SceneSerialization.h"
+#include "Engine/Foliage.h"
 #include "Core/Containers/Algorithm.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/Log/Log.h"
@@ -217,12 +218,19 @@ JsonValue SaveScene(ecs::World& world, const SceneIOOptions& options, const Json
             if (!paths.Contains(path))
                 paths.PushBack(move(path));
         };
-        for (ecs::Entity e : entities)
+        for (ecs::Entity e : entities) {
             if (const MeshRenderer* mr = world.Get<const MeshRenderer>(e)) {
                 addSource(mr->mesh);
                 for (const asset::AssetId& m : mr->materials)
                     addSource(m);
             }
+            if (const Foliage* f = world.Get<const Foliage>(e))
+                for (const FoliagePart& p : f->parts) {
+                    addSource(p.mesh);
+                    for (const asset::AssetId& m : p.materials)
+                        addSource(m);
+                }
+        }
         for (String& p : paths)
             assetList.PushBack(JsonValue(p));
     }

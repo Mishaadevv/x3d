@@ -1,5 +1,7 @@
 #include "Editor.h"
 #include "Engine/TimeOfDay.h"
+#include "Engine/Project.h"
+#include "Engine/Foliage.h"
 #include "Engine/ZGraph.h"
 #include "Engine/PostProcessVolume.h"
 #include "Thumbnails.h"
@@ -2091,6 +2093,45 @@ bool Editor::CreateOpenWorld(f32 size, f32 tile, i32 seed)
         }
     }
     const f32 baseY = -t.height * 0.4f;
+    // Plants and rocks (Stylized Nature, CC0): copied into the project, loaded once for their meshes and materials.
+    struct PlantType
+    {
+        const char* models[5];
+        FoliageRule rule;
+        f32 cull;
+        bool shadows;
+        Array<Array<FoliagePart>> parts; // per model
+        Array<String> paths;
+    };
+    const f32 snowLine = 115.0f;
+    PlantType plants[] = {
+        {{"Tree", "Tree_2", "Tree_3", "Tree_4", "Tree_5"}, FoliageRule{0.0035f, 0.45f, -1e9f, snowLine - 70.0f, 0.85f, 260.0f, 0.8f, 1.3f, 11}, 900.0f, true, {}, {}},
+        {{"Pine", "Pine_2", "Pine_3", "Pine_4", "Pine_5"}, FoliageRule{0.003f, 0.55f, snowLine - 95.0f, snowLine + 10.0f, 0.75f, 300.0f, 0.85f, 1.35f, 23}, 900.0f, true, {}, {}},
+        {{"Bush", "Bush_with_Flowers", nullptr, nullptr, nullptr}, FoliageRule{0.004f, 0.6f, -1e9f, snowLine - 30.0f, 0.5f, 140.0f, 0.8f, 1.4f, 37}, 300.0f, true, {}, {}},
+        {{"Rock_Medium", "Rock_Medium_2", "Rock_Medium_3", nullptr, nullptr}, FoliageRule{0.0008f, 3.0f, -1e9f, 1e9f, 0.3f, 400.0f, 0.7f, 2.2f, 41}, 700.0f, true, {}, {}},
+        {{"Grass", "Tall_Grass", "Grass_Wispy", nullptr, nullptr}, FoliageRule{0.02f, 0.5f, -1e9f, snowLine - 40.0f, 0.6f, 90.0f, 0.8f, 1.3f, 53}, 70.0f, false, {}, {}},
+    };
+    if (assets) {
+        CopyAssetPack(engineRoot, "StylizedNature", contentRoot);
+        Array<asset::AssetId> ids;
+        for (PlantType& pt : plants)
+            for (const char* m : pt.models)
+                if (m) {
+                    pt.paths.PushBack(String::Format("{}/Packs/StylizedNature/{}.gltf", contentRoot, m));
+                    ids.PushBack(assets->LoadPath(pt.paths.Back()));
+                }
+        assets->WaitIdle();
+        usize k = 0;
+        for (PlantType& pt : plants)
+            for (usize i = 0; i < pt.paths.Size(); ++i) {
+                Array<FoliagePart> parts;
+                if (const asset::PrefabAsset* prefab = assets->GetPrefab(ids[k]))
+                    FoliagePartsFromPrefab(*prefab, parts);
+                pt.parts.PushBack(move(parts));
+                ++k;
+            }
+    }
+    u64 plantCount = 0;
     worldPartition = WorldPartitionSettings{};
     worldPartition.enabled = true;
     worldPartition.cellSize = tile;
@@ -2110,6 +2151,34 @@ bool Editor::CreateOpenWorld(f32 size, f32 tile, i32 seed)
             temp.Add(e, tt);
             temp.Add(e, SpatiallyLoaded{});
             EnsureEntityGuid(temp, e);
+            // The tile's plants: one Foliage per model, positions relative to the tile's center on the ground plane.
+            const Vec3 plantOrigin(center.x, 0.0f, center.z);
+            auto heightAt = [&](f32 x, f32 z) { return baseY + GeneratedTerrainHeight(tt, x - center.x, z - center.z); };
+            for (PlantType& pt : plants)
+                for (usize mi = 0; mi < pt.paths.Size(); ++mi) {
+                    if (pt.parts[mi].Empty())
+                        continue;
+                    FoliageRule rule = pt.rule;
+                    rule.density /= f32(pt.paths.Size());
+                    rule.seed = rule.seed * 31u + u32(mi) + u32(seed) * 977u;
+                    Array<FoliageInstance> points;
+                    ScatterFoliage(rule, Vec2(center.x - tile * 0.5f, center.z - tile * 0.5f), Vec2(tile), heightAt, points);
+                    if (points.Empty())
+                        continue;
+                    for (FoliageInstance& in : points)
+                        in.position -= plantOrigin;
+                    const ecs::Entity fe = scene::CreateNode(temp, Path::Stem(pt.paths[mi]), Transform(plantOrigin));
+                    Foliage f;
+                    f.model = Path::MakeRelative(pt.paths[mi], contentRoot);
+                    f.parts = pt.parts[mi];
+                    f.cullDistance = pt.cull;
+                    f.castShadows = pt.shadows;
+                    EncodeFoliage(f, points.View());
+                    temp.Add(fe, move(f));
+                    temp.Add(fe, SpatiallyLoaded{});
+                    EnsureEntityGuid(temp, fe);
+                    plantCount += points.Size();
+                }
             scene::UpdateWorldTransforms(temp);
             const JsonValue doc = zx::SaveScene(temp, SceneIO());
             fs::WriteTextFile(Path::Join(cells, WorldCellFileName(WorldCellOf(center, tile))), ToJsonString(doc));
@@ -2131,7 +2200,8 @@ bool Editor::CreateOpenWorld(f32 size, f32 tile, i32 seed)
     camera.moveSpeed = 40.0f;
     if (!SaveSceneFile(path, world, SceneIO(), SceneSettings()))
         return false;
-    ZX_LOG_INFO(LogEditor, "Open world: {:.0f} x {:.0f} m, {} terrain tiles of {:.0f} m -> {}", size, size, tiles * tiles, tile, path);
+    ZX_LOG_INFO(LogEditor, "Open world: {:.0f} x {:.0f} m, {} terrain tiles of {:.0f} m, {} plants and rocks -> {}", size, size, tiles * tiles, tile,
+                plantCount, path);
     {
         // HLODs of every cell before streaming starts.
         WorldStreamer builder;
