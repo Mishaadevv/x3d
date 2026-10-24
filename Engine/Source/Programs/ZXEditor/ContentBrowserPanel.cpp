@@ -48,6 +48,8 @@ FileKind KindOf(const FileItem& item)
         return {ZX_ICON_FILE_CODE, Color(0x4E, 0xC9, 0xB0), "Script"};
     if (ext.EqualsIgnoreCase(".zgraph"))
         return {ZX_ICON_WORKFLOW, Color(0x4E, 0x9C, 0xF0), "Script Graph"};
+    if (ext.EqualsIgnoreCase(".zbt"))
+        return {ZX_ICON_BRAIN, Color(0xC8, 0x8C, 0xF0), "Behavior Tree"};
     if (ext.EqualsIgnoreCase(".zscene"))
         return {ZX_ICON_CLAPPERBOARD, Color(0xF0, 0x8C, 0x4A), "Scene"};
     if (ext.EqualsIgnoreCase(".bin"))
@@ -229,6 +231,8 @@ void DrawContentBrowserPanel(Editor& ed)
                     OpenAnimGraphEditor(ed, item.path);
                 else if (Path::HasExtension(item.path, ".zgraph"))
                     OpenZGraphEditor(ed, item.path);
+                else if (Path::HasExtension(item.path, ".zbt"))
+                    OpenBTEditor(ed, item.path);
                 else if ((Path::HasExtension(item.path, ".wav") || Path::HasExtension(item.path, ".ogg")) && ed.audio)
                     ed.audio->TogglePreview(item.path);
                 else if (Path::HasExtension(item.path, ".zmat") || Path::HasExtension(item.path, ".zmati")) {
@@ -360,6 +364,15 @@ void DrawContentBrowserPanel(Editor& ed)
                 Refresh(ed, true);
             }
             ui::ItemTooltip("Visual scripting with nodes (like Blueprints): put it on an entity like a script");
+            if (ui::MenuItem(ZX_ICON_BRAIN "  New Behavior Tree")) {
+                String path = Path::Join(b.browserCurrent, "NewBehaviorTree.zbt");
+                for (u32 n = 2; platform::FileExists(path); ++n)
+                    path = Path::Join(b.browserCurrent, String::Format("NewBehaviorTree{}.zbt", n));
+                if (CreateBehaviorTreeFile(path))
+                    OpenBTEditor(ed, path);
+                Refresh(ed, true);
+            }
+            ui::ItemTooltip("AI decisions as a tree of tasks: put it on an entity with a Behavior Tree component");
             if (ui::MenuItem(ZX_ICON_WORKFLOW "  New Anim Graph")) {
                 CreateAnimGraph(ed, b.browserCurrent);
                 Refresh(ed, true);

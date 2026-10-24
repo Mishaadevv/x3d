@@ -221,3 +221,36 @@ ZX_TEST(BehaviorTree, NavComponentsAreRegistered)
     ZX_EXPECT(FindComponentType("NavMeshAgent") != nullptr);
     ZX_EXPECT(FindComponentType("BehaviorTree") != nullptr);
 }
+
+ZX_TEST(BehaviorTree, LayoutAndProblems)
+{
+    BehaviorTreeAsset t = MakeGuardTree();
+    LayoutBehaviorTree(t, Vec2(100, 40), Vec2(10, 30));
+    // Children sit one level below their parent, in their running order left to right, without overlapping.
+    for (const BTNode& n : t.nodes) {
+        for (usize i = 0; i < n.children.Size(); ++i) {
+            const BTNode& c = t.nodes[n.children[i]];
+            ZX_EXPECT_NEAR(c.editorPosition.y, n.editorPosition.y + 70.0f, 1e-3f);
+            if (i > 0)
+                ZX_EXPECT(c.editorPosition.x >= t.nodes[n.children[i - 1]].editorPosition.x + 110.0f - 1e-3f);
+        }
+    }
+    Array<String> problems;
+    CheckBehaviorTree(t, problems);
+    ZX_EXPECT(problems.Empty());
+    // A decorator without a child and a loose node are reported; the lenient parser keeps such a tree for editing.
+    BTNode rep;
+    rep.type = BTNodeType::Repeat;
+    t.nodes.PushBack(rep);
+    t.nodes[0].children.PushBack(u32(t.nodes.Size() - 1));
+    BTNode loose;
+    loose.type = BTNodeType::Wait;
+    t.nodes.PushBack(loose);
+    problems.Clear();
+    CheckBehaviorTree(t, problems);
+    ZX_EXPECT_EQ(problems.Size(), 2u);
+    BehaviorTreeAsset back;
+    ZX_EXPECT(!ParseBehaviorTree(WriteBehaviorTree(t).View(), back));
+    ZX_EXPECT(ParseBehaviorTree(WriteBehaviorTree(t).View(), back, nullptr, false));
+    ZX_EXPECT_EQ(back.nodes.Size(), t.nodes.Size());
+}

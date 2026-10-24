@@ -376,6 +376,11 @@ ConCommand CmdBtStatus("bt.status", "Behaviour tree of every AI: running nodes a
     });
 });
 
+ConCommand CmdBtEdit("bt.edit", "Opens a behaviour tree in the tree editor: bt.edit <Content path .zbt>", [](Span<const StringView> args) {
+    if (Editor* ed = Ed(); ed && !args.Empty())
+        OpenBTEditor(*ed, Path::Join(ed->contentRoot, args[0]));
+});
+
 ConCommand CmdBtReload("bt.reload", "Reloads behaviour tree files (after editing a .zbt by hand)", [](Span<const StringView>) {
     if (Editor* ed = Ed())
         ed->behavior.Reload();

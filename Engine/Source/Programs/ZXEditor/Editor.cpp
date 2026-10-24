@@ -4098,7 +4098,7 @@ void Editor::UpdateImports()
 
 void Editor::ProcessShortcuts()
 {
-    if (ui->WantsKeyboard() || flying || mode != EditorMode::Editing || materialEditor.capturesKeys || scriptEditor.capturesKeys || graphEditor.capturesKeys || palette.open)
+    if (ui->WantsKeyboard() || flying || mode != EditorMode::Editing || materialEditor.capturesKeys || scriptEditor.capturesKeys || graphEditor.capturesKeys || btEditor.capturesKeys || palette.open)
         return;
     const KeyModifiers mods = input.Modifiers() & (KeyModifiers::Control | KeyModifiers::Shift | KeyModifiers::Alt);
     for (const WindowEvent& e : m_events) {

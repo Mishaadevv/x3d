@@ -4,7 +4,7 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12, part o
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a workflow like Unity URP or Unreal Engine 5 that
 runs well on everyday hardware. The development machine is a laptop with Intel UHD 620 graphics.
 
-**Version 0.17.4 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
+**Version 0.17.5 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
 [download](https://github.com/Mishaadevv/x3d/releases/latest)
 
 > [!WARNING]
@@ -85,7 +85,7 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
 - **AI navigation**:
   - A navigation mesh built from the scene (Recast-style voxelization, agent radius / height / step / slope).
   - Shortest paths (A* + funnel), Nav Mesh Agents that walk characters to a destination; `entity.navTo(pos)` in scripts.
-  - Behaviour trees (`.zbt`): patrol, chase what it sees, search; a starter Guard AI (Create > AI Agent).
+  - Behaviour trees (`.zbt`) with a node editor that shows the running AI live: patrol, chase what it sees, search; a starter Guard AI (Create > AI Agent).
 - **Physics (ZPhys)**, an engine of its own:
   - Rigid bodies, convex hulls, meshes, height fields and joints.
   - Triggers, queries and collision events.

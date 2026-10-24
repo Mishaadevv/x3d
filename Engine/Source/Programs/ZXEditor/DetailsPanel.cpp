@@ -856,6 +856,15 @@ void DrawDetailsPanel(Editor& ed)
                 edited = EditAudioSourceClip(ed, *static_cast<AudioSource*>(data)) | PropertyEditor(*ct.type, data);
             else if (ct.type == &TypeOf<TimeOfDay>())
                 edited = EditTimeOfDayPresets(*static_cast<TimeOfDay*>(data)) | PropertyEditor(*ct.type, data);
+            else if (ct.type == &TypeOf<BehaviorTree>()) {
+                edited = PropertyEditor(*ct.type, data);
+                const BehaviorTree& bt = *static_cast<const BehaviorTree*>(data);
+                if (ui::Button(ZX_ICON_BRAIN "  Edit Tree", Vec2(-1.0f, 0.0f)) && !bt.tree.Empty())
+                    OpenBTEditor(ed, Path::Join(ed.contentRoot, bt.tree));
+                ui::ItemTooltip("Opens the .zbt in the Behavior Tree editor (while playing it shows this AI's tree running)");
+                if (ed.IsPlaying())
+                    ed.btEditor.debugEntity = e;
+            }
             else
                 edited = PropertyEditor(*ct.type, data);
             if (edited) {

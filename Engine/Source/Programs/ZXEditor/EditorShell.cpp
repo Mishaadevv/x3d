@@ -615,6 +615,7 @@ void DrawShell(Editor& ed)
     DrawPackagePanel(ed);
     DrawScriptEditorPanel(ed);
     DrawZGraphEditorPanel(ed);
+    DrawBTEditorPanel(ed);
     DrawAbout(ed);
     DrawProfileDialog(ed);
     DrawSaveChangesDialog(ed);

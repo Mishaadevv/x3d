@@ -37,6 +37,7 @@
 #include "Engine/ViewportRenderer.h"
 #include "EditorActions.h"
 #include "ZGraphEditor.h"
+#include "BTEditor.h"
 #include "EditorSettings.h"
 #include "EditorTools.h"
 #include "AnimationEditor.h"
@@ -275,6 +276,7 @@ public:
     NavigationSystem navigation;          // nav meshes (built here, saved as <scene>.znav) + agents in Play
     BehaviorSystem behavior;              // Behavior Tree components in Play (trees from contentRoot)
     ZGraphEditorState graphEditor; // script graphs (.zgraph)
+    BTEditorState btEditor;        // behaviour trees (.zbt)
     Localization localization;            // Localization/*.zloc: game texts per language (Window > Localization)
     bool showLocalization = false;
     struct LocalizationWindowState
@@ -686,6 +688,7 @@ inline constexpr StringView StatsTitle = ZX_ICON_GAUGE "  Statistics";
 inline constexpr StringView AudioMixerTitle = ZX_ICON_SLIDERS_VERTICAL "  Audio Mixer";
 inline constexpr StringView InputActionsTitle = ZX_ICON_GAMEPAD_2 "  Input Actions";
 inline constexpr StringView ZGraphEditorTitle = ZX_ICON_WORKFLOW "  Script Graph";
+inline constexpr StringView BTEditorTitle = ZX_ICON_BRAIN "  Behavior Tree";
 inline constexpr StringView LocalizationTitle = ZX_ICON_LANGUAGES "  Localization";
 
 } // namespace zx::editor

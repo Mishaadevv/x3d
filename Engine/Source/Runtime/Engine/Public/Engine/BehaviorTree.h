@@ -110,8 +110,14 @@ struct BehaviorTreeAsset
     Array<Pair<String, BBValue>> defaults; // blackboard defaults
 };
 
-bool ParseBehaviorTree(StringView json, BehaviorTreeAsset& out, String* error = nullptr);
+/// `validate` = false accepts trees being edited (decorators without a child); child indices are always checked.
+bool ParseBehaviorTree(StringView json, BehaviorTreeAsset& out, String* error = nullptr, bool validate = true);
+/// Problems that keep a tree from running as drawn (empty decorators, unconnected nodes), one line each.
+void CheckBehaviorTree(const BehaviorTreeAsset& tree, Array<String>& problems);
 String WriteBehaviorTree(const BehaviorTreeAsset& tree);
+/// Tidy top-down layout of the editor positions: leaves side by side, parents centered over their children; nodes not
+/// under the root are placed in a row below.
+void LayoutBehaviorTree(BehaviorTreeAsset& tree, Vec2 nodeSize = Vec2(200.0f, 58.0f), Vec2 gap = Vec2(24.0f, 56.0f));
 /// Patrol between waypoints (children of "Waypoints"), chase the target ("Player") while it is seen, look around where
 /// it was last seen, then go back to patrolling.
 BehaviorTreeAsset MakeGuardTree();

@@ -271,7 +271,9 @@ Behaviour Trees (0.17.4): Engine/BehaviorTree.h (.zbt ParseBehaviorTree / WriteB
 component with runtime states + blackboard, BehaviorSystem::Tick before NavigationSystem::Tick in TickGame, sight ->
 target / targetVisible / targetLastSeen, Events -> ScriptSystem::DispatchAIEvents = onAIEvent; scripts bbGet / bbSet).
 Starter StarterContent/AI/Guard.zbt; Editor::behavior, CreateNavAgent adds the Guard tree + "Waypoints"; console bt.status /
-bt.reload. Tests BehaviorTree.*. Python heredocs turn "\xEE" into raw bytes: put icon literals in with the Edit tool.
+bt.reload. Tests BehaviorTree.*. Editor: ZXEditor/BTEditor.cpp (Editor::btEditor, window "Behavior Tree", children ordered
+by x = SortChildren, LayoutBehaviorTree / CheckBehaviorTree / lenient ParseBehaviorTree(..., false) for undo), console bt.edit.
+Real-mouse script uidrag2.py: wait:N token, keybd_event needs MapVirtualKey scan codes (the engine reads scan codes). Python heredocs turn "\xEE" into raw bytes: put icon literals in with the Edit tool.
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
 in one run (switch cvars between stat.gpu samples).

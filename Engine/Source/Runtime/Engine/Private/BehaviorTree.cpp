@@ -1,4 +1,5 @@
 #include "Engine/BehaviorTree.h"
+#include "Core/Containers/Function.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/Log/Log.h"
 #include "Core/Serialization/Json.h"
@@ -147,7 +148,7 @@ bool BBValue::Truthy() const
     }
 }
 
-bool ParseBehaviorTree(StringView json, BehaviorTreeAsset& out, String* error)
+bool ParseBehaviorTree(StringView json, BehaviorTreeAsset& out, String* error, bool validate)
 {
     JsonValue root;
     JsonParseError pe;
@@ -196,6 +197,11 @@ bool ParseBehaviorTree(StringView json, BehaviorTreeAsset& out, String* error)
             *error = "the tree has no nodes";
         return false;
     }
+    if (!validate) {
+        for (BTNode& n : out.nodes)
+            n.children.RemoveIf([&](u32 c) { return c >= out.nodes.Size(); });
+        return true;
+    }
     // Children must exist and form a tree under node 0 (no cycles: every child index is visited once).
     Array<u8> seen;
     seen.Resize(out.nodes.Size(), 0);
@@ -221,6 +227,40 @@ bool ParseBehaviorTree(StringView json, BehaviorTreeAsset& out, String* error)
         }
     }
     return true;
+}
+
+void CheckBehaviorTree(const BehaviorTreeAsset& tree, Array<String>& problems)
+{
+    Array<u8> reached;
+    reached.Resize(tree.nodes.Size(), 0);
+    Array<u32> stack;
+    if (!tree.nodes.Empty()) {
+        stack.PushBack(0);
+        reached[0] = 1;
+    }
+    while (!stack.Empty()) {
+        const u32 i = stack.PopBackValue();
+        const BTNode& n = tree.nodes[i];
+        const StringView label = n.name.Empty() ? StringView(BTNodeTypeName(n.type)) : n.name.View();
+        if (BTIsDecorator(n.type) && n.children.Size() != 1)
+            problems.PushBack(String::Format("{} '{}' needs exactly one child", BTNodeTypeName(n.type), label));
+        if (BTIsComposite(n.type) && n.children.Empty())
+            problems.PushBack(String::Format("{} '{}' has no children (it always fails)", BTNodeTypeName(n.type), label));
+        if ((n.type == BTNodeType::MoveTo || n.type == BTNodeType::Condition || n.type == BTNodeType::SetValue || n.type == BTNodeType::RandomPoint ||
+             n.type == BTNodeType::NextWaypoint || n.type == BTNodeType::FaceTarget) &&
+            n.key.Empty())
+            problems.PushBack(String::Format("{} '{}' has no blackboard key", BTNodeTypeName(n.type), label));
+        for (u32 c : n.children)
+            if (c < tree.nodes.Size() && !reached[c]) {
+                reached[c] = 1;
+                stack.PushBack(c);
+            }
+    }
+    u32 loose = 0;
+    for (u8 r : reached)
+        loose += r ? 0u : 1u;
+    if (loose)
+        problems.PushBack(String::Format("{} node{} not connected to the root (ignored)", loose, loose == 1 ? " is" : "s are"));
 }
 
 String WriteBehaviorTree(const BehaviorTreeAsset& tree)
@@ -272,6 +312,47 @@ String WriteBehaviorTree(const BehaviorTreeAsset& tree)
     }
     root.Set("nodes", move(nodes));
     return ToJsonString(root);
+}
+
+void LayoutBehaviorTree(BehaviorTreeAsset& tree, Vec2 nodeSize, Vec2 gap)
+{
+    if (tree.nodes.Empty())
+        return;
+    Array<u8> placed;
+    placed.Resize(tree.nodes.Size(), 0);
+    f32 nextX = 0.0f;
+    f32 maxY = 0.0f;
+    // Returns the node's x; leaves take the next free slot, parents center over their children.
+    Function<f32(u32, u32), 64> place = [&](u32 i, u32 depth) -> f32 {
+        placed[i] = 1;
+        BTNode& n = tree.nodes[i];
+        const f32 y = f32(depth) * (nodeSize.y + gap.y);
+        maxY = Max(maxY, y);
+        f32 lo = 1e30f, hi = -1e30f;
+        for (u32 c : n.children)
+            if (c < tree.nodes.Size() && !placed[c]) {
+                const f32 x = place(c, depth + 1);
+                lo = Min(lo, x);
+                hi = Max(hi, x);
+            }
+        f32 x;
+        if (lo > hi) {
+            x = nextX;
+            nextX += nodeSize.x + gap.x;
+        } else {
+            x = (lo + hi) * 0.5f;
+        }
+        n.editorPosition = Vec2(x, y);
+        return x;
+    };
+    place(0, 0);
+    // Loose nodes: a row under the tree.
+    f32 x = 0.0f;
+    for (u32 i = 0; i < tree.nodes.Size(); ++i)
+        if (!placed[i]) {
+            tree.nodes[i].editorPosition = Vec2(x, maxY + 2.0f * (nodeSize.y + gap.y));
+            x += nodeSize.x + gap.x;
+        }
 }
 
 BehaviorTreeAsset MakeGuardTree()
@@ -342,6 +423,7 @@ BehaviorTreeAsset MakeGuardTree()
     child(root, patrol);
     t.defaults.PushBack({String("search"), BBValue::Bool(false)});
     t.defaults.PushBack({String("targetVisible"), BBValue::Bool(false)});
+    LayoutBehaviorTree(t, Vec2(168.0f, 52.0f), Vec2(16.0f, 48.0f));
     return t;
 }
 
