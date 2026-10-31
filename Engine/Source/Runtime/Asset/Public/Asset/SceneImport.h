@@ -1,6 +1,6 @@
 #pragma once
 
-// Scene importers (own implementations): glTF 2.0 (.gltf + .bin / data URIs, .glb) and Wavefront OBJ/MTL.
+// Scene importers (own implementations): glTF 2.0 (.gltf + .bin / data URIs, .glb), binary FBX 7.x and Wavefront OBJ/MTL.
 // Everything is converted to engine conventions (left-handed, Y-up, +Z forward, meters, clockwise front faces,
 // UV origin top-left).
 //
@@ -112,7 +112,13 @@ Result<ImportedScene> ImportGltf(StringView path, const ImportOptions& options =
 /// Parses glTF/GLB from memory; external files (buffers, images) are resolved relative to baseDirectory.
 Result<ImportedScene> ImportGltfFromMemory(ByteSpan data, StringView baseDirectory, const ImportOptions& options = {});
 Result<ImportedScene> ImportObj(StringView path, const ImportOptions& options = {});
-/// Dispatches on the extension (.gltf/.glb/.obj).
+/// Binary FBX 7.x (meshes, materials, textures, skins, animation stacks).
+Result<ImportedScene> ImportFbx(StringView path, const ImportOptions& options = {});
+/// `sourceName` = the file name (messages, texture folder "<stem>.fbm"); textures resolve relative to baseDirectory.
+Result<ImportedScene> ImportFbxFromMemory(ByteSpan data, StringView baseDirectory, StringView sourceName, const ImportOptions& options = {});
+/// Texture files an FBX references, resolved like the importer does (moved files are looked up by name).
+Array<String> ListFbxTextureFiles(StringView path);
+/// Dispatches on the extension (.gltf/.glb/.fbx/.obj).
 Result<ImportedScene> ImportScene(StringView path, const ImportOptions& options = {});
 
 } // namespace zx::asset

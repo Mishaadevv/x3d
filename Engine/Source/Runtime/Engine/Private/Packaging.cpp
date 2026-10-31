@@ -14,7 +14,7 @@ namespace {
 
 bool IsAssetSource(StringView path)
 {
-    for (StringView ext : {"gltf", "glb", "obj", "png", "jpg", "jpeg", "tga", "bmp", "hdr", "exr", "dds"})
+    for (StringView ext : {"gltf", "glb", "fbx", "obj", "png", "jpg", "jpeg", "tga", "bmp", "hdr", "exr", "dds"})
         if (Path::HasExtension(path, ext))
             return true;
     return false;

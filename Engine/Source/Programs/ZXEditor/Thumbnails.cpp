@@ -27,7 +27,7 @@ bool IsMaterialPath(StringView p) { return Path::HasExtension(p, ".zmat") || Pat
 /// Rendered through the model path (a private world): meshes and materials (on a sphere).
 bool IsModelPath(StringView p)
 {
-    return Path::HasExtension(p, ".gltf") || Path::HasExtension(p, ".glb") || Path::HasExtension(p, ".obj") || IsMaterialPath(p);
+    return Path::HasExtension(p, ".gltf") || Path::HasExtension(p, ".glb") || Path::HasExtension(p, ".fbx") || Path::HasExtension(p, ".obj") || IsMaterialPath(p);
 }
 
 bool IsImagePath(StringView p)

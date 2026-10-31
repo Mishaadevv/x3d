@@ -477,7 +477,7 @@ ConCommand CmdStressParticles("stress.particles",
                                });
 
 ConCommand CmdAnimViewer("anim.viewer",
-                         "Opens a model in the Animation Viewer: anim.viewer <path of a .glb / .gltf> [clip [time]] (time pauses there)",
+                         "Opens a model in the Animation Viewer: anim.viewer <path of a .glb / .gltf / .fbx> [clip [time]] (time pauses there)",
                          [](Span<const StringView> args) {
                              if (!Ed() || args.Empty())
                                  return;

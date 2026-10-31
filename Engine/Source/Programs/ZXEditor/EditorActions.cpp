@@ -151,7 +151,7 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "file.saveScene", "Save Scene", "File", ZX_ICON_SAVE, "Ctrl+S", [](Editor& e) { e.SaveScene(false); });
     Add(ed, "file.saveSceneAs", "Save Scene As...", "File", ZX_ICON_SAVE_ALL, "Ctrl+Shift+S", [](Editor& e) { e.SaveScene(true); });
     Add(ed, "file.import", "Import Asset...", "File", ZX_ICON_IMPORT, "Ctrl+I", [](Editor& e) {
-        static const platform::FileDialogFilter Filters[] = {{"3D models", "*.gltf;*.glb;*.obj"}, {"All files", "*.*"}};
+        static const platform::FileDialogFilter Filters[] = {{"3D models", "*.gltf;*.glb;*.fbx;*.obj"}, {"All files", "*.*"}};
         for (const String& path : platform::OpenFileDialog(e.window.Get(), "Import Asset", Span<const platform::FileDialogFilter>(Filters, 2), true))
             e.ImportAsset(path, e.camera.position + e.camera.Forward() * 5.0f);
     });
@@ -542,7 +542,7 @@ void DrawCommandPalette(Editor& ed)
             const Guid g = m ? m->guid : (ed.materials ? ed.materials->LoadFile(path) : Guid());
             if (g.IsValid())
                 OpenMaterialEditor(ed, g);
-        } else if (Path::HasExtension(path, ".gltf") || Path::HasExtension(path, ".glb") || Path::HasExtension(path, ".obj") ||
+        } else if (Path::HasExtension(path, ".gltf") || Path::HasExtension(path, ".glb") || Path::HasExtension(path, ".fbx") || Path::HasExtension(path, ".obj") ||
                    Path::HasExtension(path, ".zprefab")) {
             ed.ImportAsset(path, ed.camera.position + ed.camera.Forward() * 5.0f);
         } else {

@@ -26,7 +26,7 @@ enum class SourceKind : u8
 
 bool IsSceneExtension(StringView path)
 {
-    return Path::HasExtension(path, "gltf") || Path::HasExtension(path, "glb") || Path::HasExtension(path, "obj");
+    return Path::HasExtension(path, "gltf") || Path::HasExtension(path, "glb") || Path::HasExtension(path, "fbx") || Path::HasExtension(path, "obj");
 }
 
 bool IsImageExtension(StringView path)
@@ -464,7 +464,7 @@ void AssetManager::CookSource(Source& s)
                     it.file = src.path;
                     continue;
                 }
-                Result<Image> img = DecodeImage(src.data.View(), src.mimeType == "image/jpeg" ? "x.jpg" : "x.png");
+                Result<Image> img = DecodeImage(src.data.View(), src.mimeType == "image/jpeg" ? "x.jpg" : src.mimeType == "image/x-tga" ? "x.tga" : src.mimeType == "image/bmp" ? "x.bmp" : "x.png");
                 if (!img)
                     continue; // left without origin -> fails on load
                 TextureCookOptions o;

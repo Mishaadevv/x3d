@@ -28,7 +28,7 @@ FileKind KindOf(const FileItem& item)
     if (item.directory)
         return {ZX_ICON_FOLDER, Color(0xE8, 0xB8, 0x4A), "Folder"};
     const StringView ext = Path::Extension(item.name);
-    if (ext.EqualsIgnoreCase(".gltf") || ext.EqualsIgnoreCase(".glb") || ext.EqualsIgnoreCase(".obj"))
+    if (ext.EqualsIgnoreCase(".gltf") || ext.EqualsIgnoreCase(".glb") || ext.EqualsIgnoreCase(".fbx") || ext.EqualsIgnoreCase(".obj"))
         return {ZX_ICON_BOX, Color(0x5A, 0xA0, 0xF5), "Model"};
     if (ext.EqualsIgnoreCase(".png") || ext.EqualsIgnoreCase(".jpg") || ext.EqualsIgnoreCase(".jpeg") || ext.EqualsIgnoreCase(".bmp") ||
         ext.EqualsIgnoreCase(".tga") || ext.EqualsIgnoreCase(".ktx2") || ext.EqualsIgnoreCase(".dds"))
@@ -68,7 +68,7 @@ bool IsHdrImage(StringView path) { return Path::HasExtension(path, ".hdr") || Pa
 /// Can be placed in the scene (double click / drag into the viewport).
 bool IsModel(StringView path)
 {
-    return Path::HasExtension(path, ".gltf") || Path::HasExtension(path, ".glb") || Path::HasExtension(path, ".obj") ||
+    return Path::HasExtension(path, ".gltf") || Path::HasExtension(path, ".glb") || Path::HasExtension(path, ".fbx") || Path::HasExtension(path, ".obj") ||
            Path::HasExtension(path, ".zprefab");
 }
 
@@ -328,7 +328,7 @@ void DrawContentBrowserPanel(Editor& ed)
 
     // Toolbar.
     if (ui::Button(ZX_ICON_IMPORT "  Import", Vec2::Zero(), ui::ButtonVariant::Primary)) {
-        static const platform::FileDialogFilter Filters[] = {{"3D models", "*.gltf;*.glb;*.obj"}, {"All files", "*.*"}};
+        static const platform::FileDialogFilter Filters[] = {{"3D models", "*.gltf;*.glb;*.fbx;*.obj"}, {"All files", "*.*"}};
         for (const String& path : platform::OpenFileDialog(ed.window.Get(), "Import Asset", Span<const platform::FileDialogFilter>(Filters, 2), true))
             ed.ImportAsset(path, ed.camera.position + ed.camera.Forward() * 5.0f);
     }

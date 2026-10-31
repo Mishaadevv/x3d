@@ -1,4 +1,5 @@
 #include "Engine/Project.h"
+#include "Asset/SceneImport.h"
 #include "Core/Containers/Algorithm.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/Hash/Hash.h"
@@ -332,6 +333,19 @@ Result<String> CopySourceWithDependencies(StringView sourcePathIn, StringView de
         if (!platform::CopyFileAt(from, to))
             ZX_LOG_WARN(LogProject, "Missing dependency '{}' of {}", rel, Path::FileName(source));
     }
+    // FBX textures are often stored with absolute paths or in a sibling folder: files inside the source folder keep
+    // their relative path, the others are copied next to the model (where the importer looks for them by name).
+    if (Path::HasExtension(source, ".fbx"))
+        for (const String& file : asset::ListFbxTextureFiles(source)) {
+            const String normalized = Path::Normalize(file);
+            const String prefix = sourceDir + "/";
+            const String rel = normalized.View().StartsWith(prefix) ? String(normalized.View().SubStr(prefix.Size()))
+                                                                     : String(Path::FileName(normalized));
+            const String to = Path::Join(dest, rel);
+            platform::CreateDirectoryTree(Path::Parent(to));
+            if (!platform::CopyFileAt(normalized, to))
+                ZX_LOG_WARN(LogProject, "Can't copy texture '{}' of {}", normalized, Path::FileName(source));
+        }
     // Keep the asset GUID stable: carry an existing .zmeta along.
     if (platform::FileExists(source + ".zmeta"))
         platform::CopyFileAt(source + ".zmeta", target + ".zmeta");

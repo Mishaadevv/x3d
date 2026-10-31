@@ -886,6 +886,8 @@ Result<ImportedScene> ImportScene(StringView path, const ImportOptions& options)
 {
     if (Path::HasExtension(path, "gltf") || Path::HasExtension(path, "glb"))
         return ImportGltf(path, options);
+    if (Path::HasExtension(path, "fbx"))
+        return ImportFbx(path, options);
     if (Path::HasExtension(path, "obj"))
         return ImportObj(path, options);
     return Error::Make(ErrorCode::Unsupported, "No importer for '{}'", Path::FileName(path));

@@ -273,6 +273,11 @@ target / targetVisible / targetLastSeen, Events -> ScriptSystem::DispatchAIEvent
 Starter StarterContent/AI/Guard.zbt; Editor::behavior, CreateNavAgent adds the Guard tree + "Waypoints"; console bt.status /
 bt.reload. Tests BehaviorTree.*. Editor: ZXEditor/BTEditor.cpp (Editor::btEditor, window "Behavior Tree", children ordered
 by x = SortChildren, LayoutBehaviorTree / CheckBehaviorTree / lenient ParseBehaviorTree(..., false) for undo), console bt.edit.
+FBX (0.17.7): Asset/Private/FbxImporter.cpp (Document = binary node tree, FbxParser: objects + connections, node
+matrices in double via LocalMatrix + Convert = C*M*C^-1, BuildMesh in file space then mesh::Transform(C*G), skins:
+cluster Transform = Link^-1 * mesh bind, SkeletonInfo / BindSkin, ImportAnimations resample + ReduceKeys), ImportFbx /
+ListFbxTextureFiles (Project.cpp copies textures next to the model). Test data Tests/Data/Models/Fbx from
+Tools/gen_fbx_testdata.py (Blender; strips local paths); tests FbxImport.*, ManualFbx.CompareWithGltf.
 Real-mouse script uidrag2.py: wait:N token, keybd_event needs MapVirtualKey scan codes (the engine reads scan codes). Python heredocs turn "\xEE" into raw bytes: put icon literals in with the Edit tool.
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
