@@ -15,6 +15,7 @@
 #include "Engine/WorldPartition.h"
 #include "Engine/Navigation.h"
 #include "Engine/BehaviorTree.h"
+#include "Engine/Sequencer.h"
 #include "Engine/Fire.h"
 #include "Engine/GameRuntime.h"
 #include "Engine/Packaging.h"
@@ -38,6 +39,7 @@
 #include "EditorActions.h"
 #include "ZGraphEditor.h"
 #include "BTEditor.h"
+#include "SequencerEditor.h"
 #include "EditorSettings.h"
 #include "EditorTools.h"
 #include "AnimationEditor.h"
@@ -208,6 +210,13 @@ struct PanelState
     };
     Array<FileItem> browserItems;
     String browserListedDir;
+    // Rename popup (Content Browser): requested this frame, focus the field, the name being typed, its error.
+    bool renameOpen = false;
+    bool renameFocus = false;
+    bool renameDirectory = false;
+    String renamePath;
+    String renameName;
+    String renameError;
     f64 browserListedAt = -100.0;
     f32 browserTileSize = 88.0f;
     f32 browserTreeWidth = 200.0f;
@@ -275,8 +284,10 @@ public:
     WaterSystem waterSystem;              // wave heights for gameplay, buoyancy, splashes
     NavigationSystem navigation;          // nav meshes (built here, saved as <scene>.znav) + agents in Play
     BehaviorSystem behavior;              // Behavior Tree components in Play (trees from contentRoot)
+    SequenceSystem sequencer;             // Sequence Player components in Play, the timeline's preview (.zseq from contentRoot)
     ZGraphEditorState graphEditor; // script graphs (.zgraph)
     BTEditorState btEditor;        // behaviour trees (.zbt)
+    SeqEditorState seqEditor;      // the Sequencer window (.zseq)
     Localization localization;            // Localization/*.zloc: game texts per language (Window > Localization)
     bool showLocalization = false;
     struct LocalizationWindowState
@@ -303,7 +314,8 @@ public:
 
     ecs::World world;
     SceneUndoStack undo{world};
-    ecs::Entity selected;
+    ecs::Entity selected; // primary selection (last clicked)
+    Array<ecs::Entity> selection; // multi-selection (includes primary)
     String sceneName = "Untitled";
     String scenePath;          // physical .zscene path; empty until saved
     bool sceneDirty = false;   // = undo.IsDirty(), refreshed every frame
@@ -392,11 +404,23 @@ public:
     Rect minimizeRect, maximizeRect, closeRect;
 
     // --- Helpers ---
-    void Select(ecs::Entity e);
+    void Select(ecs::Entity e, bool add = false, bool range = false);
+    /// Assign a content script to an entity; validates the file and records one undo step.
+    bool AttachScript(ecs::Entity e, StringView path);
+    bool requestScriptPicker = false;
     String EntityLabel(ecs::Entity e) const;
     ecs::Entity CreateEntity(StringView name, const Transform& t, ecs::Entity parent = {});
     void DeleteSelected();
     void DuplicateSelected();
+    /// Ctrl+C / Ctrl+V: the selected objects (with their children) as JSON, on the system clipboard too.
+    void CopySelected();
+    void PasteClipboard();
+    /// The selected objects without those whose ancestor is selected as well (the ones an operation acts on).
+    Array<ecs::Entity> SelectedRoots() const;
+    JsonValue SnapshotForCopy(Span<const ecs::Entity> roots);
+    /// Creates new copies (new guids) of a snapshot list; selects them. `offset`: moves the roots.
+    Array<ecs::Entity> PasteSnapshot(const JsonValue& list, StringView label, bool rename, const Vec3* offset);
+    String entityClipboard;
     void FocusSelected();
     void ImportAsset(StringView physicalPath, Vec3 position, bool undoable = true);
     /// Scene file options for the open project (assets, content root, prefabs).
@@ -689,6 +713,7 @@ inline constexpr StringView AudioMixerTitle = ZX_ICON_SLIDERS_VERTICAL "  Audio 
 inline constexpr StringView InputActionsTitle = ZX_ICON_GAMEPAD_2 "  Input Actions";
 inline constexpr StringView ZGraphEditorTitle = ZX_ICON_WORKFLOW "  Script Graph";
 inline constexpr StringView BTEditorTitle = ZX_ICON_BRAIN "  Behavior Tree";
+inline constexpr StringView SequencerTitle = ZX_ICON_CLAPPERBOARD "  Sequencer";
 inline constexpr StringView LocalizationTitle = ZX_ICON_LANGUAGES "  Localization";
 
 } // namespace zx::editor

@@ -20,6 +20,7 @@
 #include "Core/Reflection/Reflection.h"
 #include "Core/Serialization/Json.h"
 #include "Engine/BehaviorTree.h"
+#include "Engine/Sequencer.h"
 #include "Scene/ECS/World.h"
 #include "Script/ZeqouScript.h"
 
@@ -96,6 +97,7 @@ public:
     AnimationSystem* animation = nullptr;
     SoftBodySystem* softBodies = nullptr; // vehicles: entity.carInput / carSpeed / ...
     NavigationSystem* navigation = nullptr; // Nav Mesh Agents: entity.navTo / navStop / navStatus / navRemaining
+    SequenceSystem* sequencer = nullptr;    // Sequence Players: entity.sequencePlay / sequenceStop / sequencePause / sequenceTime / sequencePlaying
     /// Game UI for ui.cursor / ui.overUI (null = no UI).
     GameUISystem* gameUI = nullptr;
     /// tr(key, ...) and lang (null = tr returns the key).
@@ -110,6 +112,8 @@ public:
     void DispatchAnimEvents(ecs::World& world, Span<const AnimEvent> events);
     /// Behaviour tree Event nodes: fn onAIEvent(name) on the entity and its ancestors.
     void DispatchAIEvents(ecs::World& world, Span<const BehaviorSystem::AIEvent> events);
+    /// Sequencer Event keys: fn onSequenceEvent(name) on the key's target entity and its ancestors.
+    void DispatchSequenceEvents(ecs::World& world, Span<const SequenceSystem::Event> events);
     /// Calls onUIClick(name) / onUIChanged(name, value) on the widget's scripts and its ancestors' (the canvas).
     void DispatchUIEvents(ecs::World& world, Span<const UIEvent> events);
 

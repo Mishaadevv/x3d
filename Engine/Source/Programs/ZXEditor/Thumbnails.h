@@ -50,6 +50,7 @@ private:
         u64 lastWanted = 0;
     };
 
+    bool EnsureRenderer();
     bool EnsureTexture(Entry& e);
     bool UpdateImage(render::RenderGraph& graph, Array<render::RGTexture>& sampled, Entry& e);
     void UpdateModel(render::RenderGraph& graph, Array<render::RGTexture>& sampled);
@@ -59,6 +60,7 @@ private:
     render::RenderAssets& m_renderAssets;
     rhi::Pipeline* m_blitPipeline = nullptr;
     UniquePtr<ViewportRenderer> m_renderer;
+    bool m_rendererFailed = false;
     ecs::World m_world;
     Array<Entry> m_entries;
     HashMap<String, u32> m_index;

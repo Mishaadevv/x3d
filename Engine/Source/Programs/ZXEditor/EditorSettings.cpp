@@ -296,6 +296,20 @@ void DrawSettingsWindow(Editor& ed)
             }
             if (g_section == 2) {
                 ui::Spacing();
+                ui::SeparatorText("Scene graphics (saved with scene)");
+                ui::TextDisabled("These settings also apply in the built game. Save the scene to keep them.");
+                bool sceneChanged = ui::Checkbox("Fog (height and volumetric)", &ed.environment.fog);
+                sceneChanged |= ui::Checkbox("Auto Exposure", &ed.environment.autoExposure);
+                if (!ed.environment.autoExposure) {
+                    sceneChanged |= ui::Checkbox("Manual Exposure", &ed.environment.manualExposure);
+                    if (ed.environment.manualExposure)
+                        sceneChanged |= ui::SliderFloat("Exposure EV100", &ed.environment.manualEV100, -10.0f, 20.0f, "{:.1f}");
+                    else
+                        ui::TextDisabled("Manual Exposure off: exposure follows the sky (legacy mode).");
+                }
+                if (sceneChanged)
+                    ed.undo.MarkExternalChange();
+                ui::Spacing();
                 ui::TextDisabled(String::Format("Engine profile: {} - the defaults these settings start from.", ed.lite ? "Lite" : "Full"));
                 if (ui::Button(ZX_ICON_GAUGE "  Change Engine Profile..."))
                     ed.showProfileDialog = true;

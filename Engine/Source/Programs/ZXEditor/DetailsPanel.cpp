@@ -5,6 +5,7 @@
 #include "Core/String/Parse.h"
 #include "Core/String/Path.h"
 #include "Engine/ComponentRegistry.h"
+#include "Engine/ScriptAssignment.h"
 #include "Engine/TimeOfDay.h"
 
 namespace zx::editor {
@@ -362,8 +363,9 @@ bool EditScript(Editor& ed, Script& s)
     ui::ItemTooltip(s.file.Empty() ? StringView("Drop a script (.zs) from the Content Browser here") : s.file.View());
     if (const void* payload = ui::AcceptDragDropPayload("asset")) {
         const StringView path(static_cast<const char*>(payload));
-        if (Path::HasExtension(path, ".zs") || Path::HasExtension(path, ".zgraph")) {
-            s.file = Path::MakeRelative(path, ed.contentRoot);
+        const String relative = ResolveScriptPath(ed.contentRoot, path);
+        if (!ed.IsPlaying() && !relative.Empty() && platform::FileExists(Path::Join(ed.contentRoot, relative)) && s.file != relative) {
+            s.file = relative;
             s.properties.Clear();
             changed = true;
         }
@@ -404,8 +406,13 @@ bool EditScript(Editor& ed, Script& s)
     }
     ui::SameLine(0.0f, 4.0f);
     ui::BeginDisabled(s.file.Empty());
-    if (ui::IconButton(ZX_ICON_PENCIL, "Edit in the Script Editor"))
-        OpenScriptEditor(ed, Path::Join(ed.contentRoot, s.file));
+    if (ui::IconButton(ZX_ICON_PENCIL, "Edit script or graph")) {
+        const String path = Path::Join(ed.contentRoot, s.file);
+        if (Path::HasExtension(s.file, ".zgraph"))
+            OpenZGraphEditor(ed, path);
+        else
+            OpenScriptEditor(ed, path);
+    }
     ui::EndDisabled();
     if (s.file.Empty() || !ed.scripts)
         return changed;
@@ -761,10 +768,14 @@ void DrawDetailsPanel(Editor& ed)
                 continue;
             any = true;
             if (ui::MenuItem(String::Format("{}  {}", ct.icon, ct.displayName))) {
-                ed.undo.Begin(String::Format("Add {}", ct.displayName));
-                ed.undo.Record(e);
-                ed.world.AddComponent(e, ct.id);
-                ed.undo.End();
+                if (ct.type == &TypeOf<Script>()) {
+                    ed.requestScriptPicker = true;
+                } else {
+                    ed.undo.Begin(String::Format("Add {}", ct.displayName));
+                    ed.undo.Record(e);
+                    ed.world.AddComponent(e, ct.id);
+                    ed.undo.End();
+                }
             }
         }
         if (!any)
@@ -772,6 +783,62 @@ void DrawDetailsPanel(Editor& ed)
         ui::EndPopup();
     }
     ui::TextDisabled(String::Format("Entity #{}  (generation {})", e.index, e.generation));
+    ui::BeginDisabled(ed.IsPlaying());
+    if (ui::Button(ZX_ICON_FILE_CODE "  Add / Replace Script...", Vec2(-1.0f, 0.0f)))
+        ed.requestScriptPicker = true;
+    if (const void* payload = ui::AcceptDragDropPayload("asset")) {
+        const StringView path(static_cast<const char*>(payload));
+        if (Path::HasExtension(path, ".zs") || Path::HasExtension(path, ".zgraph"))
+            ed.AttachScript(e, path);
+    }
+    ui::ItemTooltip("Choose, create, or drop a .zs / .zgraph script on this entity");
+    ui::EndDisabled();
+    static Array<String> pickerScripts;
+    static String pickerFilter;
+    if (ed.requestScriptPicker && !ed.IsPlaying()) {
+        ed.requestScriptPicker = false;
+        pickerScripts.Clear();
+        pickerFilter.Clear();
+        ListScripts(ed.contentRoot, ed.contentRoot, pickerScripts);
+        ui::OpenPopup("##entity_script_picker");
+    }
+    if (ui::BeginPopup("##entity_script_picker")) {
+        ui::TextDisabled("Assign script");
+        ui::SetNextItemWidth(300.0f);
+        ui::InputText("##script_search", pickerFilter, ui::InputTextFlags::None, "Search scripts...");
+        if (ui::MenuItem(ZX_ICON_FILE_PLUS "  New Script...")) {
+            const String dir = ed.contentRoot + "/Scripts";
+            platform::CreateDirectoryTree(dir);
+            String path = dir + "/NewScript.zs";
+            for (u32 n = 2; platform::FileExists(path); ++n)
+                path = String::Format("{}/NewScript{}.zs", dir, n);
+            if (CreateScriptFile(path)) {
+                ed.AttachScript(e, path);
+                OpenScriptEditor(ed, path);
+                ed.panels.browserListedDir.Clear();
+            }
+        }
+        ui::Separator();
+        if (ui::BeginChild("##script_list", Vec2(320.0f, 240.0f), false)) {
+            bool any = false;
+            for (const String& file : pickerScripts) {
+                bool match = pickerFilter.Empty();
+                for (usize i = 0; !match && i + pickerFilter.Size() <= file.Size(); ++i)
+                    match = file.View().SubStr(i, pickerFilter.Size()).EqualsIgnoreCase(pickerFilter);
+                if (!match)
+                    continue;
+                any = true;
+                if (ui::Selectable(String::Format(ZX_ICON_FILE_CODE "  {}", file))) {
+                    ed.AttachScript(e, file);
+                    ui::CloseCurrentPopup();
+                }
+            }
+            if (!any)
+                ui::TextDisabled(pickerScripts.Empty() ? "No scripts in this project yet" : "No scripts match the search");
+        }
+        ui::EndChild();
+        ui::EndPopup();
+    }
     ui::Spacing();
 
     // Prefab bar: source asset, override count, Select / Revert / Apply.
@@ -864,6 +931,13 @@ void DrawDetailsPanel(Editor& ed)
                 ui::ItemTooltip("Opens the .zbt in the Behavior Tree editor (while playing it shows this AI's tree running)");
                 if (ed.IsPlaying())
                     ed.btEditor.debugEntity = e;
+            }
+            else if (ct.type == &TypeOf<SequencePlayer>()) {
+                edited = PropertyEditor(*ct.type, data);
+                const SequencePlayer& sp = *static_cast<const SequencePlayer*>(data);
+                if (ui::Button(ZX_ICON_FILM "  Edit Sequence", Vec2(-1.0f, 0.0f)) && !sp.sequence.Empty())
+                    OpenSequencerEditor(ed, Path::Join(ed.contentRoot, sp.sequence));
+                ui::ItemTooltip("Opens the .zseq in the Sequencer: scrub the timeline, add keys, preview the scene");
             }
             else
                 edited = PropertyEditor(*ct.type, data);

@@ -22,8 +22,32 @@ struct GizmoState
     f32 startParam = 0.0f;
     f32 startAngle = 0.0f;
     Vec2 startMouse;
+    Mat4 startPrimaryWorld;
+    // The other selected entities (multi-selection): they follow the primary's world-space change.
+    struct Follower
+    {
+        ecs::Entity entity;
+        Mat4 startWorld;
+    };
+    Array<Follower> followers;
 };
 GizmoState g_gizmo;
+
+/// Selected entities whose ancestors are not selected too (moving a parent already moves its children).
+Array<ecs::Entity> TopLevelSelection(Editor& ed)
+{
+    Array<ecs::Entity> out;
+    for (ecs::Entity e : ed.selection) {
+        if (!ed.world.IsAlive(e) || !ed.world.Has<Transform>(e))
+            continue;
+        bool underSelected = false;
+        for (ecs::Entity p = scene::GetParent(ed.world, e); p && !underSelected; p = scene::GetParent(ed.world, p))
+            underSelected = ed.selection.Contains(p);
+        if (!underSelected)
+            out.PushBack(e);
+    }
+    return out;
+}
 
 struct ViewProjector
 {
@@ -255,10 +279,26 @@ bool Gizmo(Editor& ed, const ViewProjector& vp, DrawList& dl, bool hoveredViewpo
         g_gizmo.startAngle = Atan2(mouse.y - o2.y, mouse.x - o2.x);
         if (g_gizmo.active < 3)
             ClosestParamOnAxis(ray, origin, axes[g_gizmo.active], g_gizmo.startParam);
+        g_gizmo.startPrimaryWorld = world;
+        g_gizmo.followers.Clear(); // the list is rebuilt each drag; Reset at release frees it
+        for (ecs::Entity f : TopLevelSelection(ed))
+            if (f != ed.selected) {
+                bool related = false; // under the primary (moves with it) or above it (would move it twice)
+                for (ecs::Entity p = scene::GetParent(ed.world, f); p && !related; p = scene::GetParent(ed.world, p))
+                    related = p == ed.selected;
+                for (ecs::Entity p = scene::GetParent(ed.world, ed.selected); p && !related; p = scene::GetParent(ed.world, p))
+                    related = p == f;
+                if (related)
+                    continue;
+                ed.BeginContinuousEdit("Move", f); // the same undo step as the primary
+                g_gizmo.followers.PushBack({f, scene::ComputeWorldMatrix(ed.world, f)});
+            }
+        local = ed.world.Get<Transform>(ed.selected);
     }
     if (g_gizmo.active >= 0) {
         if (!down) {
             g_gizmo.active = -1;
+            g_gizmo.followers.Reset(); // free the buffer: g_gizmo is a static and would otherwise keep it at exit
         } else {
             const i32 a = g_gizmo.active;
             const Mat4 parent = ParentWorld(ed, ed.selected);
@@ -330,6 +370,22 @@ bool Gizmo(Editor& ed, const ViewProjector& vp, DrawList& dl, bool hoveredViewpo
                 }
             }
             *local = t;
+            // Followers: the same world-space change (delta = newPrimaryWorld * inverse(startPrimaryWorld)).
+            if (!g_gizmo.followers.Empty()) {
+                const Mat4 delta = (parent * t.ToMatrix()) * InverseAffine(g_gizmo.startPrimaryWorld);
+                for (const GizmoState::Follower& f : g_gizmo.followers) {
+                    Transform* ft = ed.world.IsAlive(f.entity) ? ed.world.Get<Transform>(f.entity) : nullptr;
+                    if (!ft)
+                        continue;
+                    const Mat4 localM = InverseAffine(ParentWorld(ed, f.entity)) * (delta * f.startWorld);
+                    Vec3 p, sc;
+                    Quat r;
+                    Decompose(localM, p, r, sc);
+                    ft->position = p;
+                    ft->rotation = Normalize(r);
+                    ft->scale = sc;
+                }
+            }
         }
     }
 
@@ -435,8 +491,12 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
         ui::MenuItem("Depth of Field", {}, &ed.showDepthOfField);
         ui::MenuItem("Motion Blur (playing)", {}, &ed.showMotionBlur);
         ui::Separator();
-        ui::MenuItem("Night", {}, &ed.environment.night);
-        ui::MenuItem("Auto Exposure", {}, &ed.environment.autoExposure);
+        if (ui::MenuItem("Night", {}, &ed.environment.night))
+            ed.undo.MarkExternalChange();
+        if (ui::MenuItem("Fog", {}, &ed.environment.fog))
+            ed.undo.MarkExternalChange();
+        if (ui::MenuItem("Auto Exposure", {}, &ed.environment.autoExposure))
+            ed.undo.MarkExternalChange();
         ui::EndPopup();
     }
     ui::SameLine(0.0f, 4.0f);
@@ -568,6 +628,10 @@ void DrawViewportPanel(Editor& ed)
                 ed.AssignMaterial(target, guid);
                 ed.Select(target);
             }
+        } else if (Path::HasExtension(path, ".zs") || Path::HasExtension(path, ".zgraph")) {
+            const ecs::Entity target = Pick(ed, ray);
+            if (ed.AttachScript(target, path))
+                ed.Select(target);
         } else if ((Path::HasExtension(path, ".hdr") || Path::HasExtension(path, ".exr")) && !ed.IsPlaying()) {
             ed.UseHdriSky(Path::MakeRelative(path, ed.contentRoot)); // panoramas become the sky
         } else {
@@ -621,8 +685,13 @@ void DrawViewportPanel(Editor& ed)
     if (surfaceHovered && ed.input.WasMousePressed(MouseButton::Left))
         s_pressPos = ui::GetMousePos();
     if (surfaceHovered && ed.input.WasMouseReleased(MouseButton::Left) && !gizmoBusy && !designing &&
-        Distance(ui::GetMousePos(), s_pressPos) < 4.0f * s)
-        ed.Select(Pick(ed, vp.MouseRay(ui::GetMousePos())));
+        Distance(ui::GetMousePos(), s_pressPos) < 4.0f * s) {
+        // Shift / Ctrl + click adds the object to the selection (or takes it out); clicking empty space with them keeps it.
+        const bool add = HasAnyFlags(ed.input.Modifiers(), KeyModifiers::Shift | KeyModifiers::Control);
+        const ecs::Entity hit = Pick(ed, vp.MouseRay(ui::GetMousePos()));
+        if (!add || hit)
+            ed.Select(hit, add);
+    }
 
     if (!ed.CleanViewportShot())
         ViewportToolbar(ed, r, s);

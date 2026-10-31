@@ -112,7 +112,8 @@ void DrawMenus(Editor& ed)
             ui::EndMenu();
         }
         ui::Separator();
-        for (StringView id : {StringView("edit.duplicate"), StringView("edit.delete"), StringView("edit.focus"), StringView("edit.createPrefab")})
+        for (StringView id : {StringView("edit.copy"), StringView("edit.paste"), StringView("edit.duplicate"), StringView("edit.delete"),
+                               StringView("edit.focus"), StringView("edit.createPrefab")})
             ActionMenuItem(ed, id);
         ui::Separator();
         ActionMenuItem(ed, "editor.palette");
@@ -137,6 +138,7 @@ void DrawMenus(Editor& ed)
         ActionMenuItem(ed, "create.windZone");
         ActionMenuItem(ed, "create.navMeshBounds");
         ActionMenuItem(ed, "create.navAgent");
+        ActionMenuItem(ed, "create.cinematic");
         if (ui::BeginMenu(ZX_ICON_MONITOR "  UI")) {
             for (StringView id : {StringView("create.ui.canvas"), StringView("create.ui.panel"), StringView("create.ui.text"), StringView("create.ui.button"),
                                   StringView("create.ui.image"), StringView("create.ui.progress"), StringView("create.ui.slider"), StringView("create.ui.toggle"), StringView("create.ui.input"),
@@ -186,6 +188,7 @@ void DrawMenus(Editor& ed)
         ui::MenuItem(AudioMixerTitle, {}, &ed.showMixer);
         ui::MenuItem(InputActionsTitle, {}, &ed.showInputActions);
         ui::MenuItem(LocalizationTitle, {}, &ed.showLocalization);
+        ActionMenuItem(ed, "window.sequencer", ed.seqEditor.open);
         ui::Separator();
         ActionMenuItem(ed, "window.resetLayout");
         ActionMenuItem(ed, "view.fullscreen");
@@ -616,6 +619,7 @@ void DrawShell(Editor& ed)
     DrawScriptEditorPanel(ed);
     DrawZGraphEditorPanel(ed);
     DrawBTEditorPanel(ed);
+    DrawSequencerPanel(ed);
     DrawAbout(ed);
     DrawProfileDialog(ed);
     DrawSaveChangesDialog(ed);

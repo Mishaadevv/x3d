@@ -56,8 +56,10 @@ public:
 
     void Clear();
     /// Remembers the current position as "saved"; IsDirty compares against it.
-    void MarkSaved() { m_savedIndex = i64(m_index); }
-    bool IsDirty() const { return m_savedIndex != i64(m_index); }
+    void MarkSaved() { m_savedIndex = i64(m_index); m_externalDirty = false; }
+    /// Marks a non-entity scene edit; it is not part of the entity undo history.
+    void MarkExternalChange() { m_externalDirty = true; }
+    bool IsDirty() const { return m_externalDirty || m_savedIndex != i64(m_index); }
     /// Incremented by every push/undo/redo/clear (UI caches can watch it).
     u32 Version() const { return m_version; }
 
@@ -75,6 +77,7 @@ private:
     Array<Entry> m_entries;
     usize m_index = 0;
     i64 m_savedIndex = 0;
+    bool m_externalDirty = false;
     u32 m_version = 0;
     u32 m_depth = 0;
     bool m_suspended = false;

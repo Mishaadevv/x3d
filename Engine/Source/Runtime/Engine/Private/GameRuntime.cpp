@@ -10,6 +10,7 @@
 #include "Engine/InputActions.h"
 #include "Engine/Navigation.h"
 #include "Engine/BehaviorTree.h"
+#include "Engine/Sequencer.h"
 #include "Engine/Particles.h"
 #include "Engine/PhysicsSystem.h"
 #include "Engine/Scripting.h"
@@ -59,6 +60,16 @@ void BeginGame(ecs::World& world, GameSystems& s)
         s.navigation->Build(world, s.renderAssets);
     if (s.behavior)
         s.behavior->Reset(world);
+    if (s.sequencer) {
+        s.sequencer->audio = s.audio;
+        s.sequencer->animation = s.animation;
+        if (s.Enabled("sequencer")) {
+            s.sequencer->Reload(); // sequences edited since the last Play
+            s.sequencer->Begin(world); // Play On Start players
+        } else {
+            s.sequencer->Clear();
+        }
+    }
     if (s.fire) {
         s.fire->Clear();
         render::RenderAssets* assets = s.renderAssets;
@@ -84,7 +95,16 @@ void TickGame(ecs::World& world, GameSystems& s, f32 realDt, const InputState* i
         s.gameUI->Update(world, realDt);
     if (s.inputActionState && s.inputActions)
         s.inputActionState->Update(*s.inputActions, input);
+    // Sequences run first: they pose transforms / cameras, and their Event keys reach the scripts of this frame.
+    if (s.sequencer && s.Enabled("sequencer")) {
+        s.sequencer->audio = s.audio;
+        s.sequencer->animation = s.animation;
+        s.sequencer->Tick(world, dt);
+    }
     if (s.scripts && s.Enabled("scripts")) {
+        if (s.sequencer && s.Enabled("sequencer"))
+            s.scripts->DispatchSequenceEvents(world, s.sequencer->Events());
+        s.scripts->sequencer = s.sequencer;
         s.scripts->actions = s.inputActionState;
         s.scripts->physics = physicsRunning ? s.physics : nullptr;
         s.scripts->particles = s.particles;
@@ -184,6 +204,8 @@ void TickGame(ecs::World& world, GameSystems& s, f32 realDt, const InputState* i
 
 void EndGame(GameSystems& s)
 {
+    if (s.sequencer)
+        s.sequencer->Clear(); // the host restores the world (the editor reloads its Play snapshot)
     if (s.scripts)
         s.scripts->End();
     if (s.game)

@@ -1,5 +1,6 @@
 #include "Editor.h"
 #include "Engine/TimeOfDay.h"
+#include "Engine/ScriptAssignment.h"
 #include "Engine/Project.h"
 #include "Engine/Foliage.h"
 #include "Engine/ZGraph.h"
@@ -251,6 +252,7 @@ bool Editor::Initialize()
     animation->contentRoot = contentRoot; // Animator graphs (.zanimgraph)
     gameUI.contentRoot = contentRoot;     // UI Canvas styles (.zstyle)
     behavior.contentRoot = contentRoot;   // Behavior Tree files (.zbt)
+    sequencer.contentRoot = contentRoot;  // Sequence files (.zseq)
     localization.Load(contentRoot);       // Localization/*.zloc (the editor previews; the player's choice isn't saved here)
     gameUI.localization = &localization;
     scripts->localization = &localization;
@@ -299,9 +301,12 @@ bool Editor::Initialize()
     RegisterEditorConsole(*this);
     LoadEditorSettings(*this);
     thumbnails.Reset(new ThumbnailCache(*device, *assets, *renderAssets));
-    if (!thumbnails->Init())
+    if (!thumbnails->Init()) {
         ZX_LOG_WARN(LogEditor, "Thumbnail renderer unavailable");
-    thumbnails->SetMaterialLibrary(materials.Get());
+        thumbnails.Reset();
+    } else {
+        thumbnails->SetMaterialLibrary(materials.Get());
+    }
 
     String layout;
     if (fs::ReadTextFile(m_layoutPath, layout) && !CommandLine::HasFlag("resetlayout"))
@@ -428,6 +433,8 @@ bool Editor::OpenProject(StringView descriptorPath)
         gameUI.contentRoot = contentRoot;
         behavior.contentRoot = contentRoot;
         behavior.Reload();
+        sequencer.contentRoot = contentRoot;
+        sequencer.Reload();
         localization.Load(contentRoot);
         animation->Clear();
     }
@@ -2925,6 +2932,7 @@ void Editor::BeginPlay()
         undo.End();
         m_continuousEdit = false;
     }
+    PauseSequencerPreview(*this); // the Sequencer window's pose must not end up in the Play snapshot
     m_pieSnapshot = zx::SaveScene(world, SceneIOOptions{});
     m_pieSelection = GetEntityGuid(world, selected);
     undo.SetSuspended(true);
@@ -2957,6 +2965,8 @@ void Editor::EndPlay()
     ClearScene(world);
     zx::LoadScene(m_pieSnapshot, world, SceneIOOptions{});
     m_pieSnapshot = JsonValue();
+    seqEditor.session = SequenceSession(); // its entities are gone; the timeline poses the restored scene again
+    seqEditor.applyNeeded = true;
     selected = FindEntityByGuid(world, m_pieSelection);
     undo.SetSuspended(false);
     playState = PlayState::Editing;
@@ -3037,6 +3047,7 @@ GameSystems Editor::GameSystemsForPlay()
     s.water = &waterSystem;
     s.navigation = &navigation;
     s.behavior = &behavior;
+    s.sequencer = &sequencer;
     s.renderAssets = renderAssets.Get();
     s.inputActions = &inputActions;
     s.inputActionState = &inputActionState;
@@ -3723,7 +3734,7 @@ JsonValue Editor::SceneSettings() const
     env.Set("night", environment.night);
     env.Set("sunElevation", SettingDegrees(environment.sunElevation));
     env.Set("sunAzimuth", SettingDegrees(environment.sunAzimuth));
-    env.Set("autoExposure", environment.autoExposure);
+    WriteEnvironmentGraphics(env, environment);
     JsonValue cam = JsonValue::MakeObject();
     JsonValue pos = JsonValue::MakeArray();
     pos.PushBack(camera.position.x);
@@ -3748,8 +3759,8 @@ void Editor::ApplySceneSettings(const JsonValue& settings)
         environment.night = env.Get("night").AsBool(environment.night);
         environment.sunElevation = DegToRad(env.Get("sunElevation").AsFloat(RadToDeg(environment.sunElevation)));
         environment.sunAzimuth = DegToRad(env.Get("sunAzimuth").AsFloat(RadToDeg(environment.sunAzimuth)));
-        environment.autoExposure = env.Get("autoExposure").AsBool(environment.autoExposure);
     }
+    ReadEnvironmentGraphics(env, environment);
     const JsonValue& cam = settings.Get("editorCamera");
     if (cam.IsObject()) {
         const JsonValue& p = cam.Get("position");
@@ -3838,6 +3849,7 @@ void Editor::NewScene()
         undo.Discard();
         m_continuousEdit = false;
     }
+    PauseSequencerPreview(*this);
     ClearScene(world);
     pendingImports.Clear();
     undo.Clear();
@@ -3968,6 +3980,7 @@ bool Editor::SaveScene(bool saveAs)
 
 bool Editor::SaveSceneTo(StringView physicalPath)
 {
+    PauseSequencerPreview(*this); // the timeline's pose is not part of the scene (it poses again next frame)
     platform::CreateDirectoryTree(Path::Parent(physicalPath));
     SceneIOOptions io = SceneIO();
     if (worldPartition.enabled) {
@@ -3993,7 +4006,72 @@ bool Editor::SaveSceneTo(StringView physicalPath)
     return true;
 }
 
-void Editor::Select(ecs::Entity e) { selected = world.IsAlive(e) ? e : ecs::NullEntity; }
+void Editor::Select(ecs::Entity e, bool add, bool range)
+{
+    if (!world.IsAlive(e)) {
+        selected = ecs::NullEntity;
+        if (!add && !range)
+            selection.Clear();
+        return;
+    }
+
+    if (add) {
+        // Ctrl+Click: toggle entity in selection
+        const usize idx = selection.Find(e);
+        if (idx != NPos) {
+            // Remove from selection
+            selection.RemoveAt(idx);
+            if (selected == e) {
+                // Primary was removed - pick another as primary
+                selected = selection.Empty() ? ecs::NullEntity : selection.Back();
+            }
+        } else {
+            // Add to selection
+            selection.PushBack(e);
+            selected = e; // new entity becomes primary
+        }
+    } else if (range && world.IsAlive(selected)) {
+        // Shift+Click: select range from primary to this entity
+        // We need to find both in the flat hierarchy list
+        Array<ecs::Entity> allEntities;
+        world.Query<const scene::EntityName>().Each([&](ecs::Entity ent, const scene::EntityName&) {
+            allEntities.PushBack(ent);
+        });
+        Sort(allEntities, [](ecs::Entity a, ecs::Entity b) { return a.index < b.index; });
+
+        const usize start = allEntities.Find(selected);
+        const usize end = allEntities.Find(e);
+        if (start != NPos && end != NPos) {
+            const usize from = Min(start, end);
+            const usize to = Max(start, end);
+            selection.Clear();
+            for (usize i = from; i <= to; ++i)
+                selection.PushBack(allEntities[i]);
+            // Keep the clicked entity as primary
+            selected = e;
+        }
+    } else {
+        // Normal click: clear selection and select only this entity
+        selection.Clear();
+        selection.PushBack(e);
+        selected = e;
+    }
+}
+
+bool Editor::AttachScript(ecs::Entity e, StringView path)
+{
+    if (IsPlaying()) {
+        ZX_LOG_WARN(LogEditor, "Stop Play before assigning a script");
+        return false;
+    }
+    const ScriptAssignmentResult result = AssignScript(world, undo, e, contentRoot, path);
+    if (result == ScriptAssignmentResult::Assigned || result == ScriptAssignmentResult::AlreadyAssigned)
+        return true;
+    ZX_LOG_WARN(LogEditor, "Cannot assign script {}: {}", path,
+                result == ScriptAssignmentResult::InvalidEntity ? "no target entity" :
+                result == ScriptAssignmentResult::MissingFile ? "file not found" : "expected a script in this project's Content folder");
+    return false;
+}
 
 String Editor::EntityLabel(ecs::Entity e) const
 {
@@ -4002,50 +4080,158 @@ String Editor::EntityLabel(ecs::Entity e) const
     return String::Format("Entity {}", e.index);
 }
 
-void Editor::DeleteSelected()
+Array<ecs::Entity> Editor::SelectedRoots() const
 {
-    if (!world.IsAlive(selected))
-        return;
-    ZX_LOG_INFO(LogEditor, "Deleted '{}'", EntityLabel(selected));
-    undo.Begin("Delete");
-    undo.RecordHierarchy(selected);
-    scene::DestroyHierarchy(world, selected);
-    undo.End();
-    selected = ecs::NullEntity;
+    Array<ecs::Entity> out;
+    auto consider = [&](ecs::Entity e) {
+        if (!world.IsAlive(e) || out.Contains(e))
+            return;
+        for (ecs::Entity p = scene::GetParent(world, e); p; p = scene::GetParent(world, p))
+            if (p == selected || selection.Contains(p))
+                return; // its selected ancestor brings it along
+        out.PushBack(e);
+    };
+    consider(selected);
+    for (ecs::Entity e : selection)
+        consider(e);
+    return out;
 }
 
-void Editor::DuplicateSelected()
+void Editor::DeleteSelected()
 {
-    if (!world.IsAlive(selected))
+    const Array<ecs::Entity> roots = SelectedRoots();
+    if (roots.Empty())
         return;
-    // Snapshot the hierarchy, give every entity a new guid (parents remapped) and re-create it next to the original.
-    Array<ecs::Entity> all;
-    CollectHierarchy(world, selected, all);
+    undo.Begin(roots.Size() == 1 ? String("Delete") : String::Format("Delete {} objects", roots.Size()));
+    for (ecs::Entity e : roots)
+        undo.RecordHierarchy(e);
+    for (ecs::Entity e : roots)
+        if (world.IsAlive(e))
+            scene::DestroyHierarchy(world, e);
+    undo.End();
+    ZX_LOG_INFO(LogEditor, "Deleted {} object(s)", roots.Size());
+    selected = ecs::NullEntity;
+    selection.Clear();
+}
+
+JsonValue Editor::SnapshotForCopy(Span<const ecs::Entity> roots)
+{
+    JsonValue list = JsonValue::MakeArray();
+    for (ecs::Entity root : roots) {
+        Array<ecs::Entity> all;
+        CollectHierarchy(world, root, all);
+        for (ecs::Entity e : all) {
+            EnsureEntityGuid(world, e);
+            JsonValue s = SerializeEntity(world, e);
+            if (e == root)
+                s.Set("copyRoot", true);
+            list.PushBack(move(s));
+        }
+    }
+    return list;
+}
+
+Array<ecs::Entity> Editor::PasteSnapshot(const JsonValue& list, StringView label, bool rename, const Vec3* offset)
+{
+    // Every entity gets a new guid; parents inside the copy are remapped, roots keep their original parent if it
+    // still exists (else become scene roots).
     HashMap<Guid, Guid> remap;
-    for (ecs::Entity e : all)
-        remap.InsertOrAssign(EnsureEntityGuid(world, e), Guid::New());
+    for (const JsonValue& s : list.Elements())
+        if (const Optional<Guid> g = Guid::Parse(s.Get("guid").AsString()))
+            remap.InsertOrAssign(*g, Guid::New());
     Array<EntitySnapshot> snapshots;
-    for (ecs::Entity e : all) {
-        JsonValue s = SerializeEntity(world, e);
-        const Guid guid = *remap.Find(GetEntityGuid(world, e));
+    for (const JsonValue& src : list.Elements()) {
+        JsonValue s = src;
+        const Optional<Guid> old = Guid::Parse(s.Get("guid").AsString());
+        if (!old)
+            continue;
+        const Guid guid = *remap.Find(*old);
         s.Set("guid", String::Format("{}", guid));
-        if (const JsonValue* p = s.Find("parent"))
-            if (const Optional<Guid> pg = Guid::Parse(p->AsString()); pg && remap.Find(*pg))
+        const bool isRoot = s.Get("copyRoot").AsBool(false);
+        s.Remove("copyRoot");
+        if (const JsonValue* p = s.Find("parent")) {
+            const Optional<Guid> pg = Guid::Parse(p->AsString());
+            if (pg && remap.Find(*pg))
                 s.Set("parent", String::Format("{}", *remap.Find(*pg)));
-        if (e == selected) {
+            else if (!pg || !FindEntityByGuid(world, *pg))
+                s.Remove("parent");
+        }
+        if (isRoot) {
             s.Set("index", s.Get("index").AsInt() + 1);
-            if (JsonValue* name = s["components"].Find("EntityName"))
-                name->Set("value", String::Format("{} (Copy)", name->Get("value").AsString()));
+            if (rename)
+                if (JsonValue* name = s["components"].Find("EntityName"))
+                    name->Set("value", String::Format("{} (Copy)", name->Get("value").AsString()));
+            if (offset)
+                if (JsonValue* tr = s["components"].Find("Transform")) {
+                    // Fields equal to the default are not written, so a missing position means (0, 0, 0).
+                    Vec3 p(0.0f);
+                    if (const JsonValue* pos = tr->Find("position"); pos && pos->Size() == 3)
+                        p = Vec3((*pos)[0].AsFloat(), (*pos)[1].AsFloat(), (*pos)[2].AsFloat());
+                    p += *offset;
+                    JsonValue arr = JsonValue::MakeArray();
+                    arr.PushBack(JsonValue(p.x));
+                    arr.PushBack(JsonValue(p.y));
+                    arr.PushBack(JsonValue(p.z));
+                    tr->Set("position", move(arr));
+                }
         }
         snapshots.PushBack(EntitySnapshot{guid, move(s)});
     }
-    undo.Begin("Duplicate");
+    undo.Begin(label);
     const Array<ecs::Entity> created = ApplyEntitySnapshots(world, snapshots.View());
     for (ecs::Entity e : created)
         undo.RecordCreated(e);
     undo.End();
-    if (!created.Empty())
-        selected = created[0];
+    // Select the pasted roots.
+    Array<ecs::Entity> roots;
+    for (ecs::Entity e : created) {
+        const ecs::Entity p = scene::GetParent(world, e);
+        if (!p || !created.Contains(p))
+            roots.PushBack(e);
+    }
+    selection = roots;
+    selected = roots.Empty() ? ecs::NullEntity : roots.Back();
+    return roots;
+}
+
+void Editor::DuplicateSelected()
+{
+    const Array<ecs::Entity> roots = SelectedRoots();
+    if (roots.Empty())
+        return;
+    PasteSnapshot(SnapshotForCopy(roots.View()), roots.Size() == 1 ? StringView("Duplicate") : StringView("Duplicate objects"), true, nullptr);
+}
+
+void Editor::CopySelected()
+{
+    const Array<ecs::Entity> roots = SelectedRoots();
+    if (roots.Empty())
+        return;
+    JsonValue clip = JsonValue::MakeObject();
+    clip.Set("format", "zx-entities");
+    clip.Set("entities", SnapshotForCopy(roots.View()));
+    entityClipboard.Clear();
+    JsonWriteOptions compact;
+    compact.pretty = false;
+    WriteJson(clip, entityClipboard, compact);
+    platform::SetClipboardText(entityClipboard); // also usable between editor windows
+    ZX_LOG_INFO(LogEditor, "Copied {} object(s)", roots.Size());
+}
+
+void Editor::PasteClipboard()
+{
+    if (IsPlaying())
+        return;
+    String text = platform::GetClipboardText();
+    JsonValue clip;
+    if (!ParseJson(text.View(), clip) || clip.Get("format").AsString() != "zx-entities") {
+        if (entityClipboard.Empty() || !ParseJson(entityClipboard.View(), clip))
+            return;
+    }
+    // Pasted a little to the side so it doesn't sit exactly on top of the original.
+    const Vec3 offset(0.5f, 0.0f, 0.5f);
+    const Array<ecs::Entity> roots = PasteSnapshot(clip.Get("entities"), "Paste", false, &offset);
+    ZX_LOG_INFO(LogEditor, "Pasted {} object(s)", roots.Size());
 }
 
 void Editor::FocusSelected()
@@ -4098,7 +4284,7 @@ void Editor::UpdateImports()
 
 void Editor::ProcessShortcuts()
 {
-    if (ui->WantsKeyboard() || flying || mode != EditorMode::Editing || materialEditor.capturesKeys || scriptEditor.capturesKeys || graphEditor.capturesKeys || btEditor.capturesKeys || palette.open)
+    if (ui->WantsKeyboard() || flying || mode != EditorMode::Editing || materialEditor.capturesKeys || scriptEditor.capturesKeys || graphEditor.capturesKeys || btEditor.capturesKeys || seqEditor.capturesKeys || palette.open)
         return;
     const KeyModifiers mods = input.Modifiers() & (KeyModifiers::Control | KeyModifiers::Shift | KeyModifiers::Alt);
     for (const WindowEvent& e : m_events) {
@@ -4421,8 +4607,12 @@ void Editor::RenderFrame()
         lastViewWasGame = UsingGameCamera();
         Array<ecs::Entity> outlined;
         if (!m_screenshotViewport)
-            if (tools.active != EditorTool::Terrain) // the terrain being sculpted isn't outlined
+            if (tools.active != EditorTool::Terrain) { // the terrain being sculpted isn't outlined
                 CollectHierarchy(world, selected, outlined);
+                for (ecs::Entity e : selection) // multi-selection: every selected object is outlined
+                    if (e != selected && world.IsAlive(e) && !outlined.Contains(e))
+                        CollectHierarchy(world, e, outlined);
+            }
         viewport->SetOutlinedEntities(outlined.View());
         viewport->Outline().thickness = 2.0f * window->GetDpiScale();
         environment.playing = IsPlaying() && playState != PlayState::Paused; // every Fluid Volume simulates

@@ -23,6 +23,7 @@
 #include "Engine/ComponentRegistry.h"
 #include "Engine/Navigation.h"
 #include "Engine/BehaviorTree.h"
+#include "Engine/Sequencer.h"
 #include "Engine/Fire.h"
 #include "Engine/GameModule.h"
 #include "Engine/GameRuntime.h"
@@ -154,6 +155,7 @@ private:
     WaterSystem m_water;
     NavigationSystem m_navigation;
     BehaviorSystem m_behavior;
+    SequenceSystem m_sequencer;
     GameUISystem m_gameUI;
     Localization m_localization;
     ui::FontSystem m_fonts;
@@ -273,6 +275,7 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     m_animation->contentRoot = "/Game";
     m_gameUI.contentRoot = "/Game";
     m_behavior.contentRoot = "/Game";
+    m_sequencer.contentRoot = "/Game";
     // Texts in the player's language (their choice is remembered in Saved/Config/Language.txt).
     m_localization.preferenceFile = Path::Join(GetSavedDirectory(), "Config/Language.txt");
     m_localization.Load("/Game");
@@ -355,7 +358,7 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     m_environment.night = env.Get("night").AsBool(false);
     m_environment.sunElevation = DegToRad(env.Get("sunElevation").AsFloat(60.0f));
     m_environment.sunAzimuth = DegToRad(env.Get("sunAzimuth").AsFloat(80.0f));
-    m_environment.autoExposure = env.Get("autoExposure").AsBool(true);
+    ReadEnvironmentGraphics(env, m_environment);
     const JsonValue& cam = settings.Get("editorCamera");
     const JsonValue& p = cam.Get("position");
     const Vec3 camPos = p.Size() == 3 ? Vec3(p[0].AsFloat(), p[1].AsFloat(), p[2].AsFloat()) : Vec3(0, 2, -5);
@@ -399,7 +402,7 @@ bool Game::Frame()
     }
     if (!m_started && ready) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation, &m_behavior};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation, &m_behavior, &m_sequencer};
         BeginGame(m_world, s);
         m_started = true;
         m_startFrame = m_frame;
@@ -425,7 +428,7 @@ bool Game::Frame()
 
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation, &m_behavior};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation, &m_behavior, &m_sequencer};
         ListenerPose fallback;
         fallback.position = m_sceneCamera.position;
         m_gameUI.time += dt;
@@ -444,7 +447,7 @@ bool Game::Frame()
     scene::UpdateWorldTransforms(m_world);
     {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation, &m_behavior};
+                      &m_inputActions, &m_inputActionState, [this](StringView f) { return FeatureEnabled(f); }, m_animation.Get(), &m_softBodies, &m_gameUI, &m_water, &m_navigation, &m_behavior, &m_sequencer};
         const f32 gameDt = m_started ? dt * GameTimeScale(s) : dt; // time.scale (pause menus)
         m_particles.Tick(m_world, gameDt, m_started);
         m_animation->Tick(m_world, gameDt, m_started);
@@ -543,7 +546,7 @@ void Game::Shutdown()
     }
     if (m_started) {
         GameSystems s{m_scripts.Get(), m_module.Get(), m_audio.Get(), &m_physics, &m_particles, &m_fire, m_renderAssets.Get(),
-                      &m_inputActions, &m_inputActionState, {}, nullptr, &m_softBodies, &m_gameUI, &m_water, &m_navigation, &m_behavior};
+                      &m_inputActions, &m_inputActionState, {}, nullptr, &m_softBodies, &m_gameUI, &m_water, &m_navigation, &m_behavior, &m_sequencer};
         EndGame(s);
     }
     ClearScene(m_world);

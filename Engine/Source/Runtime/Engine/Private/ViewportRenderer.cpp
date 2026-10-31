@@ -5,12 +5,36 @@
 #include "Engine/Particles.h"
 #include "Core/Jobs/JobSystem.h"
 #include "Core/Profiler/Profiler.h"
+#include "Core/Serialization/Json.h"
 #include "Engine/PostProcessVolume.h"
 
 namespace zx {
 
 using namespace rhi;
 using namespace render;
+
+void WriteEnvironmentGraphics(JsonValue& json, const ViewportEnvironment& env)
+{
+    json.Set("autoExposure", env.autoExposure);
+    json.Set("manualExposure", env.manualExposure);
+    json.Set("manualEV100", env.manualEV100);
+    json.Set("fog", env.fog);
+}
+
+void ReadEnvironmentGraphics(const JsonValue& json, ViewportEnvironment& env)
+{
+    env.autoExposure = json.Get("autoExposure").AsBool(true);
+    env.manualExposure = json.Get("manualExposure").AsBool(false);
+    env.manualEV100 = Clamp(json.Get("manualEV100").AsFloat(13.5f), -10.0f, 20.0f);
+    env.fog = json.Get("fog").AsBool(true);
+}
+
+f32 ResolveEnvironmentExposure(const ViewportEnvironment& env, f32 sceneEV, bool hasAutoEV, f32 autoEV)
+{
+    if (env.autoExposure)
+        return hasAutoEV ? autoEV : sceneEV;
+    return env.manualExposure ? Clamp(env.manualEV100, -10.0f, 20.0f) : sceneEV;
+}
 
 ViewportRenderer::ViewportRenderer(Device& device, RenderAssets& assets)
     : m_device(device), m_assets(assets), m_scene(device, assets), m_sky(device), m_water(device), m_particleRenderer(device), m_volumetric(device), m_gi(device, assets), m_clouds(device), m_fluids(device), m_taa(device), m_reflections(device), m_captureScene(device, assets), m_post(device), m_outline(device)
@@ -175,8 +199,7 @@ void ViewportRenderer::ApplyEnvironment(const ViewportEnvironment& env)
         }
     }
     m_settings.post.autoExposure = env.autoExposure;
-    if (env.autoExposure && m_post.HasAutoExposure())
-        l.exposureEV100 = m_post.GetAutoExposureEV100();
+    l.exposureEV100 = ResolveEnvironmentExposure(env, l.exposureEV100, m_post.HasAutoExposure(), m_post.GetAutoExposureEV100());
 }
 
 StringView GraphicsEraId(GraphicsEra era)
@@ -317,7 +340,8 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     }
     ResolveHdriSky(world);
     // Height Fog component (without one: the default fog, volumetric).
-    bool volumetric = features.volumetricFog && m_settings.volumetricFog.enabled && m_settings.useSky;
+    m_settings.sky.fog.enabled &= env.fog;
+    bool volumetric = env.fog && features.volumetricFog && m_settings.volumetricFog.enabled && m_settings.useSky;
     f32 fogHeight = 0.0f;
     if (const HeightFog* hf = FindHeightFog(world, &fogHeight)) {
         render::FogSettings& f = m_settings.sky.fog;

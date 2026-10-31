@@ -689,6 +689,27 @@ void AnimationSystem::SetTime(ecs::Entity e, f32 seconds)
     s.fade = 1.0f;
 }
 
+bool AnimationSystem::Scrub(ecs::World& world, ecs::Entity e, StringView clip, f32 seconds, bool loop)
+{
+    Animator* a = world.Get<Animator>(e);
+    if (!a || !a->graph.Empty())
+        return false;
+    for (const asset::AssetId& id : a->clips)
+        if (m_assets.GetName(id).View().EqualsIgnoreCase(clip)) {
+            a->clip = id;
+            a->playing = false; // the sequence owns the time
+            a->loop = loop;
+            a->previewInEditor = true;
+            State& s = *m_states.Insert(e.Pack(), State{}).first;
+            s.alive = true;
+            s.clip = id; // already the animator's clip: no cross-fade, the time is exactly `seconds`
+            s.time = Max(seconds, 0.0f);
+            s.fade = 1.0f;
+            return true;
+        }
+    return false;
+}
+
 void AnimationSystem::ReloadGraph(StringView path)
 {
     m_graphs.RemoveIf([&](const String& key, const GraphFile&) { return key.View().EqualsIgnoreCase(path); });

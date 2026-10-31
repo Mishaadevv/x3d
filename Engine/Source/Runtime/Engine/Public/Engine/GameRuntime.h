@@ -32,6 +32,7 @@ class GameUISystem;
 class WaterSystem;
 class NavigationSystem;
 class BehaviorSystem;
+class SequenceSystem;
 
 struct GameSystems
 {
@@ -52,6 +53,7 @@ struct GameSystems
     WaterSystem* water = nullptr;         // wave heights, buoyancy, splashes
     NavigationSystem* navigation = nullptr; // nav meshes + Nav Mesh Agents (scripts: entity.navTo)
     BehaviorSystem* behavior = nullptr;     // Behavior Tree components (AI decisions, sight)
+    SequenceSystem* sequencer = nullptr;    // Sequence Player components (cinematics: transforms, clips, camera cuts, sounds)
 
     bool Enabled(StringView feature) const { return !featureEnabled || featureEnabled(feature); }
 };

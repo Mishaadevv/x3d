@@ -81,6 +81,10 @@ public:
     f32 GetParam(ecs::Entity e, StringView name) const;
     /// Seconds into the current clip (clip mode; the Animation Viewer scrubs with it).
     void SetTime(ecs::Entity e, f32 seconds);
+    /// Poses a clip-mode animator (no graph) on the clip `clip` at `seconds` and holds it there (Sequencer tracks, the
+    /// timeline scrubbing): the animator stops advancing and animates in the editor too. False if the entity has no
+    /// Animator, uses a graph, or does not have that clip.
+    bool Scrub(ecs::World& world, ecs::Entity e, StringView clip, f32 seconds, bool loop);
     /// Re-reads a graph file (after editing it): animators using it restart in its entry state.
     void ReloadGraph(StringView path);
     /// Turns the head towards `target` (world) with `weight` 0..1 (0 = look ahead again); smoothed.

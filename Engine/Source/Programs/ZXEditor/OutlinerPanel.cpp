@@ -54,6 +54,11 @@ void EntityContextMenu(Editor& ed, ecs::Entity e)
             ed.DuplicateSelected();
         if (ui::MenuItem(ZX_ICON_PLUS "  Create Child"))
             ed.CreateEmpty(Vec3::Zero(), e);
+        if (ui::MenuItem(ZX_ICON_FILE_CODE "  Add / Replace Script...", {}, false, !ed.IsPlaying())) {
+            ed.showDetails = true;
+            ed.requestScriptPicker = true;
+            ui::FocusDockedWindow(DetailsTitle);
+        }
         if (scene::GetParent(ed.world, e) && ui::MenuItem(ZX_ICON_CORNER_LEFT_UP "  Detach from Parent"))
             ed.Reparent(e, ecs::NullEntity);
         ui::Separator();
@@ -96,6 +101,12 @@ void EntityDragDrop(Editor& ed, ecs::Entity e)
         if (dragged != e)
             ed.Reparent(dragged, e);
     }
+    if (const void* p = ui::AcceptDragDropPayload("asset")) {
+        const StringView path(static_cast<const char*>(p));
+        if (Path::HasExtension(path, ".zs") || Path::HasExtension(path, ".zgraph"))
+            if (ed.AttachScript(e, path))
+                ed.Select(e);
+    }
 }
 
 void VisibilityToggle(Editor& ed, ecs::Entity e, const Rect& row)
@@ -119,12 +130,17 @@ void VisibilityToggle(Editor& ed, ecs::Entity e, const Rect& row)
 
 void TreeRecursive(Editor& ed, ecs::Entity e)
 {
-    const Span<const ecs::Entity> children = scene::GetChildren(ed.world, e);
+    Array<ecs::Entity> children;
+    children.Append(scene::GetChildren(ed.world, e)); // callbacks can move entities between archetypes
     ui::TreeNodeFlags flags = ui::TreeNodeFlags::OpenOnArrow;
     if (children.Empty())
         flags |= ui::TreeNodeFlags::Leaf;
-    if (e == ed.selected)
+
+    // Multi-selection: check if entity is in selection array
+    const bool isSelected = ed.selection.Contains(e);
+    if (isSelected)
         flags |= ui::TreeNodeFlags::Selected;
+
     ui::PushID(i32(e.index));
     // Prefab instances in blue (members slightly dimmer), like UE/Unity.
     const bool instanceRoot = ed.world.Has<PrefabInstance>(e), member = ed.world.Has<PrefabLink>(e);
@@ -134,18 +150,25 @@ void TreeRecursive(Editor& ed, ecs::Entity e)
     if (instanceRoot || member)
         ui::PopTextColor();
     const Rect row = ui::GetItemRect();
-    if (ui::IsItemClicked())
-        ed.Select(e);
+
+    // Handle multi-selection with Shift/Ctrl
+    if (ui::IsItemClicked()) {
+        const bool ctrl = ed.input.IsKeyDown(Key::LeftControl) || ed.input.IsKeyDown(Key::RightControl);
+        const bool shift = ed.input.IsKeyDown(Key::LeftShift) || ed.input.IsKeyDown(Key::RightShift);
+        if (ctrl || shift) {
+            ed.Select(e, ctrl, shift); // add=ctrl, range=shift
+        } else {
+            ed.Select(e); // normal single selection
+        }
+    }
+
     if (ui::IsItemDoubleClicked())
         ed.FocusSelected();
     EntityDragDrop(ed, e);
     EntityContextMenu(ed, e);
     VisibilityToggle(ed, e, row);
     if (open) {
-        // Copy: the callback may reparent (modifies the children array).
-        Array<ecs::Entity> copy;
-        copy.Append(children);
-        for (ecs::Entity c : copy)
+        for (ecs::Entity c : children)
             if (ed.world.IsAlive(c))
                 TreeRecursive(ed, c);
         ui::TreePop();
@@ -189,15 +212,30 @@ void DrawOutlinerPanel(Editor& ed)
                 if (ed.world.IsAlive(e))
                     TreeRecursive(ed, e);
         } else {
-            // Flat list of matches.
+            // Snapshot matches before drawing: drop and context actions may change archetypes or delete entities.
+            Array<ecs::Entity> matches;
             ed.world.Query<const scene::EntityName>().Each([&](ecs::Entity e, const scene::EntityName& n) {
-                if (!ContainsIgnoreCase(n.value, s_filter))
-                    return;
-                ui::PushID(i32(e.index));
-                if (ui::Selectable(String::Format("{}  {}", EntityIcon(ed, e), n.value), e == ed.selected))
-                    ed.Select(e);
-                ui::PopID();
+                if (ContainsIgnoreCase(n.value, s_filter))
+                    matches.PushBack(e);
             });
+            for (ecs::Entity e : matches) {
+                if (!ed.world.IsAlive(e))
+                    continue;
+                ui::PushID(i32(e.index));
+                const bool isSelected = ed.selection.Contains(e);
+                if (ui::Selectable(String::Format("{}  {}", EntityIcon(ed, e), ed.EntityLabel(e)), isSelected)) {
+                    const bool ctrl = ed.input.IsKeyDown(Key::LeftControl) || ed.input.IsKeyDown(Key::RightControl);
+                    const bool shift = ed.input.IsKeyDown(Key::LeftShift) || ed.input.IsKeyDown(Key::RightShift);
+                    if (ctrl || shift) {
+                        ed.Select(e, ctrl, shift);
+                    } else {
+                        ed.Select(e);
+                    }
+                }
+                EntityDragDrop(ed, e);
+                EntityContextMenu(ed, e);
+                ui::PopID();
+            }
         }
         // Drop on empty space: detach.
         ui::Dummy(Vec2(1.0f, 40.0f));
@@ -207,8 +245,14 @@ void DrawOutlinerPanel(Editor& ed)
             ui::FocusDockedWindow(DetailsTitle);
     }
     ui::EndChild();
-    ui::TextDisabled(String::Format("{} entities{}", ed.world.EntityCount(),
-                                    ed.world.IsAlive(ed.selected) ? String::Format("  ({} selected)", ed.EntityLabel(ed.selected)) : String()));
+    String status = String::Format("{} entities", ed.world.EntityCount());
+    if (!ed.selection.Empty()) {
+        if (ed.selection.Size() == 1 && ed.world.IsAlive(ed.selected))
+            status += String::Format("  ({} selected)", ed.EntityLabel(ed.selected));
+        else
+            status += String::Format("  ({} selected)", ed.selection.Size());
+    }
+    ui::TextDisabled(status);
     ui::End();
 }
 

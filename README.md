@@ -4,7 +4,7 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12, part o
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a workflow like Unity URP or Unreal Engine 5 that
 runs well on everyday hardware. The development machine is a laptop with Intel UHD 620 graphics.
 
-**Version 0.17.5 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
+**Version 0.17.6 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
 [download](https://github.com/Mishaadevv/x3d/releases/latest)
 
 > [!WARNING]
@@ -96,6 +96,8 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
   - AnimGraph state machines with layers, masks and blend spaces.
   - Foot IK, root motion and morph targets.
   - An Animation Viewer and an AnimGraph editor.
+- **Sequencer**: cutscenes on a timeline (`.zseq`): transform, animation, camera, event and audio tracks,
+  scrubbing with a live scene preview, a Sequence Player component and a script API.
 - **Audio**: its own mixer on WASAPI.
   - 3D sound, reverb zones and occlusion.
   - Footsteps by surface, Ogg Vorbis streaming.
@@ -117,7 +119,7 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
 ### Editor
 - A dockable shell in the style of UE5 and Unity: viewport with gizmos, outliner, details, content browser, output
   log with a console, command palette.
-- Undo / redo for everything.
+- Undo / redo for everything; multi-selection, copy / paste between editor windows.
 - Prefabs with overrides, material graphs with a node editor, Play-in-Editor.
 - Tools: Terrain, Brush (paint models onto surfaces), Measure, Drop to Ground.
 - Settings window.

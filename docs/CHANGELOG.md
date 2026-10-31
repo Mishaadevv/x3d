@@ -5,6 +5,35 @@
 одном месте — `project(ZeqouX3D VERSION ...)` в корневом CMakeLists.txt (оттуда его берут `Core/Version.h`, ресурс
 версии ZXEditor.exe, About и лог).
 
+## 0.17.6 — Sequencer и правки редактора (M18) (2026-10-31)
+- **Sequencer** — кат-сцены и скриптованные изменения сцены на таймлайне (`.zseq`, JSON в Content)
+  - дорожки: **Transform** (Linear / Smooth / Step / Spline по позициям), **Animation** (клип с `speed`, `length`,
+    `loop`; поза считается по времени, поэтому работает перемотка), **Event** (в `fn onSequenceEvent(name)` на цели
+    и её родителях), **Camera** (переключение на камеру, FOV, пустой ключ возвращает камеру игры), **Audio** (звук,
+    громкость, 3D в точке цели)
+  - цель дорожки — имя сущности, путь `Parent/Child`, `@self` или `@self/Child`
+  - компонент **Sequence Player** (Play On Start, Loop, Speed, Restore When Done), скрипты `entity.sequencePlay(from)`,
+    `sequenceStop()`, `sequencePause(bool)`, `sequenceTime()`, `sequencePlaying()`; функция в Features: `sequencer`
+  - **окно Sequencer** (Window > Sequencer, двойной клик по `.zseq`, Content Browser > New Sequence, Create >
+    Cinematic, кнопка Edit Sequence у компонента, консоль `seq.edit` / `seq.status` / `seq.play` / `seq.reload`):
+    линейка, дорожки, ключи, плейхед, Space — играть, K — ключ, Delete, Ctrl+Z / Ctrl+Y / Ctrl+S, snap к кадрам
+    (30/с), перетаскивание ключей, приближение колесом, панель настроек ключа, «взгляд через камеру кадра» во
+    вьюпорте, список проблем (нет цели в сцене, пустой клип/звук, два ключа в одно время)
+  - превью меняет сцену только на время работы окна: перед Play, сохранением и очисткой сцены всё возвращается назад
+  - тесты Sequencer.* (формат, интерполяция, Apply/Restore с камерами, проигрыватель, регистрация)
+- **Скрипты на объекты** понятнее: `.zs` / `.zgraph` можно перетащить из Content Browser на объект во вьюпорте и в
+  Outliner или Details, «Add to Selected Entity» в меню файла Content Browser; одна проверка
+  и один шаг undo на все пути (`AssignScript`, тест ScriptAssignment.*)
+- **Мультивыбор**: Shift/Ctrl+клик во вьюпорте, в Outliner Ctrl — добавить, Shift — диапазон; гизмо двигает всю группу (дети выбранных не двигаются
+  дважды), обводка у всех выбранных, Delete и Ctrl+D работают с группой, один шаг undo
+- **Ctrl+C / Ctrl+V**: копирование объектов с детьми (в буфер обмена как JSON — можно вставлять между окнами редактора),
+  новые guid, вставка рядом; Edit > Copy / Paste
+- **Content Browser: переименование** файлов и папок (меню Rename, F2): `.zmeta` и `.znav` переезжают вместе с файлом,
+  проверка недопустимых символов и занятых имён
+- **Графика сцены** (File > Settings > Rendering): Fog (высотный и объёмный), Auto Exposure / Manual Exposure + EV100;
+  сохраняются в сцене и действуют в собранной игре
+- Исправлена сборка: повторный `= false` в определении `Editor::Select`
+
 ## 0.17.5 — редактор Behaviour Trees (M18) (2026-10-24)
 - **Окно Behavior Tree** (двойной клик по `.zbt`, Content Browser > New Behavior Tree, кнопка Edit Tree у компонента,
   консоль `bt.edit`): дерево сверху вниз на холсте, дети выполняются слева направо (порядок = положение по горизонтали,

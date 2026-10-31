@@ -9,6 +9,7 @@
 #include "Engine/Foliage.h"
 #include "Engine/Navigation.h"
 #include "Engine/BehaviorTree.h"
+#include "Engine/Sequencer.h"
 #include "Engine/WaterPhysics.h"
 #include "Engine/AudioSystem.h"
 #include "Engine/Fire.h"
@@ -66,6 +67,7 @@ void RegisterEngineComponents()
     RegisterComponent<NavMeshBounds>("Nav Mesh Bounds", "\xEE\x94\xBE");          // route
     RegisterComponent<NavMeshAgent>("Nav Mesh Agent", "\xEE\x86\xBB");            // bot
     RegisterComponent<BehaviorTree>("Behavior Tree", "\xEE\x86\xBB");             // bot
+    RegisterComponent<SequencePlayer>("Sequence Player", "\xEE\x8A\x9B");         // clapperboard
     RegisterComponent<Rotator>("Rotator", "\xEE\x8B\xAA");                            // rotate-3d
     RegisterComponent<Oscillator>("Oscillator", "\xEE\x8A\x83");                      // waves
     RegisterComponent<AudioSource>("Audio Source", "\xEE\x86\xAB");                  // volume-2

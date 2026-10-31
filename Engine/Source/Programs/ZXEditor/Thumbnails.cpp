@@ -87,16 +87,29 @@ bool ThumbnailCache::Init()
     pd.debugName = "Thumbnail.Blit";
     m_blitPipeline = m_device.CreateGraphicsPipeline(pd);
 
-    // Model renderer: Lite settings, no temporal accumulation (one frame per thumbnail), crisp at full resolution.
-    m_renderer.Reset(new ViewportRenderer(m_device, m_renderAssets));
-    if (!m_renderer->Init(true, Format::R8G8B8A8_UNORM))
+    scene::InstallHierarchyHooks(m_world);
+    return m_blitPipeline != nullptr;
+}
+
+bool ThumbnailCache::EnsureRenderer()
+{
+    if (m_renderer)
+        return true;
+    if (m_rendererFailed)
         return false;
+    // Models and materials need a separate renderer; image-only browsing never pays its startup cost.
+    m_renderer.Reset(new ViewportRenderer(m_device, m_renderAssets));
+    if (!m_renderer->Init(true, Format::R8G8B8A8_UNORM)) {
+        ZX_LOG_ERROR(LogThumbnails, "Could not initialize the model thumbnail renderer");
+        m_renderer.Reset();
+        m_rendererFailed = true;
+        return false;
+    }
     ViewportSettings& s = m_renderer->Settings();
     s.taa.enabled = false;
     s.renderScale = 1.0f;
     s.scene.ao.enabled = false;
-    scene::InstallHierarchyHooks(m_world);
-    return m_blitPipeline != nullptr;
+    return true;
 }
 
 void ThumbnailCache::Invalidate(StringView physicalPath)
@@ -256,7 +269,7 @@ void ThumbnailCache::UpdateModel(RenderGraph& graph, Array<RGTexture>& sampled)
     });
     if (!resident || (m_renderAssets.GetStats().pendingUploads > 0 && m_modelWait < 120))
         return;
-    if (!EnsureTexture(e))
+    if (!EnsureTexture(e) || !EnsureRenderer())
         return finish(State::Failed);
 
     // Frame the bounds from the front-right, slightly above.

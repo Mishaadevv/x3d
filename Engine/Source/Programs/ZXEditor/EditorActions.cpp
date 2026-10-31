@@ -162,6 +162,9 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "edit.redo", "Redo", "Edit", ZX_ICON_REDO_2, "Ctrl+Y, Ctrl+Shift+Z", [](Editor& e) { e.Redo(); },
         [](Editor& e) { return e.undo.CanRedo(); }, true);
     Add(ed, "edit.duplicate", "Duplicate", "Edit", ZX_ICON_COPY, "Ctrl+D", [](Editor& e) { e.DuplicateSelected(); }, HasSelection);
+    Add(ed, "edit.copy", "Copy", "Edit", ZX_ICON_COPY, "Ctrl+C", [](Editor& e) { e.CopySelected(); }, HasSelection);
+    Add(ed, "edit.paste", "Paste", "Edit", ZX_ICON_CLIPBOARD_PASTE, "Ctrl+V", [](Editor& e) { e.PasteClipboard(); },
+        [](Editor& e) { return !e.IsPlaying(); });
     Add(ed, "edit.delete", "Delete", "Edit", ZX_ICON_TRASH_2, "Delete", [](Editor& e) { e.DeleteSelected(); }, HasSelection);
     Add(ed, "edit.focus", "Focus Selection", "Edit", ZX_ICON_SCAN, "F", [](Editor& e) { e.FocusSelected(); }, HasSelection);
     Add(ed, "edit.createPrefab", "Create Prefab from Selection...", "Edit", ZX_ICON_PACKAGE, "", [](Editor& e) { e.CreatePrefabFrom(e.selected); },
@@ -203,6 +206,18 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.windZone", "Create Wind Zone", "Create", ZX_ICON_WIND, "", [](Editor& e) { e.CreateWindZone(); });
     Add(ed, "create.navMeshBounds", "Create Nav Mesh Bounds", "Create", ZX_ICON_ROUTE, "", [spawn](Editor& e) { e.CreateNavMeshBounds(spawn(e)); });
     Add(ed, "create.navAgent", "Create AI Agent", "Create", ZX_ICON_BOT, "", [spawn](Editor& e) { e.CreateNavAgent(spawn(e)); });
+    Add(ed, "create.cinematic", "Create Cinematic", "Create", ZX_ICON_CLAPPERBOARD, "", [](Editor& e) { CreateCinematic(e); },
+        [](Editor& e) { return !e.IsPlaying() && !e.contentRoot.Empty(); });
+    Add(ed, "window.sequencer", "Sequencer", "Window", ZX_ICON_CLAPPERBOARD, "", [](Editor& e) {
+        if (e.seqEditor.open) {
+            e.seqEditor.open = false;
+            PauseSequencerPreview(e);
+        } else if (!e.seqEditor.path.Empty()) {
+            e.seqEditor.open = true;
+        } else {
+            e.showContent = true; // pick a .zseq there (or Create > Cinematic)
+        }
+    });
     Add(ed, "create.ui.canvas", "UI Canvas", "Create", ZX_ICON_MONITOR, "", [](Editor& e) { e.CreateUIWidget("canvas"); });
     Add(ed, "create.ui.panel", "UI Panel", "Create", ZX_ICON_RECTANGLE_HORIZONTAL, "", [](Editor& e) { e.CreateUIWidget("panel"); });
     Add(ed, "create.ui.text", "UI Text", "Create", ZX_ICON_TYPE, "", [](Editor& e) { e.CreateUIWidget("text"); });

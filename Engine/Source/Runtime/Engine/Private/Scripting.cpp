@@ -568,6 +568,36 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             }
             return true;
         }
+        if (m == "sequencePlay" || m == "sequenceStop" || m == "sequencePause" || m == "sequenceTime" || m == "sequencePlaying") {
+            // Sequence Player: sequencePlay([from seconds]) starts it (false: no player / sequence file), sequenceStop()
+            // ends it and puts back what it changed, sequencePause(paused), sequenceTime() = seconds into it,
+            // sequencePlaying().
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = sys.context.world;
+            if (!w || !w->IsAlive(e))
+                return v.Fail("The entity was destroyed");
+            if (!w->Has<SequencePlayer>(e))
+                return v.Fail("This entity has no Sequence Player component (Add Component > Sequence Player)");
+            if (m == "sequencePlay") {
+                if (a.Size() > 1 || (a.Size() == 1 && !a[0].IsNumber()))
+                    return v.Fail("entity.sequencePlay([from: number])");
+                out = Value(sys.sequencer && sys.sequencer->Play(*w, e, a.Empty() ? 0.0f : f32(a[0].AsNumber())));
+            } else if (m == "sequenceStop") {
+                if (sys.sequencer)
+                    sys.sequencer->Stop(*w, e);
+            } else if (m == "sequencePause") {
+                if (a.Size() != 1 || a[0].Type() != ValueType::Bool)
+                    return v.Fail("entity.sequencePause(paused: bool)");
+                if (sys.sequencer)
+                    sys.sequencer->SetPaused(e, a[0].AsBool());
+            } else if (m == "sequenceTime") {
+                out = Value(f64(sys.sequencer ? sys.sequencer->Time(e) : 0.0f));
+            } else {
+                out = Value(sys.sequencer && sys.sequencer->IsPlaying(e));
+            }
+            return true;
+        }
         if (m == "uiAnimate" || m == "uiPlay" || m == "focus" || m == "addClass" || m == "removeClass" || m == "hasClass") {
             // Game UI: tweens, UI Animation, gamepad focus, style classes.
             ScriptSystem& sys = SystemOf(o);
@@ -1820,6 +1850,31 @@ void ScriptSystem::DispatchAIEvents(ecs::World& world, Span<const BehaviorSystem
                     continue;
                 RebindGlobals(*rs);
                 if (!rs->instance->Call("onAIEvent", Span<const Value>(args, 1))) {
+                    Report(m_vm->LastError(), true);
+                    rs->failed = true;
+                }
+            }
+            const scene::Parent* p = world.Get<const scene::Parent>(x);
+            if (!p)
+                break;
+            x = p->entity;
+        }
+    }
+}
+
+void ScriptSystem::DispatchSequenceEvents(ecs::World& world, Span<const SequenceSystem::Event> events)
+{
+    if (!m_running || events.Empty())
+        return;
+    context.world = &world;
+    for (const SequenceSystem::Event& ev : events) {
+        const Value args[1] = {Value(ev.name.View())};
+        for (ecs::Entity x = ev.entity; world.IsAlive(x);) {
+            for (UniquePtr<RunningScript>& rs : m_instances) {
+                if (rs->failed || !rs->started || rs->entity != x || !rs->instance->HasFunction("onSequenceEvent"))
+                    continue;
+                RebindGlobals(*rs);
+                if (!rs->instance->Call("onSequenceEvent", Span<const Value>(args, 1))) {
                     Report(m_vm->LastError(), true);
                     rs->failed = true;
                 }

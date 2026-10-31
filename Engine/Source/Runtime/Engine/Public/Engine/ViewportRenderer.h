@@ -22,6 +22,8 @@
 
 namespace zx {
 
+class JsonValue;
+
 struct ViewportCamera
 {
     Mat4 view = Mat4::Identity();
@@ -38,6 +40,9 @@ struct ViewportEnvironment
     f32 sunElevation = DegToRad(60.0f); // radians above the horizon
     f32 sunAzimuth = DegToRad(80.0f);   // radians, 0 = +Z, pi/2 = +X
     bool autoExposure = true;
+    bool manualExposure = false; // when auto exposure is off, use manualEV100 instead of the legacy sky-based EV
+    f32 manualEV100 = 13.5f;
+    bool fog = true; // atmospheric height fog and volumetric fog (not underwater fog or particles)
     bool playing = false; // Play-in-Editor / game: every Fluid Volume simulates
     // Time of Day (set by the renderer from the component): continuous day, dusk and night instead of `night`.
     bool timeOfDay = false;
@@ -45,6 +50,11 @@ struct ViewportEnvironment
     f32 moonLight = 0.0f;   // lux on the ground from the moon (phase and height applied)
     f32 starBrightness = 1.0f;
 };
+
+/// Scene graphics fields, shared by the editor and game. Missing fields use legacy-compatible defaults.
+void WriteEnvironmentGraphics(JsonValue& json, const ViewportEnvironment& env);
+void ReadEnvironmentGraphics(const JsonValue& json, ViewportEnvironment& env);
+f32 ResolveEnvironmentExposure(const ViewportEnvironment& env, f32 sceneEV, bool hasAutoEV, f32 autoEV);
 
 /// Subsystems switched off for the project (Features window); applied on top of ViewportSettings each frame.
 struct ViewportFeatures

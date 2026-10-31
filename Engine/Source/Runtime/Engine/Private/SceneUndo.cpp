@@ -127,6 +127,7 @@ void SceneUndoStack::Clear()
     m_entries.Clear();
     m_index = 0;
     m_savedIndex = 0;
+    m_externalDirty = false;
     m_depth = 0;
     m_open = Entry();
     ++m_version;

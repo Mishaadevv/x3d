@@ -39,6 +39,7 @@ const FeatureInfo Features[] = {
     {"characters", "Character Physics", "Gameplay", "Move Character Controllers while playing"},
     {"physics", "Physics", "Gameplay", "Rigid bodies and colliders while playing (ZPhys)"},
     {"fire", "Fire", "Gameplay", "Flammable objects catch fire, spread it and burn out while playing"},
+    {"sequencer", "Sequencer", "Gameplay", "Sequence Player components run cinematic timelines (.zseq) while playing"},
     {"brush", "Brush Tool", "Editor Tools", "Paint models onto surfaces (B)"},
     {"measure", "Measure Tool", "Editor Tools", "Measure distances in the viewport (M)"},
     {"terrainTool", "Terrain Tool", "Editor Tools", "Sculpt and paint terrains (T)"},

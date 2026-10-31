@@ -386,6 +386,51 @@ ConCommand CmdBtReload("bt.reload", "Reloads behaviour tree files (after editing
         ed->behavior.Reload();
 });
 
+ConCommand CmdSeqEdit("seq.edit", "Opens a sequence in the Sequencer: seq.edit <Content path .zseq>", [](Span<const StringView> args) {
+    if (Editor* ed = Ed(); ed && !args.Empty())
+        OpenSequencerEditor(*ed, Path::Join(ed->contentRoot, args[0]));
+});
+
+ConCommand CmdSeqStatus("seq.status", "Every Sequence Player: its file, whether it runs and where its playhead is", [](Span<const StringView>) {
+    Editor* ed = Ed();
+    if (!ed)
+        return;
+    u32 count = 0;
+    ed->world.Query<const SequencePlayer>().Each([&](ecs::Entity e, const SequencePlayer& p) {
+        ++count;
+        const SequenceAsset* seq = ed->sequencer.Load(p.sequence.View());
+        ZX_LOG_INFO(LogCmd, "Sequence Player {}: '{}' {} {:.2f}s / {}", e.index, p.sequence, ed->sequencer.IsPlaying(e) ? "playing" : "stopped",
+                    ed->sequencer.Time(e), seq ? String::Format("{:.2f}s, {} track(s)", seq->duration, seq->tracks.Size()) : String("(file missing or broken)"));
+    });
+    if (count == 0)
+        ZX_LOG_INFO(LogCmd, "No Sequence Players in the scene");
+});
+
+ConCommand CmdSeqPlay("seq.play", "Plays the Sequence Players in Play mode (or one by entity name): seq.play [name]", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed)
+        return;
+    if (!ed->IsPlaying()) {
+        ZX_LOG_WARN(LogCmd, "seq.play: start Play first (the Sequencer window previews while editing: Space)");
+        return;
+    }
+    u32 started = 0;
+    Array<ecs::Entity> players;
+    ed->world.Query<const SequencePlayer>().Each([&](ecs::Entity e, const SequencePlayer&) {
+        const scene::EntityName* n = ed->world.Get<const scene::EntityName>(e);
+        if (args.Empty() || (n && n->value.View() == args[0]))
+            players.PushBack(e);
+    });
+    for (ecs::Entity e : players)
+        started += ed->sequencer.Play(ed->world, e, 0.0f) ? 1u : 0u;
+    ZX_LOG_INFO(LogCmd, "seq.play: {} sequence(s) started", started);
+});
+
+ConCommand CmdSeqReload("seq.reload", "Reloads sequence files (after editing a .zseq by hand)", [](Span<const StringView>) {
+    if (Editor* ed = Ed())
+        ed->sequencer.Reload();
+});
+
 ConCommand CmdClearBake("gi.clearbake", "Deletes the scene's baked lighting", [](Span<const StringView>) {
     if (Editor* ed = Ed()) {
         platform::DeleteFileAt(ed->BakedLightingPath());
@@ -710,10 +755,7 @@ ConCommand CmdScriptAttach("script.attach", "Puts a script (.zs) or script graph
                                     ZX_LOG_WARN(LogCmd, "script.attach: select an entity first");
                                     return;
                                 }
-                                ed->undo.Begin("Add Script");
-                                ed->undo.Record(ed->selected);
-                                ed->world.Set(ed->selected, Script{String(args[0]), String()});
-                                ed->undo.End();
+                                ed->AttachScript(ed->selected, args[0]);
                             });
 
 ConCommand CmdGraphEdit("graph.edit", "Opens a script graph in the graph editor: graph.edit <Content path .zgraph>", [](Span<const StringView> args) {

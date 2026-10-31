@@ -4,6 +4,7 @@
 #include "Editor.h"
 #include "Thumbnails.h"
 #include "Core/Containers/Algorithm.h"
+#include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
 #include "Core/String/Path.h"
 #include "Platform/Platform.h"
@@ -50,6 +51,8 @@ FileKind KindOf(const FileItem& item)
         return {ZX_ICON_WORKFLOW, Color(0x4E, 0x9C, 0xF0), "Script Graph"};
     if (ext.EqualsIgnoreCase(".zbt"))
         return {ZX_ICON_BRAIN, Color(0xC8, 0x8C, 0xF0), "Behavior Tree"};
+    if (ext.EqualsIgnoreCase(".zseq"))
+        return {ZX_ICON_FILM, Color(0xE0, 0x78, 0xC8), "Sequence"};
     if (ext.EqualsIgnoreCase(".zscene"))
         return {ZX_ICON_CLAPPERBOARD, Color(0xF0, 0x8C, 0x4A), "Scene"};
     if (ext.EqualsIgnoreCase(".bin"))
@@ -90,6 +93,175 @@ void Refresh(Editor& ed, bool force)
     });
     b.browserListedDir = b.browserCurrent;
     b.browserListedAt = now;
+}
+
+// --- Rename -----------------------------------------------------------------------------------------------------------
+
+void BeginRename(PanelState& b, const String& path, bool directory)
+{
+    b.renameOpen = true;
+    b.renameFocus = true;
+    b.renamePath = path;
+    b.renameDirectory = directory;
+    b.renameName = String(Path::FileName(path));
+}
+
+/// The name of the editor window that has this file open ("" if none).
+String OpenEditorFor(Editor& ed, StringView path)
+{
+    if (ed.scriptEditor.open && ed.scriptEditor.path == path)
+        return "Script";
+    if (ed.graphEditor.open && ed.graphEditor.path == path)
+        return "Script Graph";
+    if (ed.btEditor.open && ed.btEditor.path == path)
+        return "Behavior Tree";
+    if (ed.seqEditor.open && ed.seqEditor.path == path)
+        return "Sequencer";
+    if (ed.animGraphEditor.open && ed.animGraphEditor.path == path)
+        return "Anim Graph";
+    if (ed.animViewer.open && ed.animViewer.model == path)
+        return "Animation Viewer";
+    return String();
+}
+
+/// Text assets that name other assets by their Content-relative path (scenes, prefabs, graphs, sequences, scripts...).
+bool NamesAssetsByPath(StringView fileName)
+{
+    for (StringView ext : {".zscene", ".zprefab", ".zseq", ".zbt", ".zgraph", ".zanimgraph", ".zmat", ".zmati", ".zstyle", ".zloc", ".zs"})
+        if (Path::HasExtension(fileName, ext))
+            return true;
+    return false;
+}
+
+/// Adds the files under `dir` whose text names `rel` (a file, or with `directory` anything below that folder).
+void FindReferences(const String& dir, StringView rel, bool directory, Array<String>& out)
+{
+    Array<platform::DirectoryEntry> entries;
+    platform::ListDirectory(dir, entries);
+    const String needle = directory ? String::Format("\"{}/", rel) : String::Format("\"{}\"", rel);
+    for (const platform::DirectoryEntry& e : entries) {
+        if (e.name.View().StartsWith(".") || out.Size() >= 6)
+            continue;
+        const String path = Path::Join(dir, e.name);
+        if (e.isDirectory) {
+            FindReferences(path, rel, directory, out);
+            continue;
+        }
+        String text;
+        if (NamesAssetsByPath(e.name) && fs::ReadTextFile(path, text) && text.View().Find(needle.View()) != StringView::NPos)
+            out.PushBack(path);
+    }
+}
+
+/// Moves a file or folder inside the project (its .zmeta goes with it so the asset keeps its identity). Returns an
+/// error text, or empty on success.
+String ApplyRename(Editor& ed, const String& from, StringView newName)
+{
+    String name = String(newName).Trimmed();
+    if (name.Empty())
+        return "The name is empty";
+    for (char ch : {'/', '\\', ':', '*', '?', '"', '<', '>', '|'})
+        if (name.View().Find(ch) != StringView::NPos)
+            return "A name can't contain / \\ : * ? \" < > |";
+    if (name == "." || name == "..")
+        return "Invalid name";
+    const String to = Path::Join(Path::Parent(from), name);
+    if (to == from)
+        return String();
+    const bool directory = platform::DirectoryExists(from);
+    // Case-only changes are allowed on Windows (same file, different spelling).
+    const bool sameFile = to.View().CompareIgnoreCase(from.View()) == 0;
+    if (!sameFile && (platform::FileExists(to) || platform::DirectoryExists(to)))
+        return "Something with this name already exists here";
+    // Keep the extension when renaming a file and the user dropped it.
+    String target = to;
+    if (!directory && Path::Extension(name).Empty() && !Path::Extension(from).Empty())
+        target += Path::Extension(from);
+    if (target != to && platform::FileExists(target))
+        return "Something with this name already exists here";
+    if (ed.IsPlaying())
+        return "Stop Play before renaming";
+    // A file open in an editor window would keep saving to the old path: ask to close it first.
+    const String openIn = OpenEditorFor(ed, from);
+    if (!openIn.Empty())
+        return String::Format("Close the {} window first", openIn);
+    // Scenes, prefabs, graphs and scripts name assets by path: a moved file would leave them pointing at nothing.
+    if (from.View().StartsWith(ed.contentRoot.View())) {
+        Array<String> users;
+        FindReferences(ed.contentRoot, Path::Normalize(Path::MakeRelative(from, ed.contentRoot)), directory, users);
+        if (!users.Empty()) {
+            String names;
+            for (const String& u : users)
+                names += String::Format("{}{}", names.Empty() ? "" : ", ", Path::FileName(u));
+            return String::Format("Still used by {}: change those references first", names);
+        }
+    }
+    const bool openScene = !ed.scenePath.Empty() && (ed.scenePath == from || (directory && String(ed.scenePath).View().StartsWith(from)));
+    if (!platform::MoveFileAt(from, target, false)) {
+        // Directories: MoveFileExW can't always move a folder to another name while something has it open.
+        return "The file or folder is in use or can't be renamed";
+    }
+    if (!directory && platform::FileExists(from + ".zmeta"))
+        platform::MoveFileAt(from + ".zmeta", target + ".zmeta", true);
+    // Files the engine keeps next to a scene (navigation mesh, baked lighting, world partition cells) follow it.
+    if (!directory && Path::HasExtension(from, ".zscene")) {
+        for (const char* ext : {".znav", ".zgi"})
+            if (platform::FileExists(Path::ChangeExtension(from, ext)))
+                platform::MoveFileAt(Path::ChangeExtension(from, ext), Path::ChangeExtension(target, ext), true);
+        // The cell folder is named after the scene's stem: <Parent>/<Stem>_Cells (see Editor::CellDirectory).
+        const String cells = Path::Join(Path::Parent(from), String(Path::Stem(from)) + "_Cells");
+        const String cellsTarget = Path::Join(Path::Parent(target), String(Path::Stem(target)) + "_Cells");
+        if (platform::DirectoryExists(cells) && !platform::DirectoryExists(cellsTarget))
+            platform::MoveFileAt(cells, cellsTarget, false);
+    }
+    if (ed.panels.browserCurrent == from)
+        ed.panels.browserCurrent = target;
+    else if (directory && ed.panels.browserCurrent.View().StartsWith(from))
+        ed.panels.browserCurrent = target + String(ed.panels.browserCurrent.View().DropLeft(from.Size()));
+    if (ed.panels.browserSelected == from)
+        ed.panels.browserSelected = target;
+    if (openScene) {
+        if (ed.scenePath == from)
+            ed.scenePath = target;
+        else
+            ed.scenePath = target + String(ed.scenePath.View().DropLeft(from.Size()));
+    }
+    ed.panels.browserListedDir.Clear();
+    return String();
+}
+
+void RenamePopup(Editor& ed)
+{
+    PanelState& b = ed.panels;
+    if (b.renameOpen) {
+        ui::OpenPopup("Rename##content_rename");
+        b.renameOpen = false;
+    }
+    bool popupOpen = true;
+    if (ui::BeginPopupModal("Rename##content_rename", &popupOpen)) {
+        ui::Text(b.renameDirectory ? "Rename folder" : "Rename file");
+        ui::SetNextItemWidth(320.0f);
+        if (b.renameFocus) {
+            ui::SetKeyboardFocusHere();
+            b.renameFocus = false;
+            b.renameError.Clear();
+        }
+        const bool entered = ui::InputText("##rename_name", b.renameName,
+                                           ui::InputTextFlags::EnterReturnsTrue | ui::InputTextFlags::AutoSelectAll);
+        if (!b.renameError.Empty())
+            ui::TextColored(Color(0xFF, 0x6B, 0x6B), b.renameError);
+        const bool ok = ui::Button("Rename", Vec2::Zero(), ui::ButtonVariant::Primary);
+        ui::SameLine();
+        const bool cancel = ui::Button("Cancel");
+        if (entered || ok) {
+            b.renameError = ApplyRename(ed, b.renamePath, b.renameName.View());
+            if (b.renameError.Empty())
+                ui::CloseCurrentPopup();
+        }
+        if (cancel || ui::IsKeyPressed(Key::Escape, false))
+            ui::CloseCurrentPopup();
+        ui::EndPopup();
+    }
 }
 
 void FolderTree(Editor& ed, const String& dir, StringView label, bool root)
@@ -233,6 +405,8 @@ void DrawContentBrowserPanel(Editor& ed)
                     OpenZGraphEditor(ed, item.path);
                 else if (Path::HasExtension(item.path, ".zbt"))
                     OpenBTEditor(ed, item.path);
+                else if (Path::HasExtension(item.path, ".zseq"))
+                    OpenSequencerEditor(ed, item.path);
                 else if ((Path::HasExtension(item.path, ".wav") || Path::HasExtension(item.path, ".ogg")) && ed.audio)
                     ed.audio->TogglePreview(item.path);
                 else if (Path::HasExtension(item.path, ".zmat") || Path::HasExtension(item.path, ".zmati")) {
@@ -267,6 +441,8 @@ void DrawContentBrowserPanel(Editor& ed)
                 b.browserSelected = item.path;
                 ui::TextDisabled(item.name);
                 ui::Separator();
+                if (ui::MenuItem(ZX_ICON_PENCIL "  Rename", "F2"))
+                    BeginRename(b, item.path, item.directory);
                 if (IsModel(item.path) && ui::MenuItem(ZX_ICON_CLAPPERBOARD "  Open in Animation Viewer"))
                     OpenAnimationViewer(ed, item.path);
                 if (Path::HasExtension(item.path, ".zanimgraph") && ui::MenuItem(ZX_ICON_PENCIL "  Edit"))
@@ -314,12 +490,8 @@ void DrawContentBrowserPanel(Editor& ed)
                             OpenZGraphEditor(ed, item.path);
                     }
                     const bool canAttach = ed.world.IsAlive(ed.selected) && !ed.IsPlaying();
-                    if (ui::MenuItem(ZX_ICON_PLUS "  Add to Selected Entity", {}, false, canAttach)) {
-                        ed.undo.Begin("Add Script");
-                        ed.undo.Record(ed.selected);
-                        ed.world.Set(ed.selected, Script{Path::MakeRelative(item.path, ed.contentRoot), String()});
-                        ed.undo.End();
-                    }
+                    if (ui::MenuItem(ZX_ICON_PLUS "  Add to Selected Entity", {}, false, canAttach))
+                        ed.AttachScript(ed.selected, item.path);
                 }
                 if (ui::MenuItem(ZX_ICON_FOLDER_SEARCH "  Show in Explorer"))
                     platform::RevealInFileExplorer(item.path);
@@ -373,6 +545,15 @@ void DrawContentBrowserPanel(Editor& ed)
                 Refresh(ed, true);
             }
             ui::ItemTooltip("AI decisions as a tree of tasks: put it on an entity with a Behavior Tree component");
+            if (ui::MenuItem(ZX_ICON_FILM "  New Sequence")) {
+                String path = Path::Join(b.browserCurrent, "NewSequence.zseq");
+                for (u32 n = 2; platform::FileExists(path); ++n)
+                    path = Path::Join(b.browserCurrent, String::Format("NewSequence{}.zseq", n));
+                if (CreateSequenceFile(path))
+                    OpenSequencerEditor(ed, path);
+                Refresh(ed, true);
+            }
+            ui::ItemTooltip("A cinematic timeline (camera cuts, movement, animation, sounds, events): play it with a Sequence Player component");
             if (ui::MenuItem(ZX_ICON_WORKFLOW "  New Anim Graph")) {
                 CreateAnimGraph(ed, b.browserCurrent);
                 Refresh(ed, true);
@@ -391,6 +572,12 @@ void DrawContentBrowserPanel(Editor& ed)
         }
     }
     ui::EndChild();
+    // F2 renames the selected item while the pointer is over the browser (hovered window = the one being used).
+    if (ui::IsWindowHovered() && !ed.IsPlaying() && !ui::GetCurrentContext()->WantsKeyboard() && ui::IsKeyPressed(Key::F2, false) &&
+        !b.browserSelected.Empty() && b.browserSelected != ed.contentRoot &&
+        (platform::FileExists(b.browserSelected) || platform::DirectoryExists(b.browserSelected)))
+        BeginRename(b, b.browserSelected, platform::DirectoryExists(b.browserSelected));
+    RenamePopup(ed);
     ui::End();
 }
 
