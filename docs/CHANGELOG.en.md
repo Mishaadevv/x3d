@@ -1,9 +1,8 @@
 # ZeqouX3D — changelog (English)
 
-The full history, including older releases, is in [CHANGELOG.md](CHANGELOG.md) (Russian). This file covers the
-latest releases in English. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
+The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
-## Unreleased — AI panel: model picker size and motion
+## 0.17.10 — AI panel: model picker size and motion (2026-11-01)
 - **Model picker**: the popup has a fixed size (`ui::SetPopupSize`) that is clamped to the window. Its content (wide
   rows, nested regions) cannot stretch it. The provider and model lists take their height and width from that size, and
   the model rows leave room for the scrollbar.
@@ -11,9 +10,8 @@ latest releases in English. Version scheme up to 1.0: **0.<last closed milestone
   into place; assistant replies and tool rows only rise into place, without fading. The message box border eases to the
   accent colour on focus. The context ring's arc eases to its value, while the percentage and the tooltip show the exact
   number. The chat glides to the newest message instead of jumping.
-- **Fixed**: after a code block the cursor was not returned to the start of the item, so the next message could overlap
-  it.
-- UI: `ui::SetPopupSize`, `ui::SetScrollY`; test `UI.FixedSizePopupFitsWindow`.
+- **Found by reading the code, and fixed**: after some parts of a chat item (for example, the copy button of a code block) the layout cursor could stay inside the block, so the next item might be placed over it. The cursor is now returned to the start of the current item before moving on. Not reproduced on screen.
+- UI: `ui::SetPopupSize`, `ui::SetScrollY`; test `UI.FixedSizePopupFitsWindow`. Full ZXTests run: 474 passed, 0 failed. Development build: no errors or warnings.
 
 ## 0.17.9 — Zeqou AI: 22 providers, model picker in chat, context window, new panel (2026-11-01)
 - **Providers**: 22 instead of three — Anthropic, OpenAI, Google Gemini, xAI Grok, DeepSeek, Mistral, OpenRouter, Groq,
