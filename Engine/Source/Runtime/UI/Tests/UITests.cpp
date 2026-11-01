@@ -329,6 +329,84 @@ ZX_TEST(UI, TreeNodeAndPopup)
     ZX_EXPECT(!popupVisible);
 }
 
+// Regression: text typed right after a popup opens (node picker "Search nodes...") must reach its search field.
+ZX_TEST(UI, PopupSearchFieldAcceptsTyping)
+{
+    Harness h;
+    ZX_REQUIRE(h.ok);
+    String search;
+    bool openRequest = true;
+    bool focusRequest = false;
+    bool bodyRan = false;
+    auto ui = [&] {
+        BeginTestWindow();
+        if (openRequest) { // opened like the node editors do: from a regular window, with the search field focused on open
+            openRequest = false;
+            OpenPopup("##add_node");
+            focusRequest = true;
+        }
+        bodyRan = false;
+        if (BeginPopup("##add_node")) {
+            bodyRan = true;
+            if (focusRequest) {
+                SetKeyboardFocusHere();
+                focusRequest = false;
+            }
+            InputText("##add_search", search, InputTextFlags::None, "Search nodes...");
+            EndPopup();
+        }
+        End();
+    };
+    h.Frame(ui);
+    h.Frame(ui);
+    h.Frame(ui);
+    ZX_EXPECT(bodyRan);
+    h.Type("abc");
+    h.Frame(ui);
+    ZX_EXPECT(search == "abc");
+}
+
+// Chat inputs: Enter submits, Shift+Enter adds a line; the field keeps focus for the next message.
+ZX_TEST(UI, MultilineSubmitOnEnter)
+{
+    Harness h;
+    ZX_REQUIRE(h.ok);
+    String text;
+    bool focus = true;
+    bool submitted = false;
+    auto ui = [&] {
+        BeginTestWindow();
+        if (focus) {
+            SetKeyboardFocusHere();
+            focus = false;
+        }
+        submitted = InputTextMultiline("##chat", text, Vec2(300.0f, 60.0f),
+                                       InputTextFlags::SubmitOnEnter | InputTextFlags::KeepFocusOnEnter, "Message");
+        End();
+    };
+    h.Frame(ui);
+    h.Type("hi");
+    h.Frame(ui);
+    ZX_EXPECT(text == "hi");
+    h.input.SetKey(Key::LeftShift, true);
+    h.Key(Key::Enter);
+    h.Frame(ui);
+    h.input.SetKey(Key::LeftShift, false);
+    ZX_EXPECT(!submitted);
+    h.Type("there");
+    h.Frame(ui);
+    ZX_EXPECT(text == "hi\nthere");
+    h.Key(Key::Enter);
+    h.Frame(ui);
+    ZX_EXPECT(submitted);
+    ZX_EXPECT(text == "hi\nthere");
+    // Still focused: typing goes on into the field.
+    text.Clear();
+    h.Type("x");
+    h.Frame(ui);
+    ZX_EXPECT(text == "x");
+}
+
 ZX_TEST(UI, WindowMoveAndScale)
 {
     Harness h;

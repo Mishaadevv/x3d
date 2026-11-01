@@ -378,7 +378,10 @@ void AddNodePopup(ZGraphEditorState& st)
     }
     ui::InputText("##zg_add_search", st.addSearch, ui::InputTextFlags::None, ZX_ICON_SEARCH "  Search nodes...");
     ui::Separator();
-    if (!ui::BeginChild("##zg_add_list", Vec2(270.0f, 420.0f), false)) { // scrolls: the library is long
+    // Scrolls, and never taller than the screen: the popup is clamped to the display, so a fixed-height list could push
+    // its last nodes out of view.
+    const f32 listH = Clamp(ui::GetDisplaySize().y - 120.0f, 160.0f, 420.0f);
+    if (!ui::BeginChild("##zg_add_list", Vec2(270.0f, listH), false)) {
         ui::EndChild();
         ui::EndPopup();
         return;
@@ -417,8 +420,8 @@ void AddNodePopup(ZGraphEditorState& st)
         Changed(st);
         ui::CloseCurrentPopup();
     };
-    // Enter takes the first match.
-    const bool enter = ui::IsKeyPressed(Key::Enter, false);
+    // Enter takes the first match, once something is typed (an empty Enter adds nothing).
+    const bool enter = !st.addSearch.Empty() && ui::IsKeyPressed(Key::Enter, false);
     bool taken = false;
     auto first = [&](StringView type, StringView variable) {
         if (enter && !taken) {

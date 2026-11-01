@@ -404,6 +404,119 @@ ZX_TEST(Agent, SummarizeArguments)
     ZX_EXPECT(ApiErrorMessage(404, R"({"error":{"message":"model not found"}})").Contains("model not found"));
 }
 
+ZX_TEST(Models, ParseProviderLists)
+{
+    Array<ModelInfo> models;
+    // OpenAI: ids only; non-chat models are dropped.
+    ZX_REQUIRE(ParseModelList(R"({"object":"list","data":[{"id":"gpt-5","object":"model"},{"id":"text-embedding-3-large"},
+        {"id":"whisper-1"},{"id":"gpt-4.1-mini"},{"id":"dall-e-3"}]})", models));
+    ZX_REQUIRE(models.Size() == 2);
+    ZX_EXPECT(models[0].id == "gpt-4.1-mini"); // sorted
+    ZX_EXPECT(models[1].id == "gpt-5");
+    ZX_EXPECT_EQ(models[0].contextWindow, 0u);
+    // OpenRouter: context_length, name.
+    ZX_REQUIRE(ParseModelList(R"({"data":[{"id":"google/gemini-2.5-pro","name":"Google: Gemini 2.5 Pro","context_length":1048576},
+        {"id":"x/huge","context_length":4000000}]})", models));
+    ZX_REQUIRE(models.Size() == 2);
+    ZX_EXPECT(models[0].name == "Google: Gemini 2.5 Pro");
+    ZX_EXPECT_EQ(models[0].contextWindow, MaxContextWindow); // capped at 1M
+    ZX_EXPECT_EQ(models[1].contextWindow, MaxContextWindow);
+    // Anthropic: display_name; Groq: context_window; Mistral: max_context_length + capabilities.
+    ZX_REQUIRE(ParseModelList(R"({"data":[{"type":"model","id":"claude-opus-5-5","display_name":"Claude Opus 5.5"},
+        {"id":"llama-3.3-70b-versatile","context_window":131072},
+        {"id":"mistral-embed","max_context_length":8192,"capabilities":{"completion_chat":false}},
+        {"id":"mistral-large-latest","max_context_length":"131072"}]})", models));
+    ZX_REQUIRE(models.Size() == 3);
+    ZX_EXPECT(models[0].name == "Claude Opus 5.5");
+    ZX_EXPECT_EQ(models[1].contextWindow, 131072u);
+    ZX_EXPECT_EQ(models[2].contextWindow, 131072u); // a number sent as a string
+    // Gemini native list, Ollama /api/tags, a bare array (some local servers), llama.cpp meta.
+    ZX_REQUIRE(ParseModelList(R"({"models":[{"name":"models/gemini-2.5-flash","displayName":"Gemini 2.5 Flash","inputTokenLimit":1048576,
+        "supportedGenerationMethods":["generateContent"]},{"name":"models/text-embedding-004","supportedGenerationMethods":["embedContent"]}]})", models));
+    ZX_REQUIRE(models.Size() == 1);
+    ZX_EXPECT(models[0].id == "gemini-2.5-flash");
+    ZX_EXPECT_EQ(models[0].contextWindow, MaxContextWindow);
+    ZX_REQUIRE(ParseModelList(R"({"models":[{"name":"qwen3:8b","model":"qwen3:8b"}]})", models));
+    ZX_EXPECT(models.Size() == 1 && models[0].id == "qwen3:8b");
+    ZX_REQUIRE(ParseModelList(R"([{"id":"local-a"},{"id":"local-a"},"local-b"])", models));
+    ZX_EXPECT_EQ(models.Size(), 2u); // duplicates dropped, plain strings accepted
+    ZX_REQUIRE(ParseModelList(R"({"data":[{"id":"model.gguf","meta":{"n_ctx_train":32768}}]})", models));
+    ZX_EXPECT_EQ(models[0].contextWindow, 32768u);
+    ZX_EXPECT(!ParseModelList("not json", models));
+    ZX_EXPECT(!ParseModelList(R"({"error":"nope"})", models));
+}
+
+ZX_TEST(Models, KnownContextWindows)
+{
+    ZX_EXPECT_EQ(KnownContextWindow("claude-opus-5-5"), 200000u);
+    ZX_EXPECT_EQ(KnownContextWindow("gpt-5-mini"), 400000u);
+    ZX_EXPECT_EQ(KnownContextWindow("gpt-4o-2024-08-06"), 128000u);
+    ZX_EXPECT_EQ(KnownContextWindow("gpt-4"), 8192u);
+    ZX_EXPECT_EQ(KnownContextWindow("openai/gpt-4.1"), 1000000u);              // provider prefix ignored
+    ZX_EXPECT_EQ(KnownContextWindow("accounts/fireworks/models/kimi-k2-instruct"), 262144u);
+    ZX_EXPECT_EQ(KnownContextWindow("Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"), 262144u); // case-insensitive
+    ZX_EXPECT_EQ(KnownContextWindow("qwen3:8b"), 131072u);
+    ZX_EXPECT_EQ(KnownContextWindow("gemini-2.5-pro"), 1000000u);
+    ZX_EXPECT_EQ(KnownContextWindow("deepseek-chat"), 128000u);
+    ZX_EXPECT_EQ(KnownContextWindow("totally-unknown-model"), 0u);
+}
+
+ZX_TEST(Models, ListRequests)
+{
+    const platform::HttpRequestDesc a = BuildModelListRequest(Provider::Anthropic, "", "sk-ant");
+    ZX_EXPECT(a.method == "GET");
+    ZX_EXPECT(a.url.StartsWith("https://api.anthropic.com/v1/models"));
+    ZX_EXPECT(HeaderValue(a.headers.View(), "x-api-key") == "sk-ant");
+    ZX_EXPECT(!HeaderValue(a.headers.View(), "anthropic-version").Empty());
+    const platform::HttpRequestDesc o = BuildModelListRequest(Provider::OpenAICompatible, "https://openrouter.ai/api/v1/", "k");
+    ZX_EXPECT(o.url == "https://openrouter.ai/api/v1/models");
+    ZX_EXPECT(HeaderValue(o.headers.View(), "Authorization") == "Bearer k");
+    const platform::HttpRequestDesc local = BuildModelListRequest(Provider::OpenAICompatible, "http://localhost:11434/v1", "");
+    ZX_EXPECT(HeaderValue(local.headers.View(), "Authorization").Empty());
+}
+
+ZX_TEST(Agent, ContextTrimming)
+{
+    // Ten long turns in a 4k-token window: the oldest go, the newest turn stays, a notice is shown.
+    TestHost host;
+    FakeProvider fake;
+    for (u32 i = 0; i < 12; ++i)
+        fake.responses.PushBack(R"({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]})");
+    Agent agent(host);
+    agent.SetTransport(fake.Transport());
+    AgentConfig config;
+    config.provider = Provider::OpenAICompatible;
+    config.baseUrl = "http://localhost:1/v1";
+    config.model = "m";
+    config.maxTokens = 1024;
+    config.contextWindow = 4000;
+    const String big(4000, 'x'); // ~1000 tokens per message
+    for (u32 i = 0; i < 10; ++i) {
+        ZX_REQUIRE(agent.Send(config, "sys", String::Format("turn {} {}", i, big)));
+        agent.Wait();
+    }
+    const JsonValue& last = fake.requests.Back().Get("messages");
+    ZX_EXPECT(EstimateTokens(last) < 4000u);
+    ZX_EXPECT(last[last.Size() - 1].Get("content").AsString().StartsWith("turn 9"));
+    ZX_EXPECT(!last[1].Get("content").AsString().StartsWith("turn 0")); // [0] is the system message
+    bool notice = false;
+    for (const AgentEvent& e : agent.TakeEvents())
+        notice |= e.type == AgentEventType::Notice;
+    ZX_EXPECT(notice);
+
+    // Without a window nothing is dropped.
+    JsonValue msgs;
+    ZX_REQUIRE(ParseJson(R"([{"role":"user","content":"a"},{"role":"assistant","content":"b"},{"role":"user","content":"c"}])", msgs));
+    ZX_EXPECT_EQ(TrimHistory(msgs, Provider::OpenAI, 1000000), 0u);
+    // A tiny budget keeps the last turn only; tool results do not start a turn (Anthropic).
+    ZX_EXPECT_EQ(TrimHistory(msgs, Provider::OpenAI, 1), 2u);
+    ZX_EXPECT_EQ(msgs.Size(), 1u);
+    ZX_REQUIRE(ParseJson(R"([{"role":"user","content":[{"type":"text","text":"build"}]},
+        {"role":"assistant","content":[{"type":"tool_use","id":"t","name":"add","input":{}}]},
+        {"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"3"}]}])", msgs));
+    ZX_EXPECT_EQ(TrimHistory(msgs, Provider::Anthropic, 1), 0u); // one turn: nothing to drop, tool pairs stay intact
+}
+
 ZX_TEST(Net, SecretsRoundTrip)
 {
     const String protectedKey = platform::ProtectSecret("sk-ant-api03-example");

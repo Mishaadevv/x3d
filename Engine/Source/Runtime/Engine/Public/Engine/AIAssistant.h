@@ -116,10 +116,36 @@ struct AgentConfig
     u32 maxTokens = 16000;
     bool serverFallbacks = true; // Anthropic: re-run a declined request on Anthropic's recommended fallback model
     u32 maxToolRounds = 60;      // tool calls per message before the agent stops
+    u32 contextWindow = 0;       // tokens the model accepts; older turns are dropped to fit (0 = never trimmed)
 };
 
 StringView DefaultModel(Provider provider);
 StringView DefaultBaseUrl(Provider provider);
+
+// --- Models and context windows -----------------------------------------------------------------------------------
+
+/// The largest context window the editor works with (tokens).
+inline constexpr u32 MaxContextWindow = 1000000;
+
+struct ModelInfo
+{
+    String id;
+    String name;            // display name if the provider gives one
+    u32 contextWindow = 0;  // tokens reported by the provider (0 = not reported), at most MaxContextWindow
+};
+
+/// GET request for a provider's model list: Anthropic <base>/v1/models, everything else <base>/models (OpenAI format).
+platform::HttpRequestDesc BuildModelListRequest(Provider provider, StringView baseUrl, StringView apiKey);
+/// Parses a model list in the formats providers use (OpenAI / Anthropic / OpenRouter / Groq / Mistral / Together /
+/// Gemini / llama.cpp / vLLM / Ollama tags). Keeps chat models only, sorted by id.
+bool ParseModelList(StringView body, Array<ModelInfo>& out);
+/// Context window of a well-known model family from its id (0 = unknown), at most MaxContextWindow.
+u32 KnownContextWindow(StringView model);
+/// Rough token count of JSON content (about 4 characters per token, an image about 1.6k tokens).
+u64 EstimateTokens(const JsonValue& value);
+/// Drops the oldest turns (a turn starts at a user text message) until the estimate fits `budget` tokens; the latest
+/// turn is always kept. Returns the number of messages dropped.
+usize TrimHistory(JsonValue& messages, Provider provider, u64 budget);
 
 enum class AgentEventType : u8
 {
@@ -129,6 +155,7 @@ enum class AgentEventType : u8
     Image,     // a screenshot the model looked at (pngBase64)
     Error,     // request failed; the turn ended
     Done,      // the turn ended normally
+    Notice,    // information for the user (older messages were dropped to fit the context window)
 };
 
 struct AgentEvent
@@ -143,6 +170,7 @@ struct AgentEvent
 struct AgentUsage
 {
     u64 inputTokens = 0, outputTokens = 0, cacheReadTokens = 0;
+    u64 contextTokens = 0; // prompt size of the last request: how full the context window is
     u32 requests = 0;
 };
 
@@ -176,6 +204,8 @@ private:
     bool RunOpenAI(const AgentConfig& config, StringView system);
     platform::HttpResponse Post(const platform::HttpRequestDesc& request);
     void Emit(AgentEvent event);
+    /// Drops the oldest turns so the next request fits config.contextWindow (with room for the reply).
+    void FitContext(const AgentConfig& config, StringView system, Span<const ToolDef> tools);
 
     ToolHost& m_host;
     Transport m_transport;

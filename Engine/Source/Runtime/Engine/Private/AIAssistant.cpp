@@ -1,6 +1,8 @@
 #include "Engine/AIAssistant.h"
 
+#include "Core/Containers/Algorithm.h"
 #include "Core/Log/Log.h"
+#include "Core/String/Parse.h"
 #include "Core/String/Utf.h"
 
 ZX_DEFINE_LOG_CATEGORY_STATIC(LogAI, Info);
@@ -377,6 +379,246 @@ JsonValue BuildOpenAIRequest(const AgentConfig& config, StringView system, Span<
     return body;
 }
 
+// --- Models and context windows -------------------------------------------------------------------------------------
+
+platform::HttpRequestDesc BuildModelListRequest(Provider provider, StringView baseUrl, StringView apiKey)
+{
+    String base = baseUrl.Trim().Empty() ? String(DefaultBaseUrl(provider)) : String(baseUrl.Trim());
+    while (base.EndsWith("/"))
+        base.PopBack();
+    platform::HttpRequestDesc req;
+    req.method = "GET";
+    req.timeoutMs = 20000;
+    if (provider == Provider::Anthropic) {
+        req.url = base + "/v1/models?limit=1000";
+        req.headers.PushBack({"x-api-key", String(apiKey)});
+        req.headers.PushBack({"anthropic-version", String(AnthropicVersion)});
+    } else {
+        req.url = base + "/models";
+        if (!apiKey.Empty())
+            req.headers.PushBack({"Authorization", String::Format("Bearer {}", apiKey)});
+    }
+    return req;
+}
+
+namespace {
+
+u32 ClampContext(u64 tokens) { return u32(Min<u64>(tokens, MaxContextWindow)); }
+
+/// The context window a model entry reports, under the names providers use for it.
+u32 ReportedContext(const JsonValue& m)
+{
+    for (StringView key : {StringView("context_length"), StringView("context_window"), StringView("max_context_length"), StringView("max_model_len"),
+                           StringView("max_input_tokens"), StringView("inputTokenLimit"), StringView("max_context_window"), StringView("n_ctx")}) {
+        const JsonValue& v = m.Get(key);
+        if (v.IsNumber() && v.AsDouble() > 0.0)
+            return ClampContext(u64(v.AsDouble()));
+        if (v.IsString()) // some servers send numbers as strings
+            if (const Optional<u64> n = ParseUInt(v.AsString()); n.HasValue() && *n > 0)
+                return ClampContext(*n);
+    }
+    if (const u64 n = m.Get("top_provider").Get("context_length").AsU64())
+        return ClampContext(n);
+    if (const u64 n = m.Get("meta").Get("n_ctx_train").AsU64())
+        return ClampContext(n);
+    if (const u64 n = m.Get("limits").Get("max_context_window_tokens").AsU64())
+        return ClampContext(n);
+    if (const u64 n = m.Get("limits").Get("max_input_tokens").AsU64()) // GitHub Models catalog
+        return ClampContext(n);
+    return 0;
+}
+
+/// Embeddings, speech, images, moderation: models the chat cannot use.
+bool IsChatModel(const JsonValue& m, StringView idLower)
+{
+    for (StringView bad : {StringView("embed"), StringView("whisper"), StringView("tts"), StringView("dall-e"), StringView("moderation"),
+                           StringView("rerank"), StringView("transcribe"), StringView("gpt-image"), StringView("imagen"), StringView("veo-"),
+                           StringView("text-similarity"), StringView("text-search"), StringView("davinci-002"), StringView("babbage"),
+                           StringView("-realtime"), StringView("-audio"), StringView("guard"), StringView("sora")})
+        if (idLower.Contains(bad))
+            return false;
+    const String type = String(m.Get("type").AsString()).ToLower();
+    if (!type.Empty() && type != "model" && type != "chat" && type != "language" && type != "code" && type != "llm" && type != "vlm")
+        return false;
+    const JsonValue& caps = m.Get("capabilities");
+    if (caps.IsObject() && caps.Get("completion_chat").IsBool() && !caps.Get("completion_chat").AsBool())
+        return false;
+    const JsonValue& methods = m.Get("supportedGenerationMethods");
+    if (methods.IsArray()) {
+        bool chat = false;
+        for (const JsonValue& v : methods.Elements())
+            chat |= v.AsString() == "generateContent";
+        if (!chat)
+            return false;
+    }
+    return true;
+}
+
+} // namespace
+
+bool ParseModelList(StringView body, Array<ModelInfo>& out)
+{
+    out.Clear();
+    JsonValue doc;
+    if (!ParseJson(body, doc))
+        return false;
+    const JsonValue* list = &doc;
+    if (!doc.IsArray()) {
+        list = doc.Find("data");
+        if (!list || !list->IsArray())
+            list = doc.Find("models"); // Gemini, Ollama /api/tags
+        if (!list || !list->IsArray())
+            return false;
+    }
+    for (const JsonValue& m : list->Elements()) {
+        StringView id = m.IsString() ? m.AsString() : m.Get("id").AsString();
+        if (id.Empty())
+            id = m.Get("model").AsString();
+        if (id.Empty())
+            id = m.Get("name").AsString();
+        if (id.StartsWith("models/")) // Gemini
+            id = id.DropLeft(7);
+        if (id.Empty())
+            continue;
+        const String lower = String(id).ToLower();
+        if (!IsChatModel(m, lower))
+            continue;
+        bool dup = false;
+        for (const ModelInfo& e : out)
+            dup |= e.id == id;
+        if (dup)
+            continue;
+        ModelInfo info;
+        info.id = id;
+        StringView name = m.Get("display_name").AsString();
+        if (name.Empty())
+            name = m.Get("displayName").AsString();
+        if (name.Empty() && m.Get("name").AsString() != id && !m.Get("name").AsString().StartsWith("models/"))
+            name = m.Get("name").AsString();
+        info.name = name;
+        info.contextWindow = ReportedContext(m);
+        out.PushBack(move(info));
+    }
+    Sort(out, [](const ModelInfo& a, const ModelInfo& b) { return a.id.View().CompareIgnoreCase(b.id.View()) < 0; });
+    return true;
+}
+
+u32 KnownContextWindow(StringView model)
+{
+    // Provider prefixes ("openai/gpt-5", "accounts/fireworks/models/x", "qwen3:8b") do not matter: the last path part.
+    String id = String(model).ToLower();
+    if (const usize slash = id.View().RFind('/'); slash != StringView::NPos)
+        id = String(id.View().DropLeft(slash + 1));
+    struct Entry
+    {
+        StringView prefix;
+        u32 tokens;
+    };
+    // Longest matching prefix wins; numbers are the providers' published input limits (capped at 1M).
+    static constexpr Entry Table[] = {
+        {"claude", 200000},           {"gpt-5", 400000},           {"gpt-4.1", 1000000},        {"gpt-4o", 128000},
+        {"gpt-4-turbo", 128000},      {"gpt-4", 8192},             {"gpt-3.5", 16385},          {"gpt-oss", 131072},
+        {"chatgpt-4o", 128000},       {"o1", 200000},              {"o3", 200000},              {"o4", 200000},
+        {"codex", 400000},            {"gemini-1.5", 1000000},     {"gemini-2", 1000000},       {"gemini-3", 1000000},
+        {"gemini", 1000000},          {"gemma-3", 131072},         {"gemma3", 131072},          {"gemma", 8192},
+        {"grok-4-fast", 1000000},     {"grok-4", 256000},          {"grok-code", 256000},       {"grok-3", 131072},
+        {"grok", 131072},             {"deepseek", 128000},        {"mistral-large", 128000},   {"mistral-medium", 128000},
+        {"mistral-small", 128000},    {"magistral", 128000},       {"codestral", 256000},       {"devstral", 128000},
+        {"ministral", 128000},        {"pixtral", 128000},         {"mistral-nemo", 128000},    {"open-mistral-nemo", 128000},
+        {"mistral", 32768},           {"mixtral", 32768},          {"qwen3-coder", 262144},     {"qwen3", 131072},
+        {"qwen2.5", 32768},           {"qwen-max", 32768},         {"qwen-plus", 131072},       {"qwen-turbo", 1000000},
+        {"qwen", 32768},              {"qwq", 131072},             {"llama-4-scout", 1000000},  {"llama-4-maverick", 1000000},
+        {"llama-4", 1000000},         {"llama4", 1000000},         {"llama-3.1", 131072},       {"llama-3.2", 131072},
+        {"llama-3.3", 131072},        {"llama3.1", 131072},        {"llama3.2", 131072},        {"llama3.3", 131072},
+        {"meta-llama-3.1", 131072},   {"llama", 8192},             {"kimi-k2", 262144},         {"kimi", 131072},
+        {"moonshot", 131072},         {"glm-4.6", 200000},         {"glm-4.5", 131072},         {"glm", 131072},
+        {"minimax-m1", 1000000},      {"minimax-m2", 204800},      {"minimax", 204800},         {"command-a", 256000},
+        {"command-r", 128000},        {"command", 128000},         {"phi-4", 16384},            {"phi4", 16384},
+        {"phi-3", 128000},            {"sonar", 128000},           {"nemotron", 131072},        {"hermes", 131072},
+        {"granite", 131072},          {"jamba", 256000},           {"ernie", 128000},           {"doubao", 256000},
+    };
+    u32 best = 0;
+    usize bestLen = 0;
+    for (const Entry& e : Table)
+        if (id.StartsWith(e.prefix) && e.prefix.Size() > bestLen) {
+            best = e.tokens;
+            bestLen = e.prefix.Size();
+        }
+    return Min(best, MaxContextWindow);
+}
+
+namespace {
+
+u64 EstimateTokensRec(const JsonValue& v, StringView key)
+{
+    switch (v.Type()) {
+    case JsonType::String: {
+        const StringView s = v.AsString();
+        if (s.StartsWith("data:image") || (key == "data" && s.Size() > 2000))
+            return 1600; // an image costs about the same whatever its base64 length
+        return (s.Size() + 3) / 4;
+    }
+    case JsonType::Array: {
+        u64 n = 0;
+        for (const JsonValue& e : v.Elements())
+            n += EstimateTokensRec(e, key);
+        return n;
+    }
+    case JsonType::Object: {
+        u64 n = 3; // per-message / per-block framing
+        for (const JsonMember& m : v.Members())
+            n += EstimateTokensRec(m.second, m.first);
+        return n;
+    }
+    case JsonType::Null: return 0;
+    default: return 1;
+    }
+}
+
+/// A message that starts a new turn: the user's own text (not tool results, not an image after a tool).
+bool IsTurnStart(const JsonValue& m, Provider provider)
+{
+    if (m.Get("role").AsString() != "user")
+        return false;
+    const JsonValue& content = m.Get("content");
+    if (provider != Provider::Anthropic)
+        return content.IsString();
+    if (!content.IsArray())
+        return content.IsString();
+    for (const JsonValue& block : content.Elements())
+        if (block.Get("type").AsString() == "tool_result")
+            return false;
+    return true;
+}
+
+} // namespace
+
+u64 EstimateTokens(const JsonValue& value) { return EstimateTokensRec(value, {}); }
+
+usize TrimHistory(JsonValue& messages, Provider provider, u64 budget)
+{
+    if (!messages.IsArray())
+        return 0;
+    usize dropped = 0;
+    while (EstimateTokens(messages) > budget) {
+        // The next turn after the first one; everything before it goes.
+        usize next = 0;
+        for (usize i = 1; i < messages.Size(); ++i)
+            if (IsTurnStart(messages[i], provider)) {
+                next = i;
+                break;
+            }
+        if (next == 0)
+            break; // only the current turn is left
+        JsonValue kept = JsonValue::MakeArray();
+        for (usize i = next; i < messages.Size(); ++i)
+            kept.PushBack(move(messages[i]));
+        messages = move(kept);
+        dropped += next;
+    }
+    return dropped;
+}
+
 JsonValue AnthropicHistoryContent(const JsonValue& content)
 {
     usize lastFallback = usize(-1);
@@ -515,6 +757,7 @@ void Agent::Reset()
     m_messages = JsonValue::MakeArray();
     ScopedLock lock(m_mutex);
     m_events.Clear();
+    m_usage = AgentUsage{};
 }
 
 Array<AgentEvent> Agent::TakeEvents()
@@ -552,6 +795,26 @@ platform::HttpResponse Agent::Post(const platform::HttpRequestDesc& request)
     }
 }
 
+void Agent::FitContext(const AgentConfig& config, StringView system, Span<const ToolDef> tools)
+{
+    if (config.contextWindow == 0)
+        return;
+    // Room for the reply and a margin for the estimate being rough.
+    const u64 window = config.contextWindow;
+    const u64 reserve = Min<u64>(u64(Max(config.maxTokens, 1024u)) + window / 10, window / 2);
+    u64 fixed = (system.Size() + 3) / 4;
+    for (const ToolDef& t : tools)
+        fixed += (t.name.Size() + t.description.Size() + 3) / 4 + EstimateTokens(t.inputSchema);
+    const u64 budget = window > reserve + fixed ? window - reserve - fixed : window / 4;
+    const usize dropped = TrimHistory(m_messages, config.provider, budget);
+    if (dropped > 0) {
+        AgentEvent e;
+        e.type = AgentEventType::Notice;
+        e.text = String::Format("Older messages ({}) were dropped to fit the model's {}k-token context window.", dropped, window / 1000);
+        Emit(move(e));
+    }
+}
+
 void Agent::Run(AgentConfig config, String system)
 {
     const bool ok = config.provider == Provider::Anthropic ? RunAnthropic(config, system) : RunOpenAI(config, system);
@@ -584,6 +847,7 @@ bool Agent::RunAnthropic(const AgentConfig& configIn, StringView system)
             Emit(ErrorEvent("Stopped."));
             return false;
         }
+        FitContext(config, system, tools);
         platform::HttpRequestDesc req;
         req.url = BaseUrlOf(config) + "/v1/messages";
         req.headers.PushBack({"content-type", "application/json"});
@@ -626,6 +890,8 @@ bool Agent::RunAnthropic(const AgentConfig& configIn, StringView system)
             m_usage.inputTokens += u.Get("input_tokens").AsU64() + u.Get("cache_creation_input_tokens").AsU64();
             m_usage.cacheReadTokens += u.Get("cache_read_input_tokens").AsU64();
             m_usage.outputTokens += u.Get("output_tokens").AsU64();
+            m_usage.contextTokens = u.Get("input_tokens").AsU64() + u.Get("cache_creation_input_tokens").AsU64() +
+                                    u.Get("cache_read_input_tokens").AsU64() + u.Get("output_tokens").AsU64();
             ++m_usage.requests;
         }
         const StringView stop = doc.Get("stop_reason").AsString();
@@ -733,6 +999,7 @@ bool Agent::RunOpenAI(const AgentConfig& config, StringView system)
             Emit(ErrorEvent("Stopped."));
             return false;
         }
+        FitContext(config, system, tools);
         platform::HttpRequestDesc req;
         req.url = BaseUrlOf(config) + "/chat/completions";
         req.headers.PushBack({"Content-Type", "application/json"});
@@ -758,6 +1025,7 @@ bool Agent::RunOpenAI(const AgentConfig& config, StringView system)
             const JsonValue& u = doc.Get("usage");
             m_usage.inputTokens += u.Get("prompt_tokens").AsU64();
             m_usage.outputTokens += u.Get("completion_tokens").AsU64();
+            m_usage.contextTokens = u.Get("prompt_tokens").AsU64() + u.Get("completion_tokens").AsU64();
             ++m_usage.requests;
         }
         const JsonValue& choice = doc.Get("choices")[0];

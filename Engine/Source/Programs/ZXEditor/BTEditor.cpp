@@ -342,6 +342,14 @@ void AddNodePopup(BTEditorState& st)
     }
     ui::InputText("##bt_add_search", st.addSearch, ui::InputTextFlags::None, ZX_ICON_SEARCH "  Search nodes...");
     ui::Separator();
+    // The list scrolls and stays within the screen (the popup is clamped to the display, so a fixed-height list
+    // could push its bottom out of view).
+    const f32 listH = Clamp(ui::GetDisplaySize().y - 120.0f, 160.0f, 420.0f);
+    if (!ui::BeginChild("##bt_add_list", Vec2(260.0f, listH), false)) {
+        ui::EndChild();
+        ui::EndPopup();
+        return;
+    }
     auto matches = [&](StringView title) {
         if (st.addSearch.Empty())
             return true;
@@ -350,7 +358,8 @@ void AddNodePopup(BTEditorState& st)
                 return true;
         return false;
     };
-    const bool enter = ui::IsKeyPressed(Key::Enter, false);
+    // Enter takes the first match, once something is typed (an empty Enter adds nothing).
+    const bool enter = !st.addSearch.Empty() && ui::IsKeyPressed(Key::Enter, false);
     bool taken = false;
     StringView category;
     for (const TypeInfo& info : Types) {
@@ -382,6 +391,7 @@ void AddNodePopup(BTEditorState& st)
             ui::CloseCurrentPopup();
         }
     }
+    ui::EndChild();
     ui::EndPopup();
 }
 

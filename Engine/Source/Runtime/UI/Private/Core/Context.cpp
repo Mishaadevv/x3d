@@ -985,6 +985,12 @@ void EndChild()
 
 Rect GetWindowRect() { return G().current->outer; }
 
+Vec2 GetDisplaySize()
+{
+    Context::Impl& g = G();
+    return g.scale > 0.0f ? g.display / g.scale : g.display;
+}
+
 Vec2 GetContentRegionAvail()
 {
     Context::Impl& g = G();
@@ -1003,6 +1009,9 @@ void SetScrollHereY(f32 ratio)
     const f32 target = itemY - w->cursorStart.y - w->inner.Height() * ratio;
     w->scroll.y = Clamp(Round(target), 0.0f, Max(w->scrollMaxY, 0.0f));
 }
+
+f32 GetScrollY() { return G().current->scroll.y; }
+f32 GetScrollMaxY() { return G().current->scrollMaxY; }
 
 // --- Layout API ----------------------------------------------------------------------------------------------------------
 
@@ -1279,6 +1288,18 @@ void OpenPopup(StringView idStr)
     p.anchor = g.lastItemRect;
     p.openFrame = g.frame;
     g.openPopups.PushBack(p);
+}
+
+void OpenPopupAnchored(StringView idStr, const Rect& anchor)
+{
+    Context::Impl& g = G();
+    OpenPopup(idStr);
+    const ID id = g.MakeID(idStr);
+    for (PopupRef& p : g.openPopups)
+        if (p.id == id) {
+            p.anchor = anchor;
+            p.isCombo = true;
+        }
 }
 
 bool IsPopupOpen(StringView idStr)

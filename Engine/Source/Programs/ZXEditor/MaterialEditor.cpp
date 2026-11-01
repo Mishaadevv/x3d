@@ -279,9 +279,24 @@ void AddNodePopup(Editor& ed, MaterialEditorState& st, MaterialLibrary::Material
 {
     if (!ui::BeginPopup("##mat_add_node"))
         return;
+    if (st.addFocus) { // type to search right away
+        ui::SetKeyboardFocusHere();
+        st.addFocus = false;
+    }
     ui::SetNextItemWidth(240.0f);
     ui::InputText("##mat_add_search", st.addSearch, ui::InputTextFlags::None, ZX_ICON_SEARCH "  Search nodes...");
     ui::Separator();
+    // The list scrolls and never grows taller than the screen: the popup is clamped to the display, so a list of a
+    // fixed height pushed its last nodes out of view.
+    const f32 listH = Clamp(ui::GetDisplaySize().y - 120.0f, 160.0f, 420.0f);
+    if (!ui::BeginChild("##mat_add_list", Vec2(240.0f, listH), false)) {
+        ui::EndChild();
+        ui::EndPopup();
+        return;
+    }
+    // Enter takes the first match, once something is typed (an empty Enter adds nothing).
+    const bool enter = !st.addSearch.Empty() && ui::IsKeyPressed(Key::Enter, false);
+    bool taken = false;
     StringView category;
     for (const MaterialNodeType& t : GetMaterialNodeTypes()) {
         if (t.kind == MaterialNodeKind::Output)
@@ -297,7 +312,11 @@ void AddNodePopup(Editor& ed, MaterialEditorState& st, MaterialLibrary::Material
             category = t.category;
             ui::TextDisabled(category);
         }
-        if (ui::MenuItem(String::Format("   {}##{}", t.displayName, t.type))) {
+        const bool clicked = ui::MenuItem(String::Format("   {}##{}", t.displayName, t.type));
+        if (ui::IsItemHovered())
+            ui::SetTooltip(t.description);
+        if (clicked || (enter && !taken)) {
+            taken = true;
             PushUndo(st, m.graph);
             const u32 id = m.graph.AddNode(t.type, st.addPosition)->id;
             if (st.addHasLink) {
@@ -312,9 +331,8 @@ void AddNodePopup(Editor& ed, MaterialEditorState& st, MaterialLibrary::Material
             Commit(ed, m);
             ui::CloseCurrentPopup();
         }
-        if (ui::IsItemHovered())
-            ui::SetTooltip(t.description);
     }
+    ui::EndChild();
     ui::EndPopup();
 }
 
@@ -916,6 +934,7 @@ void DrawMaterialEditorPanel(Editor& ed)
                 st.addLinkFromOutput = st.linkFromOutput;
                 st.addPosition = c.ToGraph(mouse);
                 st.addSearch.Clear();
+                st.addFocus = true;
                 ui::OpenPopup("##mat_add_node");
             }
             st.beforeDrag.Clear();

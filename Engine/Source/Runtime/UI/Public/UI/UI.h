@@ -155,6 +155,7 @@ enum class InputTextFlags : u32
     EnterReturnsTrue = 1 << 4, // return true only on Enter (otherwise on every edit)
     AutoSelectAll = 1 << 5,
     KeepFocusOnEnter = 1 << 6, // with EnterReturnsTrue: stay active after Enter (console prompts)
+    SubmitOnEnter = 1 << 7,    // multi-line: Enter submits (returns true, as EnterReturnsTrue), Shift+Enter adds a line (chat inputs)
 };
 ZX_ENUM_FLAGS(InputTextFlags)
 
@@ -296,6 +297,8 @@ String SaveDockLayout();
 bool LoadDockLayout(StringView text);
 
 Rect GetWindowRect();
+/// Whole display in logical px (the window's physical size divided by the UI scale). Popups use it to size lists.
+Vec2 GetDisplaySize();
 /// Content area of the current window (physical px, scroll not applied).
 Rect GetWindowContentRect();
 Vec2 GetContentRegionAvail();
@@ -303,6 +306,9 @@ DrawList& GetWindowDrawList();
 /// Draw list above all windows (debug overlays, drag previews).
 DrawList& GetForegroundDrawList();
 void SetScrollHereY(f32 ratio = 0.5f);
+/// Vertical scroll of the current window / child and its maximum (physical px, as of the previous frame's content).
+f32 GetScrollY();
+f32 GetScrollMaxY();
 
 // --- Layout ------------------------------------------------------------------------------------------------------------
 
@@ -405,7 +411,9 @@ bool InputText(StringView label, String& text, InputTextFlags flags = InputTextF
 void SetActiveTextCursorToEnd();
 /// The next InputText takes keyboard focus (e.g. the search field of a palette that just opened).
 void SetKeyboardFocusHere();
-bool InputTextMultiline(StringView label, String& text, Vec2 size = Vec2::Zero(), InputTextFlags flags = InputTextFlags::None);
+/// Takes the focus set by SetKeyboardFocusHere; `hint` is shown while the text is empty.
+bool InputTextMultiline(StringView label, String& text, Vec2 size = Vec2::Zero(), InputTextFlags flags = InputTextFlags::None,
+                        StringView hint = {});
 
 /// Syntax coloring for InputTextCode: writes one color per byte of `line`. `state` carries multi-line constructs
 /// (block comments) from one line to the next; it starts at 0.
@@ -473,6 +481,8 @@ private:
 // --- Popups, menus, tooltips ----------------------------------------------------------------------------------------------
 
 void OpenPopup(StringView id);
+/// Opens a popup attached to `anchor` (physical px), like a combo list: below it, or above if there is no room below.
+void OpenPopupAnchored(StringView id, const Rect& anchor);
 bool BeginPopup(StringView id);
 bool BeginPopupModal(StringView title, bool* open = nullptr);
 /// Opens on right-click over the last item (id empty = derived from the item).

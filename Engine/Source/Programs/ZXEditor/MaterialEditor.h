@@ -64,6 +64,7 @@ struct MaterialEditorState
 
     // "Add node" popup.
     String addSearch;
+    bool addFocus = false; // focus the search field on the next frame the popup is open (type right away)
     Vec2 addPosition; // graph space
     bool addHasLink = false;
     u32 addLinkNode = 0, addLinkPin = 0;

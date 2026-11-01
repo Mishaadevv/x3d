@@ -339,7 +339,7 @@ bool Context::Impl::TextEditBehavior(ID id, const Rect& frameRect, String& text,
                 break;
             case Key::Enter:
             case Key::KeypadEnter:
-                if (multiline && !ctrl) {
+                if (multiline && !ctrl && !(HasAnyFlags(flags, InputTextFlags::SubmitOnEnter) && !shift)) {
                     if (!readOnly) {
                         pushUndo(false);
                         String newline("\n");
@@ -366,7 +366,8 @@ bool Context::Impl::TextEditBehavior(ID id, const Rect& frameRect, String& text,
                 }
                 break;
             case Key::Escape:
-                if (!readOnly && text != st.initial) {
+                // Chat inputs keep their draft; other fields revert to the value they had when focused.
+                if (!readOnly && text != st.initial && !HasAnyFlags(flags, InputTextFlags::SubmitOnEnter)) {
                     text = st.initial;
                     changed = true;
                 }
@@ -619,7 +620,7 @@ bool Context::Impl::TextEditBehavior(ID id, const Rect& frameRect, String& text,
             dl.PopClipRect();
             dl.PushClipRect(inner);
         }
-        if (view.Empty() && !active && !hint.Empty())
+        if (view.Empty() && !hint.Empty())
             dl.AddText(font, size, origin, Col(col.textDisabled), hint);
         if (active && Fmod(st.blink, 1.0f) < 0.6f) {
             const usize ls = LineStart(view, st.cursor);
@@ -659,7 +660,7 @@ bool Context::Impl::TextEditBehavior(ID id, const Rect& frameRect, String& text,
 
     if (changed)
         editedId = id;
-    if (HasAnyFlags(flags, InputTextFlags::EnterReturnsTrue))
+    if (HasAnyFlags(flags, InputTextFlags::EnterReturnsTrue | InputTextFlags::SubmitOnEnter))
         return enterPressed;
     return changed;
 }
@@ -697,7 +698,7 @@ bool InputText(StringView label, String& text, InputTextFlags flags, StringView 
     return result;
 }
 
-bool InputTextMultiline(StringView label, String& text, Vec2 size, InputTextFlags flags)
+bool InputTextMultiline(StringView label, String& text, Vec2 size, InputTextFlags flags, StringView hint)
 {
     Context::Impl& g = G();
     WindowState* w = g.current;
@@ -708,7 +709,9 @@ bool InputTextMultiline(StringView label, String& text, Vec2 size, InputTextFlag
     g.ItemSize(frame.Size());
     if (!g.ItemAdd(frame, id) && g.activeId != id)
         return false;
-    const bool result = g.TextEditBehavior(id, frame, text, flags | InputTextFlags::Multiline, {}, false);
+    const bool focus = g.focusNextTextField && g.activeId != id;
+    g.focusNextTextField = false;
+    const bool result = g.TextEditBehavior(id, frame, text, flags | InputTextFlags::Multiline, hint, focus);
     g.lastItemId = id;
     g.lastItemRect = frame;
     return result;
