@@ -2,6 +2,7 @@
 // the panels, status bar.
 
 #include "Editor.h"
+#include "EditorAI.h"
 #include "Core/HAL/PlatformMisc.h"
 #include "Core/Version.h"
 #include "RHI/EngineProfile.h"
@@ -388,6 +389,9 @@ void DrawToolbar(Editor& ed, const Rect& r)
     ui::ItemTooltip(String::Format("Engine profile: {} - click to change", ed.lite ? "Lite (for laptops and integrated graphics)" : "Full"));
     dl.AddRect(br, WithAlpha(c.accent, badgeHovered ? 0.32f : 0.18f), ui::CornerRadii(4.0f * s), 1.0f, WithAlpha(c.accent, 0.6f));
     dl.AddTextInRect(bold, 11.0f * s, br, c.accentHovered, badge, ui::TextAlign::Center, false);
+    // Zeqou AI orb, left of the badge.
+    const f32 orb = Round(26.0f * s);
+    DrawAIOrb(ed, Rect(Vec2(br.min.x - orb - 12.0f * s, Round(r.Center().y - orb * 0.5f)), Vec2(br.min.x - 12.0f * s, Round(r.Center().y + orb * 0.5f))));
     EndStrip();
 }
 
@@ -574,6 +578,7 @@ void DrawShell(Editor& ed)
     const f32 s = ctx.GetScale();
     const Vec2 display = Vec2(f32(ed.swapChain->GetSize().x), f32(ed.swapChain->GetSize().y));
     const f32 th = Round(TitleBarHeight * s), tbh = Round(ToolbarHeight * s), sh = Round(StatusBarHeight * s);
+    UpdateAI(ed); // tool calls from AI agents run here, on the main thread
     if (ed.mode == EditorMode::ProjectBrowser) {
         DrawTitleBar(ed, Rect(Vec2::Zero(), Vec2(display.x, th)), false);
         DrawProjectBrowser(ed, Rect(Vec2(0.0f, th), display));
@@ -620,6 +625,7 @@ void DrawShell(Editor& ed)
     DrawZGraphEditorPanel(ed);
     DrawBTEditorPanel(ed);
     DrawSequencerPanel(ed);
+    DrawAIPanel(ed);
     DrawAbout(ed);
     DrawProfileDialog(ed);
     DrawSaveChangesDialog(ed);

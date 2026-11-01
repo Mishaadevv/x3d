@@ -82,6 +82,8 @@ u32 WriteGameplayScripts(StringView contentDir);
 /// Writes README.md and Docs/ (getting started, ZeqouScript reference) for the team, plus AGENTS.md / CLAUDE.md with
 /// instructions for AI coding assistants. Returns the number of files written.
 u32 WriteProjectDocs(const ProjectInfo& project);
+/// One of those documents as text ("agents", "getting_started", "zeqouscript", "cpp"); empty if unknown.
+String ProjectDocText(const ProjectInfo& project, StringView doc);
 
 // --- Recent projects ---------------------------------------------------------------------------------------------------
 

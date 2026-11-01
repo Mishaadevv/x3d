@@ -98,6 +98,8 @@ void SaveEditorSettings(const Editor& ed);
 void ApplyEditorSettings(Editor& ed);
 /// File > Settings window.
 void DrawSettingsWindow(Editor& ed);
+/// Opens File > Settings on a page ("Editor", "AI", ...).
+void OpenSettingsPage(Editor& ed, StringView page);
 
 inline constexpr StringView SettingsTitle = ZX_ICON_SETTINGS "  Settings";
 

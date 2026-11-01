@@ -7,6 +7,7 @@
 #include "Engine/ZGraph.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Editor.h"
+#include "EditorAI.h"
 #include "EditorActions.h"
 #include "Core/Console/Console.h"
 #include "Core/Containers/Algorithm.h"
@@ -1071,6 +1072,40 @@ ConCommand CmdCreate("create", "Creates an object in front of the camera: create
         ed->CreateShape(BuiltinShape::Plane, at);
     else
         ZX_LOG_WARN(LogCmd, "Unknown object type '{}' (entity, pointlight, spotlight)", kind);
+});
+
+ConCommand CmdAiOpen("ai.open", "Opens / closes the Zeqou AI panel: ai.open [0|1] [chat|connect]", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || !ed->ai)
+        return;
+    ed->ai->open = args.Empty() ? !ed->ai->open : args[0] != "0";
+    if (args.Size() > 1)
+        ed->ai->page = args[1].EqualsIgnoreCase("connect") ? 1 : 0;
+});
+
+ConCommand CmdAiSend("ai.send", "Sends a message to Zeqou AI: ai.send <text>", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || !ed->ai || args.Empty())
+        return;
+    String text;
+    for (StringView a : args)
+        text.Appendf("{}{}", text.Empty() ? "" : " ", a);
+    ed->ai->open = true;
+    SendAIMessage(*ed, text);
+});
+
+ConCommand CmdAiMcp("ai.mcp", "Turns the MCP server (external AI agents) on or off: ai.mcp <0|1>; no argument prints its state", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || !ed->ai)
+        return;
+    AIState& ai = *ed->ai;
+    if (!args.Empty()) {
+        ai.settings.mcpEnabled = args[0] != "0";
+        ai.mcpError.Clear();
+        SaveAISettings(ai.settings);
+    }
+    ZX_LOG_INFO(LogCmd, "MCP server: {} (port {}, {} requests, client '{}'){}", ai.mcp.IsRunning() ? "on" : "off", ai.settings.mcpPort,
+                ai.mcp.RequestCount(), ai.mcp.LastClient(), ai.mcpError.Empty() ? String() : String::Format(" - {}", ai.mcpError));
 });
 
 ConCommand CmdPlay("play", "Starts Play-in-Editor", [](Span<const StringView>) {

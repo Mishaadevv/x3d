@@ -1,5 +1,6 @@
 #include "EditorSettings.h"
 #include "Editor.h"
+#include "EditorAI.h"
 #include "Core/Console/Console.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/Reflection/ReflectionSerialization.h"
@@ -244,6 +245,16 @@ void ApplyEditorSettings(Editor& ed)
     }
 }
 
+void OpenSettingsPage(Editor& ed, StringView page)
+{
+    static constexpr StringView Pages[] = {"Editor", "Viewport", "Rendering", "Audio", "Project", "AI"};
+    for (i32 i = 0; i < i32(ZX_ARRAY_COUNT(Pages)); ++i)
+        if (Pages[i].EqualsIgnoreCase(page))
+            g_section = i;
+    ed.showSettings = true;
+    ui::FocusDockedWindow(SettingsTitle);
+}
+
 void DrawSettingsWindow(Editor& ed)
 {
     if (!ed.showSettings)
@@ -265,6 +276,7 @@ void DrawSettingsWindow(Editor& ed)
         {ZX_ICON_MONITOR, "Rendering", "Rendering (this computer)"},
         {ZX_ICON_VOLUME_2, "Audio", "Audio"},
         {ZX_ICON_FOLDER_KANBAN, "Project", ""},
+        {ZX_ICON_SPARKLES, "AI", "#ai"},
     };
     // Sidebar.
     if (ui::BeginChild("##settings_nav", Vec2(170.0f, 0.0f), false)) {
@@ -280,7 +292,9 @@ void DrawSettingsWindow(Editor& ed)
         ui::Text(sec.name);
         ui::PopFont();
         ui::Spacing();
-        if (sec.category[0] != '\0') {
+        if (StringView(sec.category) == "#ai") {
+            DrawAISettingsPage(ed);
+        } else if (sec.category[0] != '\0') {
             // The fields of this category (the property editor draws every field: copy only this section's into a
             // scratch object would lose the edit conditions, so draw all and skip the others' headers).
             const TypeInfo& type = ZxTypeOf(static_cast<EditorSettings*>(nullptr));

@@ -278,6 +278,13 @@ matrices in double via LocalMatrix + Convert = C*M*C^-1, BuildMesh in file space
 cluster Transform = Link^-1 * mesh bind, SkeletonInfo / BindSkin, ImportAnimations resample + ReduceKeys), ImportFbx /
 ListFbxTextureFiles (Project.cpp copies textures next to the model). Test data Tests/Data/Models/Fbx from
 Tools/gen_fbx_testdata.py (Blender; strips local paths); tests FbxImport.*, ManualFbx.CompareWithGltf.
+Zeqou AI (0.17.8): Platform/Net.h (HttpRequest WinHTTP, LocalHttpServer 127.0.0.1, ProtectSecret DPAPI, RandomHex),
+Engine/AIAssistant.h (ToolHost, McpServer::Handle/HandleMessage, Agent with injectable Transport; tests Mcp.*, Agent.*).
+Editor: EditorAI.h, EditorAITools.cpp (EditorToolHost: ToolEntries table, jobs pumped in UpdateAI on the main thread,
+screenshot via Editor::captureRequests read back after the frame), EditorAIPanel.cpp (orb in DrawToolbar, DrawAIPanel,
+Settings > AI page, AI.json in %LOCALAPPDATA% or -aisettings=<file>). Console ai.open / ai.send / ai.mcp. Live check:
+run the editor with -aisettings + ai.mcp 1 and drive http://127.0.0.1:47800/mcp from a script (the sandbox blocks the
+editor from writing %LOCALAPPDATA% and isolates localhost between sandboxed processes: run both unsandboxed).
 Real-mouse script uidrag2.py: wait:N token, keybd_event needs MapVirtualKey scan codes (the engine reads scan codes). Python heredocs turn "\xEE" into raw bytes: put icon literals in with the Edit tool.
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants

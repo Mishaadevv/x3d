@@ -1,4 +1,5 @@
 #include "Editor.h"
+#include "EditorAI.h"
 #include "Engine/TimeOfDay.h"
 #include "Engine/ScriptAssignment.h"
 #include "Engine/Project.h"
@@ -300,6 +301,7 @@ bool Editor::Initialize()
     viewport->Settings().renderScale = 1.0f; // the viewport is smaller than the screen; keep it crisp
     RegisterEditorConsole(*this);
     LoadEditorSettings(*this);
+    InitAI(*this);
     thumbnails.Reset(new ThumbnailCache(*device, *assets, *renderAssets));
     if (!thumbnails->Init()) {
         ZX_LOG_WARN(LogEditor, "Thumbnail renderer unavailable");
@@ -4716,8 +4718,9 @@ void Editor::RenderFrame()
     }
     const bool capture = !m_screenshotPath.Empty() && !m_screenshotBuffer && m_autotestFrames && frameIndex + 1 >= m_autotestFrames &&
                          (m_screenshotEarly || (assets->IsIdle() && pendingImports.Empty()));
+    const bool aiCapture = !capture && !captureRequests.Empty();
     const RGTexture backBuffer =
-        graph.ImportTexture(swapChain->GetCurrentBackBuffer(), capture ? ResourceState::CopySource : ResourceState::Present);
+        graph.ImportTexture(swapChain->GetCurrentBackBuffer(), capture || aiCapture ? ResourceState::CopySource : ResourceState::Present);
     graph.AddPass(
         "Clear", PassType::Graphics,
         [&](PassBuilder& b) { b.RenderTarget(backBuffer, LoadOp::Clear, LinearColor(0.008f, 0.008f, 0.008f, 1)); },
@@ -4738,11 +4741,29 @@ void Editor::RenderFrame()
         m_screenshotPitch = cmd->CopyTextureToBuffer(m_screenshotBuffer, 0, swapChain->GetCurrentBackBuffer());
         cmd->Barrier(swapChain->GetCurrentBackBuffer(), ResourceState::Present);
     }
+    rhi::Buffer* aiBuffer = nullptr;
+    u64 aiPitch = 0;
+    if (aiCapture) {
+        aiBuffer = device->CreateBuffer(BufferDesc{AlignUp(u64(size.x) * 4, u64(256)) * size.y, BufferUsage::CopyDest,
+                                                   MemoryType::Readback, 0, "AICapture"});
+        aiPitch = cmd->CopyTextureToBuffer(aiBuffer, 0, swapChain->GetCurrentBackBuffer());
+        cmd->Barrier(swapChain->GetCurrentBackBuffer(), ResourceState::Present);
+    }
     cmd->EndTimer();
     device->Submit(cmd);
     Stopwatch present;
     swapChain->Present();
     device->EndFrame();
+    if (aiBuffer) {
+        // Rare (AI screenshots): wait for this frame instead of keeping readbacks in flight.
+        device->WaitIdle();
+        const u8* pixels = static_cast<const u8*>(aiBuffer->GetMappedData());
+        Array<CaptureRequest> requests = move(captureRequests);
+        captureRequests.Clear();
+        for (CaptureRequest& r : requests)
+            r.done(pixels, size.x, size.y, usize(aiPitch), viewportRect);
+        device->Destroy(aiBuffer);
+    }
     m_timePresent += present.ElapsedMilliseconds();
     for (const GpuTiming& t : device->GetGpuTimings())
         if (StringView(t.name) == "Frame")
@@ -4753,6 +4774,7 @@ void Editor::RenderFrame()
 
 void Editor::Shutdown()
 {
+    ShutdownAI(*this);
     if (packageJob && packageJob->thread.IsJoinable())
         packageJob->thread.Join();
     if (!device)

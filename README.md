@@ -4,7 +4,7 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12, part o
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a workflow like Unity URP or Unreal Engine 5 that
 runs well on everyday hardware. The development machine is a laptop with Intel UHD 620 graphics.
 
-**Version 0.17.7 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
+**Version 0.17.8 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
 [download](https://github.com/Mishaadevv/x3d/releases/latest)
 
 > [!WARNING]
@@ -123,6 +123,9 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
 - Prefabs with overrides, material graphs with a node editor, Play-in-Editor.
 - Tools: Terrain, Brush (paint models onto surfaces), Measure, Drop to Ground.
 - Settings window.
+- **Zeqou AI**: an assistant built into the editor (toolbar orb, Ctrl+Space) that builds scenes and writes scripts from
+  a text request, with your own API key (Claude, OpenAI or any OpenAI-compatible / local model) — or connect any MCP
+  agent (Claude Code, Cursor, VS Code) to the editor's MCP server and build from there.
 - Project Browser with templates, Starter Content and free CC0 asset packs (Quaternius).
 - **Package Project**: cooks the game into a `.zpak` and exports a standalone `.exe`.
 - Its own importers and codecs:

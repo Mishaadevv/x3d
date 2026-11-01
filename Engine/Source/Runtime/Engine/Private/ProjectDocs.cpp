@@ -324,4 +324,17 @@ u32 WriteProjectDocs(const ProjectInfo& project)
     return written;
 }
 
+String ProjectDocText(const ProjectInfo& project, StringView doc)
+{
+    if (doc == "agents")
+        return Fill(AgentsTemplate, project);
+    if (doc == "getting_started")
+        return Fill(GettingStarted, project);
+    if (doc == "zeqouscript")
+        return Fill(ScriptReference, project);
+    if (doc == "cpp")
+        return Fill(CppReference, project);
+    return {};
+}
+
 } // namespace zx

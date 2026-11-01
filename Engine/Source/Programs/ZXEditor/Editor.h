@@ -422,6 +422,15 @@ public:
     Array<ecs::Entity> PasteSnapshot(const JsonValue& list, StringView label, bool rename, const Vec3* offset);
     String entityClipboard;
     void FocusSelected();
+    /// Screen captures for the AI tools: the next rendered frame is read back and passed to `done` (RGBA8 rows,
+    /// physical pixels; `viewport` = the 3D view's rect in that image).
+    struct CaptureRequest
+    {
+        Function<void(const u8* pixels, u32 width, u32 height, usize pitch, Rect viewport)> done;
+        bool hideOverlays = false; // floating panels (Zeqou AI) are not drawn in that frame
+    };
+    Array<CaptureRequest> captureRequests;
+    UniquePtr<struct AIState> ai; // Zeqou AI (EditorAI.h)
     void ImportAsset(StringView physicalPath, Vec3 position, bool undoable = true);
     /// Scene file options for the open project (assets, content root, prefabs).
     SceneIOOptions SceneIO() const { return SceneIOOptions{assets.Get(), contentRoot, prefabs.Get()}; }
