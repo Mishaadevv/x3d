@@ -1083,6 +1083,20 @@ ConCommand CmdAiOpen("ai.open", "Opens / closes the Zeqou AI panel: ai.open [0|1
         ed->ai->page = args[1].EqualsIgnoreCase("connect") ? 1 : 0;
 });
 
+ConCommand CmdAiPicker("ai.picker", "Opens the model picker in the Zeqou AI panel: ai.picker [provider index]", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || !ed->ai)
+        return;
+    ed->ai->open = true;
+    ed->ai->page = 0;
+    ed->ai->pickerRequest = true;
+    if (!args.Empty()) {
+        const i32 idx = i32(ParseInt(args[0]).ValueOr(0));
+        if (idx >= 0 && u32(idx) < AIProviders().Size())
+            ed->ai->pickerProvider = u32(idx);
+    }
+});
+
 ConCommand CmdAiSend("ai.send", "Sends a message to Zeqou AI: ai.send <text>", [](Span<const StringView> args) {
     Editor* ed = Ed();
     if (!ed || !ed->ai || args.Empty())

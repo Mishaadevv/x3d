@@ -166,6 +166,8 @@ struct AIState
     u32 fetchProvider = 0;
     AIModelList pending;
     bool pendingReady = false;
+
+    bool pickerRequest = false; // console ai.picker: open the model picker on the next frame (for autotests)
 };
 
 void InitAI(Editor& ed);

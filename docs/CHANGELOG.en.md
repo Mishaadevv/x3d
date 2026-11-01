@@ -2,6 +2,13 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.17.11 — AI panel: model picker layout fixed (2026-11-01)
+- **Model picker** (a fix to 0.17.10): in 0.17.10 the picker was checked only by a unit test, and on screen it did not work. The models column started too low, the search row stretched to the full height of the providers list, and the models did not fit in the window. Now both columns start at the top, the models column sits next to the providers, and its position is set in physical pixels, so it accounts for the display scale.
+- **Panel spring**: opening and closing use an exact damping formula, so they do not depend on the frame time. The previous step was stable only for frames shorter than about 40 ms; on a longer frame the panel started to oscillate around its target, and the picker could close on the next frame.
+- **Checked**: the picker opens with `ai.picker` and stays open (checked with a 60-frame trace); screenshots at 1280×800 and 1920×1080 show two columns, the search row and the model list with no overlaps. Not checked: clicking the model pill and scrolling with the mouse.
+- Development build: no errors or warnings. Full ZXTests run with the TEMP folder redirected: 474 passed, 0 failed (as in 0.17.10).
+- **Known limitation**: with the default TEMP folder, the ZXTests process is denied access when it creates folders (measured), so some tests fail and the full run crashes. The editor writes `Can't create the cluster page file` to the Output Log in the same setup. The cause is not found yet; this error was also in 0.17.10. Workaround: point TEMP at another folder.
+
 ## 0.17.10 — AI panel: model picker size and motion (2026-11-01)
 - **Model picker**: the popup has a fixed size (`ui::SetPopupSize`) that is clamped to the window. Its content (wide
   rows, nested regions) cannot stretch it. The provider and model lists take their height and width from that size, and

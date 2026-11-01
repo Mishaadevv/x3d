@@ -543,16 +543,22 @@ void UpdateAI(Editor& ed)
 
     // Open / close: a critically damped spring (eases to the target, no overshoot).
     {
+        // Exact solution of x'' = -w^2 (x - target) - 2 w x' (critically damped), so every frame time is stable. The
+        // previous explicit step was stable only for frames shorter than about 40 ms (w * dt < 0.83, w = sqrt(420));
+        // longer frames made it overshoot and bounce around the target.
         const f32 target = ai.open ? 1.0f : 0.0f;
-        const f32 k = 420.0f, c = 2.0f * Sqrt(k); // stiffness, critical damping
-        const f32 accel = k * (target - ai.openAnim) - c * ai.openVel;
-        ai.openVel += accel * dt;
-        ai.openAnim += ai.openVel * dt;
+        const f32 w = Sqrt(420.0f);
+        const f32 e = Exp(-w * dt);
+        const f32 d = ai.openAnim - target; // displacement from the target
+        const f32 b = ai.openVel + w * d;
+        const f32 newD = (d + b * dt) * e;
+        ai.openVel = (ai.openVel - w * b * dt) * e;
+        ai.openAnim = target + newD;
         if (Abs(ai.openAnim - target) < 0.001f && Abs(ai.openVel) < 0.01f) {
             ai.openAnim = target;
             ai.openVel = 0.0f;
         }
-        ai.openAnim = Clamp(ai.openAnim, -0.02f, 1.02f);
+        ai.openAnim = Clamp(ai.openAnim, 0.0f, 1.0f);
     }
 }
 
@@ -1421,7 +1427,9 @@ void DrawModelPicker(PanelCtx& p)
     const f32 gap = 8.0f;
     const f32 modelsW = Max(pickerW - provW - gap - 16.0f, 160.0f);
     const f32 listH = pickerH - 40.0f;
-    // Providers.
+    // Providers. Both columns start at the same top position. The providers child advances the line by its full
+    // height, so the models column is placed explicitly at that top position rather than with SameLine.
+    const Vec2 columnsTop = ui::GetCursorPos();
     if (ui::BeginChild("##ai_picker_providers", Vec2(provW, listH), false)) {
         for (u32 i = 0; i < AIProviders().Size(); ++i) {
             const AIProviderInfo& info = AIProviders()[i];
@@ -1441,7 +1449,9 @@ void DrawModelPicker(PanelCtx& p)
         }
     }
     ui::EndChild();
-    ui::SameLine(0.0f, gap);
+    // Models column: to the right of the providers, at the same top position. SetCursorPos takes physical pixels,
+    // while provW and gap are logical, so the offset is scaled.
+    ui::SetCursorPos(Vec2(Round(columnsTop.x + (provW + gap) * s), columnsTop.y));
     ui::BeginGroup();
     const AIProviderInfo& info = AIProviders()[prov];
     if (ai.focusModelSearch) {
@@ -1579,13 +1589,16 @@ void DrawComposer(PanelCtx& p, const Rect& area)
     const f32 pillW = Min(bar.Width() - 90.0f * s, p.ctx.Fonts().MeasureWidth(medium, fs, label) + 34.0f * s);
     const Rect pill(Vec2(bar.min.x, bar.min.y + 1.0f * s), Vec2(bar.min.x + pillW, bar.max.y - 1.0f * s));
     ui::SetCursorPos(pill.min);
-    if (ui::InvisibleButton("##ai_model_pill", pill.Size() / s)) {
-        ai.pickerProvider = prov;
+    const bool pillClicked = ui::InvisibleButton("##ai_model_pill", pill.Size() / s);
+    if (pillClicked || ai.pickerRequest) {
+        // The console (ai.picker) can pick the provider to show; a click always starts from the provider in use.
+        ai.pickerProvider = ai.pickerRequest ? ai.pickerProvider : prov;
+        ai.pickerRequest = false;
         ai.modelSearch.Clear();
         ai.focusModelSearch = true;
         // Above the composer when there is no room below.
         ui::OpenPopupAnchored("##ai_model_picker", pill);
-        RefreshAIModels(ai, prov);
+        RefreshAIModels(ai, ai.pickerProvider);
     }
     const bool pillHov = ui::IsItemHovered();
     ui::ItemTooltip(model.Empty() ? String("Choose the model") : String::Format("{} - {}\nClick to change the model", Info(prov).name, model));
