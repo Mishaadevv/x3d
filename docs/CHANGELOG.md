@@ -5,6 +5,8 @@
 одном месте — `project(ZeqouX3D VERSION ...)` в корневом CMakeLists.txt (оттуда его берут `Core/Version.h`, ресурс
 версии ZXEditor.exe, About и лог).
 
+Английская версия последних релизов (0.17.8 и 0.17.9): [CHANGELOG.en.md](CHANGELOG.en.md).
+
 ## 0.17.9 — Zeqou AI: 22 провайдера, выбор модели в чате, контекст, новое окно (2026-11-01)
 - **Провайдеры**: 22 вместо трёх — Anthropic, OpenAI, Google Gemini, xAI Grok, DeepSeek, Mistral, OpenRouter, Groq,
   Cerebras, Together, Fireworks, Perplexity, Moonshot (Kimi), Z.ai (GLM), Alibaba Qwen, NVIDIA NIM, GitHub Models,
