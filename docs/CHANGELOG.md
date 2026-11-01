@@ -31,9 +31,12 @@
   `GetScrollMaxY`, `GetDisplaySize`
 - Исправлено: списки узлов в редакторах материалов / Behavior Tree / ZGraph не выходят за экран (прокрутка) и
   принимают набор текста сразу при открытии
-- Тесты Models.* (форматы списков моделей 8 провайдеров, таблица контекстов, запросы), Agent.ContextTrimming,
-  UI.MultilineSubmitOnEnter, UI.PopupSearchFieldAcceptsTyping. Живая проверка: редактор с поддельным
+- Тесты Models.* (разбор списков моделей в форматах OpenAI, Anthropic, OpenRouter, Gemini, Ollama, llama.cpp и
+  др., таблица контекстов, запросы списков), Agent.ContextTrimming, UI.MultilineSubmitOnEnter,
+  UI.PopupSearchFieldAcceptsTyping. Полный прогон ZXTests: 473 теста прошли. Живая проверка: редактор с поддельным
   OpenAI-совместимым сервером — список моделей запрашивается при открытии панели, вызов инструмента и ответ проходят
+- Настройки 0.17.8 (`AI.json`) читаются без потерь: ключи, модель, URL, усилие, Max Tokens, MCP; `openai-compatible`
+  переходит в провайдер «Custom»
 
 ## 0.17.8 — Zeqou AI: ассистент и MCP-сервер (2026-11-01)
 - **Zeqou AI** — ИИ-ассистент в редакторе: «шар» в тулбаре (слева от LITE / FULL) или **Ctrl+Space** открывает

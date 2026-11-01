@@ -293,7 +293,9 @@ manual override per "provider/model" > provider-reported > ai::KnownContextWindo
 docked card, Markdown blocks laid out in FlowRuns, composer = ui::InputTextMultiline with SubmitOnEnter. Live check: run a
 fake OpenAI-compatible server (python http.server, GET /v1/models + POST /v1/chat/completions) and
 `ZXEditor.exe -autotest=400 -aisettings=<json> "-exec=ai.open 1; ai.send hi" -screenshot=<png>`; tests are filtered by
-glob on the full name (`ZXTests.exe "Models.*"`). Core/Audio tests that use %TEMP% fail on this machine without my change.
+glob on the full name (`ZXTests.exe "Models.*"`). Known local issue: in one run many tests that use the engine's temp
+directory (C:\Users\MISHAK~1\AppData\Local\Temp) failed; with TEMP/TMP set to a writable folder (`set TEMP=...` before
+ZXTests.exe) the full run passes (473). The short-path root cause was not investigated.
 Real-mouse script uidrag2.py: wait:N token, keybd_event needs MapVirtualKey scan codes (the engine reads scan codes). Python heredocs turn "\xEE" into raw bytes: put icon literals in with the Edit tool.
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants
