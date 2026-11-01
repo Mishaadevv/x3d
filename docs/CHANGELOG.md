@@ -5,7 +5,7 @@
 одном месте — `project(ZeqouX3D VERSION ...)` в корневом CMakeLists.txt (оттуда его берут `Core/Version.h`, ресурс
 версии ZXEditor.exe, About и лог).
 
-Английская версия последних релизов (0.17.8 и 0.17.9): [CHANGELOG.en.md](CHANGELOG.en.md).
+Полная английская версия истории (все версии): [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ## Unreleased — ИИ-панель: окно выбора модели и движение
 - **Окно выбора модели**: попап имеет фиксированный размер (`ui::SetPopupSize`), который ограничен окном. Содержимое
