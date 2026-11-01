@@ -309,6 +309,8 @@ void SetScrollHereY(f32 ratio = 0.5f);
 /// Vertical scroll of the current window / child and its maximum (physical px, as of the previous frame's content).
 f32 GetScrollY();
 f32 GetScrollMaxY();
+/// Sets the vertical scroll of the current window / child (clamped to its range; applies from the next frame's layout).
+void SetScrollY(f32 y);
 
 // --- Layout ------------------------------------------------------------------------------------------------------------
 
@@ -483,6 +485,9 @@ private:
 void OpenPopup(StringView id);
 /// Opens a popup attached to `anchor` (physical px), like a combo list: below it, or above if there is no room below.
 void OpenPopupAnchored(StringView id, const Rect& anchor);
+/// Gives an open popup a fixed size (logical px). It keeps that size, clamped to the window, so its content cannot make
+/// it grow past the window. Call it every frame before BeginPopup (a no-op while the popup is not open).
+void SetPopupSize(StringView id, Vec2 logicalSize);
 bool BeginPopup(StringView id);
 bool BeginPopupModal(StringView title, bool* open = nullptr);
 /// Opens on right-click over the last item (id empty = derived from the item).

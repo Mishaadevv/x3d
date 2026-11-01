@@ -363,7 +363,6 @@ void SendMessage(Editor& ed, StringView text)
                      Info(provider).needsKey ? String::Format("Add your {} API key in Settings > AI first (or connect an agent over MCP).", Info(provider).name)
                                              : String("Set the server URL in Settings > AI first.")};
         ai.chat.PushBack(move(e));
-        ai.scrollToBottom = true;
         return;
     }
     RefreshAIModels(ai, provider);
@@ -388,7 +387,6 @@ void SendMessage(Editor& ed, StringView text)
                           "lists, bold, inline code, fenced code blocks).";
     if (ai.agent.Send(c, system, trimmed)) {
         ai.chat.PushBack(AIChatItem{AIChatItem::Kind::User, trimmed});
-        ai.scrollToBottom = true;
         ai.stickToBottom = true;
         ai.turnStarted = ai.time;
     } else if (c.apiKey.Empty() && c.provider != Provider::OpenAICompatible) {
@@ -453,6 +451,7 @@ void UpdateAI(Editor& ed)
         return;
     AIState& ai = *ed.ai;
     const f32 dt = Clamp(ed.dt, 0.0f, 0.05f);
+    ai.frameDt = dt;
     ai.time += dt;
     ai.host.Pump();
 
@@ -535,7 +534,6 @@ void UpdateAI(Editor& ed)
         case ai::AgentEventType::Notice: ai.chat.PushBack(AIChatItem{AIChatItem::Kind::Notice, move(e.text)}); break;
         default: break;
         }
-        ai.scrollToBottom = true;
     }
     for (AIChatItem& item : ai.chat)
         item.age += dt;
@@ -543,10 +541,19 @@ void UpdateAI(Editor& ed)
     if (usage.contextTokens)
         ai.lastContextTokens = usage.contextTokens;
 
-    // Open / close: a short ease (no bounce).
-    const f32 target = ai.open ? 1.0f : 0.0f;
-    const f32 step = dt / 0.16f;
-    ai.openAnim = ai.openAnim < target ? Min(target, ai.openAnim + step) : Max(target, ai.openAnim - step);
+    // Open / close: a critically damped spring (eases to the target, no overshoot).
+    {
+        const f32 target = ai.open ? 1.0f : 0.0f;
+        const f32 k = 420.0f, c = 2.0f * Sqrt(k); // stiffness, critical damping
+        const f32 accel = k * (target - ai.openAnim) - c * ai.openVel;
+        ai.openVel += accel * dt;
+        ai.openAnim += ai.openVel * dt;
+        if (Abs(ai.openAnim - target) < 0.001f && Abs(ai.openVel) < 0.01f) {
+            ai.openAnim = target;
+            ai.openVel = 0.0f;
+        }
+        ai.openAnim = Clamp(ai.openAnim, -0.02f, 1.02f);
+    }
 }
 
 // --- Toolbar button -------------------------------------------------------------------------------------------------
@@ -1111,7 +1118,12 @@ void DrawItem(PanelCtx& p, AIChatItem& item, usize index, f32 width)
         return;
     }
     DrawList& dl = ui::GetWindowDrawList();
-    const f32 fade = Saturate(item.age / 0.18f);
+    // Entrance: the item fades in and settles up from 10 px below, on a decelerating curve (0.22 s). The layout does not
+    // move: the next item is placed from the full height, so only the drawing is offset.
+    const f32 t = Saturate(item.age / 0.22f);
+    const f32 settle = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
+    const f32 fade = settle;
+    const Vec2 drawAt = at + Vec2(0.0f, (1.0f - settle) * 10.0f * s);
     f32 h = 0.0f;
     switch (item.kind) {
     case AIChatItem::Kind::User: {
@@ -1126,7 +1138,7 @@ void DrawItem(PanelCtx& p, AIChatItem& item, usize index, f32 width)
         const f32 bw = Min(maxW, textW + pad * 2.0f + 1.0f);
         const f32 th = FlowRuns(nullptr, p.text, runs.View(), Vec2::Zero(), bw - pad * 2.0f, p.lineH, p.t.text);
         h = th + pad * 1.5f;
-        const Rect r(Vec2(at.x + width - bw, at.y), Vec2(at.x + width, at.y + h));
+        const Rect r(Vec2(drawAt.x + width - bw, drawAt.y), Vec2(drawAt.x + width, drawAt.y + h));
         dl.AddRect(r, WithAlpha(Mix(p.t.frameBg, p.t.accent, 0.12f), fade), ui::CornerRadii(8.0f * s), 1.0f, WithAlpha(Mix(p.t.border, p.t.accent, 0.25f), fade));
         FlowRuns(&dl, p.text, runs.View(), r.min + Vec2(pad, pad * 0.75f), bw - pad * 2.0f, p.lineH, WithAlpha(p.t.text, fade));
         // Copy on hover.
@@ -1142,18 +1154,17 @@ void DrawItem(PanelCtx& p, AIChatItem& item, usize index, f32 width)
         break;
     }
     case AIChatItem::Kind::Assistant: {
-        h = MarkdownMessage(p, item, index, at, width, true);
+        h = MarkdownMessage(p, item, index, drawAt, width, true);
         break;
     }
     case AIChatItem::Kind::Tool: {
         // A compact activity row: status icon, tool name, what it was asked; click to see the result.
         const f32 rowH = 26.0f * s;
-        const Rect row(at, at + Vec2(width, rowH));
+        const Rect row(drawAt, drawAt + Vec2(width, rowH));
         ui::SetCursorPos(row.min);
         if (ui::InvisibleButton(String::Format("##tool_{}", index), row.Size() / s) && !item.running)
             item.expanded = !item.expanded;
         const bool hov = ui::IsItemHovered();
-        ui::SetCursorPos(at);
         if (hov && !item.running)
             dl.AddRect(row, WithAlpha(p.t.text, 0.05f), ui::CornerRadii(5.0f * s));
         const Vec2 ic(row.min.x + 12.0f * s, row.Center().y);
@@ -1211,7 +1222,7 @@ void DrawItem(PanelCtx& p, AIChatItem& item, usize index, f32 width)
         const Array<Run> runs = ParseInline(item.text);
         const f32 th = FlowRuns(nullptr, p.text, runs.View(), Vec2::Zero(), width - pad * 2.0f - 22.0f * s, p.lineH, p.t.text);
         h = th + pad * 1.6f;
-        const Rect r(at, at + Vec2(width, h));
+        const Rect r(drawAt, drawAt + Vec2(width, h));
         dl.AddRect(r, WithAlpha(tint, 0.08f), ui::CornerRadii(6.0f * s), 1.0f, WithAlpha(tint, 0.35f));
         dl.AddTextInRect(Font("Inter"), 13.0f * s, Rect(r.min + Vec2(pad - 2.0f * s, pad * 0.8f), r.min + Vec2(pad + 16.0f * s, pad * 0.8f + p.lineH)), tint,
                          error ? ZX_ICON_CIRCLE_ALERT : ZX_ICON_INFO, ui::TextAlign::Center, false);
@@ -1222,6 +1233,8 @@ void DrawItem(PanelCtx& p, AIChatItem& item, usize index, f32 width)
     }
     item.layoutWidth = width;
     item.layoutHeight = h;
+    // Some kinds move the cursor while they draw (copy buttons, inner widgets): always advance from the item start.
+    ui::SetCursorPos(at);
     ui::Dummy(Vec2(width / s, h / s));
 }
 
@@ -1391,6 +1404,11 @@ void DrawModelPicker(PanelCtx& p)
 {
     AIState& ai = p.ai;
     const f32 s = p.s;
+    // Fixed size from the panel: it never grows with its content and it fits the window (the UI library clamps it to
+    // the display). Columns and lists derive from this size.
+    const f32 pickerW = Clamp(ai.settings.panelWidth - 24.0f, 340.0f, 560.0f);
+    const f32 pickerH = Clamp(ui::GetDisplaySize().y * 0.45f, 260.0f, 440.0f);
+    ui::SetPopupSize("##ai_model_picker", Vec2(pickerW, pickerH));
     if (!ui::BeginPopup("##ai_model_picker")) {
         ai.popupOpen = false;
         return;
@@ -1398,9 +1416,13 @@ void DrawModelPicker(PanelCtx& p)
     ai.popupOpen = true;
     const u32 prov = ai.pickerProvider;
     RefreshAIModels(ai, prov);
-    const f32 listH = Clamp(ui::GetDisplaySize().y * 0.5f, 220.0f, 420.0f);
+    // Columns share the popup width: providers take a narrow fixed column, models get the rest.
+    const f32 provW = Clamp(pickerW * 0.40f, 150.0f, 200.0f);
+    const f32 gap = 8.0f;
+    const f32 modelsW = Max(pickerW - provW - gap - 16.0f, 160.0f);
+    const f32 listH = pickerH - 40.0f;
     // Providers.
-    if (ui::BeginChild("##ai_picker_providers", Vec2(196.0f, listH), false)) {
+    if (ui::BeginChild("##ai_picker_providers", Vec2(provW, listH), false)) {
         for (u32 i = 0; i < AIProviders().Size(); ++i) {
             const AIProviderInfo& info = AIProviders()[i];
             const bool ready = ProviderReady(ai.settings, i);
@@ -1408,7 +1430,7 @@ void DrawModelPicker(PanelCtx& p)
             const String label = String::Format("{}  {}{}", ready ? ZX_ICON_CIRCLE_CHECK : ZX_ICON_CIRCLE, info.name, i == ai.settings.provider ? "  \xC2\xB7" : "");
             if (!ready)
                 ui::PushTextColor(p.t.textDim);
-            if (ui::Selectable(label, i == prov, Vec2(188.0f, 26.0f))) {
+            if (ui::Selectable(label, i == prov, Vec2(provW - 8.0f, 26.0f))) {
                 ai.pickerProvider = i;
                 ai.modelSearch.Clear();
                 ai.focusModelSearch = true;
@@ -1419,14 +1441,15 @@ void DrawModelPicker(PanelCtx& p)
         }
     }
     ui::EndChild();
-    ui::SameLine(0.0f, 8.0f);
+    ui::SameLine(0.0f, gap);
     ui::BeginGroup();
     const AIProviderInfo& info = AIProviders()[prov];
     if (ai.focusModelSearch) {
         ui::SetKeyboardFocusHere();
         ai.focusModelSearch = false;
     }
-    ui::SetNextItemWidth(250.0f);
+    const f32 reloadW = ui::GetFrameHeight() / s;
+    ui::SetNextItemWidth(Max(modelsW - reloadW - 6.0f, 80.0f));
     ui::InputText("##ai_model_search", ai.modelSearch, ui::InputTextFlags::None, ZX_ICON_SEARCH "  Search or type a model id");
     ui::SameLine(0.0f, 4.0f);
     const bool fetching = ai.fetching.load() && ai.fetchProvider == prov;
@@ -1437,11 +1460,13 @@ void DrawModelPicker(PanelCtx& p)
     const AIModelList& list = ai.lists[prov];
     const String current = ModelFor(ai, prov);
     bool chosen = false;
-    if (ui::BeginChild("##ai_picker_models", Vec2(290.0f, listH - ui::GetFrameHeight() / s - 8.0f), false)) {
+    if (ui::BeginChild("##ai_picker_models", Vec2(modelsW, listH - ui::GetFrameHeight() / s - 8.0f), false)) {
         auto modelRow = [&](StringView id, u32 context, StringView note) {
             ui::PushID(id);
             const Vec2 c = ui::GetCursorPos();
-            const f32 w = 282.0f * s, h = 28.0f * s;
+            // Leave room for the child's scrollbar, which appears when the list is longer than its box.
+            const f32 scrollbar = p.ctx.GetStyle().scrollbarSize;
+            const f32 w = Max(modelsW - scrollbar - 6.0f, 120.0f) * s, h = 28.0f * s;
             const Rect r(c, c + Vec2(w, h));
             const bool clicked = ui::InvisibleButton("##m", r.Size() / s);
             const bool hov = ui::IsItemHovered();
@@ -1520,7 +1545,10 @@ void DrawComposer(PanelCtx& p, const Rect& area)
     const bool busy = ai.agent.IsBusy();
     const Rect box = area;
     const bool focused = ai.inputActive;
-    dl.AddRect(box, p.t.frameBg, ui::CornerRadii(8.0f * s), 1.0f, focused ? WithAlpha(p.t.accent, 0.85f) : p.t.border);
+    // The border eases between the normal and the accent colour (exponential approach, ~0.12 s), so focus never snaps.
+    const f32 focusTarget = focused ? 1.0f : 0.0f;
+    ai.focusAnim += (focusTarget - ai.focusAnim) * Saturate(ai.frameDt * 14.0f);
+    dl.AddRect(box, p.t.frameBg, ui::CornerRadii(8.0f * s), 1.0f, Mix(p.t.border, WithAlpha(p.t.accent, 0.85f), ai.focusAnim));
 
     // Text field (transparent, inside the box).
     const f32 barH = 32.0f * s;
@@ -1584,6 +1612,11 @@ void DrawComposer(PanelCtx& p, const Rect& area)
     const u32 window = AIContextWindow(ai);
     const u64 used = ai.lastContextTokens;
     const f32 frac = window ? f32(f64(used) / f64(window)) : 0.0f;
+    // The ring eases towards the real fill, so a new turn animates instead of snapping (about 0.3 s).
+    ai.ringAnim += (frac - ai.ringAnim) * Saturate(ai.frameDt * 9.0f);
+    if (Abs(frac - ai.ringAnim) < 0.0005f)
+        ai.ringAnim = frac;
+    const f32 shownFrac = ai.ringAnim;
     const f32 rr = 8.0f * s;
     const Vec2 rc(send.min.x - 14.0f * s - rr, bar.Center().y);
     const Rect ringRect(rc - Vec2(rr + 4.0f * s), rc + Vec2(rr + 4.0f * s));
@@ -1597,7 +1630,7 @@ void DrawComposer(PanelCtx& p, const Rect& area)
         ui::SetTooltip(String::Format("Context: {} / {} tokens ({:.0f}%)\nWindow {}: {}\nOlder messages are dropped when it fills up.\nClick to change.",
                                       FormatTokens(used), FormatTokens(window), f64(frac) * 100.0, how, FormatTokens(window)));
     }
-    DrawRing(dl, rc, rr, 2.2f * s, frac, p.t);
+    DrawRing(dl, rc, rr, 2.2f * s, shownFrac, p.t); // the arc eases; the numbers below show the real value
     if (frac >= 0.995f)
         dl.AddCircle(rc, 2.0f * s, p.t.error);
     // Percentage left of the ring once it matters.
@@ -1652,7 +1685,8 @@ void DrawAIPanel(Editor& ed)
     const ui::Theme& t = ctx.GetStyle().colors;
     const Vec2 display(f32(ed.swapChain->GetSize().x), f32(ed.swapChain->GetSize().y));
     // Slides in from the right edge, below the toolbar, down to the status bar.
-    const f32 ease = 1.0f - (1.0f - ai.openAnim) * (1.0f - ai.openAnim) * (1.0f - ai.openAnim);
+    // The spring is critically damped and stays within [0, 1]; the clamp below is only a guard against numerical overshoot.
+    const f32 ease = 1.0f - (1.0f - Saturate(ai.openAnim)) * (1.0f - Saturate(ai.openAnim)) * (1.0f - Saturate(ai.openAnim));
     const f32 w = Round(Min(ai.settings.panelWidth * s, display.x * 0.7f));
     const f32 top = Round(ai.buttonRect.max.y + 8.0f * s);
     const f32 bottom = Round(display.y - 30.0f * s);
@@ -1799,21 +1833,23 @@ void DrawAIPanel(Editor& ed)
                 ui::PopFont();
             }
             ui::Dummy(Vec2(0.0f, 14.0f));
-            if (ai.scrollToBottom && ai.stickToBottom) {
-                ui::SetScrollHereY(1.0f);
+            // Follow the newest message with an ease instead of a jump. The target is the scroll range of the last
+            // frame (the layout is only known after this pass); while the user has scrolled up, the chat stays put.
+            if (ai.stickToBottom) {
+                const f32 target = ui::GetScrollMaxY();
+                const f32 cur = ui::GetScrollY();
+                const f32 next = cur + (target - cur) * Saturate(ai.frameDt * 10.0f);
+                ui::SetScrollY(Abs(target - next) < 0.5f ? target : next);
                 ai.lastSetScroll = ui::GetScrollY();
             }
-            ai.scrollToBottom = false;
             if (!ai.stickToBottom) {
                 // "Jump to latest" when scrolled up.
                 const Vec2 c(body.Center().x, body.max.y - 24.0f * s);
                 const Rect jr(c - Vec2(15.0f * s), c + Vec2(15.0f * s));
                 DrawList& fg = ui::GetWindowDrawList();
                 ui::SetCursorPos(jr.min);
-                if (ui::InvisibleButton("##ai_jump", jr.Size() / s)) {
+                if (ui::InvisibleButton("##ai_jump", jr.Size() / s))
                     ai.stickToBottom = true;
-                    ai.scrollToBottom = true;
-                }
                 ui::ItemTooltip("Jump to the latest message");
                 fg.AddRect(jr, ui::IsItemHovered() ? t.buttonHovered : t.button, ui::CornerRadii(15.0f * s), 1.0f, t.borderStrong);
                 fg.AddTextInRect(Font("Inter"), 14.0f * s, jr, t.text, ZX_ICON_ARROW_DOWN, ui::TextAlign::Center, false);
@@ -1823,8 +1859,6 @@ void DrawAIPanel(Editor& ed)
     }
     ui::EndChild();
     if (ai.page == 0) {
-        if (ai.scrollToBottom && ai.stickToBottom)
-            ai.scrollToBottom = true; // applied next frame once the layout is known
         DrawComposer(p, Rect(Vec2(panel.min.x + pad, panel.max.y - pad - composerH), Vec2(panel.max.x - pad, panel.max.y - pad)));
     }
     dl.PopClipRect();

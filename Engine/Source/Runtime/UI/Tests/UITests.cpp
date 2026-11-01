@@ -17,6 +17,7 @@ struct Harness
     InputState input;
     Array<WindowEvent> events;
     bool ok = false;
+    Vec2 display{1280.0f, 800.0f}; // the window size each Frame() runs at
 
     Harness()
     {
@@ -29,7 +30,7 @@ struct Harness
     void Frame(F&& body)
     {
         FrameInput fi;
-        fi.displaySize = Vec2(1280.0f, 800.0f);
+        fi.displaySize = display;
         fi.deltaTime = 1.0f / 60.0f;
         fi.input = &input;
         fi.events = events.View();
@@ -364,6 +365,48 @@ ZX_TEST(UI, PopupSearchFieldAcceptsTyping)
     h.Type("abc");
     h.Frame(ui);
     ZX_EXPECT(search == "abc");
+}
+
+// A popup with a fixed size keeps it even when its content is much wider, and shrinks to fit a small window.
+ZX_TEST(UI, FixedSizePopupFitsWindow)
+{
+    Harness h;
+    ZX_REQUIRE(h.ok);
+    h.display = Vec2(1280.0f, 800.0f);
+    bool opened = false;
+    Rect popupRect;
+    auto ui = [&] {
+        BeginTestWindow();
+        if (!opened) {
+            opened = true;
+            OpenPopupAnchored("##fixed", Rect(Vec2(900.0f, 100.0f), Vec2(1000.0f, 120.0f)));
+        }
+        SetPopupSize("##fixed", Vec2(400.0f, 300.0f));
+        if (BeginPopup("##fixed")) {
+            // Content far wider than the popup: it must not widen it.
+            Text("a very long line that is much wider than the four hundred logical pixels of the popup window itself, on purpose");
+            BeginChild("##wide_child", Vec2(900.0f, 60.0f), false);
+            Text("inside a wide child");
+            EndChild();
+            popupRect = GetWindowRect();
+            EndPopup();
+        }
+        End();
+    };
+    h.Frame(ui);
+    h.Frame(ui);
+    h.Frame(ui);
+    ZX_EXPECT_EQ(popupRect.Width(), 400.0f);
+    ZX_EXPECT_EQ(popupRect.Height(), 300.0f);
+
+    // A window narrower than the popup: the popup shrinks to fit the display (minus a margin), it never overflows.
+    h.display = Vec2(320.0f, 240.0f);
+    h.Frame(ui);
+    h.Frame(ui);
+    h.Frame(ui);
+    ZX_EXPECT(popupRect.Width() <= 320.0f);
+    ZX_EXPECT(popupRect.Height() <= 240.0f);
+    ZX_EXPECT(popupRect.max.x <= 320.0f + 0.5f && popupRect.max.y <= 240.0f + 0.5f);
 }
 
 // Chat inputs: Enter submits, Shift+Enter adds a line; the field keeps focus for the next message.

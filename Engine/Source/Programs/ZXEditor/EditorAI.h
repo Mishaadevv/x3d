@@ -129,7 +129,11 @@ struct AIState
 
     // Panel.
     bool open = false;
-    f32 openAnim = 0.0f; // 0..1, eased
+    f32 openAnim = 0.0f; // 0..1 (critically damped spring: eases in, no overshoot)
+    f32 openVel = 0.0f;  // spring velocity of openAnim
+    f32 focusAnim = 0.0f; // 0..1: the composer border eases towards the accent while the field has the keyboard
+    f32 ringAnim = 0.0f;  // the context ring eases towards its real fill
+    f32 frameDt = 0.0f;   // seconds of the last frame (clamped), for the eased visuals
     f32 buttonHover = 0.0f;
     f64 time = 0.0;
     Array<AIChatItem> chat;
@@ -143,7 +147,6 @@ struct AIState
     f32 lastSetScroll = 0.0f;
     ui::FontHandle mono;       // code (Consolas, else Inter)
     bool monoLoaded = false;
-    bool scrollToBottom = false;
     i32 page = 0;              // 0 chat, 1 connect (MCP instructions)
     String settingsFilter;     // Settings > AI model list filter
     Rect buttonRect;           // the toolbar button, last frame (physical px)

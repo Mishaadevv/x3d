@@ -659,8 +659,13 @@ bool Context::Impl::BeginPopupWindow(u32 index, WindowFlags flags, StringView ti
     if (w->lastFrameActive + 1 < frame)
         w->hiddenFrames = 1; // measure first
     popupBeginStack.PushBack(index);
+    // A fixed size (SetPopupSize) replaces the content size, clamped to the display: the popup can never grow past the
+    // window it is shown in. It is applied as the next-window size below, so Begin() does not auto-size it.
+    Vec2 fixed;
+    if (p.hasSize)
+        fixed = Round(Vec2(Min(S(p.size.x), Max(display.x - S(16.0f), S(40.0f))), Min(S(p.size.y), Max(display.y - S(16.0f), S(40.0f)))));
     // Position.
-    const Vec2 size = w->contentSize;
+    const Vec2 size = p.hasSize ? fixed : w->contentSize;
     Vec2 pos;
     if (p.isModal) {
         pos = Round((display - w->size) * 0.5f);
@@ -681,7 +686,14 @@ bool Context::Impl::BeginPopupWindow(u32 index, WindowFlags flags, StringView ti
     nextPosSet = true;
     nextPosCond = Cond::Always;
     nextPos = pos / scale;
-    WindowFlags wf = flags | WindowFlags::AlwaysAutoResize | WindowFlags::NoMove | WindowFlags::NoResize | WindowFlags::NoCollapse;
+    // A fixed-size popup takes the requested size, not its content: AlwaysAutoResize would overwrite that every frame.
+    if (p.hasSize) {
+        nextSizeSet = true;
+        nextSizeCond = Cond::Always;
+        nextSize = fixed / scale;
+    }
+    WindowFlags wf = flags | (p.hasSize ? WindowFlags::None : WindowFlags::AlwaysAutoResize) | WindowFlags::NoMove | WindowFlags::NoResize |
+                     WindowFlags::NoCollapse;
     if (!p.isModal)
         wf |= WindowFlags::NoTitleBar;
     const bool visible = Begin(name, nullptr, wf);
@@ -1012,6 +1024,11 @@ void SetScrollHereY(f32 ratio)
 
 f32 GetScrollY() { return G().current->scroll.y; }
 f32 GetScrollMaxY() { return G().current->scrollMaxY; }
+void SetScrollY(f32 y)
+{
+    WindowState* w = G().current;
+    w->scroll.y = Clamp(Round(y), 0.0f, Max(w->scrollMaxY, 0.0f));
+}
 
 // --- Layout API ----------------------------------------------------------------------------------------------------------
 
@@ -1299,6 +1316,17 @@ void OpenPopupAnchored(StringView idStr, const Rect& anchor)
         if (p.id == id) {
             p.anchor = anchor;
             p.isCombo = true;
+        }
+}
+
+void SetPopupSize(StringView idStr, Vec2 logicalSize)
+{
+    Context::Impl& g = G();
+    const ID id = g.MakeID(idStr);
+    for (PopupRef& p : g.openPopups)
+        if (p.id == id) {
+            p.hasSize = true;
+            p.size = Max(logicalSize, Vec2(40.0f));
         }
 }
 

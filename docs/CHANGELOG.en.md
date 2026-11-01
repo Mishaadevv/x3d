@@ -3,6 +3,18 @@
 The full history, including older releases, is in [CHANGELOG.md](CHANGELOG.md) (Russian). This file covers the
 latest releases in English. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## Unreleased — AI panel: model picker size and motion
+- **Model picker**: the popup has a fixed size (`ui::SetPopupSize`) that is clamped to the window. Its content (wide
+  rows, nested regions) cannot stretch it. The provider and model lists take their height and width from that size, and
+  the model rows leave room for the scrollbar.
+- **Motion**: the panel opens and closes on a spring instead of a linear step. A new message from you fades in and rises
+  into place; assistant replies and tool rows only rise into place, without fading. The message box border eases to the
+  accent colour on focus. The context ring's arc eases to its value, while the percentage and the tooltip show the exact
+  number. The chat glides to the newest message instead of jumping.
+- **Fixed**: after a code block the cursor was not returned to the start of the item, so the next message could overlap
+  it.
+- UI: `ui::SetPopupSize`, `ui::SetScrollY`; test `UI.FixedSizePopupFitsWindow`.
+
 ## 0.17.9 — Zeqou AI: 22 providers, model picker in chat, context window, new panel (2026-11-01)
 - **Providers**: 22 instead of three — Anthropic, OpenAI, Google Gemini, xAI Grok, DeepSeek, Mistral, OpenRouter, Groq,
   Cerebras, Together, Fireworks, Perplexity, Moonshot (Kimi), Z.ai (GLM), Alibaba Qwen, NVIDIA NIM, GitHub Models,

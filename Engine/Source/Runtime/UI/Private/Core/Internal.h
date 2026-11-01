@@ -132,6 +132,8 @@ struct PopupRef
     bool isModal = false;
     bool isContext = false;
     bool isCombo = false;     // positioned below the anchor
+    bool hasSize = false;     // a fixed logical size was requested (SetPopupSize): never sized from the content
+    Vec2 size;                // fixed size in logical px (when hasSize)
 };
 
 struct TextEditState
