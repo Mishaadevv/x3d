@@ -138,7 +138,7 @@ void ApplyEditorSettings(Editor& ed)
     if (Reflection::ToJson(before) != Reflection::ToJson(s))
         SaveEditorSettings(ed);
     ed.camera.lookSensitivity = 0.0025f * Clamp(s.mouseSensitivity, 0.1f, 5.0f);
-    ed.camera.fovY = DegToRad(Clamp(s.fieldOfView, 20.0f, 120.0f));
+    ed.camera.fovY = DegToRad(Clamp(s.fieldOfView, 5.0f, 150.0f)); // camera.fov may zoom past the settings' range
 
     // Rendering of the editor viewport.
     ViewportSettings& vs = ed.viewport->Settings();

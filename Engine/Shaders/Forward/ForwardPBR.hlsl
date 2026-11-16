@@ -251,12 +251,43 @@ float3 FoliageWind(uint2 row, float localY, float4x4 world, float3 worldPos)
     return offset;
 }
 
+/// Impostor (Engine/Impostor.h; instance row +192 x = half2(-frames, sphere center height)): the quad turns towards the
+/// camera as the atlas frame closest to the view direction saw the model (hemi-octahedral layout over the upper
+/// hemisphere), and its UVs move into that frame. Works in model space: the instance is rotated and uniformly scaled.
+void ImpostorVertex(inout MeshVertex v, uint head, float4x4 world)
+{
+    const float frames = -f16tof32(head & 0xFFFF), centerY = f16tof32(head >> 16);
+    const float3 cx = float3(world[0][0], world[1][0], world[2][0]), cy = float3(world[0][1], world[1][1], world[2][1]),
+                 cz = float3(world[0][2], world[1][2], world[2][2]);
+    const float3 center = float3(world[0][3], world[1][3], world[2][3]) + cy * centerY;
+    const float3 d = g_View.cameraPosition - center;
+    float3 dir = float3(dot(d, cx), dot(d, cy), dot(d, cz)); // model space (the scale only changes the length)
+    dir.y = max(dir.y, 0.0);
+    const float s = abs(dir.x) + abs(dir.y) + abs(dir.z);
+    const float2 o = s > 1e-6 ? float2(dir.x, dir.z) / s : float2(0.0, 0.0);
+    const float2 frame = clamp(floor((float2(o.x + o.y, o.x - o.y) * 0.5 + 0.5) * frames), 0.0, frames - 1.0);
+    // The frame's own direction and axes (ImpostorFrameDirection / ImpostorFrameAxes).
+    const float2 c = (frame + 0.5) / frames * 2.0 - 1.0;
+    const float ox = (c.x + c.y) * 0.5, oz = (c.x - c.y) * 0.5;
+    const float3 fd = normalize(float3(ox, max(1.0 - abs(ox) - abs(oz), 0.0), oz));
+    const float3 r = cross(float3(0.0, 1.0, 0.0), fd);
+    const float3 right = dot(r, r) > 1e-6 ? normalize(r) : float3(1.0, 0.0, 0.0);
+    const float3 up = cross(fd, right);
+    v.position = float3(0.0, centerY, 0.0) + right * v.position.x + up * (v.position.y - centerY);
+    v.normal = fd;
+    v.tangent = float4(right, 1.0);
+    v.uv0 = (frame + v.uv0) / frames;
+}
+
 VSOutput MakeVertex(uint vertexBuffer, uint vertexIndex, uint instanceIndex, uint material, uint lod)
 {
-    const MeshVertex v = LoadMeshVertex(GetBuffer(vertexBuffer), vertexIndex);
+    MeshVertex v = LoadMeshVertex(GetBuffer(vertexBuffer), vertexIndex);
     const Instance inst = LoadInstance(instanceIndex);
+    const uint4 extraRow = GetBuffer(g_View.instanceBuffer).Load4(instanceIndex * INSTANCE_STRIDE + 192);
+    if (f16tof32(extraRow.x & 0xFFFF) < 0.0)
+        ImpostorVertex(v, extraRow.x, inst.world);
     float4 world = mul(inst.world, float4(v.position, 1.0));
-    const uint2 windRow = GetBuffer(g_View.instanceBuffer).Load2(instanceIndex * INSTANCE_STRIDE + 200);
+    const uint2 windRow = extraRow.zw;
     if (windRow.x != 0)
         world.xyz += FoliageWind(windRow, v.position.y, inst.world, world.xyz);
     VSOutput o;

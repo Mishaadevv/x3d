@@ -421,6 +421,7 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out, con
                 inst.materials = f.parts[k].materials.View();
                 inst.castShadows = f.castShadows;
                 inst.wind = wind;
+                inst.impostor = Vec2(f32(f.impostorFrames), f.impostorCenterY);
             }
         }
     });

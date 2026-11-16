@@ -16,6 +16,12 @@ namespace zx::render {
 void WriteLightmapRow(u8* dst, const RenderInstance& inst, const AABB& bounds)
 {
     // x, y: lightmap scale / bias (scale.x > 0 = has one); z: wind xz (0 = rigid); w: the mesh's base height and height.
+    // Impostors (never lightmapped or windy): x = half2(-frames, sphere center height).
+    if (inst.impostor.x > 0.0f) {
+        const u32 row[4] = {PackHalf2(Vec2(-inst.impostor.x, inst.impostor.y)), 0u, 0u, 0u};
+        MemCopy(dst, row, 16);
+        return;
+    }
     const bool windy = inst.wind.x != 0.0f || inst.wind.y != 0.0f;
     const u32 row[4] = {PackHalf2(Vec2(inst.lightmapScaleBias.x, inst.lightmapScaleBias.y)),
                         PackHalf2(Vec2(inst.lightmapScaleBias.z, inst.lightmapScaleBias.w)),

@@ -2,6 +2,20 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.17.15 — Foliage impostors for HLODs (2026-11-16)
+- **Forests to the horizon**: trees and rocks of cells beyond the load range are drawn as impostors: one quad per plant, turned towards the camera, showing the model from the right side. Before this, only the simplified terrain was left past 640 m.
+- **Baking** (`Engine/Impostor.h`): the model is rasterized on the CPU from 8×8 directions over the upper hemisphere into a 512×512 atlas. The atlas holds albedo with the leaves' alpha mask and each view's normals, as BC7/BC5 with mips and alpha coverage preserved. A pine bakes in about a second, once per model. The files live in `<cells>/impostors/` and go into the game package. A changed model is baked again.
+- **Rendering**: the ordinary mesh path. The vertex shader turns the quad and picks the atlas frame; lighting, fog, alpha test and GPU culling stay shared with models. Impostors cast no shadows and don't sway in the wind.
+- **HLOD**: `.zhlod` files now hold the plants of each 4×4-cell group (trees and rocks: models with Trunk/Hull collision), split by cell. Loaded cells are left out of the impostors, so real trees get no doubles next to them. Old `.zhlod` files still load (without plants); rebuild with `world.hlod` or by saving the scene.
+- Console: `impostor.spawn <model> <x> <z> [scale] [pair]` (an impostor and, with `pair`, the real model beside it; not saved), `camera.fov <deg>`, `world.loadrange <m>`.
+- **Checked**:
+  - Impostor.* tests: frame ↔ direction, a card bake (coverage and color from each side), serialization and registration, and the real Pine_3 (atlas inspected).
+  - WorldPartition.HlodKeepsTreesAsImpostors: an HLOD build that bakes, 5 impostors from far away, 2 after the neighbouring cell loads.
+  - In the editor, a 2 km open world: 13 models baked in 18 s, and the forest reaches the edge of the world with 11 of 64 cells loaded.
+  - An `impostor.spawn … pair` comparison in the Main scene: the impostor's silhouette, color and brightness match the model.
+  - Not checked: display in a packaged game (ZXGame) and performance with a large horizon.
+- Fixed: `camera.fov` is no longer reset by the editor settings every frame (FOV 5–150°).
+
 ## 0.17.14 — Foliage painting brush (2026-11-16)
 - **The Brush paints foliage**: a model dropped from the Content Browser into Tool Settings becomes a foliage item. So does a selected Foliage entity added with Add Selected. A stroke adds instances to the nearest Foliage of the same model within reach of the World Partition cell, so plants stream with their area. If there is none, it creates one with the look of the model's other areas; grass gets a 120 m cull distance and no shadows. Density, spacing, scale range, random yaw, max slope and offset all apply. Shift erases the plants of those models in the circle, and a Foliage left empty is removed. Each stroke is one undo step.
 - Both kinds of brush now hit terrains as well as meshes. The normal comes from the terrain heights, so the slope limit works.

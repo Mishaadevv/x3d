@@ -10,7 +10,10 @@
 #include "Asset/AssetManager.h"
 #include "Core/Reflection/ReflectionSerialization.h"
 #include "Core/Serialization/Binary.h"
+#include "Engine/Foliage.h"
+#include "Engine/Impostor.h"
 #include "Engine/SceneRendering.h"
+#include "Core/Hash/Hash.h"
 #include "Engine/Terrain.h"
 
 #include <cmath>
@@ -81,6 +84,7 @@ void WorldStreamer::Reset()
     m_cells.Clear();
     m_groups.Clear();
     m_hlodMeshes.Clear();
+    m_impostors.Clear();
     m_directory.Clear();
     m_settings = WorldPartitionSettings{};
     m_stats = Stats{};
@@ -172,8 +176,36 @@ void AppendMesh(asset::CookedMesh& dst, Array<u32>& indices, const asset::Cooked
 }
 } // namespace
 
+String WorldStreamer::EnsureImpostor(StringView model, UniquePtr<asset::AssetManager>& cooker)
+{
+    // Keyed by the model and its file's size and time: an edited model bakes again.
+    const String source = Path::Join(m_io.assetRoot, model);
+    platform::FileInfo info;
+    if (!platform::GetFileInfo(source, info))
+        return {};
+    const u64 key = HashFnv1a64(String::Format("{}|{}|{}|v1", model, info.size, info.modifiedTime).View());
+    const String file = String::Format("impostors/{}_{:016x}.zimp", Path::Stem(model), key);
+    const String full = Path::Join(m_directory, file);
+    if (platform::FileExists(full))
+        return file;
+    const f64 start = Clock::NowSeconds();
+    ImpostorAsset imp;
+    if (!BakeImpostorFromFile(source, imp, cooker))
+        return {};
+    Array<u8> bytes;
+    SerializeImpostor(imp, bytes);
+    platform::CreateDirectoryTree(Path::Join(m_directory, "impostors"));
+    if (!fs::WriteFile(full, bytes.View()))
+        return {};
+    ZX_LOG_INFO(LogWorldPartition, "HLOD: impostor of {} baked ({} x {} views, {:.0f} ms)", Path::Stem(model), imp.frames, imp.frames,
+                (Clock::NowSeconds() - start) * 1000.0);
+    return file;
+}
+
 u32 WorldStreamer::BuildHlods(Span<const IVec2> only)
 {
+    UniquePtr<asset::AssetManager> cooker; // impostor bakes (only when a model has none yet)
+    HashMap<String, String> impostorFiles;  // model -> file ("" = none)
     if (!IsActive())
         return 0;
     // The groups to (re)build.
@@ -197,6 +229,9 @@ u32 WorldStreamer::BuildHlods(Span<const IVec2> only)
         merged.slotSourceMaterial.PushBack(0);
         Array<u32> indices;
         Guid material;
+        // Impostor plants: per model, per cell of the group.
+        Array<String> plantModels, plantFiles;
+        Array<Array<Array<f32>>> plantCells;
         for (i32 cz = 0; cz < i32(HlodGroupCells); ++cz)
             for (i32 cx = 0; cx < i32(HlodGroupCells); ++cx) {
                 const IVec2 c(g.x * i32(HlodGroupCells) + cx, g.y * i32(HlodGroupCells) + cz);
@@ -221,8 +256,48 @@ u32 WorldStreamer::BuildHlods(Span<const IVec2> only)
                     if (!material.IsValid())
                         material = t.material;
                 }
+                // Trees and rocks of the cell (roots with Foliage): their plants in group space.
+                for (const JsonValue& o : doc.Get("entities").Elements()) {
+                    const JsonValue& comps = o.Get("components");
+                    const JsonValue& fj = comps.Get("Foliage");
+                    if (!fj.IsObject() || !o.Get("parent").IsNull() || !m_io.assets)
+                        continue;
+                    Foliage f;
+                    Reflection::FromJson(fj, f);
+                    if (f.model.Empty() || !WantsImpostor(f))
+                        continue;
+                    String* file = impostorFiles.Find(f.model);
+                    if (!file) {
+                        impostorFiles.InsertOrAssign(f.model, EnsureImpostor(f.model, cooker));
+                        file = impostorFiles.Find(f.model);
+                    }
+                    if (file->Empty())
+                        continue;
+                    DecodeFoliage(f);
+                    Transform tr;
+                    Reflection::FromJson(comps.Get("Transform"), tr);
+                    const Mat4 em = tr.ToMatrix();
+                    const Vec3 fwd = tr.rotation * Vec3(0.0f, 0.0f, 1.0f);
+                    const f32 entityYaw = std::atan2(fwd.x, fwd.z);
+                    usize set = 0;
+                    while (set < plantModels.Size() && plantModels[set] != f.model)
+                        ++set;
+                    if (set == plantModels.Size()) {
+                        plantModels.PushBack(f.model);
+                        plantFiles.PushBack(*file);
+                        Array<Array<f32>> cells;
+                        cells.Resize(HlodGroupCells * HlodGroupCells);
+                        plantCells.PushBack(move(cells));
+                    }
+                    Array<f32>& list = plantCells[set][usize(cz) * HlodGroupCells + usize(cx)];
+                    for (const FoliageInstance& in : f.instances) {
+                        const Vec3 p = em.TransformPointAffine(in.position) - origin;
+                        for (f32 v : {p.x, p.y, p.z, in.yaw + entityYaw, in.scale * Abs(tr.scale.x)})
+                            list.PushBack(v);
+                    }
+                }
             }
-        if (merged.vertices.Empty()) {
+        if (merged.vertices.Empty() && plantModels.Empty()) {
             fs::Delete(HlodPath(g));
             m_groups.Remove(Key(g));
             continue;
@@ -238,6 +313,13 @@ u32 WorldStreamer::BuildHlods(Span<const IVec2> only)
         w.WriteBytes(&origin, sizeof(Vec3));
         w.WriteBytes(&material, sizeof(Guid));
         w.WriteArray(Span<const u8>(meshBytes.Data(), meshBytes.Size()));
+        w.Write<u32>(u32(plantModels.Size()));
+        for (usize s = 0; s < plantModels.Size(); ++s) {
+            w.WriteString(plantModels[s]);
+            w.WriteString(plantFiles[s]);
+            for (const Array<f32>& cell : plantCells[s])
+                w.WriteArray(Span<const f32>(cell.Data(), cell.Size()));
+        }
         if (fs::WriteFile(HlodPath(g), bytes.View())) {
             ++written;
             Group* existing = m_groups.Find(Key(g));
@@ -270,12 +352,59 @@ void WorldStreamer::ShowHlod(ecs::World& world, Group& group)
     r.ReadBytes(&material, sizeof(Guid));
     Array<u8> meshBytes;
     r.ReadArray(meshBytes);
+    // Impostor plants (older files end here).
+    group.plants.Clear();
+    group.loadedMask = ~0u; // UpdateHlodPlants fills them in
+    const u32 sets = r.Remaining() >= 4 ? r.Read<u32>() : 0u;
+    for (u32 s = 0; s < sets && !r.HasError(); ++s) {
+        const String model = r.ReadString();
+        const String file = r.ReadString();
+        Array<Array<f32>> cells;
+        cells.Resize(HlodGroupCells * HlodGroupCells);
+        for (Array<f32>& c : cells)
+            r.ReadArray(c);
+        LoadedImpostor* imp = m_impostors.Find(file);
+        if (!imp) {
+            ImpostorAsset asset;
+            Array<u8> impBytes;
+            LoadedImpostor li;
+            if (fs::ReadFile(Path::Join(m_directory, file), impBytes) && DeserializeImpostor(impBytes.View(), asset)) {
+                const ImpostorIds ids = RegisterImpostor(*m_io.assets, asset, String::Format("{}|{}", m_directory, file).View());
+                li.ids = {ids.mesh, ids.material, ids.albedo, ids.normal};
+                li.frames = asset.frames;
+                li.centerY = asset.centerY;
+            } else {
+                ZX_LOG_WARN(LogWorldPartition, "HLOD: impostor {} is missing (rebuild the HLODs)", file);
+            }
+            m_impostors.InsertOrAssign(file, move(li));
+            imp = m_impostors.Find(file);
+        }
+        if (imp->ids.Empty())
+            continue;
+        Foliage f;
+        f.model = model;
+        ImpostorIds ids{imp->ids[0], imp->ids[1], imp->ids[2], imp->ids[3]};
+        ImpostorAsset meta;
+        meta.frames = imp->frames;
+        meta.centerY = imp->centerY;
+        MakeImpostorFoliage(ids, meta, f);
+        f.cullDistance = m_settings.hlodRange + m_settings.cellSize * f32(HlodGroupCells) * 1.5f;
+        Transform ptr;
+        ptr.position = origin;
+        HlodPlants plants;
+        plants.entity = scene::CreateNode(world, String::Format("HLOD {}_{} {}", group.coord.x, group.coord.y, Path::Stem(model)), ptr);
+        world.Add(plants.entity, move(f));
+        world.Add(plants.entity, HlodProxy{group.coord});
+        plants.cells = move(cells);
+        group.entities.PushBack(plants.entity);
+        group.plants.PushBack(move(plants));
+    }
     const Guid id = Guid::FromName(Guid(0x484C4F4450617274ull, 0x5A58334457507478ull),
                                    String::Format("{}|{}_{}|{}", m_directory, group.coord.x, group.coord.y, group.version).View());
     if (!m_hlodMeshes.Contains(id)) {
         asset::CookedMesh mesh;
-        if (!asset::Deserialize(meshBytes.View(), mesh))
-            return;
+        if (!asset::Deserialize(meshBytes.View(), mesh) || mesh.vertices.Empty())
+            return; // plants only
         m_io.assets->AddMemoryMesh(id, move(mesh));
         m_hlodMeshes.Insert(id);
     }
@@ -292,12 +421,34 @@ void WorldStreamer::ShowHlod(ecs::World& world, Group& group)
     group.entities.PushBack(e);
 }
 
+void WorldStreamer::UpdateHlodPlants(ecs::World& world, Group& group, u32 loadedMask)
+{
+    if (group.loadedMask == loadedMask)
+        return;
+    group.loadedMask = loadedMask;
+    for (HlodPlants& p : group.plants) {
+        Foliage* f = world.IsAlive(p.entity) ? world.Get<Foliage>(p.entity) : nullptr;
+        if (!f)
+            continue;
+        Array<FoliageInstance> instances;
+        for (usize c = 0; c < p.cells.Size(); ++c) {
+            if (loadedMask & (1u << c))
+                continue; // the cell's real plants stand there
+            const Array<f32>& v = p.cells[c];
+            for (usize i = 0; i + 4 < v.Size(); i += 5)
+                instances.PushBack(FoliageInstance{Vec3(v[i], v[i + 1], v[i + 2]), v[i + 3], v[i + 4]});
+        }
+        EncodeFoliage(*f, instances.View());
+    }
+}
+
 void WorldStreamer::HideHlod(ecs::World& world, Group& group)
 {
     for (ecs::Entity e : group.entities)
         if (world.IsAlive(e))
             world.Destroy(e);
     group.entities.Clear();
+    group.plants.Clear();
 }
 
 void WorldStreamer::Configure(StringView cellDirectory, const WorldPartitionSettings& settings, const SceneIOOptions& io)
@@ -480,10 +631,19 @@ void WorldStreamer::Update(ecs::World& world, Span<const Vec3> sources, bool all
     u32 hlods = 0;
     const f64 now = Clock::NowSeconds();
     HashMap<u64, bool> groupComplete; // every cell of the group loaded and settled
+    HashMap<u64, u32> groupSettled;   // bit per settled cell (their real plants replace the impostors)
     for (auto& kv : m_cells) {
         const Cell& cell = kv.second;
         const bool settled = cell.state == CellState::Loaded && now - cell.loadedTime > 1.5;
         const u64 gk = Key(GroupOf(cell.coord));
+        if (settled) {
+            const IVec2 g = GroupOf(cell.coord);
+            const u32 bit = 1u << u32((cell.coord.y - g.y * i32(HlodGroupCells)) * i32(HlodGroupCells) + (cell.coord.x - g.x * i32(HlodGroupCells)));
+            if (u32* m = groupSettled.Find(gk))
+                *m |= bit;
+            else
+                groupSettled.InsertOrAssign(gk, bit);
+        }
         bool* complete = groupComplete.Find(gk);
         if (!complete)
             groupComplete.InsertOrAssign(gk, settled);
@@ -510,6 +670,10 @@ void WorldStreamer::Update(ecs::World& world, Span<const Vec3> sources, bool all
             ShowHlod(world, group);
         else if (!want && !group.entities.Empty())
             HideHlod(world, group);
+        if (!group.plants.Empty()) {
+            const u32* settledMask = groupSettled.Find(kv.first);
+            UpdateHlodPlants(world, group, settledMask ? *settledMask : 0u);
+        }
         hlods += group.entities.Empty() ? 0u : 1u;
     }
     m_stats.hlods = hlods;

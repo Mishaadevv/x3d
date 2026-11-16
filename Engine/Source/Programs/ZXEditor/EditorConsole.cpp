@@ -16,6 +16,8 @@
 #include "Core/Threading/Thread.h"
 #include "Core/Time/Time.h"
 #include "Engine/BuiltinAssets.h"
+#include "Engine/Impostor.h"
+#include "Engine/WorldPartition.h"
 #include "Engine/Prefab.h"
 #include "Core/String/Parse.h"
 #include "Core/String/Path.h"
@@ -295,6 +297,65 @@ ConCommand CmdWorldFly("world.flytest", "Flies the camera straight ahead and mea
                                 ed->flyTest.speed = args.Size() > 1 ? ParseFloat(args[1]).ValueOr(60.0f) : 60.0f;
                             }
                         });
+
+ConCommand CmdWorldLoadRange("world.loadrange", "World Partition streaming distance until the scene is reopened: world.loadrange <meters>",
+                              [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || args.Empty())
+        return;
+    ed->streamer.SetLoadRange(ParseFloat(args[0]).ValueOr(640.0f));
+    ZX_LOG_INFO(LogCmd, "World Partition: load range {} m", args[0]);
+});
+
+ConCommand CmdImpostorSpawn("impostor.spawn", "Bakes a model's impostor and stands one at world (x, z) on the ground, to compare with the "
+                             "real model (not saved): impostor.spawn <Content-relative model> <x> <z> [scale] [pair = the real model beside it]",
+                             [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || args.Size() < 3 || !ed->assets)
+        return;
+    UniquePtr<asset::AssetManager> cooker;
+    ImpostorAsset imp;
+    if (!BakeImpostorFromFile(Path::Join(ed->contentRoot, args[0]), imp, cooker))
+        return;
+    const ImpostorIds ids = RegisterImpostor(*ed->assets, imp, String::Format("spawn|{}", args[0]).View());
+    const f32 x = ParseFloat(args[1]).ValueOr(0.0f), z = ParseFloat(args[2]).ValueOr(0.0f);
+    f32 y = 0.0f;
+    ed->world.Query<const Terrain>().Each([&](ecs::Entity t, const Terrain&) {
+        f32 h;
+        if (ed->terrains.HeightAt(ed->world, t, Vec2(x, z), h))
+            y = h;
+    });
+    const ecs::Entity e = scene::CreateNode(ed->world, String::Format("Impostor {}", Path::Stem(args[0])), Transform(Vec3(x, y, z)));
+    Foliage f;
+    f.model = String(args[0]);
+    MakeImpostorFoliage(ids, imp, f);
+    const FoliageInstance one[] = {{Vec3(), 0.0f, args.Size() > 3 ? ParseFloat(args[3]).ValueOr(1.0f) : 1.0f}};
+    EncodeFoliage(f, one);
+    ed->world.Add(e, move(f));
+    ed->world.Add(e, HlodProxy{}); // a stand-in: never saved
+    if (args.Size() > 4 && args[4].EqualsIgnoreCase("pair")) {
+        // The real model 3 radii to the left (camera on +X... any side works for a look).
+        const asset::AssetId id = ed->assets->LoadPath(Path::Join(ed->contentRoot, args[0]));
+        ed->assets->WaitIdle();
+        Foliage real;
+        real.model = String(args[0]);
+        if (const asset::PrefabAsset* prefab = ed->assets->GetPrefab(id); prefab && FoliagePartsFromPrefab(*prefab, real.parts)) {
+            f32 ry = y;
+            const f32 rx = x - imp.radius * 3.0f;
+            ed->world.Query<const Terrain>().Each([&](ecs::Entity t, const Terrain&) {
+                f32 h;
+                if (ed->terrains.HeightAt(ed->world, t, Vec2(rx, z), h))
+                    ry = h;
+            });
+            const ecs::Entity r = scene::CreateNode(ed->world, String::Format("Real {}", Path::Stem(args[0])), Transform(Vec3(rx, ry, z)));
+            EncodeFoliage(real, one);
+            ed->world.Add(r, move(real));
+            ed->world.Add(r, HlodProxy{});
+        }
+    }
+    ZX_LOG_INFO(LogCmd, "Impostor of {}: {} x {} views, radius {:.2f} m, at ({:.1f}, {:.1f}, {:.1f})", Path::Stem(args[0]), imp.frames, imp.frames,
+                imp.radius, x, y, z);
+});
 
 ConCommand CmdWorldStats("world.stats", "World Partition streaming statistics", [](Span<const StringView>) {
     if (Editor* ed = Ed()) {
@@ -972,6 +1033,17 @@ ConCommand CmdCameraDrop("camera.drop", "Puts the editor camera above the terrai
                              ed->viewport->ResetHistory();
                              ZX_LOG_INFO(LogCmd, "camera {:.2f} {:.2f} {:.2f}", ed->camera.position.x, ed->camera.position.y, ed->camera.position.z);
                          });
+
+ConCommand CmdCameraFov("camera.fov", "Vertical field of view of the editor camera: camera.fov <degrees = 60> (small = zoom)",
+                        [](Span<const StringView> args) {
+                            Editor* ed = Ed();
+                            if (!ed)
+                                return;
+                            ed->prefs.fieldOfView = Clamp(args.Empty() ? 60.0f : ParseFloat(args[0]).ValueOr(60.0f), 5.0f, 150.0f);
+                            ed->camera.fovY = DegToRad(ed->prefs.fieldOfView); // the settings hold it (not saved)
+                            ed->viewport->ResetHistory();
+                            ZX_LOG_INFO(LogCmd, "camera.fov {:.1f}", RadToDeg(ed->camera.fovY));
+                        });
 
 ConCommand CmdHdriInfo("hdri.info", "HDRI Sky: panorama, intensity, the sun it lights the scene with", [](Span<const StringView>) {
     Editor* ed = Ed();

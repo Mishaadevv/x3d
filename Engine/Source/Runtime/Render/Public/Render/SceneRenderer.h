@@ -42,6 +42,7 @@ struct RenderInstance
     /// Foliage in the wind: the wind (world xz, m/s) times the plant's flexibility; zero = rigid. The vertex shader bends
     /// the mesh by height within its bounds (the base stays, the top sways), with flutter towards the tips.
     Vec2 wind;
+    Vec2 impostor; // x = atlas frames per side (0 = not an impostor), y = the model's sphere center height (Engine/Impostor.h)
 };
 
 /// Writes the last part of an instance row (SceneRenderer / SceneRendererGpu): lightmap scale / bias, and the wind with

@@ -71,6 +71,9 @@ public:
     String GetName(AssetId id) const;
     /// Registers a ready mesh (built-in shapes, procedural geometry) as a Loaded asset. Kept for the manager's lifetime.
     void AddMemoryMesh(AssetId id, CookedMesh mesh);
+    /// The same for generated textures and materials (impostor atlases and their material).
+    void AddMemoryTexture(AssetId id, CookedTexture texture);
+    void AddMemoryMaterial(AssetId id, MaterialAsset material);
     /// Frees the CPU copy (e.g. after GPU upload); the state stays Loaded.
     void ReleaseCpuData(AssetId id);
 

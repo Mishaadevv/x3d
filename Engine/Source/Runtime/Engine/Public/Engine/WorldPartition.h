@@ -14,7 +14,9 @@
 //   streamer.BuildHlods();                                   // far-away stand-ins of every cell
 //
 // HLOD: each group of 4 x 4 cells gets a hlod_<x>_<z>.zhlod with coarse copies of its terrains (one mesh, a little below
-// the real ground); groups within hlodRange that are not completely loaded show it, so the horizon is never empty.
+// the real ground) and its trees and rocks as impostors (Engine/Impostor.h: one camera-facing quad per plant, baked once
+// per model into <cells>/impostors/); groups within hlodRange that are not completely loaded show it, so the horizon is
+// never empty. A group's impostors leave out its cells that are loaded (their real plants stand there).
 //
 // Loading never stalls a frame for long: files are read and parsed by jobs, and the entities of a cell are created
 // one root at a time within a per-frame time budget. Cells unload past loadRange x 1.25 (hysteresis).
@@ -83,6 +85,8 @@ public:
     /// Writes the spatial roots of the world into their cell files. Cells that are not loaded keep what is on disk (new
     /// entities in them are merged in); loaded cells left empty are deleted.
     bool SaveCells(ecs::World& world);
+    /// Streaming distance (meters) from now on (tests and tuning; the scene setting is the saved one).
+    void SetLoadRange(f32 meters) { m_settings.loadRange = Max(meters, 1.0f); }
     /// Writes the HLOD of every cell on disk (or only `cells`) from its file.
     u32 BuildHlods(Span<const IVec2> cells = {});
 
@@ -119,6 +123,12 @@ private:
     };
     /// HLODs cover groups of HlodGroupCells x HlodGroupCells cells: one mesh per group (few draws for a whole horizon).
     static constexpr u32 HlodGroupCells = 4;
+    /// The impostor plants of one model in a shown HLOD group (instances per cell of the group, relative to its origin).
+    struct HlodPlants
+    {
+        ecs::Entity entity;
+        Array<Array<f32>> cells; // HlodGroupCells^2 lists of 5 floats per plant (x, y, z, yaw, scale)
+    };
     struct Group
     {
         IVec2 coord;
@@ -126,6 +136,8 @@ private:
         bool stale = false; // rebuilt: a shown copy is replaced
         u32 version = 0;
         Array<ecs::Entity> entities;
+        Array<HlodPlants> plants;
+        u32 loadedMask = 0; // cells whose real plants stand (left out of the impostors)
     };
     static IVec2 GroupOf(IVec2 cell);
     static u64 Key(IVec2 c) { return (u64(u32(c.x)) << 32) | u32(c.y); }
@@ -138,6 +150,9 @@ private:
     void ShowHlod(ecs::World& world, Group& group);
     void HideHlod(ecs::World& world, Group& group);
     String HlodPath(IVec2 group) const;
+    /// The impostor file of a model (baked when missing or the model changed); empty when it can't be baked.
+    String EnsureImpostor(StringView model, UniquePtr<asset::AssetManager>& cooker);
+    void UpdateHlodPlants(ecs::World& world, Group& group, u32 loadedMask);
 
     WorldPartitionSettings m_settings;
     String m_directory;
@@ -145,6 +160,13 @@ private:
     HashMap<u64, Cell> m_cells;
     HashMap<u64, Group> m_groups;
     HashSet<Guid> m_hlodMeshes; // registered with the asset manager
+    struct LoadedImpostor
+    {
+        Array<asset::AssetId> ids; // mesh, material, albedo, normal
+        u32 frames = 0;
+        f32 centerY = 0.0f;
+    };
+    HashMap<String, LoadedImpostor> m_impostors; // by file (registered with the asset manager)
     Stats m_stats;
 };
 

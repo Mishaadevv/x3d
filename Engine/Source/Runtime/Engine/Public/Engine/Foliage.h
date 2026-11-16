@@ -59,6 +59,9 @@ struct Foliage
     // Runtime (decoded instances; not saved).
     Array<FoliageInstance> instances;
     i32 decodedId = -1;
+    // Runtime: the parts are an impostor quad (Engine/Impostor.h; HLOD stand-ins). 0 = an ordinary model.
+    u32 impostorFrames = 0;
+    f32 impostorCenterY = 0.0f;
 };
 ZX_DECLARE_TYPE(Foliage);
 

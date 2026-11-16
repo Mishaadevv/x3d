@@ -803,6 +803,30 @@ void AssetManager::AddMemoryMesh(AssetId id, CookedMesh mesh)
     e.state.store(AssetState::Loaded, std::memory_order_release);
 }
 
+void AssetManager::AddMemoryTexture(AssetId id, CookedTexture texture)
+{
+    ScopedLock lock(m_mutex);
+    Entry& e = GetOrAddEntry(id);
+    e.source = id;
+    e.type = AssetType::Texture;
+    e.origin = EntryOrigin::Memory;
+    e.name = texture.name;
+    e.tex = MakeUnique<CookedTexture>(move(texture));
+    e.state.store(AssetState::Loaded, std::memory_order_release);
+}
+
+void AssetManager::AddMemoryMaterial(AssetId id, MaterialAsset material)
+{
+    ScopedLock lock(m_mutex);
+    Entry& e = GetOrAddEntry(id);
+    e.source = id;
+    e.type = AssetType::Material;
+    e.origin = EntryOrigin::Memory;
+    e.name = material.name;
+    e.material = MakeUnique<MaterialAsset>(move(material));
+    e.state.store(AssetState::Loaded, std::memory_order_release);
+}
+
 void AssetManager::ReleaseCpuData(AssetId id)
 {
     ScopedLock lock(m_mutex);
