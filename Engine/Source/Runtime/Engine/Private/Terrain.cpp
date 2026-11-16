@@ -1,12 +1,14 @@
 #include "Engine/Terrain.h"
 #include "Asset/CookedAssets.h"
 #include "Asset/MeshData.h"
+#include "Core/Containers/Function.h"
 #include "Core/Log/Log.h"
 #include "Core/Math/Random.h"
 #include "Core/String/Base64.h"
 #include "Scene/Hierarchy.h"
 #include "Core/Time/Time.h"
 #include <bit>
+#include <cmath>
 #include "Engine/SceneRendering.h"
 #include "Engine/SceneSerialization.h"
 #include "Render/RenderAssets.h"
@@ -89,13 +91,21 @@ f32 Shape(const Terrain& t, f32 x, f32 z)
 /// One vertex of the terrain grid (heights `h`, n x n, spacing `s`).
 f32 GeneratedHeightLocal(const Terrain& t, f32 px, f32 pz);
 
-asset::PackedVertex TerrainVertex(const Terrain& t, const Array<f32>& h, const Array<u8>& paint, u32 n, f32 s, u32 x, u32 z)
+/// Heights beyond a terrain's edge (local space): a neighboring tile's when one stands there.
+using TerrainOutside = Function<bool(i32, i32, f32&), 32>;
+
+asset::PackedVertex TerrainVertex(const Terrain& t, const Array<f32>& h, const Array<u8>& paint, u32 n, f32 s, u32 x, u32 z,
+                                  const TerrainOutside* outside = nullptr)
 {
     const f32 half = s * f32(n - 1) * 0.5f;
-    // Beyond the edge: the generated landscape continues (tiles of one landscape get matching normals at their seams).
+    // Beyond the edge: the neighboring tile (sculpted seams shade alike), else the generated landscape continues.
     auto at = [&](i32 xx, i32 zz) {
-        if (xx < 0 || zz < 0 || xx >= i32(n) || zz >= i32(n))
+        if (xx < 0 || zz < 0 || xx >= i32(n) || zz >= i32(n)) {
+            f32 v;
+            if (outside && (*outside)(xx, zz, v))
+                return v;
             return GeneratedHeightLocal(t, -half + f32(xx) * s, -half + f32(zz) * s);
+        }
         return h[usize(zz) * n + usize(xx)];
     };
     asset::MeshVertex v;
@@ -141,7 +151,14 @@ void TerrainSectionBounds(const Array<asset::PackedVertex>& vertices, u32 n, Arr
 
 /// The render mesh, cooked directly (a regular grid needs no cache optimization): square chunks of cells become
 /// sections with their own bounds, so the renderer culls what is off screen.
-asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h, const Array<u8>& paint, bool skirtsAtLod0 = false)
+struct TerrainSkirts
+{
+    Array<u32> source;
+    f32 depth = 0.0f;
+};
+
+asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h, const Array<u8>& paint, bool skirtsAtLod0 = false,
+                                  const TerrainOutside* outside = nullptr, TerrainSkirts* skirtsOut = nullptr)
 {
     const u32 n = TerrainSamples(t);
     const f32 s = TerrainSpacing(t);
@@ -150,7 +167,7 @@ asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h, const A
     out.vertices.ResizeUninitialized(usize(n) * n);
     for (u32 z = 0; z < n; ++z)
         for (u32 x = 0; x < n; ++x) {
-            out.vertices[usize(z) * n + x] = TerrainVertex(t, h, paint, n, s, x, z);
+            out.vertices[usize(z) * n + x] = TerrainVertex(t, h, paint, n, s, x, z, outside);
             out.bounds.Expand(out.vertices[usize(z) * n + x].position);
         }
     const u32 cells = n - 1, chunk = TerrainChunk(n);
@@ -165,12 +182,18 @@ asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h, const A
         maxHeight = Max(maxHeight, v);
     }
     const f32 skirtDepth = Max(s * 4.0f, (maxHeight - minHeight) * 0.05f);
+    if (skirtsOut) {
+        skirtsOut->source.Clear();
+        skirtsOut->depth = skirtDepth;
+    }
     auto skirt = [&](u32 i) {
         const auto r = skirtOf.Insert(i, u32(out.vertices.Size()));
         if (r.second) {
             asset::PackedVertex v = out.vertices[i];
             v.position.y -= skirtDepth;
             out.vertices.PushBack(v);
+            if (skirtsOut)
+                skirtsOut->source.PushBack(i);
         }
         return *r.first;
     };
@@ -438,18 +461,38 @@ void TerrainSystem::Rebuild(ecs::World& world, ecs::Entity e, Data& d, asset::As
     Array<f32> heights = d.base;
     for (usize i = 0; i < heights.Size(); ++i)
         heights[i] += d.sculpt[i];
-    // While a tool edits it: only the touched rows, written into the resident GPU mesh (no reload: no flicker, no
-    // reflection recapture, a fraction of the work).
-    if (d.editing && renderAssets && d.dirtyX1 >= d.dirtyX0 && d.vertices.Size() == heights.Size()) {
+    const TerrainOutside outside = [this, &d](i32 x, i32 z, f32& h) { return HeightBeyondEdge(d, x, z, h); };
+    // While a tool edits it, or when only some samples changed (a neighbor's seam): only the touched rows, written into
+    // the resident GPU mesh (no reload: no flicker, no reflection recapture, a fraction of the work).
+    const bool partial = d.dirtyX1 >= d.dirtyX0 && (d.dirtyX0 > 0 || d.dirtyZ0 > 0 || d.dirtyX1 < i32(d.n) - 1 || d.dirtyZ1 < i32(d.n) - 1);
+    if ((d.editing || partial) && renderAssets && d.dirtyX1 >= d.dirtyX0 && d.vertices.Size() == heights.Size() + d.skirtSource.Size()) {
         const u32 x0 = u32(Max(d.dirtyX0 - 1, 0)), x1 = Min(u32(d.dirtyX1 + 1), d.n - 1);
         const u32 z0 = u32(Max(d.dirtyZ0 - 1, 0)), z1 = Min(u32(d.dirtyZ1 + 1), d.n - 1);
         for (u32 z = z0; z <= z1; ++z)
             for (u32 x = x0; x <= x1; ++x)
-                d.vertices[usize(z) * d.n + x] = TerrainVertex(t, heights, d.paint, d.n, d.spacing, x, z);
+                d.vertices[usize(z) * d.n + x] = TerrainVertex(t, heights, d.paint, d.n, d.spacing, x, z, &outside);
+        // The skirts hanging below the touched samples follow them.
+        const usize grid = usize(d.n) * d.n;
+        usize skirtLo = ~usize(0), skirtHi = 0;
+        for (usize k = 0; k < d.skirtSource.Size(); ++k) {
+            const u32 src = d.skirtSource[k], sx = src % d.n, sz = src / d.n;
+            if (sx < x0 || sx > x1 || sz < z0 || sz > z1)
+                continue;
+            asset::PackedVertex v = d.vertices[src];
+            v.position.y -= d.skirtDepth;
+            d.vertices[grid + k] = v;
+            skirtLo = Min(skirtLo, k);
+            skirtHi = Max(skirtHi, k);
+        }
         TerrainSectionBounds(d.vertices, d.n, d.sections, d.bounds);
         const usize first = usize(z0) * d.n, count = usize(z1 - z0 + 1) * d.n;
-        if (renderAssets->UpdateMeshVertices(d.mesh, u32(first), Span<const asset::PackedVertex>(d.vertices.Data() + first, count), d.bounds,
-                                             d.sections.View())) {
+        bool updated = renderAssets->UpdateMeshVertices(d.mesh, u32(first), Span<const asset::PackedVertex>(d.vertices.Data() + first, count),
+                                                        d.bounds, d.sections.View());
+        if (updated && skirtLo <= skirtHi)
+            updated = renderAssets->UpdateMeshVertices(d.mesh, u32(grid + skirtLo),
+                                                       Span<const asset::PackedVertex>(d.vertices.Data() + grid + skirtLo, skirtHi - skirtLo + 1),
+                                                       d.bounds, d.sections.View());
+        if (updated) {
             d.time = Clock::NowSeconds();
             d.dirty = false;
             d.dirtyX0 = d.dirtyZ0 = 1 << 30;
@@ -457,7 +500,10 @@ void TerrainSystem::Rebuild(ecs::World& world, ecs::Entity e, Data& d, asset::As
             return;
         }
     }
-    asset::CookedMesh cooked = CookTerrainMesh(t, heights, d.paint);
+    TerrainSkirts skirts;
+    asset::CookedMesh cooked = CookTerrainMesh(t, heights, d.paint, false, &outside, &skirts);
+    d.skirtSource = move(skirts.source);
+    d.skirtDepth = skirts.depth;
     d.vertices = cooked.vertices;
     d.sections = cooked.sections;
     d.bounds = cooked.bounds;
@@ -477,6 +523,12 @@ void TerrainSystem::Update(ecs::World& world, asset::AssetManager& assets, rende
 {
     Array<ecs::Entity> terrains;
     world.Query<const Terrain>().Each([&](ecs::Entity e, const Terrain&) { terrains.PushBack(e); });
+    // Where every built terrain stands (seams read the neighbors' heights).
+    for (ecs::Entity e : terrains)
+        if (Data* d = m_built.Find(TerrainMeshId(world, e))) {
+            d->world = scene::ComputeWorldMatrix(world, e);
+            d->inv = InverseAffine(d->world);
+        }
     u32 newBuilds = 0;
     for (ecs::Entity e : terrains) {
         EnsureEntityGuid(world, e);
@@ -495,7 +547,10 @@ void TerrainSystem::Update(ecs::World& world, asset::AssetManager& assets, rende
             d->mesh = id;
             d->hash = ~hash; // build now
             d->dataId = t.dataId - 1;
+            d->world = scene::ComputeWorldMatrix(world, e);
+            d->inv = InverseAffine(d->world);
         }
+        bool shapeChanged = false; // new heights: the neighbors' seams follow
         // The generated shape: while a value is being dragged in Details, a few times per second (the last value lands).
         if (d->hash != hash && (d->base.Empty() || now - d->time > 0.12)) {
             d->hash = hash;
@@ -505,6 +560,7 @@ void TerrainSystem::Update(ecs::World& world, asset::AssetManager& assets, rende
             if (d->sculpt.Size() != d->base.Size())
                 d->dataId = t.dataId - 1; // resolution changed: resample what was sculpted
             d->dirty = true;
+            shapeChanged = true;
         }
         // Sculpted / painted data from the component (scene load, undo, redo) unless a tool is editing it.
         if (!d->editing && d->dataId != t.dataId) {
@@ -512,9 +568,12 @@ void TerrainSystem::Update(ecs::World& world, asset::AssetManager& assets, rende
             DecodeTerrainSculpt(t, d->n, d->sculpt);
             DecodeTerrainPaint(t, d->n, d->paint);
             d->dirty = true;
+            shapeChanged = true;
         }
         if (d->dirty) // every frame while sculpting: the ground follows the brush
             Rebuild(world, e, *d, assets, renderAssets);
+        if (shapeChanged)
+            RefreshNeighborEdges(*d);
         // The Mesh Renderer draws it (and makes picking, shadows and editor tools work as for any mesh).
         MeshRenderer* mr = world.Get<MeshRenderer>(e);
         if (!mr) {
@@ -570,6 +629,58 @@ void TerrainSystem::Commit(ecs::World& world, ecs::Entity e)
     t->dataId = id;
     d->dataId = id;
     d->editing = false; // the GPU mesh is already up to date (updated in place while editing)
+    RefreshNeighborEdges(*d);
+}
+
+bool TerrainSystem::HeightBeyondEdge(const Data& d, i32 x, i32 z, f32& localHeight) const
+{
+    const f32 half = d.spacing * f32(d.n - 1) * 0.5f;
+    const Vec3 w = d.world.TransformPointAffine(Vec3(-half + f32(x) * d.spacing, 0.0f, -half + f32(z) * d.spacing));
+    for (const auto& [id, o] : m_built) {
+        if (&o == &d || o.n < 2 || o.base.Empty() || o.sculpt.Size() != o.base.Size())
+            continue;
+        const Vec3 l = o.inv.TransformPointAffine(w);
+        const f32 oh = o.spacing * f32(o.n - 1) * 0.5f;
+        const f32 fx = (l.x + oh) / o.spacing, fz = (l.z + oh) / o.spacing;
+        if (fx < -0.01f || fz < -0.01f || fx > f32(o.n - 1) + 0.01f || fz > f32(o.n - 1) + 0.01f)
+            continue;
+        const u32 ix = u32(Clamp(i32(Round(fx)), 0, i32(o.n) - 1)), iz = u32(Clamp(i32(Round(fz)), 0, i32(o.n) - 1));
+        const Vec3 wp = o.world.TransformPointAffine(Vec3(l.x, o.Height(ix, iz), l.z));
+        localHeight = d.inv.TransformPointAffine(wp).y;
+        return true;
+    }
+    return false;
+}
+
+void TerrainSystem::RefreshNeighborEdges(const Data& d)
+{
+    if (d.n < 2)
+        return;
+    // d's footprint, one sample wider, in each neighbor's grid: the samples there whose normals read d.
+    const f32 half = d.spacing * f32(d.n - 1) * 0.5f + d.spacing;
+    for (auto& [id, o] : m_built) {
+        if (&o == &d || o.n < 2 || o.vertices.Size() < usize(o.n) * o.n)
+            continue;
+        f32 minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+        for (f32 sx : {-half, half})
+            for (f32 sz : {-half, half}) {
+                const Vec3 l = o.inv.TransformPointAffine(d.world.TransformPointAffine(Vec3(sx, 0.0f, sz)));
+                minX = Min(minX, l.x);
+                maxX = Max(maxX, l.x);
+                minZ = Min(minZ, l.z);
+                maxZ = Max(maxZ, l.z);
+            }
+        const f32 oh = o.spacing * f32(o.n - 1) * 0.5f;
+        const i32 x0 = Max(i32(std::floor((minX + oh) / o.spacing)), 0), x1 = Min(i32(std::ceil((maxX + oh) / o.spacing)), i32(o.n) - 1);
+        const i32 z0 = Max(i32(std::floor((minZ + oh) / o.spacing)), 0), z1 = Min(i32(std::ceil((maxZ + oh) / o.spacing)), i32(o.n) - 1);
+        if (x0 > x1 || z0 > z1)
+            continue;
+        // Only the samples next to o's edge need it (the rest of o reads its own heights).
+        const i32 n = i32(o.n);
+        const bool touchesEdge = x0 <= 1 || z0 <= 1 || x1 >= n - 2 || z1 >= n - 2;
+        if (touchesEdge)
+            MarkDirty(o, x0, z0, x1, z1);
+    }
 }
 
 bool TerrainSystem::HeightAt(ecs::World& world, ecs::Entity e, Vec2 worldXZ, f32& height)

@@ -109,9 +109,9 @@ struct ToolState
     u32 placedThisStroke = 0;
     // Terrain tool: the terrain under the mouse and the stroke in progress.
     ecs::Entity hoverTerrain;
-    ecs::Entity sculptTerrain;
+    Array<ecs::Entity> strokeTerrains; // every terrain the stroke reached (tiles of a landscape are edited as one ground)
     bool sculpting = false;
-    f32 flattenHeight = 0.0f; // local height of the stroke's start
+    f32 flattenHeight = 0.0f; // world height of the stroke's start (Flatten)
     bool rampDragging = false;
     bool focusPanel = false;  // bring the Tool Settings tab to front once it exists
     Vec3 rampStart;           // Ramp: where the drag began (world)
@@ -161,10 +161,14 @@ bool AddSelectedBrushItem(Editor& ed);
 bool AddFoliageBrushItem(Editor& ed, StringView modelPath);
 /// Foliage instances of the brush's foliage models in the scene.
 u32 BrushFoliageCount(Editor& ed);
-/// One frame of a terrain stroke at world `point` (the editor's live terrain data; Commit writes the component).
-void TerrainDab(Editor& ed, ecs::Entity terrain, Vec3 point, f32 dt);
-/// Ramp from `from` to `to` (world) as wide as the brush (one undo step).
-void TerrainRamp(Editor& ed, ecs::Entity terrain, Vec3 from, Vec3 to);
+/// A terrain stroke (one undo step): every terrain the brush reaches joins it, so the tiles of a landscape are sculpted
+/// and painted as one ground - seams get the same heights (neighbors are read across them) and matching normals.
+void BeginTerrainStroke(Editor& ed, Vec3 start);
+/// One frame of the stroke at world `point` (the editor's live terrain data; EndTerrainStroke writes the components).
+void TerrainDab(Editor& ed, Vec3 point, f32 dt);
+void EndTerrainStroke(Editor& ed);
+/// Ramp from `from` to `to` (world) as wide as the brush, over every terrain it crosses (one undo step).
+void TerrainRamp(Editor& ed, Vec3 from, Vec3 to);
 /// Whole-terrain operations (one undo step each).
 enum class TerrainOp : u8
 {

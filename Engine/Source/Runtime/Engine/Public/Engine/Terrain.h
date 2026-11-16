@@ -93,10 +93,16 @@ public:
         bool dirty = false;
         // Edited samples since the last mesh update (inclusive; empty when x1 < x0).
         i32 dirtyX0 = 1 << 30, dirtyZ0 = 1 << 30, dirtyX1 = -1, dirtyZ1 = -1;
-        // The mesh as on the GPU (for in-place updates).
+        // The mesh as on the GPU (for in-place updates): n x n samples, then the skirt vertices (copies of chunk-border
+        // samples `skirtDepth` lower; skirtSource[k] = the sample of vertex n * n + k).
         Array<asset::PackedVertex> vertices;
+        Array<u32> skirtSource;
+        f32 skirtDepth = 0.0f;
         Array<asset::CookedMeshSection> sections;
         AABB bounds;
+        // Where it stands (kept by Update): tiles of a landscape read each other's heights at their seams.
+        Mat4 world = Mat4::Identity();
+        Mat4 inv = Mat4::Identity();
         f32 Height(u32 x, u32 z) const { return base[usize(z) * n + x] + sculpt[usize(z) * n + x]; }
     };
     /// Starts editing a terrain (its data stays live until Commit; the component is not re-read meanwhile).
@@ -125,8 +131,13 @@ public:
     bool HeightAt(ecs::World& world, ecs::Entity e, Vec2 worldXZ, f32& height);
     /// Closest terrain hit along a ray (world space).
     bool Raycast(ecs::World& world, const Ray& ray, f32 maxDistance, ecs::Entity& hitTerrain, Vec3& hitPoint);
+    /// Height (in `d`'s local space) of `d`'s grid sample (x, z) beyond its edge, read from the built terrain that
+    /// covers that point (a neighboring tile). False when none does.
+    bool HeightBeyondEdge(const Data& d, i32 x, i32 z, f32& localHeight) const;
 
 private:
+    /// Marks the edge samples of the built terrains around `d` for an update (their normals read `d`'s heights).
+    void RefreshNeighborEdges(const Data& d);
     void Rebuild(ecs::World& world, ecs::Entity e, Data& d, asset::AssetManager& assets, render::RenderAssets* renderAssets);
     HashMap<asset::AssetId, Data> m_built; // by mesh id
     u32 m_builds = 0;

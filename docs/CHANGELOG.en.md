@@ -2,6 +2,16 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.17.16 — Terrain brush across tile borders (2026-11-16)
+- **Tiles are one ground**: a terrain brush stroke (raise, smooth, flatten, terrace, noise, erode, paint) and a ramp carry on into the neighbouring open-world tiles. The whole stroke is one Undo step, even when it crosses several tiles.
+- **No trace of the seam**: brush weight, noise and terraces are computed in world coordinates, and heights beyond a tile's edge are read from its neighbour. Both tiles get the same heights and normals at the seam, so no stripe shows in the lighting. When a tile changes, its neighbours update their edge vertices.
+- **Fixed**: since 0.17.1 (chunk skirts), sculpting rebuilt the whole terrain mesh every frame. It now updates only the touched vertex rows and the skirts below them, as intended.
+- **Checked**:
+  - The Terrain.TilesShadeAlikeAcrossTheirSeam test: a wall at tile A's edge; the height beyond tile B's edge and the seam normals of both tiles match.
+  - In the editor, an open world with 256 m cells: a mountain, terraces and rock paint right on the x = 0 seam, with no cracks or stripes.
+  - A ramp across the seam.
+  - Undo reverts the stroke on both tiles.
+
 ## 0.17.15 — Foliage impostors for HLODs (2026-11-16)
 - **Forests to the horizon**: trees and rocks of cells beyond the load range are drawn as impostors: one quad per plant, turned towards the camera, showing the model from the right side. Before this, only the simplified terrain was left past 640 m.
 - **Baking** (`Engine/Impostor.h`): the model is rasterized on the CPU from 8×8 directions over the upper hemisphere into a 512×512 atlas. The atlas holds albedo with the leaves' alpha mask and each view's normals, as BC7/BC5 with mips and alpha coverage preserved. A pine bakes in about a second, once per model. The files live in `<cells>/impostors/` and go into the game package. A changed model is baked again.

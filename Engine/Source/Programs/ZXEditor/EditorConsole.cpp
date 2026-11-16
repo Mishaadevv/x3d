@@ -716,15 +716,10 @@ ConCommand CmdTerrainSculpt("terrain.sculpt",
                                      ts.terrain = saved;
                                      return;
                                  }
-                                 ed->undo.Begin("Sculpt Terrain");
-                                 ed->undo.Record(terrain);
-                                 if (ed->terrains.BeginEdit(ed->world, terrain)) {
-                                     ts.flattenHeight = InverseAffine(scene::ComputeWorldMatrix(ed->world, terrain)).TransformPointAffine(hit).y;
-                                     for (u32 i = 0; i < u32(seconds * 60.0f); ++i)
-                                         TerrainDab(*ed, terrain, hit, 1.0f / 60.0f);
-                                     ed->terrains.Commit(ed->world, terrain);
-                                 }
-                                 ed->undo.End();
+                                 BeginTerrainStroke(*ed, hit); // every tile the brush reaches
+                                 for (u32 i = 0; i < u32(seconds * 60.0f); ++i)
+                                     TerrainDab(*ed, hit, 1.0f / 60.0f);
+                                 EndTerrainStroke(*ed);
                                  ts.terrain = saved;
                              });
 
@@ -746,12 +741,11 @@ ConCommand CmdTerrainRamp("terrain.ramp", "Ramp between two ground points as wid
                               Editor* ed = Ed();
                               if (!ed || args.Size() < 4)
                                   return;
-                              const ecs::Entity t = ConsoleTerrain(*ed);
                               Vec3 p[2];
                               for (u32 i = 0; i < 2; ++i) {
                                   const f32 x = ParseFloat(args[i * 2]).ValueOr(0.0f), z = ParseFloat(args[i * 2 + 1]).ValueOr(0.0f);
                                   ecs::Entity hitTerrain;
-                                  if (!t || !ed->terrains.Raycast(ed->world, Ray(Vec3(x, 5000.0f, z), Vec3(0, -1, 0)), 10000.0f, hitTerrain, p[i])) {
+                                  if (!ed->terrains.Raycast(ed->world, Ray(Vec3(x, 5000.0f, z), Vec3(0, -1, 0)), 10000.0f, hitTerrain, p[i])) {
                                       ZX_LOG_WARN(LogCmd, "terrain.ramp: no terrain at {} {}", x, z);
                                       return;
                                   }
@@ -759,7 +753,7 @@ ConCommand CmdTerrainRamp("terrain.ramp", "Ramp between two ground points as wid
                               const f32 savedRadius = ed->tools.terrain.radius;
                               if (args.Size() > 4)
                                   ed->tools.terrain.radius = ParseFloat(args[4]).ValueOr(savedRadius);
-                              TerrainRamp(*ed, t, p[0], p[1]);
+                              TerrainRamp(*ed, p[0], p[1]);
                               ed->tools.terrain.radius = savedRadius;
                           });
 

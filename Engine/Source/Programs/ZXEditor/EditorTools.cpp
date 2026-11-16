@@ -432,12 +432,83 @@ void EndTerrainChange(Editor& ed, ecs::Entity terrain, TerrainSystem::Data& d)
 
 } // namespace
 
-void TerrainDab(Editor& ed, ecs::Entity terrain, Vec3 point, f32 dt)
+namespace {
+
+/// Terrains whose ground comes within `margin` of the world rectangle [lo, hi] (xz).
+void TerrainsNear(Editor& ed, Vec2 lo, Vec2 hi, f32 margin, Array<ecs::Entity>& out)
 {
-    TerrainSystem::Data* d = ed.terrains.Find(ed.world, terrain);
-    if (!d || !d->editing || dt <= 0.0f)
+    ed.world.Query<const Terrain>().Each([&](ecs::Entity e, const Terrain&) {
+        const TerrainSystem::Data* d = ed.terrains.Find(ed.world, e);
+        if (!d)
+            return;
+        const Mat4 m = scene::ComputeWorldMatrix(ed.world, e);
+        const f32 half = d->spacing * f32(d->n - 1) * 0.5f;
+        Vec2 mn(Infinity), mx(-Infinity);
+        for (f32 sx : {-half, half})
+            for (f32 sz : {-half, half}) {
+                const Vec3 w = m.TransformPointAffine(Vec3(sx, 0.0f, sz));
+                mn = Min(mn, Vec2(w.x, w.z));
+                mx = Max(mx, Vec2(w.x, w.z));
+            }
+        if (mn.x <= hi.x + margin && mx.x >= lo.x - margin && mn.y <= hi.y + margin && mx.y >= lo.y - margin)
+            out.PushBack(e);
+    });
+}
+
+/// Adds a terrain to the stroke (its undo state recorded, its data live). False when it can't be edited.
+TerrainSystem::Data* JoinStroke(Editor& ed, ecs::Entity e)
+{
+    ToolState& ts = ed.tools;
+    if (!ts.strokeTerrains.Contains(e)) {
+        ed.undo.Record(e);
+        if (!ed.terrains.BeginEdit(ed.world, e))
+            return nullptr;
+        ts.strokeTerrains.PushBack(e);
+    }
+    return ed.terrains.Find(ed.world, e);
+}
+
+/// One terrain's part of a dab: its samples under the brush (one sample wider: seam normals) and their heights before.
+struct DabTile
+{
+    ecs::Entity entity;
+    TerrainSystem::Data* d = nullptr;
+    Mat4 m, inv;
+    i32 x0 = 0, x1 = -1, z0 = 0, z1 = -1;
+    Array<f32> before; // (w + 2) x (h + 2): one sample around, read across seams
+};
+
+} // namespace
+
+void BeginTerrainStroke(Editor& ed, Vec3 start)
+{
+    ToolState& ts = ed.tools;
+    if (ts.sculpting)
+        EndTerrainStroke(ed);
+    ed.undo.Begin("Sculpt Terrain");
+    ts.strokeTerrains.Clear();
+    ts.sculpting = true;
+    ts.flattenHeight = start.y;
+}
+
+void EndTerrainStroke(Editor& ed)
+{
+    ToolState& ts = ed.tools;
+    if (!ts.sculpting)
         return;
-    const ToolState& ts = ed.tools;
+    for (ecs::Entity e : ts.strokeTerrains)
+        ed.terrains.Commit(ed.world, e);
+    ts.strokeTerrains.Clear();
+    ts.sculpting = false;
+    ed.undo.End();
+    ed.viewport->Scene().InvalidateShadows();
+}
+
+void TerrainDab(Editor& ed, Vec3 point, f32 dt)
+{
+    ToolState& ts = ed.tools;
+    if (!ts.sculpting || dt <= 0.0f)
+        return;
     const TerrainBrushSettings& b = ts.terrain;
     TerrainBrushMode mode = b.mode;
     if (mode == TerrainBrushMode::Ramp)
@@ -449,147 +520,212 @@ void TerrainDab(Editor& ed, ecs::Entity terrain, Vec3 point, f32 dt)
         mode = mode == TerrainBrushMode::Raise ? TerrainBrushMode::Lower : TerrainBrushMode::Raise;
     else if (HasAnyFlags(mods, KeyModifiers::Control) && IsTerrainPaintMode(mode))
         mode = TerrainBrushMode::ErasePaint; // Ctrl erases with any paint layer
-    const Mat4 m = scene::ComputeWorldMatrix(ed.world, terrain);
-    const Vec3 local = InverseAffine(m).TransformPointAffine(point);
-    const u32 n = d->n;
-    const f32 sp = d->spacing, half = sp * f32(n - 1) * 0.5f;
-    const f32 radius = Max(b.radius, sp * 0.5f);
-    const i32 cx = i32(Round((local.x + half) / sp)), cz = i32(Round((local.z + half) / sp));
-    const i32 r = i32(radius / sp) + 1;
-    const i32 x0 = Max(cx - r, 0), x1 = Min(cx + r, i32(n) - 1), z0 = Max(cz - r, 0), z1 = Min(cz + r, i32(n) - 1);
-    if (x0 > x1 || z0 > z1)
-        return;
     const f32 strength = Clamp(b.strength, 0.0f, 1.0f);
-    auto weight = [&](i32 x, i32 z) {
-        const f32 dx = -half + f32(x) * sp - local.x, dz = -half + f32(z) * sp - local.z;
-        const f32 t = (b.shape == TerrainBrushShape::Square ? Max(Abs(dx), Abs(dz)) : Sqrt(dx * dx + dz * dz)) / radius;
-        return BrushFalloff(t, b.falloff);
+
+    // The terrains under the brush (and one sample beyond: their seam normals read the edited heights).
+    Array<ecs::Entity> near;
+    TerrainsNear(ed, Vec2(point.x, point.z), Vec2(point.x, point.z), b.radius + 1.0f, near);
+    Array<DabTile> tiles;
+    for (ecs::Entity e : near) {
+        DabTile t;
+        t.entity = e;
+        t.m = scene::ComputeWorldMatrix(ed.world, e);
+        t.inv = InverseAffine(t.m);
+        const TerrainSystem::Data* peek = ed.terrains.Find(ed.world, e);
+        const f32 sp = peek->spacing, half = sp * f32(peek->n - 1) * 0.5f;
+        const Vec3 local = t.inv.TransformPointAffine(point);
+        const f32 radius = Max(b.radius, sp * 0.5f);
+        const i32 cx = i32(Round((local.x + half) / sp)), cz = i32(Round((local.z + half) / sp));
+        const i32 r = i32(radius / sp) + 2;
+        t.x0 = Max(cx - r, 0);
+        t.x1 = Min(cx + r, i32(peek->n) - 1);
+        t.z0 = Max(cz - r, 0);
+        t.z1 = Min(cz + r, i32(peek->n) - 1);
+        if (t.x0 > t.x1 || t.z0 > t.z1)
+            continue;
+        t.d = JoinStroke(ed, e);
+        if (t.d)
+            tiles.PushBack(move(t));
+    }
+    if (tiles.Empty())
+        return;
+    // World position of a sample, and its weight under the brush (by world distance: a seam sample weighs the same in
+    // both tiles).
+    auto worldOf = [](const DabTile& t, i32 x, i32 z, f32 h) {
+        const f32 half = t.d->spacing * f32(t.d->n - 1) * 0.5f;
+        return t.m.TransformPointAffine(Vec3(-half + f32(x) * t.d->spacing, h, -half + f32(z) * t.d->spacing));
     };
+    auto weight = [&](const DabTile& t, i32 x, i32 z) {
+        const Vec3 w = worldOf(t, x, z, 0.0f);
+        const f32 dx = w.x - point.x, dz = w.z - point.z;
+        const f32 radius = Max(b.radius, t.d->spacing * 0.5f);
+        const f32 k = (b.shape == TerrainBrushShape::Square ? Max(Abs(dx), Abs(dz)) : Sqrt(dx * dx + dz * dz)) / radius;
+        return BrushFalloff(k, b.falloff);
+    };
+
     if (IsTerrainPaintMode(mode)) {
         const i32 channel = mode == TerrainBrushMode::PaintRock   ? 0
                             : mode == TerrainBrushMode::PaintDirt ? 1
                             : mode == TerrainBrushMode::PaintSand ? 2
                             : mode == TerrainBrushMode::PaintGrass ? 3
                                                                    : -1;
-        for (i32 z = z0; z <= z1; ++z)
-            for (i32 x = x0; x <= x1; ++x) {
-                const f32 k = Min(weight(x, z) * strength * dt * 6.0f, 1.0f);
-                if (k <= 0.0f)
-                    continue;
-                u8* px = d->paint.Data() + (usize(z) * n + usize(x)) * 4;
-                for (i32 c = 0; c < 4; ++c) {
-                    const f32 target = c == channel ? 255.0f : 0.0f;
-                    px[c] = u8(Clamp(Lerp(f32(px[c]), target, k) + (target > f32(px[c]) ? 0.5f : 0.0f), 0.0f, 255.0f));
+        for (DabTile& t : tiles) {
+            const u32 n = t.d->n;
+            for (i32 z = t.z0; z <= t.z1; ++z)
+                for (i32 x = t.x0; x <= t.x1; ++x) {
+                    const f32 k = Min(weight(t, x, z) * strength * dt * 6.0f, 1.0f);
+                    if (k <= 0.0f)
+                        continue;
+                    u8* px = t.d->paint.Data() + (usize(z) * n + usize(x)) * 4;
+                    for (i32 c = 0; c < 4; ++c) {
+                        const f32 target = c == channel ? 255.0f : 0.0f;
+                        px[c] = u8(Clamp(Lerp(f32(px[c]), target, k) + (target > f32(px[c]) ? 0.5f : 0.0f), 0.0f, 255.0f));
+                    }
                 }
-            }
-        ed.terrains.MarkDirty(*d, x0, z0, x1, z1);
+            ed.terrains.MarkDirty(*t.d, t.x0, t.z0, t.x1, t.z1);
+        }
         return;
     }
-    // Heights: the total (generated + sculpted) is edited, the offset stored.
-    const i32 w = x1 - x0 + 1, h = z1 - z0 + 1;
-    Array<f32> before;
-    before.Resize(usize(w + 2) * usize(h + 2));
-    auto total = [&](i32 x, i32 z) {
-        x = Clamp(x, 0, i32(n) - 1);
-        z = Clamp(z, 0, i32(n) - 1);
-        return d->Height(u32(x), u32(z));
-    };
-    for (i32 z = -1; z <= h; ++z)
-        for (i32 x = -1; x <= w; ++x)
-            before[usize(z + 1) * usize(w + 2) + usize(x + 1)] = total(x0 + x, z0 + z);
-    auto prev = [&](i32 x, i32 z) { return before[usize(z - z0 + 1) * usize(w + 2) + usize(x - x0 + 1)]; };
-    const f32 rate = strength * (2.0f + radius * 0.25f); // m/s at the center: bigger brushes move more ground
-    const f32 talus = Tan(DegToRad(Clamp(b.erodeAngle, 5.0f, 85.0f))) * sp; // height difference that starts to slide
-    for (i32 z = z0; z <= z1; ++z)
-        for (i32 x = x0; x <= x1; ++x) {
-            const f32 wgt = weight(x, z);
-            if (wgt <= 0.0f)
-                continue;
-            const f32 cur = prev(x, z);
-            f32 next = cur;
-            switch (mode) {
-            case TerrainBrushMode::Raise: next = cur + rate * wgt * dt; break;
-            case TerrainBrushMode::Lower: next = cur - rate * wgt * dt; break;
-            case TerrainBrushMode::Smooth: {
-                f32 sum = 0.0f;
-                for (i32 dz = -1; dz <= 1; ++dz)
-                    for (i32 dx = -1; dx <= 1; ++dx)
-                        sum += prev(x + dx, z + dz);
-                next = Lerp(cur, sum / 9.0f, Min(wgt * strength * dt * 25.0f, 1.0f));
-                break;
+
+    // Heights: the total (generated + sculpted) is edited, the offset stored. First every tile's heights before the
+    // dab (one sample around; beyond a tile's edge from its neighbor), so a seam sample sees the same neighborhood in
+    // both tiles and gets the same result.
+    for (DabTile& t : tiles) {
+        const i32 w = t.x1 - t.x0 + 1, h = t.z1 - t.z0 + 1, n = i32(t.d->n);
+        t.before.Resize(usize(w + 2) * usize(h + 2));
+        for (i32 z = -1; z <= h; ++z)
+            for (i32 x = -1; x <= w; ++x) {
+                const i32 gx = t.x0 + x, gz = t.z0 + z;
+                f32 v;
+                if (gx >= 0 && gz >= 0 && gx < n && gz < n)
+                    v = t.d->Height(u32(gx), u32(gz));
+                else if (!ed.terrains.HeightBeyondEdge(*t.d, gx, gz, v))
+                    v = t.d->Height(u32(Clamp(gx, 0, n - 1)), u32(Clamp(gz, 0, n - 1)));
+                t.before[usize(z + 1) * usize(w + 2) + usize(x + 1)] = v;
             }
-            case TerrainBrushMode::Flatten: next = Lerp(cur, ts.flattenHeight, Min(wgt * strength * dt * 10.0f, 1.0f)); break;
-            case TerrainBrushMode::SetHeight: next = Lerp(cur, b.targetHeight, Min(wgt * strength * dt * 10.0f, 1.0f)); break;
-            case TerrainBrushMode::Noise: {
-                const f32 cell = Max(radius * Clamp(b.noiseScale, 0.02f, 2.0f), sp) / sp;
-                const f32 v = TerrainValueNoise(f32(x) / cell, f32(z) / cell) * 0.7f + TerrainValueNoise(f32(x) / cell * 2.3f + 7.1f, f32(z) / cell * 2.3f) * 0.3f;
-                next = cur + (v - 0.5f) * 2.0f * rate * 0.6f * wgt * dt;
-                break;
+    }
+    const f32 talusAngle = Tan(DegToRad(Clamp(b.erodeAngle, 5.0f, 85.0f)));
+    for (DabTile& t : tiles) {
+        const i32 w = t.x1 - t.x0 + 1;
+        const u32 n = t.d->n;
+        const f32 sp = t.d->spacing;
+        const f32 radius = Max(b.radius, sp * 0.5f);
+        auto prev = [&](i32 x, i32 z) { return t.before[usize(z - t.z0 + 1) * usize(w + 2) + usize(x - t.x0 + 1)]; };
+        const f32 rate = strength * (2.0f + radius * 0.25f); // m/s at the center: bigger brushes move more ground
+        const f32 talus = talusAngle * sp; // height difference that starts to slide
+        for (i32 z = t.z0; z <= t.z1; ++z)
+            for (i32 x = t.x0; x <= t.x1; ++x) {
+                const f32 wgt = weight(t, x, z);
+                if (wgt <= 0.0f)
+                    continue;
+                const f32 cur = prev(x, z);
+                f32 next = cur;
+                switch (mode) {
+                case TerrainBrushMode::Raise: next = cur + rate * wgt * dt; break;
+                case TerrainBrushMode::Lower: next = cur - rate * wgt * dt; break;
+                case TerrainBrushMode::Smooth: {
+                    f32 sum = 0.0f;
+                    for (i32 dz = -1; dz <= 1; ++dz)
+                        for (i32 dx = -1; dx <= 1; ++dx)
+                            sum += prev(x + dx, z + dz);
+                    next = Lerp(cur, sum / 9.0f, Min(wgt * strength * dt * 25.0f, 1.0f));
+                    break;
+                }
+                case TerrainBrushMode::Flatten: {
+                    // Towards the world height where the stroke started (the same level on every tile).
+                    const Vec3 at = worldOf(t, x, z, 0.0f);
+                    const f32 target = t.inv.TransformPointAffine(Vec3(at.x, ts.flattenHeight, at.z)).y;
+                    next = Lerp(cur, target, Min(wgt * strength * dt * 10.0f, 1.0f));
+                    break;
+                }
+                case TerrainBrushMode::SetHeight: next = Lerp(cur, b.targetHeight, Min(wgt * strength * dt * 10.0f, 1.0f)); break;
+                case TerrainBrushMode::Noise: {
+                    // World-space noise: the same lumps on both sides of a seam.
+                    const Vec3 at = worldOf(t, x, z, 0.0f);
+                    const f32 cell = Max(radius * Clamp(b.noiseScale, 0.02f, 2.0f), sp);
+                    const f32 v = TerrainValueNoise(at.x / cell, at.z / cell) * 0.7f + TerrainValueNoise(at.x / cell * 2.3f + 7.1f, at.z / cell * 2.3f) * 0.3f;
+                    next = cur + (v - 0.5f) * 2.0f * rate * 0.6f * wgt * dt;
+                    break;
+                }
+                case TerrainBrushMode::Terrace: {
+                    // Steps in world height (tiles at different heights terrace alike).
+                    const f32 worldH = worldOf(t, x, z, cur).y;
+                    const f32 step = Max(b.terraceHeight, 0.05f);
+                    const f32 f = worldH / step;
+                    const f32 base = Floor(f), frac = f - base;
+                    // Soft steps: a smoothstep whose edge sharpens with Sharpness.
+                    const f32 k = Clamp(b.terraceSharpness, 0.0f, 1.0f) * 0.48f;
+                    const f32 tt = Saturate((frac - k) / Max(1.0f - 2.0f * k, 1e-3f));
+                    const Vec3 at = worldOf(t, x, z, 0.0f);
+                    const f32 target = t.inv.TransformPointAffine(Vec3(at.x, (base + tt * tt * (3.0f - 2.0f * tt)) * step, at.z)).y;
+                    next = Lerp(cur, target, Min(wgt * strength * dt * 8.0f, 1.0f));
+                    break;
+                }
+                case TerrainBrushMode::Erode: {
+                    // Thermal erosion: what is steeper than the talus angle slides to the lowest neighbor.
+                    f32 drop = 0.0f;
+                    for (i32 dz = -1; dz <= 1; ++dz)
+                        for (i32 dx = -1; dx <= 1; ++dx) {
+                            if (!dx && !dz)
+                                continue;
+                            const f32 dist = (dx && dz) ? 1.41421356f : 1.0f;
+                            const f32 diff = cur - prev(x + dx, z + dz) - talus * dist;
+                            if (diff > 0.0f)
+                                drop -= diff * 0.125f; // gives away
+                            const f32 diffIn = prev(x + dx, z + dz) - cur - talus * dist;
+                            if (diffIn > 0.0f)
+                                drop += diffIn * 0.125f; // receives
+                        }
+                    next = cur + drop * Min(wgt * strength * dt * 12.0f, 1.0f);
+                    break;
+                }
+                default: break;
+                }
+                t.d->sculpt[usize(z) * n + usize(x)] += next - cur;
             }
-            case TerrainBrushMode::Terrace: {
-                const f32 step = Max(b.terraceHeight, 0.05f);
-                const f32 f = cur / step;
-                const f32 base = Floor(f), frac = f - base;
-                // Soft steps: a smoothstep whose edge sharpens with Sharpness.
-                const f32 k = Clamp(b.terraceSharpness, 0.0f, 1.0f) * 0.48f;
-                const f32 tt = Saturate((frac - k) / Max(1.0f - 2.0f * k, 1e-3f));
-                const f32 target = (base + tt * tt * (3.0f - 2.0f * tt)) * step;
-                next = Lerp(cur, target, Min(wgt * strength * dt * 8.0f, 1.0f));
-                break;
-            }
-            case TerrainBrushMode::Erode: {
-                // Thermal erosion: what is steeper than the talus angle slides to the lowest neighbor.
-                f32 drop = 0.0f;
-                for (i32 dz = -1; dz <= 1; ++dz)
-                    for (i32 dx = -1; dx <= 1; ++dx) {
-                        if (!dx && !dz)
-                            continue;
-                        const f32 dist = (dx && dz) ? 1.41421356f : 1.0f;
-                        const f32 diff = cur - prev(x + dx, z + dz) - talus * dist;
-                        if (diff > 0.0f)
-                            drop -= diff * 0.125f; // gives away
-                        const f32 diffIn = prev(x + dx, z + dz) - cur - talus * dist;
-                        if (diffIn > 0.0f)
-                            drop += diffIn * 0.125f; // receives
-                    }
-                next = cur + drop * Min(wgt * strength * dt * 12.0f, 1.0f);
-                break;
-            }
-            default: break;
-            }
-            d->sculpt[usize(z) * n + usize(x)] += next - cur;
-        }
-    ed.terrains.MarkDirty(*d, x0, z0, x1, z1);
+        ed.terrains.MarkDirty(*t.d, t.x0, t.z0, t.x1, t.z1);
+    }
     ed.viewport->Scene().InvalidateShadows(); // the ground's shadows follow the brush
 }
 
-void TerrainRamp(Editor& ed, ecs::Entity terrain, Vec3 from, Vec3 to)
+void TerrainRamp(Editor& ed, Vec3 from, Vec3 to)
 {
-    TerrainSystem::Data* d = BeginTerrainChange(ed, terrain, "Terrain Ramp");
-    if (!d)
-        return;
     const TerrainBrushSettings& b = ed.tools.terrain;
-    const Mat4 inv = InverseAffine(scene::ComputeWorldMatrix(ed.world, terrain));
-    const Vec3 a = inv.TransformPointAffine(from), c = inv.TransformPointAffine(to);
-    const u32 n = d->n;
-    const f32 sp = d->spacing, half = sp * f32(n - 1) * 0.5f;
-    const Vec2 a2(a.x, a.z), c2(c.x, c.z);
+    Array<ecs::Entity> near;
+    TerrainsNear(ed, Min(Vec2(from.x, from.z), Vec2(to.x, to.z)), Max(Vec2(from.x, from.z), Vec2(to.x, to.z)), b.radius + 1.0f, near);
+    if (near.Empty())
+        return;
+    ed.undo.Begin("Terrain Ramp");
+    const Vec2 a2(from.x, from.z), c2(to.x, to.z);
     const Vec2 ab = c2 - a2;
     const f32 len2 = Max(Dot(ab, ab), 1e-6f);
-    const f32 width = Max(b.radius, sp);
-    for (u32 z = 0; z < n; ++z)
-        for (u32 x = 0; x < n; ++x) {
-            const Vec2 p(-half + f32(x) * sp, -half + f32(z) * sp);
-            const f32 t = Clamp(Dot(p - a2, ab) / len2, 0.0f, 1.0f);
-            const f32 dist = Length(p - (a2 + ab * t));
-            const f32 wgt = BrushFalloff(dist / width, b.falloff) * Clamp(b.strength * 2.0f, 0.0f, 1.0f);
-            if (wgt <= 0.0f)
-                continue;
-            const f32 target = Lerp(a.y, c.y, t);
-            const f32 cur = d->Height(x, z);
-            d->sculpt[usize(z) * n + x] += (target - cur) * wgt;
-        }
-    EndTerrainChange(ed, terrain, *d);
+    for (ecs::Entity e : near) {
+        ed.undo.Record(e);
+        TerrainSystem::Data* d = ed.terrains.BeginEdit(ed.world, e);
+        if (!d)
+            continue;
+        const Mat4 m = scene::ComputeWorldMatrix(ed.world, e), inv = InverseAffine(m);
+        const u32 n = d->n;
+        const f32 sp = d->spacing, half = sp * f32(n - 1) * 0.5f;
+        const f32 width = Max(b.radius, sp);
+        for (u32 z = 0; z < n; ++z)
+            for (u32 x = 0; x < n; ++x) {
+                const Vec3 w = m.TransformPointAffine(Vec3(-half + f32(x) * sp, 0.0f, -half + f32(z) * sp));
+                const Vec2 p(w.x, w.z);
+                const f32 t = Clamp(Dot(p - a2, ab) / len2, 0.0f, 1.0f);
+                const f32 dist = Length(p - (a2 + ab * t));
+                const f32 wgt = BrushFalloff(dist / width, b.falloff) * Clamp(b.strength * 2.0f, 0.0f, 1.0f);
+                if (wgt <= 0.0f)
+                    continue;
+                const f32 target = inv.TransformPointAffine(Vec3(w.x, Lerp(from.y, to.y, t), w.z)).y;
+                const f32 cur = d->Height(x, z);
+                d->sculpt[usize(z) * n + x] += (target - cur) * wgt;
+            }
+        ed.terrains.MarkDirty(*d);
+        ed.terrains.Commit(ed.world, e);
+    }
+    ed.undo.End();
+    ed.viewport->Scene().InvalidateShadows();
 }
 
 void TerrainOperation(Editor& ed, ecs::Entity terrain, TerrainOp op)
@@ -833,11 +969,8 @@ void SetActiveTool(Editor& ed, EditorTool tool)
     if ((tool == EditorTool::Brush && !ed.FeatureEnabled("brush")) || (tool == EditorTool::Measure && !ed.FeatureEnabled("measure")) ||
         (tool == EditorTool::Terrain && !ed.FeatureEnabled("terrainTool")))
         tool = EditorTool::None;
-    if (ts.sculpting) { // switching tools mid-stroke: keep what was done
-        ed.terrains.Commit(ed.world, ts.sculptTerrain);
-        ed.undo.End();
-        ts.sculpting = false;
-    }
+    if (ts.sculpting) // switching tools mid-stroke: keep what was done
+        EndTerrainStroke(ed);
     ts.active = ts.active == tool ? EditorTool::None : tool;
     ts.painting = false;
     ts.rampDragging = false;
@@ -903,37 +1036,23 @@ bool UpdateViewportTool(Editor& ed, const Ray& mouseRay, bool hovered, const Fun
         // Ramp: press = start, release = end (previewed while dragging).
         if (tmode == TerrainBrushMode::Ramp) {
             if (pressed && ts.hoverTerrain) {
-                ts.sculptTerrain = ts.hoverTerrain;
                 ts.rampStart = ts.hoverPoint;
                 ts.rampDragging = true;
             }
             if (ts.rampDragging && !held) {
                 ts.rampDragging = false;
-                if (ts.hovering && ts.hoverTerrain == ts.sculptTerrain && Distance(ts.rampStart, ts.hoverPoint) > 0.5f)
-                    TerrainRamp(ed, ts.sculptTerrain, ts.rampStart, ts.hoverPoint);
+                if (ts.hovering && ts.hoverTerrain && Distance(ts.rampStart, ts.hoverPoint) > 0.5f)
+                    TerrainRamp(ed, ts.rampStart, ts.hoverPoint); // across tiles too
             }
             return hovered || ts.rampDragging;
         }
-        if (pressed && ts.hoverTerrain) {
-            ts.sculptTerrain = ts.hoverTerrain;
-            ed.undo.Begin("Sculpt Terrain");
-            ed.undo.Record(ts.sculptTerrain);
-            if (TerrainSystem::Data* d = ed.terrains.BeginEdit(ed.world, ts.sculptTerrain)) {
-                ts.sculpting = true;
-                const Vec3 local = InverseAffine(scene::ComputeWorldMatrix(ed.world, ts.sculptTerrain)).TransformPointAffine(ts.hoverPoint);
-                ts.flattenHeight = local.y;
-                ZX_UNUSED(d);
-            } else {
-                ed.undo.Discard();
-            }
-        }
-        if (ts.sculpting && held && ts.hovering && ts.hoverTerrain == ts.sculptTerrain)
-            TerrainDab(ed, ts.sculptTerrain, ts.hoverPoint, Min(ed.dt, 0.05f));
-        if (ts.sculpting && !held) {
-            ts.sculpting = false;
-            ed.terrains.Commit(ed.world, ts.sculptTerrain);
-            ed.undo.End();
-        }
+        // A stroke goes on over every terrain it reaches (tiles of one landscape are one ground).
+        if (pressed && ts.hoverTerrain)
+            BeginTerrainStroke(ed, ts.hoverPoint);
+        if (ts.sculpting && held && ts.hovering && ts.hoverTerrain)
+            TerrainDab(ed, ts.hoverPoint, Min(ed.dt, 0.05f));
+        if (ts.sculpting && !held)
+            EndTerrainStroke(ed);
         if (hovered && !ts.hoverTerrain && !ts.sculpting) {
             bool any = false;
             ed.world.Query<const Terrain>().Each([&](ecs::Entity, const Terrain&) { any = true; });

@@ -230,3 +230,52 @@ ZX_TEST(Terrain, EditingThroughTheSystem)
     ComputeTerrainHeights(after, heights);
     ZX_EXPECT_NEAR(heights[usize(20) * 41 + 20], 5.0f, 0.02f);
 }
+
+ZX_TEST(Terrain, TilesShadeAlikeAcrossTheirSeam)
+{
+    ecs::World world;
+    scene::InstallHierarchyHooks(world);
+    asset::AssetManagerSettings settings;
+    settings.ddcDirectory = platform::GetTempDirectory() + "/zx_terrain_seam_test";
+    settings.writeMetaFiles = false;
+    asset::AssetManager assets(settings);
+    // Two flat 40 m tiles side by side: A covers x in [-20, 20], B [20, 60]; they share the samples at x = 20.
+    Terrain t;
+    t.hills = false;
+    t.size = 40.0f;
+    t.resolution = 41;
+    const ecs::Entity a = scene::CreateNode(world, "A", Transform(Vec3(0, 0, 0)));
+    const ecs::Entity b = scene::CreateNode(world, "B", Transform(Vec3(40, 0, 0)));
+    world.Add(a, t);
+    world.Add(b, t);
+    scene::UpdateWorldTransforms(world);
+    TerrainSystem terrains;
+    terrains.Update(world, assets, nullptr);
+    TerrainSystem::Data* da = terrains.Find(world, a);
+    TerrainSystem::Data* db = terrains.Find(world, b);
+    ZX_REQUIRE(da && db);
+    const u32 n = da->n;
+    auto normalX = [&](const TerrainSystem::Data& d, u32 x, u32 z) { return asset::UnpackVertex(d.vertices[usize(z) * n + x]).normal.x; };
+    ZX_EXPECT_NEAR(normalX(*db, 0, 20), 0.0f, 1e-3f);
+
+    // Sculpt a 4 m wall along A's last column before the seam: B reads it as its sample at x = -1.
+    da = terrains.BeginEdit(world, a);
+    ZX_REQUIRE(da != nullptr);
+    for (u32 z = 0; z < n; ++z)
+        da->sculpt[usize(z) * n + (n - 2)] = 4.0f;
+    terrains.MarkDirty(*da);
+    terrains.Commit(world, a);
+    f32 beyond = 0.0f;
+    ZX_REQUIRE(terrains.HeightBeyondEdge(*db, -1, 20, beyond));
+    ZX_EXPECT_NEAR(beyond, 4.0f, 0.02f);
+    ZX_EXPECT(!terrains.HeightBeyondEdge(*db, i32(n), 20, beyond)); // nothing east of B
+    terrains.Update(world, assets, nullptr);
+    da = terrains.Find(world, a);
+    db = terrains.Find(world, b);
+    // The seam samples of both tiles slope down to +x the same way (normal (2, 1, 0) / sqrt 5), not B flat.
+    const f32 expected = 2.0f / Sqrt(5.0f);
+    ZX_EXPECT_NEAR(normalX(*da, n - 1, 20), expected, 0.02f);
+    ZX_EXPECT_NEAR(normalX(*db, 0, 20), expected, 0.02f);
+    // B's interior stays flat.
+    ZX_EXPECT_NEAR(normalX(*db, 2, 20), 0.0f, 1e-3f);
+}
