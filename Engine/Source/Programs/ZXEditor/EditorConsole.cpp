@@ -1088,6 +1088,37 @@ ConCommand CmdTool("tool", "Activates an editor tool: tool <brush|measure|terrai
         SetActiveTool(*ed, tool);
 });
 
+ConCommand CmdBrushFoliage("brush.foliage", "Adds a model as a foliage brush item: brush.foliage <Content-relative model>; brush.foliage clear",
+                            [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || args.Empty())
+        return;
+    if (args[0].EqualsIgnoreCase("clear")) {
+        ed->tools.items.Clear();
+        return;
+    }
+    if (AddFoliageBrushItem(*ed, args[0]))
+        ZX_LOG_INFO(LogCmd, "Brush: {} item{}", ed->tools.items.Size(), ed->tools.items.Size() == 1 ? "" : "s");
+});
+
+ConCommand CmdBrushStroke("brush.stroke", "One brush dab on the surface below world (x, z): brush.stroke <x> <z> [erase] (one undo step)",
+                          [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || args.Size() < 2)
+        return;
+    const f32 x = ParseFloat(args[0]).ValueOr(0.0f), z = ParseFloat(args[1]).ValueOr(0.0f);
+    const bool erase = args.Size() > 2 && args[2].EqualsIgnoreCase("erase");
+    // The surface: terrains first, else y = 0.
+    f32 y = 0.0f;
+    ed->world.Query<const Terrain>().Each([&](ecs::Entity t, const Terrain&) {
+        f32 h;
+        if (ed->terrains.HeightAt(ed->world, t, Vec2(x, z), h))
+            y = h;
+    });
+    const u32 n = BrushStrokeAt(*ed, Vec3(x, y, z), Vec3::Up(), erase);
+    ZX_LOG_INFO(LogCmd, "Brush: {} instances / plants of the brush models in the scene", n);
+});
+
 ConCommand CmdCreate("create", "Creates an object in front of the camera: create <entity|pointlight|spotlight|water|audiosource|reverbzone|decal|terrain|heightfog [density]|fogvolume|sun|skylight|clouds|fluidfire|fluidsmoke|cube|sphere|cylinder|plane>",
                      [](Span<const StringView> args) {
     Editor* ed = Ed();

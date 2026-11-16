@@ -2,6 +2,14 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.17.14 — Foliage painting brush (2026-11-16)
+- **The Brush paints foliage**: a model dropped from the Content Browser into Tool Settings becomes a foliage item. So does a selected Foliage entity added with Add Selected. A stroke adds instances to the nearest Foliage of the same model within reach of the World Partition cell, so plants stream with their area. If there is none, it creates one with the look of the model's other areas; grass gets a 120 m cull distance and no shadows. Density, spacing, scale range, random yaw, max slope and offset all apply. Shift erases the plants of those models in the circle, and a Foliage left empty is removed. Each stroke is one undo step.
+- Both kinds of brush now hit terrains as well as meshes. The normal comes from the terrain heights, so the slope limit works.
+- Console: `brush.foliage <model>` / `brush.foliage clear`, `brush.stroke <x> <z> [erase]`.
+- Test `PhysicsSystem.EntitiesStreamedInWhilePlaying`: entities that appear after Play starts get bodies (a ball falls onto the floor, a ray hits a wall), and removed ones lose them. This covers what 0.17.13 left unchecked.
+- **Checked**: the `-tooltest` self-test passed. It covers painting, a second stroke into the same Foliage that keeps the spacing, plants resting on the floor, undo removing the created Foliage, redo, and erasing to zero. On the open world, `brush.stroke` put 21 pines and flowering bushes on a terrain slope, none floating. Full ZXTests: 485 passed. Debug and Development builds have no warnings, and there were 0 debug-layer errors. **Not checked with a real mouse**: the PC was locked (the lock screen was the foreground window), so the scripted drags never reached the editor.
+- Performance note: in this session the same open-world frame showed 7 FPS and later 39 FPS on the same code (laptop heat, Intel UHD). Compare speed only within a single run.
+
 ## 0.17.13 — Foliage: wind and collision (2026-11-16)
 - **Wind**: trees, bushes and grass bend with the Wind Zones, gusts included. The base stays put, the top leans and rocks, leaves flutter, and every plant has its own phase. `Foliage::windSway`: 0 = rigid, 1 = a tree, 3 = grass; -1 = by the model's name, so rocks stay still. The wind goes in free words of the instance row, and the vertex shader does the bending (shadows sway too).
 - **Collision**: in Play every plant gets a static body. Trees get a trunk capsule: its center and radius come from the lowest 8 % of the mesh's vertices, and its height is half the plant's height. Rocks get the convex hull of their mesh. `Foliage::collision`: Auto (by name) / None / Trunk / Hull.

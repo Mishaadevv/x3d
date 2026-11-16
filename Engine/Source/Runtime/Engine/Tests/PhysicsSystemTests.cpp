@@ -357,3 +357,32 @@ ZX_TEST(PhysicsSystem, ScriptsSeeSurfacesAndStay)
     ZX_EXPECT(log.Contains("ray Grass"));
     ZX_EXPECT(log.Contains("stayed"));
 }
+
+ZX_TEST(PhysicsSystem, EntitiesStreamedInWhilePlayingCollide)
+{
+    // World Partition loads cells while playing: their colliders must become bodies, and unloaded ones must go.
+    Scene s;
+    s.Floor();
+    scene::UpdateWorldTransforms(s.world);
+    PhysicsSystem p;
+    p.Begin(s.world, nullptr);
+    ZX_EXPECT_EQ(p.World()->BodyCount(), 1u);
+    const ecs::Entity wall = scene::CreateNode(s.world, "StreamedWall", Transform(Vec3(0, 1, 5), Quat(), Vec3(4, 2, 0.5f)));
+    s.world.Add(wall, BoxCollider{});
+    const ecs::Entity ball = scene::CreateNode(s.world, "StreamedBall", Transform(Vec3(0, 3, 0)));
+    s.world.Add(ball, SphereCollider{});
+    s.world.Add(ball, RigidBody{});
+    s.Run(p, 2.0f);
+    ZX_EXPECT_EQ(p.World()->BodyCount(), 3u);
+    ZX_EXPECT(p.BodyOf(wall).IsValid());
+    ZX_EXPECT_NEAR(s.world.Get<Transform>(ball)->position.y, 0.5f, 0.03f); // fell and rests on the floor
+    physics::RaycastHit hit;
+    ecs::Entity hitEntity;
+    ZX_EXPECT(p.Raycast(Ray(Vec3(0, 1, 0), Vec3(0, 0, 1)), 10.0f, hit, hitEntity) && hitEntity == wall);
+    // The cell unloads.
+    scene::DestroyHierarchy(s.world, wall);
+    s.Run(p, 0.1f);
+    ZX_EXPECT_EQ(p.World()->BodyCount(), 2u);
+    ZX_EXPECT(!p.Raycast(Ray(Vec3(0, 1, 0), Vec3(0, 0, 1)), 10.0f, hit, hitEntity));
+    p.End();
+}

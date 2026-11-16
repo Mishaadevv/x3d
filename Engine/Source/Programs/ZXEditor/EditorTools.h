@@ -1,12 +1,14 @@
 #pragma once
 
-// Editor tools beyond the transform gizmo: Brush (paint models onto surfaces), Terrain (sculpt and paint terrains),
+// Editor tools beyond the transform gizmo: Brush (paint models onto surfaces - as entities, or as instanced Foliage
+// plants), Terrain (sculpt and paint terrains),
 // Measure (distances), Drop to Ground,
 // and the Features window (engine subsystems and tools switched on/off per project, stored in the .zproj).
 
 #include "Core/Containers/Function.h"
 #include "Core/Math/Math.h"
 #include "Core/Serialization/Json.h"
+#include "Engine/Foliage.h"
 #include "Scene/ECS/World.h"
 #include "UI/UI.h"
 
@@ -67,11 +69,14 @@ struct TerrainBrushSettings
     f32 erodeAngle = 35.0f;   // degrees: steeper slopes crumble
 };
 
-/// One model the brush can place: a snapshot of an entity hierarchy (root first) captured from the scene.
+/// One model the brush can place: a snapshot of an entity hierarchy (root first) captured from the scene, or a
+/// foliage model (painted as instances of Foliage entities: thousands of plants cost one component per area).
 struct BrushItem
 {
     String name;
     Array<JsonValue> entities; // SerializeEntity of the hierarchy, root first (guids remapped on placement)
+    String foliageModel;       // Content-relative model; non-empty = a foliage item
+    Array<FoliagePart> foliageParts;
     f32 weight = 1.0f;         // relative chance among the enabled items
     bool enabled = true;
 };
@@ -149,8 +154,13 @@ void DrawUIDesignerPanel(Editor& ed);
 void DrawFeaturesPanel(Editor& ed);
 /// One brush stroke at a point (one undo step): paints, or erases with `erase`. Returns the painted-instance count after.
 u32 BrushStrokeAt(Editor& ed, Vec3 point, Vec3 normal, bool erase);
-/// Adds the selected entity hierarchy as a brush model. Returns false without a valid selection.
+/// Adds the selected entity hierarchy as a brush model (a Foliage entity adds its model as a foliage item). Returns
+/// false without a valid selection.
 bool AddSelectedBrushItem(Editor& ed);
+/// Adds a model file (absolute or Content-relative .glb / .gltf / .fbx) as a foliage brush item. False when it can't load.
+bool AddFoliageBrushItem(Editor& ed, StringView modelPath);
+/// Foliage instances of the brush's foliage models in the scene.
+u32 BrushFoliageCount(Editor& ed);
 /// One frame of a terrain stroke at world `point` (the editor's live terrain data; Commit writes the component).
 void TerrainDab(Editor& ed, ecs::Entity terrain, Vec3 point, f32 dt);
 /// Ramp from `from` to `to` (world) as wide as the brush (one undo step).

@@ -3602,19 +3602,65 @@ bool Editor::RunToolSelfTest(bool& retry)
     u32 afterRedo = 0;
     world.Query<const PaintedInstance>().Each([&](const PaintedInstance&) { ++afterRedo; });
     const u32 afterErase = BrushStrokeAt(*this, Vec3(0, 0, 55), Vec3::Up(), true);
+    // Foliage brush: the box as an instanced plant; undo removes the Foliage entity it made, erase empties it.
+    tools.items.Clear();
+    {
+        BrushItem plant;
+        plant.name = "Test Plant";
+        plant.foliageModel = "ToolTest/TestPlant.glb";
+        FoliagePart part;
+        part.mesh = builtin::Mesh(BuiltinShape::Cube);
+        plant.foliageParts.PushBack(part);
+        tools.items.PushBack(move(plant));
+    }
+    auto foliageEntities = [this] {
+        u32 n = 0;
+        world.Query<const Foliage>().Each([&](const Foliage& f) { n += f.model == "ToolTest/TestPlant.glb" ? 1u : 0u; });
+        return n;
+    };
+    const u32 plants = BrushStrokeAt(*this, Vec3(0, 0, 55), Vec3::Up(), false);
+    const u32 plantsAgain = BrushStrokeAt(*this, Vec3(2, 0, 55), Vec3::Up(), false); // same Foliage, spacing kept
+    bool plantsOnFloor = plants > 0;
+    world.Query<const Foliage>().Each([&](ecs::Entity e, const Foliage& cf) {
+        if (cf.model != "ToolTest/TestPlant.glb")
+            return;
+        Foliage& f = *world.Get<Foliage>(e);
+        DecodeFoliage(f);
+        const Mat4 m = scene::ComputeWorldMatrix(world, e);
+        for (usize i = 0; i < f.instances.Size(); ++i) {
+            const Vec3 p = m.TransformPointAffine(f.instances[i].position);
+            plantsOnFloor &= Abs(p.y) < 0.05f;
+            for (usize j = 0; j < i; ++j)
+                plantsOnFloor &= Distance(p, m.TransformPointAffine(f.instances[j].position)) >= tools.brush.spacing - 1e-3f;
+        }
+    });
+    const u32 foliageMade = foliageEntities();
+    Undo();
+    Undo();
+    const u32 foliageUndone = foliageEntities();
+    Redo();
+    Redo();
+    const u32 plantsRedone = BrushFoliageCount(*this);
+    BrushStrokeAt(*this, Vec3(0, 0, 55), Vec3::Up(), true);
+    const u32 plantsErased = BrushStrokeAt(*this, Vec3(2, 0, 55), Vec3::Up(), true);
+    const bool foliageOk = plants > 0 && plantsAgain > plants && plantsOnFloor && foliageMade == 1 && foliageUndone == 0 &&
+                           plantsRedone == plantsAgain && plantsErased == 0 && foliageEntities() == 0;
     // Features: off -> viewport mask off, back on; stored in the descriptor.
     SetFeatureEnabled("water", false);
     const bool featureOff = !FeatureEnabled("water") && project.descriptor.disabledFeatures.Size() == 1;
     SetFeatureEnabled("water", true);
     const bool featureOn = FeatureEnabled("water") && project.descriptor.disabledFeatures.Empty();
     const bool history = undo.Count() > undoBefore;
-    const bool ok = picked && dropped && onFloor && afterUndo == 0 && afterRedo == painted && afterErase == 0 && featureOff && featureOn && history;
+    const bool ok = picked && dropped && onFloor && afterUndo == 0 && afterRedo == painted && afterErase == 0 && featureOff && featureOn &&
+                    history && foliageOk;
     if (ok)
-        ZX_LOG_INFO(LogEditor, "Tool self-test passed ({} instances painted)", painted);
+        ZX_LOG_INFO(LogEditor, "Tool self-test passed ({} instances painted, {} foliage plants)", painted, plantsAgain);
     else
         ZX_LOG_ERROR(LogEditor,
-                     "Tool self-test FAILED (picked {}, dropped {}, painted {} on floor {}, undo {}, redo {}, erase {}, features {}/{})",
-                     picked, dropped, painted, onFloor, afterUndo, afterRedo, afterErase, featureOff, featureOn);
+                     "Tool self-test FAILED (picked {}, dropped {}, painted {} on floor {}, undo {}, redo {}, erase {}, features {}/{}, "
+                     "foliage {} -> {} on floor {}, entities {} undone {}, redone {}, erased {})",
+                     picked, dropped, painted, onFloor, afterUndo, afterRedo, afterErase, featureOff, featureOn, plants, plantsAgain,
+                     plantsOnFloor, foliageMade, foliageUndone, plantsRedone, plantsErased);
     tools.items.Clear();
     return ok;
 }

@@ -3,7 +3,10 @@
 #include "EditorTools.h"
 #include "Editor.h"
 #include "Engine/Gameplay.h"
+#include "Asset/AssetManager.h"
 #include "Engine/Raycast.h"
+#include "Engine/Terrain.h"
+#include "Engine/WorldPartition.h"
 #include "Engine/SceneSerialization.h"
 #include "Render/DebugDraw.h"
 #include "Core/FileSystem/FileSystem.h"
@@ -78,6 +81,116 @@ bool RaycastScene(Editor& ed, const Ray& ray, RaycastHit& hit, f32 maxDistance, 
     return RaycastMeshes(ed.world, *ed.renderAssets, ray, hit, maxDistance, filter);
 }
 
+/// The surface along a ray: scene meshes and terrains (whichever is nearer). Terrain normals come from the heights.
+bool RaycastSurface(Editor& ed, const Ray& ray, RaycastHit& hit, f32 maxDistance, const RaycastFilter* filter = nullptr)
+{
+    const bool mesh = RaycastScene(ed, ray, hit, maxDistance, filter);
+    ecs::Entity terrain;
+    Vec3 p;
+    if (!ed.terrains.Raycast(ed.world, ray, mesh ? hit.distance : maxDistance, terrain, p))
+        return mesh;
+    const f32 d = Distance(ray.origin, p);
+    if (mesh && hit.distance <= d)
+        return true;
+    hit.entity = terrain;
+    hit.point = p;
+    hit.distance = d;
+    constexpr f32 h = 0.5f;
+    f32 l = p.y, r = p.y, b = p.y, f = p.y;
+    ed.terrains.HeightAt(ed.world, terrain, Vec2(p.x - h, p.z), l);
+    ed.terrains.HeightAt(ed.world, terrain, Vec2(p.x + h, p.z), r);
+    ed.terrains.HeightAt(ed.world, terrain, Vec2(p.x, p.z - h), b);
+    ed.terrains.HeightAt(ed.world, terrain, Vec2(p.x, p.z + h), f);
+    hit.normal = SafeNormalize(Vec3(l - r, 2.0f * h, b - f), Vec3::Up());
+    return true;
+}
+
+bool IsFoliageItem(const BrushItem& it) { return !it.foliageModel.Empty(); }
+bool CanPaint(const BrushItem& it) { return it.enabled && (IsFoliageItem(it) ? !it.foliageParts.Empty() : !it.entities.Empty()); }
+
+/// Foliage entities painted with `model` (the Foliage entities of the scene that use it).
+template <typename F>
+void ForEachFoliageOf(Editor& ed, StringView model, F&& fn)
+{
+    Array<ecs::Entity> list;
+    ed.world.Query<const Foliage>().Each([&](ecs::Entity e, const Foliage& f) {
+        if (f.model.View().EqualsIgnoreCase(model))
+            list.PushBack(e);
+    });
+    for (ecs::Entity e : list)
+        fn(e, *ed.world.Get<Foliage>(e));
+}
+
+/// The Foliage entity a plant at `point` goes into: the nearest one of the model (within the World Partition cell's
+/// reach, so plants stream with the area they stand in), else a new one there (part of the current undo step).
+ecs::Entity FoliageTarget(Editor& ed, const BrushItem& item, Vec3 point)
+{
+    const bool partitioned = ed.worldPartition.enabled;
+    const f32 reach = partitioned ? ed.worldPartition.cellSize * 0.75f : Infinity;
+    ecs::Entity best;
+    f32 bestDist = reach;
+    const Foliage* like = nullptr;
+    ForEachFoliageOf(ed, item.foliageModel, [&](ecs::Entity e, Foliage& f) {
+        like = &f;
+        const Vec3 o = scene::ComputeWorldMatrix(ed.world, e).GetTranslation();
+        const f32 d = Length(Vec2(o.x - point.x, o.z - point.z));
+        if (d <= bestDist) {
+            bestDist = d;
+            best = e;
+        }
+    });
+    if (best)
+        return best;
+    Foliage f;
+    f.model = item.foliageModel;
+    f.parts = item.foliageParts;
+    if (like) { // the look of the model's other areas
+        f.cullDistance = like->cullDistance;
+        f.castShadows = like->castShadows;
+        f.windSway = like->windSway;
+        f.collision = like->collision;
+    } else if (FoliageWindSway(f) >= 3.0f) { // grass and flowers: near the camera only, no shadows
+        f.cullDistance = 120.0f;
+        f.castShadows = false;
+    }
+    const ecs::Entity e = ed.CreateEntity(Path::Stem(item.foliageModel), Transform(Vec3(point.x, 0.0f, point.z)));
+    EnsureEntityGuid(ed.world, e);
+    ed.world.Add(e, move(f));
+    if (partitioned)
+        ed.world.Add(e, SpatiallyLoaded{});
+    ed.undo.RecordCreated(e);
+    scene::UpdateWorldTransforms(ed.world);
+    return e;
+}
+
+/// World positions of the foliage plants of the brush's models within `radius` of `center` (spacing checks).
+void NearbyFoliage(Editor& ed, Vec3 center, f32 radius, Array<Vec3>& out)
+{
+    for (const BrushItem& it : ed.tools.items) {
+        if (!IsFoliageItem(it))
+            continue;
+        ForEachFoliageOf(ed, it.foliageModel, [&](ecs::Entity e, Foliage& f) {
+            DecodeFoliage(f);
+            const Mat4 m = scene::ComputeWorldMatrix(ed.world, e);
+            for (const FoliageInstance& in : f.instances) {
+                const Vec3 p = m.TransformPointAffine(in.position);
+                if (DistanceSq(p, center) <= radius * radius)
+                    out.PushBack(p);
+            }
+        });
+    }
+}
+
+/// Writes changed instances back (one encode per Foliage per dab).
+void CommitFoliage(Editor& ed, Span<const ecs::Entity> touched)
+{
+    for (ecs::Entity e : touched)
+        if (Foliage* f = ed.world.Get<Foliage>(e)) {
+            const Array<FoliageInstance> instances = f->instances;
+            EncodeFoliage(*f, instances.View());
+        }
+}
+
 /// The group entity painted instances are parented to (created on first use, as part of the current undo step).
 ecs::Entity PaintGroup(Editor& ed)
 {
@@ -146,7 +259,7 @@ void PaintDab(Editor& ed)
     const BrushSettings& b = ts.brush;
     f32 totalWeight = 0.0f;
     for (const BrushItem& it : ts.items)
-        totalWeight += it.enabled && !it.entities.Empty() ? Max(it.weight, 0.0f) : 0.0f;
+        totalWeight += CanPaint(it) ? Max(it.weight, 0.0f) : 0.0f;
     if (totalWeight <= 0.0f)
         return;
     scene::UpdateWorldTransforms(ed.world); // instances restored by undo/redo have no world matrix yet
@@ -154,6 +267,8 @@ void PaintDab(Editor& ed)
     Array<Vec3> existing;
     ed.world.Query<const PaintedInstance, const scene::WorldTransform>().Each(
         [&](const PaintedInstance&, const scene::WorldTransform& wt) { existing.PushBack(wt.GetPosition()); });
+    NearbyFoliage(ed, ts.hoverPoint, b.radius * 2.0f + b.spacing + 1.0f, existing);
+    Array<ecs::Entity> touched; // Foliage entities that got plants
     const RaycastFilter notPainted = [&ed](ecs::Entity e) { return !PaintedRoot(ed.world, e); };
     Vec3 tangent, bitangent;
     OrthonormalBasis(ts.hoverNormal, tangent, bitangent);
@@ -164,7 +279,7 @@ void PaintDab(Editor& ed)
         const Vec3 sample = ts.hoverPoint + tangent * (Cos(angle) * r) + bitangent * (Sin(angle) * r);
         RaycastHit hit;
         const Ray down(sample + ts.hoverNormal * (b.radius + 1.0f), -ts.hoverNormal);
-        if (!RaycastScene(ed, down, hit, b.radius * 2.0f + 2.0f, &notPainted))
+        if (!RaycastSurface(ed, down, hit, b.radius * 2.0f + 2.0f, &notPainted))
             continue;
         if (RadToDeg(Acos(Clamp(hit.normal.y, -1.0f, 1.0f))) > b.maxSlope)
             continue;
@@ -178,12 +293,29 @@ void PaintDab(Editor& ed)
         u32 item = 0;
         for (u32 k = 0; k < ts.items.Size(); ++k) {
             const BrushItem& it = ts.items[k];
-            if (!it.enabled || it.entities.Empty())
+            if (!CanPaint(it))
                 continue;
             item = k;
             pick -= Max(it.weight, 0.0f);
             if (pick <= 0.0f)
                 break;
+        }
+        if (IsFoliageItem(ts.items[item])) {
+            // Plants stand upright (a yaw and a scale per instance), sunk by the offset.
+            const ecs::Entity target = FoliageTarget(ed, ts.items[item], hit.point);
+            ed.undo.Record(target);
+            Foliage* f = ed.world.Get<Foliage>(target);
+            DecodeFoliage(*f);
+            FoliageInstance in;
+            in.position = InverseAffine(scene::ComputeWorldMatrix(ed.world, target)).TransformPointAffine(hit.point + Vec3(0.0f, b.offset, 0.0f));
+            in.yaw = b.randomYaw ? ts.rng.NextFloat() * TwoPi : 0.0f;
+            in.scale = ts.rng.Range(Min(b.scaleMin, b.scaleMax), Max(b.scaleMin, b.scaleMax));
+            f->instances.PushBack(in);
+            if (!touched.Contains(target))
+                touched.PushBack(target);
+            existing.PushBack(hit.point);
+            ++ts.placedThisStroke;
+            continue;
         }
         const Vec3 up = SafeNormalize(Lerp(Vec3::Up(), hit.normal, Clamp(b.alignToNormal, 0.0f, 1.0f)), Vec3::Up());
         Quat rot = Quat::FromTo(Vec3::Up(), up);
@@ -197,6 +329,7 @@ void PaintDab(Editor& ed)
             ++ts.placedThisStroke;
         }
     }
+    CommitFoliage(ed, touched.View());
 }
 
 /// Shift+drag: removes painted instances inside the brush.
@@ -215,6 +348,27 @@ void EraseDab(Editor& ed)
             continue;
         ed.undo.RecordHierarchy(e);
         scene::DestroyHierarchy(ed.world, e);
+    }
+    // Plants of the brush's foliage models (a Foliage left empty is removed).
+    const f32 r2 = ts.brush.radius * ts.brush.radius;
+    for (const BrushItem& it : ts.items) {
+        if (!IsFoliageItem(it) || !it.enabled)
+            continue;
+        ForEachFoliageOf(ed, it.foliageModel, [&](ecs::Entity e, Foliage& f) {
+            DecodeFoliage(f);
+            const Mat4 m = scene::ComputeWorldMatrix(ed.world, e);
+            Array<FoliageInstance> kept;
+            for (const FoliageInstance& in : f.instances)
+                if (DistanceSq(m.TransformPointAffine(in.position), ts.hoverPoint) > r2)
+                    kept.PushBack(in);
+            if (kept.Size() == f.instances.Size())
+                return;
+            ed.undo.RecordHierarchy(e);
+            if (kept.Empty() && scene::GetChildren(ed.world, e).Empty())
+                scene::DestroyHierarchy(ed.world, e);
+            else
+                EncodeFoliage(f, kept.View());
+        });
     }
 }
 
@@ -589,15 +743,73 @@ u32 BrushStrokeAt(Editor& ed, Vec3 point, Vec3 normal, bool erase)
     else
         PaintDab(ed);
     ed.undo.End();
-    u32 count = 0;
+    u32 count = BrushFoliageCount(ed);
     ed.world.Query<const PaintedInstance>().Each([&](const PaintedInstance&) { ++count; });
     return count;
+}
+
+u32 BrushFoliageCount(Editor& ed)
+{
+    u32 n = 0;
+    Array<String> seen;
+    for (const BrushItem& it : ed.tools.items) {
+        if (!IsFoliageItem(it) || seen.Contains(it.foliageModel))
+            continue;
+        seen.PushBack(it.foliageModel);
+        ForEachFoliageOf(ed, it.foliageModel, [&](ecs::Entity, Foliage& f) {
+            DecodeFoliage(f);
+            n += u32(f.instances.Size());
+        });
+    }
+    return n;
+}
+
+bool AddFoliageBrushItem(Editor& ed, StringView modelPath)
+{
+    if (!ed.assets)
+        return false;
+    const String full = Path::IsAbsolute(modelPath) ? String(modelPath) : Path::Join(ed.contentRoot, modelPath);
+    const String model = Path::MakeRelative(full, ed.contentRoot);
+    for (const BrushItem& it : ed.tools.items)
+        if (it.foliageModel.View().EqualsIgnoreCase(model))
+            return true;
+    BrushItem item;
+    item.name = Path::Stem(model);
+    item.foliageModel = model;
+    // The parts of an existing Foliage of the model, else the model's own (loaded now).
+    ForEachFoliageOf(ed, model, [&](ecs::Entity, Foliage& f) {
+        if (item.foliageParts.Empty())
+            item.foliageParts = f.parts;
+    });
+    if (item.foliageParts.Empty()) {
+        const asset::AssetId id = ed.assets->LoadPath(full);
+        ed.assets->WaitIdle();
+        const asset::PrefabAsset* prefab = id.IsValid() ? ed.assets->GetPrefab(id) : nullptr;
+        if (!prefab || !FoliagePartsFromPrefab(*prefab, item.foliageParts) || item.foliageParts.Empty()) {
+            ZX_LOG_WARN(LogTools, "Brush: {} is not a model with meshes", Path::FileName(full));
+            return false;
+        }
+    }
+    ZX_LOG_INFO(LogTools, "Brush: {} added as foliage ({} part{})", item.name, item.foliageParts.Size(), item.foliageParts.Size() == 1 ? "" : "s");
+    ed.tools.items.PushBack(move(item));
+    return true;
 }
 
 bool AddSelectedBrushItem(Editor& ed)
 {
     if (!ed.world.IsAlive(ed.selected) || PaintedRoot(ed.world, ed.selected))
         return false;
+    if (const Foliage* f = ed.world.Get<const Foliage>(ed.selected); f && !f->parts.Empty() && !f->model.Empty()) {
+        for (const BrushItem& it : ed.tools.items)
+            if (it.foliageModel.View().EqualsIgnoreCase(f->model))
+                return true;
+        BrushItem item;
+        item.name = Path::Stem(f->model);
+        item.foliageModel = f->model;
+        item.foliageParts = f->parts;
+        ed.tools.items.PushBack(move(item));
+        return true;
+    }
     BrushItem item;
     item.name = ed.EntityLabel(ed.selected);
     Array<ecs::Entity> all;
@@ -652,7 +864,7 @@ bool UpdateViewportTool(Editor& ed, const Ray& mouseRay, bool hovered, const Fun
     if (hovered) {
         RaycastHit hit;
         const RaycastFilter notPainted = [&ed](ecs::Entity e) { return !PaintedRoot(ed.world, e); };
-        if (RaycastScene(ed, mouseRay, hit, 5000.0f, ts.active == EditorTool::Brush ? &notPainted : nullptr)) {
+        if (RaycastSurface(ed, mouseRay, hit, 5000.0f, ts.active == EditorTool::Brush ? &notPainted : nullptr)) {
             ts.hovering = true;
             ts.hoverPoint = hit.point;
             ts.hoverNormal = hit.normal;
@@ -761,7 +973,8 @@ bool UpdateViewportTool(Editor& ed, const Ray& mouseRay, bool hovered, const Fun
             const Rect r = ui::GetWindowContentRect();
             ui::Context& ctx = *ui::GetCurrentContext();
             dl.AddTextInRect(ctx.Fonts().FindFont("Inter"), 12.5f * scale, Rect(Vec2(r.min.x, r.min.y + 44.0f * scale), Vec2(r.max.x, r.min.y + 64.0f * scale)),
-                             Color(240, 200, 120), "Brush: select a model and press 'Add Selected' in Tool Settings", ui::TextAlign::Center, false);
+                             Color(240, 200, 120), "Brush: select a model and press 'Add Selected', or drop a model file into Tool Settings",
+                             ui::TextAlign::Center, false);
         }
         return hovered || ts.painting;
     }
@@ -1060,7 +1273,8 @@ void DrawToolPanel(Editor& ed)
     BrushSettings& b = ts.brush;
     ui::Heading(ZX_ICON_PAINTBRUSH "  Brush");
     ui::PushTextColor(ui::GetCurrentContext()->GetStyle().colors.textDisabled);
-    ui::TextWrapped("Drag to paint, Shift+drag to erase, [ and ] change the radius. Painted models go under 'Brush Painted'.");
+    ui::TextWrapped("Drag to paint, Shift+drag to erase, [ and ] change the radius. Scene models go under 'Brush Painted'; "
+                    "foliage models (dropped files, Foliage entities) become instanced plants - forests cost little.");
     ui::PopTextColor();
     ui::Spacing();
     ui::TextDisabled("MODELS");
@@ -1069,7 +1283,18 @@ void DrawToolPanel(Editor& ed)
     if (ui::Button(ZX_ICON_PLUS "  Add Selected", Vec2(-1.0f, 0.0f), ui::ButtonVariant::Primary))
         AddSelectedBrushItem(ed);
     ui::EndDisabled();
-    ui::ItemTooltip(canAdd ? "Use the selected entity (and its children) as a brush model" : "Select a model in the scene first");
+    ui::ItemTooltip(canAdd ? "Use the selected entity (and its children) as a brush model; a Foliage entity adds its plant"
+                           : "Select a model in the scene first");
+    ui::SetNextItemWidth(-1.0f);
+    String dropHint(ZX_ICON_SPROUT "  Drop a model here to paint it as foliage");
+    ui::InputText("##dropfoliage", dropHint, ui::InputTextFlags::ReadOnly);
+    ui::ItemTooltip("Drop a .glb / .gltf / .fbx from the Content Browser: its plants are painted as instances (Foliage), the "
+                    "fast way to paint grass, bushes, trees and rocks");
+    if (const void* payload = ui::AcceptDragDropPayload("asset")) {
+        const StringView path(static_cast<const char*>(payload));
+        if (Path::HasExtension(path, ".glb") || Path::HasExtension(path, ".gltf") || Path::HasExtension(path, ".fbx"))
+            AddFoliageBrushItem(ed, path);
+    }
     i32 remove = -1;
     for (usize i = 0; i < ts.items.Size(); ++i) {
         BrushItem& it = ts.items[i];
@@ -1078,7 +1303,9 @@ void DrawToolPanel(Editor& ed)
         ui::SameLine();
         ui::SetNextItemWidth(-(ui::GetFrameHeight() / ui::GetCurrentContext()->GetScale() * 2.0f + 70.0f));
         ui::AlignTextToFramePadding();
-        ui::Text(it.name);
+        ui::Text(IsFoliageItem(it) ? String::Format(ZX_ICON_SPROUT " {}", it.name) : it.name);
+        if (IsFoliageItem(it))
+            ui::ItemTooltip(String::Format("Foliage: {} (instanced plants)", it.foliageModel));
         ui::SameLine(Max(0.0f, ui::GetWindowContentRect().Width() / ui::GetCurrentContext()->GetScale() - 100.0f));
         ui::SetNextItemWidth(60.0f);
         ui::DragFloat("##w", &it.weight, 0.02f, 0.0f, 10.0f, "x{:.1f}");
@@ -1127,6 +1354,8 @@ void DrawToolPanel(Editor& ed)
     u32 painted = 0;
     ed.world.Query<const PaintedInstance>().Each([&](const PaintedInstance&) { ++painted; });
     ui::TextDisabled(String::Format("{} painted instance{} in the scene", painted, painted == 1 ? "" : "s"));
+    if (const u32 plants = BrushFoliageCount(ed))
+        ui::TextDisabled(String::Format("{} plant{} of the foliage models", plants, plants == 1 ? "" : "s"));
     ui::End();
 }
 
