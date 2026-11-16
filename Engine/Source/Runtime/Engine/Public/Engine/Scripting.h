@@ -97,6 +97,7 @@ public:
     AnimationSystem* animation = nullptr;
     SoftBodySystem* softBodies = nullptr; // vehicles: entity.carInput / carSpeed / ...
     NavigationSystem* navigation = nullptr; // Nav Mesh Agents: entity.navTo / navStop / navStatus / navRemaining
+    BehaviorSystem* behavior = nullptr;     // AI hearing: noise(position, range[, tag]) / entity.makeNoise(range[, tag])
     SequenceSystem* sequencer = nullptr;    // Sequence Players: entity.sequencePlay / sequenceStop / sequencePause / sequenceTime / sequencePlaying
     /// Game UI for ui.cursor / ui.overUI (null = no UI).
     GameUISystem* gameUI = nullptr;

@@ -4,6 +4,7 @@
 #include "Core/Log/Log.h"
 #include "Core/Serialization/Json.h"
 #include "Core/String/Path.h"
+#include "Engine/Gameplay.h"
 #include "Engine/Navigation.h"
 #include "Engine/PhysicsSystem.h"
 #include "Scene/Hierarchy.h"
@@ -21,6 +22,8 @@ ZX_REFLECT_STRUCT_BEGIN(BehaviorTree)
     ZX_FIELD(sightRange, Meta::Range(0.0f, 500.0f), Meta::Units("m"))
     ZX_FIELD(sightAngle, Meta::Range(1.0f, 360.0f), Meta::Units("deg"), Meta::Tooltip("Full width of the view cone"))
     ZX_FIELD(eyeHeight, Meta::Range(0.0f, 10.0f), Meta::Units("m"))
+    ZX_FIELD(hearing, Meta::Category("Hearing"), Meta::Range(0.0f, 10.0f),
+             Meta::Tooltip("Multiplier of how far noises carry for it (0 = deaf). Blackboard: noiseHeard, noiseLocation, noiseTag, noiseInstigator"))
 ZX_REFLECT_STRUCT_END()
 
 namespace {
@@ -418,9 +421,32 @@ BehaviorTreeAsset MakeGuardTree()
     child(patrol, next);
     child(patrol, walk);
     child(patrol, pause);
+    // 3. Investigate a noise (a new noise on the way moves the destination).
+    const u32 investigate = add(BTNodeType::Sequence, "Investigate", Vec2(420, 140));
+    const u32 heard = add(BTNodeType::Condition, "Heard a noise?", Vec2(280, 280));
+    t.nodes[heard].key = "noiseHeard";
+    t.nodes[heard].op = "==";
+    t.nodes[heard].value = BBValue::Bool(true);
+    // As close as it gets (a noise it can't reach - a ledge, behind a fence - is still listened to).
+    const u32 tryGo = add(BTNodeType::Succeeder, "As close as it gets", Vec2(420, 280));
+    const u32 goNoise = add(BTNodeType::MoveTo, "Go to the noise", Vec2(420, 420));
+    t.nodes[goNoise].key = "noiseLocation";
+    t.nodes[goNoise].radius = 1.5f;
+    child(tryGo, goNoise);
+    const u32 listen = add(BTNodeType::Wait, "Listen", Vec2(560, 280));
+    t.nodes[listen].seconds = 2.0f;
+    const u32 calm = add(BTNodeType::SetValue, "Calm down", Vec2(700, 280));
+    t.nodes[calm].key = "noiseHeard";
+    t.nodes[calm].value = BBValue::Bool(false);
+    child(investigate, heard);
+    child(investigate, tryGo);
+    child(investigate, listen);
+    child(investigate, calm);
     child(root, chase);
     child(root, search);
+    child(root, investigate);
     child(root, patrol);
+    t.defaults.PushBack({String("noiseHeard"), BBValue::Bool(false)});
     t.defaults.PushBack({String("search"), BBValue::Bool(false)});
     t.defaults.PushBack({String("targetVisible"), BBValue::Bool(false)});
     LayoutBehaviorTree(t, Vec2(168.0f, 52.0f), Vec2(16.0f, 48.0f));
@@ -756,15 +782,17 @@ BTStatus BehaviorSystem::Run(Context& c, u32 node)
     }
 }
 
-void BehaviorSystem::UpdateSight(ecs::World& world, ecs::Entity e, BehaviorTree& bt)
+ecs::Entity BehaviorSystem::UpdateSight(ecs::World& world, ecs::Entity e, BehaviorTree& bt)
 {
-    if (bt.targetName.Empty() || bt.sightRange <= 0.0f)
-        return;
+    if (bt.targetName.Empty())
+        return {};
     ecs::Entity target;
     world.Query<const scene::EntityName>().Each([&](ecs::Entity x, const scene::EntityName& name) {
         if (!target && x != e && name.value == bt.targetName)
             target = x;
     });
+    if (bt.sightRange <= 0.0f)
+        return target;
     bool visible = false;
     Vec3 targetPos;
     if (target) {
@@ -788,11 +816,87 @@ void BehaviorSystem::UpdateSight(ecs::World& world, ecs::Entity e, BehaviorTree&
         bt.blackboard.InsertOrAssign(String("target"), BBValue::Of(target));
         bt.blackboard.InsertOrAssign(String("targetLastSeen"), BBValue::Vector(targetPos));
     }
+    return target;
+}
+
+void BehaviorSystem::ReportNoise(Vec3 position, f32 range, ecs::Entity instigator, StringView tag)
+{
+    if (range <= 0.0f)
+        return;
+    Noise& n = m_noises.AddDefaulted();
+    n.position = position;
+    n.range = range;
+    n.instigator = instigator;
+    n.tag = String(tag);
+}
+
+void BehaviorSystem::UpdateHearing(ecs::World& world, ecs::Entity e, BehaviorTree& bt, ecs::Entity target)
+{
+    if (bt.hearing <= 0.0f)
+        return;
+    const Vec3 ears = scene::ComputeWorldMatrix(world, e).GetTranslation() + Vec3(0.0f, bt.eyeHeight, 0.0f);
+    const Noise* best = nullptr;
+    Noise footsteps;
+    f32 bestScore = 0.0f;
+    auto consider = [&](const Noise& n) {
+        if (n.instigator == e)
+            return;
+        const Vec3 to = n.position + Vec3(0.0f, 0.5f, 0.0f) - ears;
+        const f32 dist = Length(to);
+        f32 range = n.range * bt.hearing;
+        if (dist > range)
+            return;
+        // Through a wall it carries half as far.
+        if (physics && physics->IsRunning() && dist > 0.5f) {
+            PhysicsHit hit;
+            if (physics->Raycast(ears, to / dist, dist - 0.3f, hit, ~0u, e) && hit.entity != n.instigator &&
+                !(n.instigator && scene::IsAncestorOf(world, n.instigator, hit.entity)) && !scene::IsAncestorOf(world, e, hit.entity))
+                range *= 0.5f;
+        }
+        const f32 score = 1.0f - dist / Max(range, 1e-3f);
+        if (score > bestScore) {
+            bestScore = score;
+            best = &n;
+        }
+    };
+    for (const Noise& n : m_lastNoises)
+        consider(n);
+    // The target's footsteps: louder the faster it moves (on the ground).
+    if (target && footstepNoise > 0.0f && world.IsAlive(target))
+        if (const CharacterState* cs = world.Get<const CharacterState>(target)) {
+            const f32 speed = Length(Vec2(cs->velocity.x, cs->velocity.z));
+            if (cs->grounded && speed > 0.3f) {
+                footsteps.position = scene::ComputeWorldMatrix(world, target).GetTranslation();
+                footsteps.range = speed * footstepNoise;
+                footsteps.instigator = target;
+                footsteps.tag = "footstep";
+                consider(footsteps);
+            }
+        }
+    if (!best)
+        return;
+    // Where to look: the walkable spot next to the noise (a shot from a window, a stone in a bush).
+    Vec3 location = best->position;
+    if (navigation && navigation->HasMesh()) {
+        Vec3 onMesh;
+        if (navigation->NearestPoint(location, 4.0f, onMesh))
+            location = onMesh;
+    }
+    bt.blackboard.InsertOrAssign(String("noiseHeard"), BBValue::Bool(true));
+    bt.blackboard.InsertOrAssign(String("noiseLocation"), BBValue::Vector(location));
+    bt.blackboard.InsertOrAssign(String("noiseTag"), BBValue::Text(best->tag.View()));
+    if (best->instigator && world.IsAlive(best->instigator))
+        bt.blackboard.InsertOrAssign(String("noiseInstigator"), BBValue::Of(best->instigator));
+    else
+        bt.blackboard.Remove(String("noiseInstigator"));
 }
 
 void BehaviorSystem::Tick(ecs::World& world, f32 dt)
 {
     m_events.Clear();
+    // Noises reported since the last tick are heard now, then forgotten.
+    m_lastNoises = move(m_noises);
+    m_noises.Clear();
     Array<ecs::Entity> agents;
     world.Query<const BehaviorTree>().Each([&](ecs::Entity e, const BehaviorTree& bt) {
         if (bt.enabled && !bt.tree.Empty())
@@ -813,7 +917,8 @@ void BehaviorSystem::Tick(ecs::World& world, f32 dt)
                     bt->blackboard.InsertOrAssign(d.first, d.second);
         }
         bt->clock += dt;
-        UpdateSight(world, e, *bt);
+        const ecs::Entity target = UpdateSight(world, e, *bt);
+        UpdateHearing(world, e, *bt, target);
         Context c{world, e, *bt, *tree, dt};
         const BTStatus r = Run(c, 0);
         if (r != BTStatus::Running)

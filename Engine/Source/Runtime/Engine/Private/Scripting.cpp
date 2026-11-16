@@ -542,6 +542,20 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
                 return v.Fail("entity.bbSet: the value must be nil, a bool, a number, a vec3, a string or an entity");
             return true;
         }
+        if (m == "makeNoise") {
+            // AI hearing: a noise at the entity that Behavior Trees within `range` meters hear (half as far through walls).
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = sys.context.world;
+            if (!w || !w->IsAlive(e))
+                return v.Fail("The entity was destroyed");
+            if (a.Empty() || !a[0].IsNumber() || (a.Size() > 1 && a[1].Type() != ValueType::String))
+                return v.Fail("entity.makeNoise(range: number[, tag: string])");
+            if (sys.behavior)
+                sys.behavior->ReportNoise(scene::ComputeWorldMatrix(*w, e).GetTranslation(), a[0].AsFloat(), e,
+                                          a.Size() > 1 ? a[1].AsString() : StringView());
+            return true;
+        }
         if (m == "navTo" || m == "navStop" || m == "navStatus" || m == "navRemaining") {
             // Nav Mesh Agent: navTo(position) walks there on the navigation mesh (false: no agent / mesh), navStop(),
             // navStatus() = "idle" / "moving" / "arrived" / "partial" (unreachable, going as close as possible) /
@@ -1342,6 +1356,15 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
     };
     m_hitType = &hitType;
     vm.SetGlobal("physics", script::MakeNative(physicsType, this));
+
+    // AI hearing: noise(position, range[, tag]) - a sound Behavior Trees within `range` meters hear.
+    vm.SetGlobal("noise", script::MakeNativeFunction("noise", [this](script::VM& v, Span<const Value> a, Value&) {
+                     if (a.Size() < 2 || a[0].Type() != ValueType::Vec3 || !a[1].IsNumber() || (a.Size() > 2 && a[2].Type() != ValueType::String))
+                         return v.Fail("noise(position: vec3, range: number[, tag: string])");
+                     if (behavior)
+                         behavior->ReportNoise(a[0].AsVec3(), a[1].AsFloat(), {}, a.Size() > 2 ? a[2].AsString() : StringView());
+                     return true;
+                 }));
 
     // Localization: tr("key", args...) -> the text in the player's language ({0} {1} = the arguments);
     // lang.current, lang.set("ru"), lang.list() (codes), lang.name("ru") ("Русский").

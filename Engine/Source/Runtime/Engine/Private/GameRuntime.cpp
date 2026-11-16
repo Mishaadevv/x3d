@@ -111,6 +111,7 @@ void TickGame(ecs::World& world, GameSystems& s, f32 realDt, const InputState* i
         s.scripts->animation = s.animation;
         s.scripts->softBodies = s.softBodies;
         s.scripts->navigation = s.navigation;
+        s.scripts->behavior = s.Enabled("ai") ? s.behavior : nullptr;
         if (s.animation) // last frame's footsteps and authored events
             s.scripts->DispatchAnimEvents(world, s.animation->Events());
         s.scripts->gameUI = s.gameUI;

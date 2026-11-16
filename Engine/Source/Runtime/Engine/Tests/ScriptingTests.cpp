@@ -156,3 +156,35 @@ ZX_TEST(Scripting, PropertyOverrides)
     ZX_EXPECT(s.properties.Empty());
     ZX_EXPECT(ScriptTemplate("My Mover").Contains("script MyMover {"));
 }
+
+ZX_TEST(Scripting, NoisesReachTheAI)
+{
+    const String root = ScriptRoot("noise");
+    ZX_REQUIRE(fs::WriteTextFile(root + "/Scripts/Noisy.zs", R"zs(
+        script Noisy {
+            fn update(dt) {
+                noise(vec3(1, 2, 3), 12, "bang")
+                entity.makeNoise(4)
+            }
+        }
+    )zs"));
+    ScriptSystem scripts;
+    scripts.SetContentRoot(root);
+    u32 errors = 0;
+    scripts.onLog = [&](StringView, bool isError) { errors += isError; };
+    BehaviorSystem behavior;
+    scripts.behavior = &behavior;
+    ecs::World world;
+    const ecs::Entity e = world.Create(scene::EntityName{String("Bell")}, Transform(Vec3(5, 0, 0)), Script{String("Scripts/Noisy.zs"), String()});
+    scene::UpdateWorldTransforms(world);
+    scripts.Begin(world);
+    scripts.Tick(world, 0.1f, nullptr);
+    behavior.Tick(world, 0.1f); // takes the noises reported since the last tick
+    ZX_EXPECT_EQ(errors, 0u);
+    ZX_REQUIRE(behavior.LastNoises().Size() == 2u);
+    const BehaviorSystem::Noise& bang = behavior.LastNoises()[0];
+    ZX_EXPECT(Distance(bang.position, Vec3(1, 2, 3)) < 1e-4f && bang.range == 12.0f && bang.tag == "bang" && !bang.instigator);
+    const BehaviorSystem::Noise& own = behavior.LastNoises()[1];
+    ZX_EXPECT(Distance(own.position, Vec3(5, 0, 0)) < 1e-4f && own.range == 4.0f && own.instigator == e);
+    scripts.End();
+}

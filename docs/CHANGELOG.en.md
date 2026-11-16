@@ -2,6 +2,22 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.17.17 — AI hearing (2026-11-16)
+- **AI hears**: a Behavior Tree picks up noises (shots, thrown stones, alarms) and its target's footsteps. Footsteps carry speed × 1.5 m: a player walking at 3 m/s is heard within 4.5 m, one running at 7 m/s within 10 m. Sneaking up works.
+- A noise's range is multiplied by the component's new **Hearing** field (0 = deaf). Through walls (physics) it carries half as far. An AI doesn't hear its own noises.
+- **Blackboard**: the loudest noise heard writes `noiseHeard`, `noiseLocation` (snapped to the nav mesh within 4 m), `noiseTag` and `noiseInstigator`.
+- **Guard** (starter Guard.zbt): a new Investigate branch between Search and Patrol. The guard goes as close to the noise as it can, listens for 2 s, then calms down. A new noise on the way moves the destination. An unreachable noise (behind a fence, on a ledge) is listened to from the closest point, without looping.
+- API: `noise(position, range[, tag])` and `entity.makeNoise(range[, tag])` in ZeqouScript, `BehaviorSystem::ReportNoise` in C++, console `ai.noise x y z [range] [tag]`.
+- **Checked**:
+  - BehaviorTree.GuardHearsNoisesAndFootsteps:
+    - Quiet noises and the guard's own noise go unheard.
+    - A loud noise makes it walk there, listen and calm down.
+    - A running player's footsteps behind it are heard at 4 m and not at 9 m.
+    - A deaf guard hears nothing.
+  - BehaviorTree.UnreachableNoiseIsListenedToFromAsCloseAsItGets and Scripting.NoisesReachTheAI.
+  - In the editor (a new Third Person project, Play): after `ai.noise` 25 m away, the guard walked there, listened and went back to patrolling. When the player is in sight, the chase wins.
+  - Existing projects get the new Guard tree only with new Starter Content.
+
 ## 0.17.16 — Terrain brush across tile borders (2026-11-16)
 - **Tiles are one ground**: a terrain brush stroke (raise, smooth, flatten, terrace, noise, erode, paint) and a ramp carry on into the neighbouring open-world tiles. The whole stroke is one Undo step, even when it crosses several tiles.
 - **No trace of the seam**: brush weight, noise and terraces are computed in world coordinates, and heights beyond a tile's edge are read from its neighbour. Both tiles get the same heights and normals at the seam, so no stripe shows in the lighting. When a tile changes, its neighbours update their edge vertices.

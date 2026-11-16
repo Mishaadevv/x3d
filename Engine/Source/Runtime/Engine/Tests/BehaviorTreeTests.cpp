@@ -9,6 +9,7 @@
 #include "Core/Testing/Test.h"
 #include "Engine/BehaviorTree.h"
 #include "Engine/ComponentRegistry.h"
+#include "Engine/Gameplay.h"
 #include "Engine/Navigation.h"
 #include "Engine/Terrain.h"
 #include "Scene/Hierarchy.h"
@@ -253,4 +254,78 @@ ZX_TEST(BehaviorTree, LayoutAndProblems)
     ZX_EXPECT(!ParseBehaviorTree(WriteBehaviorTree(t).View(), back));
     ZX_EXPECT(ParseBehaviorTree(WriteBehaviorTree(t).View(), back, nullptr, false));
     ZX_EXPECT_EQ(back.nodes.Size(), t.nodes.Size());
+}
+
+ZX_TEST(BehaviorTree, GuardHearsNoisesAndFootsteps)
+{
+    Fixture f;
+    f.Ground();
+    f.Write("Guard.zbt", MakeGuardTree());
+    // No waypoints: the guard stands still unless something draws it. The player is far away, out of sight.
+    const ecs::Entity player = scene::CreateNode(f.world, "Player", Transform(Vec3(-60, 0, 60)));
+    f.Agent("Guard.zbt", Vec3(0, 0, 0));
+    auto heard = [&] { return f.Tree().blackboard.Find(String("noiseHeard"))->Truthy(); };
+    f.Step(5);
+    ZX_EXPECT(!heard());
+    // Too quiet for the distance: nothing.
+    f.bt.ReportNoise(Vec3(10, 0, -10), 5.0f, {}, "pebble");
+    f.Step(1);
+    ZX_EXPECT(!heard());
+    // Its own noises don't count.
+    f.bt.ReportNoise(Vec3(0, 0, 0), 50.0f, f.agent, "cough");
+    f.Step(1);
+    ZX_EXPECT(!heard());
+    // A loud one behind it: it goes there, listens, then calms down.
+    const Vec3 spot(8, 0, -10);
+    f.bt.ReportNoise(spot, 20.0f, {}, "gunshot");
+    f.Step(1);
+    ZX_REQUIRE(heard());
+    ZX_EXPECT(f.Tree().blackboard.Find(String("noiseTag"))->text == "gunshot");
+    ZX_EXPECT(Distance(f.Tree().blackboard.Find(String("noiseLocation"))->vec, spot) < 0.2f); // on the mesh
+    f32 closest = 1e9f;
+    for (u32 frame = 0; frame < 30 * 6; ++frame) {
+        f.Step(1);
+        closest = Min(closest, Distance(Vec2(f.Position().x, f.Position().z), Vec2(spot.x, spot.z)));
+    }
+    ZX_EXPECT(closest < 1.6f);
+    ZX_EXPECT(!heard()); // listened, nothing more
+    // The player runs past behind it (no sight): its footsteps carry speed x 1.5 m.
+    CharacterState cs;
+    cs.grounded = true;
+    cs.velocity = Vec3(4, 0, 0); // 6 m of footsteps
+    f.world.Add(player, cs);
+    const Vec3 guard = f.Position();
+    const Vec3 back = -(f.world.Get<const Transform>(f.agent)->rotation * Vec3(0, 0, 1));
+    f.world.Get<Transform>(player)->position = guard + Vec3(back.x, 0, back.z) * 9.0f; // too far
+    scene::UpdateWorldTransforms(f.world);
+    f.Step(1);
+    ZX_EXPECT(!heard());
+    f.world.Get<Transform>(player)->position = guard + Vec3(back.x, 0, back.z) * 4.0f;
+    scene::UpdateWorldTransforms(f.world);
+    f.Step(1);
+    ZX_REQUIRE(heard());
+    ZX_EXPECT(f.Tree().blackboard.Find(String("noiseTag"))->text == "footstep");
+    ZX_EXPECT(f.Tree().blackboard.Find(String("noiseInstigator"))->entity == player);
+    // Deaf guards hear nothing.
+    f.Tree().blackboard.InsertOrAssign(String("noiseHeard"), BBValue::Bool(false));
+    f.Tree().hearing = 0.0f;
+    f.bt.ReportNoise(guard, 100.0f, {}, "explosion");
+    f.Step(1);
+    ZX_EXPECT(!heard());
+}
+
+ZX_TEST(BehaviorTree, UnreachableNoiseIsListenedToFromAsCloseAsItGets)
+{
+    Fixture f;
+    f.Ground();
+    f.Write("Guard.zbt", MakeGuardTree());
+    scene::CreateNode(f.world, "Player", Transform(Vec3(-60, 0, 60)));
+    f.Agent("Guard.zbt", Vec3(0, 0, 0));
+    // Far off the mesh (the ground ends at 25 m): it walks to the edge, listens, calms down - no endless loop.
+    f.bt.ReportNoise(Vec3(40, 0, 0), 60.0f, {}, "far");
+    f.Step(1);
+    ZX_REQUIRE(f.Tree().blackboard.Find(String("noiseHeard"))->Truthy());
+    f.Step(30 * 12);
+    ZX_EXPECT(!f.Tree().blackboard.Find(String("noiseHeard"))->Truthy());
+    ZX_EXPECT(f.Position().x > 15.0f); // went towards it
 }

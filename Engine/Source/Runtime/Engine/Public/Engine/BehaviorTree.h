@@ -17,6 +17,10 @@
 //     them (entity.bbGet(key) / entity.bbSet(key, value)).
 //   Sight: the component's sightRange / sightAngle look for the entity named `targetName` (line of sight through the
 //     physics when it runs) and write target (entity), targetVisible (bool), targetLastSeen (vec3).
+//   Hearing: noises (BehaviorSystem::ReportNoise; scripts noise(position, range[, tag]) / entity.makeNoise(range[, tag]);
+//     the target's footsteps: its Character speed x footstepNoise meters) are heard within their range x `hearing`, half
+//     as far through walls (physics). The loudest one heard writes noiseHeard (bool, true until the tree clears it),
+//     noiseLocation (vec3), noiseTag (string) and noiseInstigator (entity, when known).
 
 #include "Core/Containers/Array.h"
 #include "Core/Containers/HashMap.h"
@@ -139,6 +143,8 @@ struct BehaviorTree
     f32 sightRange = 20.0f;     // meters
     f32 sightAngle = 120.0f;    // degrees (full cone)
     f32 eyeHeight = 1.6f;
+    // Hearing
+    f32 hearing = 1.0f;         // multiplier of every noise's range (0 = deaf)
     // Runtime (not saved).
     struct NodeState
     {
@@ -163,6 +169,19 @@ public:
     NavigationSystem* navigation = nullptr;
     PhysicsSystem* physics = nullptr; // line of sight (null: no occlusion)
     ScriptSystem* scripts = nullptr;  // Event -> onAIEvent
+    f32 footstepNoise = 1.5f;         // meters a target's footsteps carry per m/s of its Character speed (0 = silent)
+
+    /// A sound the AI can hear (heard by the trees on their next Tick, then forgotten).
+    struct Noise
+    {
+        Vec3 position;
+        f32 range = 10.0f;      // meters it carries (in the open, for hearing 1)
+        ecs::Entity instigator; // who made it (not heard by itself)
+        String tag;             // "footstep", "gunshot", ... (blackboard noiseTag)
+    };
+    void ReportNoise(Vec3 position, f32 range, ecs::Entity instigator = {}, StringView tag = {});
+    /// Noises heard by the last Tick (debug views; reported ones wait in m_noises until the next).
+    Span<const Noise> LastNoises() const { return m_lastNoises.View(); }
 
     void Tick(ecs::World& world, f32 dt);
     /// Clears the runtime state of every tree (Play starts fresh).
@@ -192,13 +211,16 @@ private:
     HashMap<String, File> m_files;
     i32 m_nextVersion = 1;
     Array<AIEvent> m_events;
+    Array<Noise> m_noises, m_lastNoises;
     u32 m_rng = 12345;
     f32 Random01();
 
     struct Context;
     BTStatus Run(Context& c, u32 node);
     void Abort(Context& c, u32 node);
-    void UpdateSight(ecs::World& world, ecs::Entity e, BehaviorTree& bt);
+    /// Returns the target entity (found by name, even when not seen).
+    ecs::Entity UpdateSight(ecs::World& world, ecs::Entity e, BehaviorTree& bt);
+    void UpdateHearing(ecs::World& world, ecs::Entity e, BehaviorTree& bt, ecs::Entity target);
 };
 
 } // namespace zx

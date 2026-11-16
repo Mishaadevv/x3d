@@ -1332,7 +1332,9 @@ Vulkan-бэкенд, HDR-вывод, плагины редактора, ZScript 
 - [x] (0.17.3) NavMesh (вокселизация → фильтры высоты/ступеньки/уклона/обрывов → эрозия на радиус агента → выпуклые полигоны-прямоугольники со связями), поиск пути A* + funnel + срезание углов, агенты (Nav Mesh Agent, с Character Controller или без), `.znav` рядом со сценой, скриптовый API (ADR-105; тесты NavMesh.*, Navigation.*)
 - [x] (0.17.4) Behaviour Trees: рантайм (.zbt, реактивный Selector, Sequence с перепроверкой условий, Parallel, декораторы, задачи навигации), Blackboard, зрение (конус + линия видимости), события в скрипты, стартовое дерево Guard (ADR-106; тесты BehaviorTree.*)
 - [x] (0.17.5) Редактор Behaviour Trees: холст (дети слева направо), меню узлов с поиском, связи перетаскиванием, Arrange, undo/redo, настройки узла и blackboard, проблемы, подсветка выполнения выбранного ИИ в Play
-- [ ] ИИ: слух (события шума), тайловый навмеш с перестройкой в рантайме, off-mesh links
+- [x] (0.17.17) ИИ: слух — события шума (`BehaviorSystem::ReportNoise`, скрипты `noise()` / `entity.makeNoise()`, консоль `ai.noise`) и шаги цели (скорость Character × 1,5 м); слышно в пределах дальности × `hearing`, через стены вдвое ближе; blackboard noiseHeard / noiseLocation (прижата к навмешу) / noiseTag / noiseInstigator; охранник проверяет шум (ветка Investigate) (тесты BehaviorTree.GuardHearsNoisesAndFootsteps, UnreachableNoiseIsListenedToFromAsCloseAsItGets, Scripting.NoisesReachTheAI)
+- [ ] ИИ: тайловый навмеш с перестройкой в рантайме
+- [ ] ИИ: off-mesh links
 - [ ] Приёмка: OpenWorld-сэмпл 4×4 км со стримингом без фризов > 50 мс
 
 ### M19 … M20

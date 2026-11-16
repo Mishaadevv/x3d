@@ -438,6 +438,16 @@ ConCommand CmdBtStatus("bt.status", "Behaviour tree of every AI: running nodes a
     });
 });
 
+ConCommand CmdAiNoise("ai.noise", "A noise the AI hears (Play): ai.noise <x> <y> <z> [range m] [tag]", [](Span<const StringView> args) {
+    Editor* ed = Ed();
+    if (!ed || args.Size() < 3)
+        return;
+    const Vec3 p(ParseFloat(args[0]).ValueOr(0.0f), ParseFloat(args[1]).ValueOr(0.0f), ParseFloat(args[2]).ValueOr(0.0f));
+    const f32 range = args.Size() > 3 ? ParseFloat(args[3]).ValueOr(15.0f) : 15.0f;
+    ed->behavior.ReportNoise(p, range, {}, args.Size() > 4 ? args[4] : StringView("noise"));
+    ZX_LOG_INFO(LogCmd, "Noise at ({:.1f}, {:.1f}, {:.1f}), heard within {:.1f} m", p.x, p.y, p.z, range);
+});
+
 ConCommand CmdBtEdit("bt.edit", "Opens a behaviour tree in the tree editor: bt.edit <Content path .zbt>", [](Span<const StringView> args) {
     if (Editor* ed = Ed(); ed && !args.Empty())
         OpenBTEditor(*ed, Path::Join(ed->contentRoot, args[0]));
