@@ -591,6 +591,28 @@ ConCommand CmdSun("sun", "Turns the scene's sun: sun <elevation deg> [azimuth de
     });
 });
 
+ConCommand CmdWind("wind", "Sets the speed of the scene's Directional Wind Zones (creates one if there is none): wind <m/s> [direction deg]",
+                   [](Span<const StringView> args) {
+                       Editor* ed = Ed();
+                       if (!ed || args.Empty())
+                           return;
+                       const f32 speed = Max(ParseFloat(args[0]).ValueOr(6.0f), 0.0f);
+                       bool found = false;
+                       ed->world.Query<WindZone, Transform>().Each([&](ecs::Entity, WindZone& z, Transform& t) {
+                           if (z.mode != WindZoneMode::Directional)
+                               return;
+                           found = true;
+                           z.speed = speed;
+                           if (args.Size() > 1)
+                               t.rotation = Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(ParseFloat(args[1]).ValueOr(0.0f)));
+                       });
+                       if (!found) {
+                           ed->CreateWindZone();
+                           ed->world.Query<WindZone>().Each([&](ecs::Entity, WindZone& z) { z.speed = speed; });
+                       }
+                       ZX_LOG_INFO(LogCmd, "Wind: {:.1f} m/s", speed);
+                   });
+
 ConCommand CmdGraphicsEra("graphics.era", "The project's graphics generation: graphics.era <modern|2017|2011|2008>",
                            [](Span<const StringView> args) {
                                if (Editor* ed = Ed(); ed && !args.Empty())
@@ -933,6 +955,23 @@ ConCommand CmdCamera("camera", "Moves the editor camera: camera <x> <y> <z> [yaw
     ZX_LOG_INFO(LogCmd, "camera {:.2f} {:.2f} {:.2f} {:.1f} {:.1f}", ed->camera.position.x, ed->camera.position.y, ed->camera.position.z,
                 RadToDeg(ed->camera.yaw), RadToDeg(ed->camera.pitch));
 });
+
+ConCommand CmdCameraDrop("camera.drop", "Puts the editor camera above the terrain under it: camera.drop [meters above the ground = 1.7]",
+                         [](Span<const StringView> args) {
+                             Editor* ed = Ed();
+                             if (!ed)
+                                 return;
+                             const Vec3 p = ed->camera.position;
+                             ecs::Entity terrain;
+                             Vec3 hit;
+                             if (!ed->terrains.Raycast(ed->world, Ray(Vec3(p.x, 5000.0f, p.z), Vec3(0, -1, 0)), 10000.0f, terrain, hit)) {
+                                 ZX_LOG_WARN(LogCmd, "camera.drop: no terrain under the camera");
+                                 return;
+                             }
+                             ed->camera.position.y = hit.y + (args.Empty() ? 1.7f : ParseFloat(args[0]).ValueOr(1.7f));
+                             ed->viewport->ResetHistory();
+                             ZX_LOG_INFO(LogCmd, "camera {:.2f} {:.2f} {:.2f}", ed->camera.position.x, ed->camera.position.y, ed->camera.position.z);
+                         });
 
 ConCommand CmdHdriInfo("hdri.info", "HDRI Sky: panorama, intensity, the sun it lights the scene with", [](Span<const StringView>) {
     Editor* ed = Ed();

@@ -39,10 +39,14 @@ struct RenderInstance
     f32 embers = 0.0f;     // 0..1 embers in the charred part
     /// Baked lightmap: UV1 * xy + zw = atlas uv (x = 0: none).
     Vec4 lightmapScaleBias;
+    /// Foliage in the wind: the wind (world xz, m/s) times the plant's flexibility; zero = rigid. The vertex shader bends
+    /// the mesh by height within its bounds (the base stays, the top sways), with flutter towards the tips.
+    Vec2 wind;
 };
 
-/// Writes the lightmap part of an instance row (SceneRenderer / SceneRendererGpu).
-void WriteLightmapRow(u8* dst, const RenderInstance& inst);
+/// Writes the last part of an instance row (SceneRenderer / SceneRendererGpu): lightmap scale / bias, and the wind with
+/// the mesh's height range (`bounds` in mesh space).
+void WriteLightmapRow(u8* dst, const RenderInstance& inst, const AABB& bounds);
 
 struct RenderView
 {

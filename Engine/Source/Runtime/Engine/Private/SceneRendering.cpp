@@ -398,6 +398,12 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out, con
         for (const FoliagePart& p : f.parts)
             partMatrices.PushBack(p.local.ToMatrix());
         const u64 base = HashMix64(e.Pack());
+        // The wind here (gusts included), once per entity: the shader bends each plant with it.
+        Vec2 wind;
+        if (const f32 sway = FoliageWindSway(f); sway > 0.0f) {
+            const Vec3 w = WindFor(world, e, origin) * sway;
+            wind = Vec2(w.x, w.z);
+        }
         for (usize i = 0; i < f.instances.Size(); ++i) {
             const FoliageInstance& in = f.instances[i];
             const Vec3 p = origin + in.position;
@@ -414,6 +420,7 @@ void GatherRenderInstances(World& world, Array<render::RenderInstance>& out, con
                 inst.mesh = f.parts[k].mesh;
                 inst.materials = f.parts[k].materials.View();
                 inst.castShadows = f.castShadows;
+                inst.wind = wind;
             }
         }
     });

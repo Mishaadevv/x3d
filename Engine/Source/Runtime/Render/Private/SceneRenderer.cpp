@@ -13,11 +13,14 @@ ZX_DEFINE_LOG_CATEGORY_STATIC(LogSceneRenderer, Info);
 namespace zx::render {
 
 /// Instance row bytes 192..207: lightmap scale / bias (half4), page (unused: one atlas), valid flag.
-void WriteLightmapRow(u8* dst, const RenderInstance& inst)
+void WriteLightmapRow(u8* dst, const RenderInstance& inst, const AABB& bounds)
 {
+    // x, y: lightmap scale / bias (scale.x > 0 = has one); z: wind xz (0 = rigid); w: the mesh's base height and height.
+    const bool windy = inst.wind.x != 0.0f || inst.wind.y != 0.0f;
     const u32 row[4] = {PackHalf2(Vec2(inst.lightmapScaleBias.x, inst.lightmapScaleBias.y)),
-                        PackHalf2(Vec2(inst.lightmapScaleBias.z, inst.lightmapScaleBias.w)), 0u,
-                        inst.lightmapScaleBias.x > 0.0f ? 1u : 0u};
+                        PackHalf2(Vec2(inst.lightmapScaleBias.z, inst.lightmapScaleBias.w)),
+                        windy ? PackHalf2(inst.wind) : 0u,
+                        windy ? PackHalf2(Vec2(bounds.min.y, Max(bounds.max.y - bounds.min.y, 1e-3f))) : 0u};
     MemCopy(dst, row, 16);
 }
 
@@ -932,7 +935,7 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
             // Last frame's world rows (velocity of moving objects).
             const Mat4 prevRows = Transpose(inst.prevWorld ? *inst.prevWorld : inst.world);
             MemCopy(dst + 128, &prevRows, 64);
-            WriteLightmapRow(dst + 192, inst);
+            WriteLightmapRow(dst + 192, inst, mesh->bounds);
             // Skinned meshes always have motion (their pose changes) once last frame's pose exists.
             const bool moved = inst.prevWorld != nullptr || (skin && skin->previous != skin->current);
             const u32 vertexOverride = skin ? skin->current : InvalidIndex;

@@ -3,7 +3,9 @@
 // Physics in the scene (Unity-style): Box / Sphere / Capsule / Mesh Collider components make an entity solid; a
 // RigidBody makes it move (gravity, collisions). Colliders on children of a RigidBody belong to its body (compound);
 // colliders without a RigidBody above them are static. Mesh Renderers with Collision on and no collider components
-// collide as static triangle meshes (level geometry works without setup). Scale is baked into the shapes.
+// collide as static triangle meshes (level geometry works without setup). Scale is baked into the shapes. Foliage
+// plants get one static body each (trunk capsules, rock hulls: Foliage::collision). Entities that appear while playing
+// (World Partition cells streaming in) get their bodies on the next Tick, and lose them when they are unloaded.
 //
 //   PhysicsSystem physics;
 //   physics.Begin(world, &renderAssets);          // Play: bodies from the components
@@ -301,6 +303,8 @@ public:
     /// Motor of the entity's hinge / slider joint (speed in rad/s or m/s; force <= 0 keeps the current one).
     void SetJointMotor(ecs::Entity e, bool enabled, f32 speed, f32 force = 0.0f);
     u32 JointCount() const { return m_world ? m_world->JointCount() : 0u; }
+    /// Static bodies of foliage plants (trunks, rocks) currently in the world.
+    u32 FoliageBodyCount() const;
     /// Destroys every joint attached to the entity's body (burnt through, cut loose).
     void BreakJoints(ecs::Entity e);
 
@@ -317,10 +321,16 @@ private:
         Quat writtenRot;
     };
 
-    void CreateBodies(ecs::World& world);
+    void CreateBodies(ecs::World& world, bool onlyNew);
     void CreateJoints(ecs::World& world);
     bool CreateBody(ecs::World& world, ecs::Entity e, bool dynamic);
     physics::HullId HullOf(const render::GpuMesh* mesh, Vec3 scale); // null mesh: unit cylinder (diameter 1, height 1)
+    /// Bodies for entities that appeared since Begin / the last sync (streamed cells), and frees those of removed ones.
+    void SyncStreamed(ecs::World& world);
+    /// Has a body, waits for one, or is a foliage entity handled already.
+    bool Known(ecs::Entity e) const;
+    /// One static body per plant of a Foliage entity (its collision mode); false while one of its meshes is loading.
+    bool CreateFoliageBodies(ecs::World& world, ecs::Entity e);
 
     UniquePtr<physics::PhysicsWorld> m_world;
     render::RenderAssets* m_assets = nullptr;
@@ -338,6 +348,10 @@ private:
         physics::HullId hull = physics::InvalidHull;
     };
     Array<CachedHull> m_hulls; // convex Mesh Colliders: instances of one mesh at one scale share a hull
+    HashMap<u64, Array<physics::BodyId>> m_foliage; // foliage entity -> the bodies of its plants
+    Array<ecs::Entity> m_pendingFoliage;            // foliage whose meshes are still loading
+    HashMap<u64, physics::BodyId> m_meshBodies;     // static mesh colliders made once their mesh arrived
+    u32 m_seenEntities = 0;                          // world entity count at the last sync
     ecs::Entity EntityOf(physics::BodyId id) const;
     f32 m_accumulator = 0.0f;
 };

@@ -2,6 +2,7 @@
 #include "Core/Containers/Function.h"
 #include "Core/Log/Log.h"
 #include "Core/Reflection/Reflection.h"
+#include "Engine/Foliage.h"
 #include "Engine/Gameplay.h"
 #include "Engine/Terrain.h"
 #include "Render/RenderAssets.h"
@@ -556,13 +557,15 @@ void PhysicsSystem::Begin(ecs::World& world, render::RenderAssets* renderAssets)
     m_world->Settings().stayEvents = true; // collisionStay / triggerStay callbacks
     m_assets = renderAssets;
     m_accumulator = 0.0f;
-    CreateBodies(world);
+    CreateBodies(world, false);
     CreateJoints(world);
+    m_seenEntities = world.EntityCount();
     u32 moving = 0;
     for (const Tracked& t : m_tracked)
         moving += t.moves ? 1u : 0u;
-    ZX_LOG_INFO(LogPhysics, "Physics: {} bodies ({} moving, {} static), {} joints, {} mesh colliders waiting for their mesh",
-                m_world->BodyCount(), moving, m_world->BodyCount() - moving, m_world->JointCount(), m_pendingMeshes.Size());
+    ZX_LOG_INFO(LogPhysics, "Physics: {} bodies ({} moving, {} static, {} foliage), {} joints, {} mesh colliders and {} foliage waiting for their meshes",
+                m_world->BodyCount(), moving, m_world->BodyCount() - moving, FoliageBodyCount(), m_world->JointCount(), m_pendingMeshes.Size(),
+                m_pendingFoliage.Size());
 }
 
 void PhysicsSystem::End()
@@ -574,6 +577,10 @@ void PhysicsSystem::End()
     m_pendingBodies.Clear();
     m_joints.Clear();
     m_hulls.Clear();
+    m_foliage.Clear();
+    m_pendingFoliage.Clear();
+    m_meshBodies.Clear();
+    m_seenEntities = 0;
 }
 
 bool PhysicsSystem::CreateBody(ecs::World& world, Entity e, bool dynamic)
@@ -673,11 +680,128 @@ bool PhysicsSystem::CreateBody(ecs::World& world, Entity e, bool dynamic)
     return true;
 }
 
-void PhysicsSystem::CreateBodies(ecs::World& world)
+bool PhysicsSystem::Known(Entity e) const
+{
+    const u64 k = e.Pack();
+    if (m_byEntity.Contains(k) || m_meshBodies.Contains(k) || m_foliage.Contains(k))
+        return true;
+    for (const Array<Entity>* list : {&m_pendingMeshes, &m_pendingBodies, &m_pendingFoliage})
+        for (Entity p : *list)
+            if (p == e)
+                return true;
+    return false;
+}
+
+u32 PhysicsSystem::FoliageBodyCount() const
+{
+    u32 n = 0;
+    for (const auto& [k, bodies] : m_foliage)
+        n += u32(bodies.Size());
+    return n;
+}
+
+bool PhysicsSystem::CreateFoliageBodies(ecs::World& world, Entity e)
+{
+    Foliage* f = world.Get<Foliage>(e);
+    const FoliageCollision mode = f ? FoliageCollisionOf(*f) : FoliageCollision::None;
+    if (mode == FoliageCollision::None || f->parts.Empty()) {
+        m_foliage.InsertOrAssign(e.Pack(), Array<BodyId>());
+        return true;
+    }
+    // The meshes first (their vertices shape the trunks and hulls).
+    Array<const render::GpuMesh*> meshes;
+    for (const FoliagePart& p : f->parts) {
+        const render::GpuMesh* mesh = m_assets ? m_assets->GetMesh(p.mesh) : nullptr;
+        if (!mesh || mesh->cpuPositions.Empty())
+            return false;
+        meshes.PushBack(mesh);
+    }
+    DecodeFoliage(*f);
+    // Trunk: the part with the tallest trunk (a tree is usually one mesh).
+    FoliageTrunk trunk;
+    usize trunkPart = 0;
+    if (mode == FoliageCollision::Trunk)
+        for (usize k = 0; k < meshes.Size(); ++k) {
+            FoliageTrunk t;
+            if (EstimateFoliageTrunk(meshes[k]->cpuPositions.View(), t) && t.height > trunk.height) {
+                trunk = t;
+                trunkPart = k;
+            }
+        }
+    const scene::WorldTransform* wt = world.Get<const scene::WorldTransform>(e);
+    const Mat4 entity = wt ? wt->matrix : Mat4::Identity();
+    const u32 layer = LayerOf(world, e);
+    Array<BodyId> bodies;
+    for (const FoliageInstance& in : f->instances) {
+        const Mat4 plant = entity * Mat4::TRS(in.position, Quat::FromAxisAngle(Vec3(0, 1, 0), in.yaw), Vec3(in.scale));
+        for (usize k = 0; k < meshes.Size(); ++k) {
+            if (mode == FoliageCollision::Trunk && k != trunkPart)
+                continue;
+            Pose p;
+            Decompose(plant * f->parts[k].local.ToMatrix(), p.position, p.rotation, p.scale);
+            const f32 s = Max(std::floor(Abs(p.scale.x) * 20.0f + 0.5f) / 20.0f, 0.05f); // hulls shared per 5 % of scale
+            BodyDesc d;
+            d.position = p.position;
+            d.rotation = Normalize(p.rotation);
+            d.userData = e.Pack();
+            d.layer = layer;
+            if (mode == FoliageCollision::Hull) {
+                const HullId hull = HullOf(meshes[k], Vec3(s));
+                if (hull == InvalidHull)
+                    continue;
+                d.shapes.PushBack(ShapeDesc::Hull(hull));
+            } else {
+                if (trunk.height <= 0.0f)
+                    continue;
+                const f32 r = trunk.radius * s, half = Max(trunk.height * s * 0.5f - r, 0.0f);
+                d.shapes.PushBack(ShapeDesc::Capsule(r, half, Vec3(trunk.base.x, trunk.base.y + trunk.height * 0.5f, trunk.base.z) * s));
+            }
+            bodies.PushBack(m_world->CreateBody(d));
+        }
+    }
+    m_foliage.InsertOrAssign(e.Pack(), move(bodies));
+    return true;
+}
+
+void PhysicsSystem::SyncStreamed(ecs::World& world)
+{
+    // Unloaded: free the bodies no tracked entry owns (tracked ones are freed by Tick).
+    Array<u64> gone;
+    for (const auto& [k, bodies] : m_foliage)
+        if (!world.IsAlive(Entity::Unpack(k)))
+            gone.PushBack(k);
+    for (u64 k : gone) {
+        for (BodyId b : *m_foliage.Find(k))
+            if (m_world->IsValid(b))
+                m_world->DestroyBody(b);
+        m_foliage.Remove(k);
+    }
+    gone.Clear();
+    for (const auto& [k, body] : m_meshBodies)
+        if (!world.IsAlive(Entity::Unpack(k)))
+            gone.PushBack(k);
+    for (u64 k : gone) {
+        if (m_world->IsValid(*m_meshBodies.Find(k)))
+            m_world->DestroyBody(*m_meshBodies.Find(k));
+        m_meshBodies.Remove(k);
+    }
+    // Loaded: the same as Begin for entities without a body.
+    const u32 before = m_world->BodyCount();
+    CreateBodies(world, true);
+    if (m_world->BodyCount() != before)
+        ZX_LOG_INFO(LogPhysics, "Physics: streamed {} -> {} bodies ({} foliage)", before, m_world->BodyCount(), FoliageBodyCount());
+}
+
+void PhysicsSystem::CreateBodies(ecs::World& world, bool onlyNew)
 {
     Array<Entity> dynamicBodies, staticBodies;
-    world.Query<const RigidBody>().Each([&](Entity e, const RigidBody&) { dynamicBodies.PushBack(e); });
+    world.Query<const RigidBody>().Each([&](Entity e, const RigidBody&) {
+        if (!onlyNew || !Known(e))
+            dynamicBodies.PushBack(e);
+    });
     auto addStatic = [&](Entity e) {
+        if (onlyNew && Known(e))
+            return;
         if (!world.Get<const RigidBody>(e) && !HasRigidBodyAbove(world, e)) {
             for (Entity s : staticBodies)
                 if (s == e)
@@ -699,6 +823,15 @@ void PhysicsSystem::CreateBodies(ecs::World& world)
         CreateBody(world, e, false);
     for (Entity e : dynamicBodies)
         CreateBody(world, e, true);
+    // Foliage plants (static, one body each).
+    Array<Entity> foliage;
+    world.Query<const Foliage>().Each([&](Entity e, const Foliage&) {
+        if (!Known(e))
+            foliage.PushBack(e);
+    });
+    for (Entity e : foliage)
+        if (!CreateFoliageBodies(world, e))
+            m_pendingFoliage.PushBack(e);
     // Characters push dynamic bodies: a kinematic capsule follows each Character Controller.
     world.Query<const CharacterController>().Each([&](Entity e, const CharacterController& c) {
         if (m_byEntity.Contains(e.Pack()))
@@ -804,12 +937,28 @@ void PhysicsSystem::Tick(ecs::World& world, f32 dt)
             d.userData = e.Pack();
             d.layer = LayerOf(world, e);
             d.shapes.PushBack(ShapeDesc::Mesh(m_world->CreateTriangleMesh(positions.View(), indices.View())));
-            m_world->CreateBody(d);
+            const BodyId body = m_world->CreateBody(d);
+            if (!m_byEntity.Contains(e.Pack()))
+                m_meshBodies.InsertOrAssign(e.Pack(), body);
             if (m_pendingMeshes.Empty())
                 ZX_LOG_INFO(LogPhysics, "Physics: mesh colliders ready ({} bodies)", m_world->BodyCount());
         } else {
             ++i;
         }
+    }
+
+    // Foliage whose meshes arrived since.
+    if (!m_pendingFoliage.Empty()) {
+        Array<Entity> waiting = move(m_pendingFoliage);
+        m_pendingFoliage.Clear();
+        for (Entity e : waiting)
+            if (world.IsAlive(e) && !CreateFoliageBodies(world, e))
+                m_pendingFoliage.PushBack(e);
+    }
+    // World Partition cells streamed in or out: bodies for the new entities, none for the removed ones.
+    if (world.EntityCount() != m_seenEntities) {
+        m_seenEntities = world.EntityCount();
+        SyncStreamed(world);
     }
 
     // Rigid bodies whose convex meshes arrived since.

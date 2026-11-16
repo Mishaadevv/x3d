@@ -363,7 +363,7 @@ void SceneRenderer::PrepareGpu(Span<const RenderInstance> instances, const Rende
             }
             const Vec4 burn(inst.burnOrigin, inst.burnRadius);
             MemCopy(dst + 112, &burn, 16);
-            WriteLightmapRow(dst + 192, inst);
+            WriteLightmapRow(dst + 192, inst, mesh->bounds);
             moved[i] = inst.prevWorld ? 1 : 0;
             if (inst.prevWorld) { // only the velocity pass reads last frame's rows, and only for moved instances
                 const Mat4 prevRows = Transpose(*inst.prevWorld);

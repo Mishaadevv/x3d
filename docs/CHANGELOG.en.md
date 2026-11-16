@@ -2,6 +2,14 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.17.13 — Foliage: wind and collision (2026-11-16)
+- **Wind**: trees, bushes and grass bend with the Wind Zones, gusts included. The base stays put, the top leans and rocks, leaves flutter, and every plant has its own phase. `Foliage::windSway`: 0 = rigid, 1 = a tree, 3 = grass; -1 = by the model's name, so rocks stay still. The wind goes in free words of the instance row, and the vertex shader does the bending (shadows sway too).
+- **Collision**: in Play every plant gets a static body. Trees get a trunk capsule: its center and radius come from the lowest 8 % of the mesh's vertices, and its height is half the plant's height. Rocks get the convex hull of their mesh. `Foliage::collision`: Auto (by name) / None / Trunk / Hull.
+- **Streaming and physics**: entities that appear while playing (World Partition cells in ZXGame) get their bodies on the next frame, and unloaded ones lose them. Before this, physics only saw the entities that were in the scene at the start.
+- Console: `wind <m/s> [direction deg]`, `camera.drop [height]`.
+- **Checked**: Foliage.* tests (trunk from a mesh, automatic modes by name, wind reaches grass and not rocks) and Physics*: 30 passed. Open world screenshots in calm air and in a 22 m/s storm: grass and pines lean with the wind, rocks stay still. Play in a 2 km world created 4659 foliage bodies. Not checked: picking up cells streamed in during play (editor Play does not stream cells; only ZXGame does). The TAA velocity does not include the wind.
+- Development build: no errors or warnings.
+
 ## 0.17.12 — Animation retargeting (2026-11-16)
 - **Other models' clips on your skeleton**: an Animator plays clips from any model, not only its own. A clip records which skeleton it was made for. When a character has a different skeleton, the engine bakes a version of the clip for it once. After that, the AnimGraph, blending, root motion, morph targets and events work as they do with the character's own clips, and the per-frame cost is unchanged.
 - **Bone matching**: humanoid bones are recognized from names in Mixamo style (`mixamorig:LeftUpLeg`), Unreal style (`thigh_l`, `calf_r`), Blender style (`upper_arm.L`, `DEF-thigh.R`), 3ds Max style (`Bip01 L Thigh`) and variants such as `LThigh` / `HandR` / `Leg_Upper_Right`. The spine is matched by position along the chain from the pelvis to the neck, so 3 spine bones can drive 2 and the other way round. Other bones (fingers and so on) are matched by name. Twist, IK and end bones are skipped.

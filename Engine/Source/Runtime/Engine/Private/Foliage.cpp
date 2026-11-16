@@ -1,7 +1,9 @@
 #include "Engine/Foliage.h"
+#include "Core/Containers/Algorithm.h"
 #include "Core/Hash/Hash.h"
 #include "Core/Math/Random.h"
 #include "Core/String/Base64.h"
+#include "Core/String/Path.h"
 
 #include <cmath>
 
@@ -13,14 +15,91 @@ ZX_REFLECT_STRUCT_BEGIN(FoliagePart)
     ZX_FIELD(local)
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_ENUM_BEGIN(FoliageCollision)
+    ZX_ENUM_VALUE(Auto)
+    ZX_ENUM_VALUE(None)
+    ZX_ENUM_VALUE(Trunk)
+    ZX_ENUM_VALUE(Hull)
+ZX_REFLECT_ENUM_END()
+
 ZX_REFLECT_STRUCT_BEGIN(Foliage)
     ZX_FIELD(model, Meta::ReadOnly(), Meta::Tooltip("The model the plants were made from"))
     ZX_FIELD(parts, Meta::Hidden())
     ZX_FIELD(cullDistance, Meta::Range(10, 5000), Meta::Units("m"), Meta::Tooltip("Plants farther than this from the camera are not drawn"))
     ZX_FIELD(castShadows)
+    ZX_FIELD(windSway, Meta::Range(-1, 5), Meta::Tooltip("How much the plants bend in the wind (Wind Zones): 0 = rigid, 1 = a tree, "
+                                                         "3 = grass; -1 = by the model's name (rocks rigid, grass flexible)"))
+    ZX_FIELD(collision, Meta::Tooltip("How the plants collide while playing: Trunk = a capsule around the trunk (trees), Hull = the "
+                                      "convex shape of the mesh (rocks), None = walk through (grass); Auto = by the model's name"))
     ZX_FIELD(data, Meta::Hidden())
     ZX_FIELD(dataId, Meta::Hidden())
 ZX_REFLECT_STRUCT_END()
+
+f32 FoliageWindSway(const Foliage& f)
+{
+    if (f.windSway >= 0.0f)
+        return f.windSway;
+    String name(Path::Stem(f.model));
+    name.ToLowerInPlace();
+    for (const char* rigid : {"rock", "stone", "boulder", "pebble", "cliff", "log", "stump", "mushroom", "dead"})
+        if (name.Contains(StringView(rigid)))
+            return name.Contains(StringView("dead")) ? 0.4f : 0.0f; // dead trees: bare, stiff branches
+    for (const char* soft : {"grass", "fern", "flower", "clover", "plant", "reed", "petal", "wheat", "weed"})
+        if (name.Contains(StringView(soft)))
+            return 3.0f;
+    if (name.Contains(StringView("bush")) || name.Contains(StringView("shrub")))
+        return 1.5f;
+    if (name.Contains(StringView("pine")) || name.Contains(StringView("fir")))
+        return 0.8f;
+    return 1.0f;
+}
+
+FoliageCollision FoliageCollisionOf(const Foliage& f)
+{
+    if (f.collision != FoliageCollision::Auto)
+        return f.collision;
+    String name(Path::Stem(f.model));
+    name.ToLowerInPlace();
+    for (const char* solid : {"rock", "stone", "boulder", "cliff", "stump", "log"})
+        if (name.Contains(StringView(solid)))
+            return FoliageCollision::Hull;
+    for (const char* tree : {"tree", "pine", "fir", "oak", "birch", "palm", "spruce", "trunk"})
+        if (name.Contains(StringView(tree)))
+            return FoliageCollision::Trunk;
+    return FoliageCollision::None;
+}
+
+bool EstimateFoliageTrunk(Span<const Vec3> positions, FoliageTrunk& out)
+{
+    if (positions.Empty())
+        return false;
+    f32 minY = positions[0].y, maxY = positions[0].y;
+    for (Vec3 p : positions) {
+        minY = Min(minY, p.y);
+        maxY = Max(maxY, p.y);
+    }
+    const f32 height = maxY - minY;
+    const f32 band = minY + Max(height * 0.08f, 1e-3f);
+    Vec3 center;
+    u32 n = 0;
+    for (Vec3 p : positions)
+        if (p.y <= band) {
+            center += Vec3(p.x, 0.0f, p.z);
+            ++n;
+        }
+    center = center / f32(Max(n, 1u));
+    // Radius: the 75th percentile of the base ring (roots and stray vertices don't widen it).
+    Array<f32> d;
+    for (Vec3 p : positions)
+        if (p.y <= band)
+            d.PushBack(Length(Vec2(p.x - center.x, p.z - center.z)));
+    Sort(d, [](f32 a, f32 b) { return a < b; });
+    const f32 r = d.Empty() ? 0.0f : d[Min(d.Size() - 1, usize(f32(d.Size()) * 0.75f))];
+    out.base = Vec3(center.x, minY, center.z);
+    out.radius = Clamp(r, 0.04f, Max(height * 0.12f, 0.04f));
+    out.height = height * 0.5f;
+    return true;
+}
 
 void EncodeFoliage(Foliage& f, Span<const FoliageInstance> instances)
 {

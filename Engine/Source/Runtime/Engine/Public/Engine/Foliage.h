@@ -26,6 +26,16 @@ struct FoliagePart
 };
 ZX_DECLARE_TYPE(FoliagePart);
 
+/// How the plants of a Foliage entity collide (while playing).
+enum class FoliageCollision : u8
+{
+    Auto,  // by the model's name: trees -> Trunk, rocks -> Hull, grass / flowers / bushes -> None
+    None,
+    Trunk, // a capsule around the trunk (estimated from the mesh's lowest part), up to half the plant's height
+    Hull,  // the convex hull of the mesh (rocks)
+};
+ZX_DECLARE_ENUM(FoliageCollision);
+
 struct FoliageInstance
 {
     Vec3 position; // relative to the entity
@@ -39,6 +49,10 @@ struct Foliage
     Array<FoliagePart> parts;
     f32 cullDistance = 600.0f;    // meters from the viewer
     bool castShadows = true;
+    // How much the plants bend in the scene's wind (Wind Zones; a Wind Response on the entity scales it): 0 = rigid,
+    // 1 = a tree, ~3 = grass. Negative = by the model's name (rocks rigid, grass and flowers flexible, trees 1).
+    f32 windSway = -1.0f;
+    FoliageCollision collision = FoliageCollision::Auto;
     // Instances: base64 of 5 floats each (x, y, z, yaw, scale); a new dataId marks every change.
     String data;
     i32 dataId = 0;
@@ -51,6 +65,19 @@ ZX_DECLARE_TYPE(Foliage);
 void EncodeFoliage(Foliage& f, Span<const FoliageInstance> instances);
 /// Decodes `data` into `instances` when dataId changed.
 void DecodeFoliage(Foliage& f);
+/// Flexibility of a foliage entity in the wind: windSway, or (when negative) a guess from the model's name.
+f32 FoliageWindSway(const Foliage& f);
+/// The collision of a foliage entity with Auto resolved from the model's name (never Auto).
+FoliageCollision FoliageCollisionOf(const Foliage& f);
+/// Trunk of a plant mesh (mesh space): the vertices of its lowest 8 % give the center and radius; the capsule reaches
+/// half the plant's height. False for an empty mesh.
+struct FoliageTrunk
+{
+    Vec3 base;      // bottom center
+    f32 radius = 0.0f;
+    f32 height = 0.0f;
+};
+bool EstimateFoliageTrunk(Span<const Vec3> positions, FoliageTrunk& out);
 /// Parts of a model prefab (every node with a mesh, with its transform within the model). False until it is loaded.
 bool FoliagePartsFromPrefab(const asset::PrefabAsset& prefab, Array<FoliagePart>& out);
 

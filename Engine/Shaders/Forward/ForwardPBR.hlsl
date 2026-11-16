@@ -223,11 +223,42 @@ struct VSOutput
 #endif
 };
 
+/// Foliage in the wind (instance row +192: z = wind xz times flexibility, w = the mesh's base height and height): the
+/// plant leans with the wind and rocks around that lean, bending more towards the top (base fixed), and its tips
+/// flutter. Each plant has its own phase. Returns the world offset of the vertex at mesh height `localY`.
+float3 FoliageWind(uint2 row, float localY, float4x4 world, float3 worldPos)
+{
+    const float2 wind = float2(f16tof32(row.x & 0xFFFF), f16tof32(row.x >> 16));
+    const float baseY = f16tof32(row.y & 0xFFFF), height = max(f16tof32(row.y >> 16), 1e-3);
+    const float t = saturate((localY - baseY) / height);
+    const float3 origin = float3(world[0][3], world[1][3], world[2][3]);
+    const float plant = height * length(float3(world[0][1], world[1][1], world[2][1])); // meters tall
+    const float speed = length(wind);
+    const float phase = dot(origin.xz, float2(0.37, 0.61));
+    const float time = g_View.time;
+    const float rock = 0.65 + 0.3 * sin(time * (1.05 + 0.25 * frac(phase)) + phase) + 0.1 * sin(time * 2.7 + phase * 1.7);
+    float3 offset = float3(wind.x, 0.0, wind.y) * (0.012 * plant * t * t * rock);
+    const float lean = length(offset.xz), maxLean = 0.35 * plant;
+    if (lean > maxLean)
+        offset.xz *= maxLean / lean;
+    // Leaves and blades flutter across the wind.
+    const float flutter = sin(time * 6.3 + dot(worldPos, float3(1.7, 0.9, 1.3)) + phase) * 0.003 * speed * t * min(plant, 4.0);
+    const float2 across = speed > 1e-3 ? float2(-wind.y, wind.x) / speed : float2(1.0, 0.0);
+    offset += float3(across.x * flutter, 0.4 * flutter, across.y * flutter);
+    // Bending sinks the top a little (the stem keeps its length).
+    const float l = length(offset.xz);
+    offset.y -= l * l / max(2.0 * plant * max(t, 0.1), 0.2);
+    return offset;
+}
+
 VSOutput MakeVertex(uint vertexBuffer, uint vertexIndex, uint instanceIndex, uint material, uint lod)
 {
     const MeshVertex v = LoadMeshVertex(GetBuffer(vertexBuffer), vertexIndex);
     const Instance inst = LoadInstance(instanceIndex);
-    const float4 world = mul(inst.world, float4(v.position, 1.0));
+    float4 world = mul(inst.world, float4(v.position, 1.0));
+    const uint2 windRow = GetBuffer(g_View.instanceBuffer).Load2(instanceIndex * INSTANCE_STRIDE + 200);
+    if (windRow.x != 0)
+        world.xyz += FoliageWind(windRow, v.position.y, inst.world, world.xyz);
     VSOutput o;
     o.position = mul(g_View.viewProj, world);
 #if !defined(DEPTH_ONLY) || defined(ALPHA_TEST)
@@ -898,7 +929,7 @@ SurfaceData EvaluateSurface(VSOutput i, bool frontFace, out Material m)
     s_lightmapUV = i.uv.zw;
     if (g_View.lightmapAtlas != ZX_INVALID_INDEX) {
         const uint4 row = GetBuffer(g_View.instanceBuffer).Load4(i.drawInfo.x * INSTANCE_STRIDE + 192);
-        if (row.w != 0) {
+        if (f16tof32(row.x & 0xFFFF) > 0.0) {
             const float4 sb = float4(f16tof32(row.x & 0xFFFF), f16tof32(row.x >> 16), f16tof32(row.y & 0xFFFF), f16tof32(row.y >> 16));
             s_lightmapAtlasUV = float3(i.uv.zw * sb.xy + sb.zw, 1.0);
         }
