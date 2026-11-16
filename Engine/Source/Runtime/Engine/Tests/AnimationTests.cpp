@@ -537,3 +537,73 @@ ZX_TEST(AnimationSystem, MorphTargetsFromThePrefabAndTheClips)
     ch.Warm(editing, false);
     ZX_EXPECT(editing.MorphWeights(ch.skinned).Empty());
 }
+
+ZX_TEST(AnimationSystem, PlaysAnotherModelsClipsRetargeted)
+{
+    // SK_Bot has no clips and an Unreal-style A-pose skeleton; it borrows SK_Human's (Mixamo-style, T-pose, Z-up).
+    AnimatedCharacter bot("SK_Bot.glb");
+    ZX_REQUIRE(bool(bot.skinned));
+    Animator* a = bot.world.Get<Animator>(bot.skinned);
+    ZX_REQUIRE(a != nullptr);
+    ZX_EXPECT(a->clips.Empty());
+    const asset::AssetId human =
+        bot.assets->LoadPath(FindEngineRootDirectory() + "/Engine/Content/StarterContent/Characters/SK_Human.glb");
+    bot.assets->WaitIdle();
+    const asset::PrefabAsset* prefab = bot.assets->GetPrefab(human);
+    ZX_REQUIRE(prefab != nullptr);
+    asset::AssetId humanSkeleton;
+    for (const asset::PrefabNode& n : prefab->nodes)
+        if (n.skeleton.IsValid()) {
+            humanSkeleton = n.skeleton;
+            a->clips.Append(n.animations.View());
+        }
+    ZX_REQUIRE(a->clips.Size() >= 7);
+
+    AnimationSystem anim(*bot.assets);
+    bot.Warm(anim, true);
+    ZX_REQUIRE(!anim.Palette(bot.skinned).Empty());
+    // The rest pose: where the feet stand (mesh space).
+    const asset::Skeleton* sk = bot.assets->GetSkeleton(a->skeleton);
+    ZX_REQUIRE(sk != nullptr);
+    const Mat4 skinToNode = a->skinToNode.ToMatrix();
+    const u32 feet[2] = {u32(sk->FindBone("foot_l")), u32(sk->FindBone("foot_r"))};
+    auto footHeight = [&](u32 f) {
+        const Vec3 rest = (skinToNode * Inverse(sk->inverseBind[f])).GetTranslation();
+        return anim.Palette(bot.skinned)[f].TransformPoint(rest).y;
+    };
+    const f32 restFoot = footHeight(feet[0]);
+
+    // Idle, retargeted: cooked clips know their skeleton, so the bot gets a version made for its own.
+    ZX_REQUIRE(anim.Play(bot.world, bot.skinned, "Idle"));
+    for (u32 i = 0; i < 6; ++i) {
+        anim.Tick(bot.world, 0.0f, true);
+        bot.assets->WaitIdle();
+    }
+    const asset::AnimationClip* idle = bot.assets->GetAnimation(a->clip);
+    ZX_REQUIRE(idle != nullptr);
+    ZX_EXPECT(idle->skeleton == humanSkeleton);
+    ZX_EXPECT(idle->skeleton != a->skeleton);
+    // Standing: the feet stay on the ground (hip height scaled to the bot's legs).
+    ZX_EXPECT_NEAR(footHeight(feet[0]), restFoot, 0.05f);
+    ZX_EXPECT_NEAR(footHeight(feet[1]), restFoot, 0.05f);
+
+    // Walking moves the pose, and the feet take turns.
+    ZX_REQUIRE(anim.Play(bot.world, bot.skinned, "Walk"));
+    for (u32 i = 0; i < 6; ++i) {
+        anim.Tick(bot.world, 0.0f, true);
+        bot.assets->WaitIdle();
+    }
+    for (u32 i = 0; i < 30; ++i) // past the cross-fade
+        anim.Tick(bot.world, 1.0f / 60.0f, true);
+    Array<Mat4> before;
+    before.Append(anim.Palette(bot.skinned));
+    f32 lift[2] = {0.0f, 0.0f};
+    for (u32 i = 0; i < 90; ++i) {
+        anim.Tick(bot.world, 1.0f / 60.0f, true);
+        for (u32 k = 0; k < 2; ++k)
+            lift[k] = Max(lift[k], footHeight(feet[k]) - restFoot);
+    }
+    ZX_EXPECT_GT(MaxDifference(before.View(), anim.Palette(bot.skinned)), 1e-2f);
+    ZX_EXPECT_GT(lift[0], 0.03f);
+    ZX_EXPECT_GT(lift[1], 0.03f);
+}

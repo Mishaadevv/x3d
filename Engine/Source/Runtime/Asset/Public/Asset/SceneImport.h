@@ -118,6 +118,8 @@ Result<ImportedScene> ImportFbx(StringView path, const ImportOptions& options = 
 Result<ImportedScene> ImportFbxFromMemory(ByteSpan data, StringView baseDirectory, StringView sourceName, const ImportOptions& options = {});
 /// Texture files an FBX references, resolved like the importer does (moved files are looked up by name).
 Array<String> ListFbxTextureFiles(StringView path);
+/// Sets Skeleton::toModel from the first skinned node of each skin (its node chain * skinToNode). The importers call it.
+void ResolveSkeletonModelSpaces(ImportedScene& scene);
 /// Dispatches on the extension (.gltf/.glb/.fbx/.obj).
 Result<ImportedScene> ImportScene(StringView path, const ImportOptions& options = {});
 

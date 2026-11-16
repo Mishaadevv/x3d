@@ -571,6 +571,8 @@ private:
     void BuildEraLevel(); // an empty outdoor level: atmosphere and a ground plane (the "Graphics 20xx" templates)
     void BuildPhysicsLevel();
     bool AddAnimatedCharacter(ecs::Entity player);
+    /// The Starter Content robot (SK_Bot: its own skeleton, no clips) playing SK_Human's `clip`, retargeted.
+    ecs::Entity AddRetargetedBot(const Transform& at, StringView clip);
     void AddSlime(const Transform& at, f32 speed);
     void BuildVehicleLevel(); // skinned starter character + locomotion graph (false: not available)
     /// Template atmosphere: a volumetric Height Fog and Volumetric Clouds (outside the undo history).

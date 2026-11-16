@@ -1,4 +1,5 @@
 #include "Engine/Animation.h"
+#include "Asset/Retarget.h"
 #include "Core/FileSystem/FileSystem.h"
 #include <cmath>
 #include "Core/Log/Log.h"
@@ -12,7 +13,10 @@ namespace zx {
 ZX_DEFINE_LOG_CATEGORY_STATIC(LogAnimation, Info);
 
 ZX_REFLECT_STRUCT_BEGIN(Animator)
-    ZX_FIELD(clip, Meta::AssetType("Animation"), Meta::Tooltip("The clip that plays without a graph (one of the model's clips)"))
+    ZX_FIELD(clip, Meta::AssetType("Animation"), Meta::Tooltip("The clip that plays without a graph (one of Clips)"))
+    ZX_FIELD(clips, Meta::AssetType("Animation"),
+             Meta::Tooltip("Clips this animator plays (by name in graphs and scripts): the model's own, and clips of other "
+                           "models, retargeted to this skeleton by bone names"))
     ZX_FIELD(graph, Meta::Tooltip("AnimGraph (.zanimgraph, Content-relative) that picks and blends the clips from parameters, "
                                   "e.g. StarterContent/Characters/Locomotion.zanimgraph; empty = play Clip"))
     ZX_FIELD(playing)
@@ -21,7 +25,6 @@ ZX_REFLECT_STRUCT_BEGIN(Animator)
     ZX_FIELD(speed, Meta::Range(0, 4))
     ZX_FIELD(blendTime, Meta::Range(0, 2), Meta::Units("s"), Meta::Tooltip("Cross-fade when the clip changes"))
     ZX_FIELD(skeleton, Meta::AssetType("Skeleton"), Meta::ReadOnly())
-    ZX_FIELD(clips, Meta::AssetType("Animation"), Meta::ReadOnly(), Meta::Tooltip("Clips imported with the model"))
     ZX_FIELD(footIK, Meta::Category("Inverse Kinematics"), Meta::Tooltip("Feet follow slopes and steps while playing (grounded Character Controller)"))
     ZX_FIELD(footReach, Meta::Range(0, 2), Meta::Units("m"), Meta::Tooltip("How far the feet may move up / down"))
     ZX_FIELD(leftFoot, Meta::Tooltip("Foot bone; its parent and grandparent are the knee and the hip"))
@@ -83,14 +86,62 @@ const AnimationSystem::GraphFile* AnimationSystem::LoadGraph(StringView path)
     return g.ok ? &g : nullptr;
 }
 
+namespace {
+
+asset::AssetId PairKey(asset::AssetId clip, asset::AssetId skeleton)
+{
+    asset::AssetId k;
+    k.high = clip.high ^ (skeleton.high * 0x9E3779B97F4A7C15ull + 0x632BE59BD9B4E019ull);
+    k.low = clip.low ^ ((skeleton.low << 17) | (skeleton.low >> 47)) ^ 0x85EBCA77C2B2AE63ull;
+    return k;
+}
+
+} // namespace
+
+const asset::AnimationClip* AnimationSystem::ClipFor(asset::AssetId id, const Animator& a)
+{
+    if (!id.IsValid())
+        return nullptr;
+    const asset::AnimationClip* clip = m_assets.GetAnimation(id);
+    if (!clip) {
+        if (m_assets.GetState(id) == asset::AssetState::Unknown)
+            m_assets.Load(id);
+        return nullptr;
+    }
+    // Made for this skeleton (or unknown: older cooks, procedural clips).
+    if (!clip->skeleton.IsValid() || clip->skeleton == a.skeleton || !a.skeleton.IsValid())
+        return clip;
+    const asset::AssetId key = PairKey(id, a.skeleton);
+    if (UniquePtr<asset::AnimationClip>* done = m_retargeted.Find(key))
+        return done->Get();
+    const asset::Skeleton* source = m_assets.GetSkeleton(clip->skeleton);
+    const asset::Skeleton* target = m_assets.GetSkeleton(a.skeleton);
+    if (!source || !target) {
+        for (asset::AssetId sk : {clip->skeleton, a.skeleton})
+            if (m_assets.GetState(sk) == asset::AssetState::Unknown)
+                m_assets.Load(sk);
+        if (m_assets.GetState(clip->skeleton) == asset::AssetState::Failed)
+            return clip->boneCount == (target ? target->BoneCount() : 0u) ? clip : nullptr;
+        return nullptr;
+    }
+    const asset::anim::RetargetMap map = asset::anim::BuildRetargetMap(*source, *target);
+    UniquePtr<asset::AnimationClip> made(new asset::AnimationClip(map.identity ? *clip : asset::anim::RetargetClip(*clip, *source, *target, map)));
+    made->skeleton = a.skeleton;
+    if (!map.identity)
+        ZX_LOG_INFO(LogAnimation, "Retargeted {} from {} to {}: {} of {} bones mapped", clip->name, source->name, target->name, map.mapped,
+                    target->BoneCount());
+    if (map.mapped == 0)
+        ZX_LOG_WARN(LogAnimation, "{} has no bones in common with {}: it plays as the rest pose", clip->name, target->name);
+    const asset::AnimationClip* result = made.Get();
+    m_retargeted.InsertOrAssign(key, move(made));
+    return result;
+}
+
 const asset::AnimationClip* AnimationSystem::ClipByName(const Animator& a, StringView name)
 {
     for (const asset::AssetId& id : a.clips)
         if (m_assets.GetName(id).View().EqualsIgnoreCase(name)) {
-            const asset::AnimationClip* clip = m_assets.GetAnimation(id);
-            if (!clip && m_assets.GetState(id) == asset::AssetState::Unknown)
-                m_assets.Load(id);
-            return clip;
+            return ClipFor(id, a);
         }
     return nullptr;
 }
@@ -456,9 +507,7 @@ void AnimationSystem::Tick(ecs::World& world, f32 dt, bool playing)
             }
             const asset::AnimationClip* clip = nullptr;
             if (s.clip.IsValid()) {
-                clip = m_assets.GetAnimation(s.clip);
-                if (!clip && m_assets.GetState(s.clip) == asset::AssetState::Unknown)
-                    m_assets.Load(s.clip);
+                clip = ClipFor(s.clip, a);
             }
             const f32 timeBefore = s.time, fromBefore = s.fromTime;
             if (animate && a.playing) {
@@ -486,7 +535,7 @@ void AnimationSystem::Tick(ecs::World& world, f32 dt, bool playing)
                 s.rootDelta = Horizontal(asset::anim::RootMotionDelta(*clip, *skeleton, root, timeBefore, s.time, a.loop), s.rootUp);
             }
             if (s.fade < 1.0f && animate)
-                if (const asset::AnimationClip* from = m_assets.GetAnimation(s.fromClip)) {
+                if (const asset::AnimationClip* from = ClipFor(s.fromClip, a)) {
                     s.fromPose.Resize(bones);
                     asset::anim::SampleClip(*from, *skeleton, s.fromTime, a.loop, s.fromPose.View());
                     asset::anim::BlendPoses(s.fromPose.View(), s.pose.View(), Smooth(s.fade), s.pose.View());
@@ -522,7 +571,7 @@ void AnimationSystem::Tick(ecs::World& world, f32 dt, bool playing)
                 const f32 t = s.fade < 1.0f ? Smooth(s.fade) : 1.0f;
                 clipMorphs(clip, s.time, t);
                 if (t < 1.0f)
-                    clipMorphs(m_assets.GetAnimation(s.fromClip), s.fromTime, 1.0f - t);
+                    clipMorphs(ClipFor(s.fromClip, a), s.fromTime, 1.0f - t);
             }
         }
         if (playing && s.rootBone >= 0)

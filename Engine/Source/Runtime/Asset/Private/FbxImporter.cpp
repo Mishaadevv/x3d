@@ -460,6 +460,7 @@ public:
         ImportAnimations();
         if (m_scene.meshes.Empty() && m_scene.skeletons.Empty())
             return Error::Make(ErrorCode::InvalidData, "FBX: '{}' contains no meshes", m_sourceName);
+        ResolveSkeletonModelSpaces(m_scene);
         return move(m_scene);
     }
 

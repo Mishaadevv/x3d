@@ -296,6 +296,12 @@ fake OpenAI-compatible server (python http.server, GET /v1/models + POST /v1/cha
 glob on the full name (`ZXTests.exe "Models.*"`). Known local issue: in one run many tests that use the engine's temp
 directory (C:\Users\MISHAK~1\AppData\Local\Temp) failed; with TEMP/TMP set to a writable folder (`set TEMP=...` before
 ZXTests.exe) the full run passes (473). The short-path root cause was not investigated.
+Retargeting (0.17.12): Asset/Retarget.h (ClassifyBone / BuildRetargetMap / RetargetPose / RetargetClip; align through
+Skeleton::toModel set by ResolveSkeletonModelSpaces in the importers, restFix = body frame then FromTo per bone, hips
+move scaled by hip height), AnimationClip::skeleton (cook), AnimationSystem::ClipFor bakes + caches per (clip, skeleton).
+Editor: Details EditAnimatorClips (drop a model), AddClipsFromModel / ClipLabel (AnimationEditor.cpp), anim.addclips,
+Editor::AddRetargetedBot (Third Person template). SK_Bot.glb from Tools/make_starter_bot.py. Tests Retarget.*,
+AnimationSystem.PlaysAnotherModelsClipsRetargeted. SK_Human's rest pose faces -X (its clips turn the hips to +Z).
 Real-mouse script uidrag2.py: wait:N token, keybd_event needs MapVirtualKey scan codes (the engine reads scan codes). Python heredocs turn "\xEE" into raw bytes: put icon literals in with the Edit tool.
 Relocation (0.16.3): RelocateProbe in UpdateIrradianceCS (thread 0, from the group-shared rays) -> m_probeData
 (DDGIVolume::probeData, DDGIProbeOffset); back-face rays store -t. Tests GI.*. GPU timings on this laptop drift with heat: compare variants

@@ -699,6 +699,8 @@ void Editor::BuildCharacterLevel(bool thirdPerson)
         AddSlime(Transform(Vec3(-3.5f, 0, 1.5f), Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(150.0f))), 1.0f);
         AddSlime(Transform(Vec3(-4.8f, 0, 3.2f), Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(200.0f)), Vec3(0.7f)), 1.3f);
         AddSlime(Transform(Vec3(-2.4f, 0, 3.6f), Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(170.0f)), Vec3(0.55f)), 1.6f);
+        // A robot with its own skeleton working with the human's clips (animation retargeting).
+        AddRetargetedBot(Transform(Vec3(3.2f, 0, 2.6f), Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(215.0f))), "Working");
         if (!AddAnimatedCharacter(player)) {
             // A simple mannequin (part of the player, so it doesn't block it): body, head, visor, arms.
             shape("Body", BuiltinShape::Cylinder, Vec3(0, 0.95f, 0), Vec3(0.55f, 1.1f, 0.4f), "M_Proto_Light", {}, player);
@@ -862,6 +864,34 @@ void Editor::AddSlime(const Transform& at, f32 speed)
         }
     }
     world.Add(root, Script{String("StarterContent/Scripts/Slime.zs"), String::Format(R"json({{"period":{}}})json", 1.0333f / speed)});
+}
+
+ecs::Entity Editor::AddRetargetedBot(const Transform& at, StringView clip)
+{
+    const String bot = contentRoot + "/StarterContent/Characters/SK_Bot.glb";
+    const String human = contentRoot + "/StarterContent/Characters/SK_Human.glb";
+    if (!assets || !platform::FileExists(bot) || !platform::FileExists(human))
+        return {};
+    const asset::AssetId id = assets->LoadPath(bot);
+    assets->WaitIdle();
+    const asset::PrefabAsset* prefab = assets->GetPrefab(id);
+    if (!prefab)
+        return {};
+    const ecs::Entity root = zx::InstantiatePrefab(world, *prefab, at, {}, assets.Get());
+    if (scene::EntityName* n = world.Get<scene::EntityName>(root))
+        n->value = "Robot";
+    Array<ecs::Entity> members;
+    CollectHierarchy(world, root, members);
+    for (ecs::Entity e : members) {
+        EnsureEntityGuid(world, e);
+        if (Animator* a = world.Get<Animator>(e)) {
+            AddClipsFromModel(*this, *a, human);
+            for (const asset::AssetId& c : a->clips)
+                if (assets->GetName(c).View().EqualsIgnoreCase(clip))
+                    a->clip = c;
+        }
+    }
+    return root;
 }
 
 bool Editor::AddAnimatedCharacter(ecs::Entity player)

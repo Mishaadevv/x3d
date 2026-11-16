@@ -117,6 +117,7 @@ public:
         ImportNodes();
         ImportSkins();
         ImportAnimations();
+        ResolveSkeletonModelSpaces(m_scene);
         return move(m_scene);
     }
 
@@ -880,6 +881,20 @@ Result<ImportedScene> ImportGltf(StringView path, const ImportOptions& options)
     if (scene)
         scene->sourcePath = String(path);
     return scene;
+}
+
+void ResolveSkeletonModelSpaces(ImportedScene& scene)
+{
+    for (usize k = 0; k < scene.skeletons.Size(); ++k)
+        for (usize n = 0; n < scene.nodes.Size(); ++n) {
+            if (scene.nodes[n].skin != i32(k))
+                continue;
+            Mat4 m = scene.nodes[n].skinToNode;
+            for (i32 p = i32(n); p >= 0; p = scene.nodes[usize(p)].parent)
+                m = scene.nodes[usize(p)].local.ToMatrix() * m;
+            scene.skeletons[k].toModel = Transform::FromMatrix(m);
+            break;
+        }
 }
 
 Result<ImportedScene> ImportScene(StringView path, const ImportOptions& options)

@@ -4,7 +4,7 @@ A 3D game engine and editor written from scratch in C++20 on Direct3D 12, part o
 [Zeqou](https://mishaadevv.github.io/zeqou/) ecosystem. The goal is a workflow like Unity URP or Unreal Engine 5 that
 runs well on everyday hardware. The development machine is a laptop with Intel UHD 620 graphics.
 
-**Version 0.17.11 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
+**Version 0.17.12 (Beta)** · no third-party libraries (only Windows and its SDK) · [changelog](docs/CHANGELOG.md) ·
 [English changelog](docs/CHANGELOG.en.md) · [download](https://github.com/Mishaadevv/x3d/releases/latest)
 
 > [!WARNING]
@@ -95,6 +95,8 @@ Bug reports are welcome in [Issues](https://github.com/Mishaadevv/x3d/issues). P
   - glTF skins and clips with GPU skinning.
   - AnimGraph state machines with layers, masks and blend spaces.
   - Foot IK, root motion and morph targets.
+  - Retargeting: one character plays another's clips (bones matched by name across Mixamo / Unreal / Blender / 3ds Max
+    naming, rest pose and proportions adapted).
   - An Animation Viewer and an AnimGraph editor.
 - **Sequencer**: cutscenes on a timeline (`.zseq`): transform, animation, camera, event and audio tracks,
   scrubbing with a live scene preview, a Sequence Player component and a script API.

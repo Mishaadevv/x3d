@@ -93,6 +93,12 @@ struct AnimGraphEditorState
 };
 
 void OpenAnimationViewer(Editor& ed, StringView modelPath);
+/// Appends the clips of a model (.glb / .gltf / .fbx, physical path) to an Animator, skipping ones it already has; clips
+/// made for another skeleton play retargeted. Loads the model (blocking). Without a clip or graph, the first added clip
+/// becomes the one that plays. Returns how many were added.
+u32 AddClipsFromModel(Editor& ed, Animator& animator, StringView modelPath);
+/// "Run  (SK_Human)" for a clip of another model, "Run" for the animator's own.
+String ClipLabel(Editor& ed, const Animator& animator, asset::AssetId clip);
 void OpenAnimGraphEditor(Editor& ed, StringView graphPath);
 /// Writes a new graph (the locomotion graph as a starting point) and opens it.
 void CreateAnimGraph(Editor& ed, StringView directory);

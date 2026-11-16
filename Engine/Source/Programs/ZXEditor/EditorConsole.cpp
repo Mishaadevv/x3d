@@ -509,6 +509,42 @@ ConCommand CmdAnimGraph("anim.graph",
                             }
                         });
 
+ConCommand CmdAnimAddClips("anim.addclips",
+                           "Adds a model's clips to the Animators of the selected entity (and its children), retargeted to their "
+                           "skeletons: anim.addclips <.glb / .gltf / .fbx, Content-relative or absolute> [clip to play] (undoable)",
+                           [](Span<const StringView> args) {
+                               Editor* ed = Ed();
+                               if (!ed || args.Empty())
+                                   return;
+                               const String path = Path::IsAbsolute(args[0]) ? String(args[0]) : Path::Join(ed->contentRoot, args[0]);
+                               Array<ecs::Entity> animated, stack;
+                               if (ed->selected)
+                                   stack.PushBack(ed->selected);
+                               while (!stack.Empty()) {
+                                   const ecs::Entity e = stack.Back();
+                                   stack.PopBack();
+                                   if (ed->world.Get<Animator>(e))
+                                       animated.PushBack(e);
+                                   stack.Append(scene::GetChildren(ed->world, e));
+                               }
+                               if (animated.Empty()) {
+                                   ZX_LOG_WARN(LogCmd, "anim.addclips: select an entity with an Animator (or above one)");
+                                   return;
+                               }
+                               ed->undo.Begin("Add Clips");
+                               for (ecs::Entity e : animated) {
+                                   ed->undo.Record(e);
+                                   Animator& a = *ed->world.Get<Animator>(e);
+                                   AddClipsFromModel(*ed, a, path);
+                                   if (args.Size() > 1)
+                                       for (const asset::AssetId& clip : a.clips)
+                                           if (ed->assets->GetName(clip).View().EqualsIgnoreCase(args[1]))
+                                               a.clip = clip;
+                                   ed->world.GetComponent(e, ecs::ComponentIdOf<Animator>(), true);
+                               }
+                               ed->undo.End();
+                           });
+
 ConCommand CmdCarDrive("car.drive",
                        "Drives every soft-body car instead of its script: car.drive <throttle> <steer> [brake] (car.drive off: scripts again)",
                        [](Span<const StringView> args) {

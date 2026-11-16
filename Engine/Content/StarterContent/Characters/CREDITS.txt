@@ -1,3 +1,6 @@
 SK_Human.glb - "Animated Human" by Quaternius (https://quaternius.com), CC0 1.0 Universal (public domain).
 Source: https://opengameart.org/content/animated-human-low-poly
 Converted from the .blend with Tools/convert_starter_character.py (Blender 4.5 glTF exporter).
+
+SK_Bot.glb - made for ZeqouX3D by Tools/make_starter_bot.py (Blender 4.5), same license as the engine's Starter Content.
+A robot with a deliberately different skeleton (Unreal-style names, A-pose); it plays SK_Human's clips retargeted.

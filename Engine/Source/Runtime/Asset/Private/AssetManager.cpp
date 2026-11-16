@@ -565,6 +565,8 @@ void AssetManager::CookSource(Source& s)
             writeItem(SubAsset(s.id, "skeleton", k), AssetType::Skeleton, name, String::Format("_skel{}.zasset", k), out);
         }
         for (usize k = 0; k < scene.animations.Size(); ++k) {
+            if (k < scene.animationSkeleton.Size() && scene.animationSkeleton[k] < scene.skeletons.Size())
+                scene.animations[k].skeleton = SubAsset(s.id, "skeleton", scene.animationSkeleton[k]);
             Array<u8> out;
             Serialize(scene.animations[k], out);
             writeItem(SubAsset(s.id, "animation", k), AssetType::Animation, scene.animations[k].name, String::Format("_anim{}.zasset", k), out);

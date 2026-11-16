@@ -197,6 +197,46 @@ bool NameCombo(StringView id, String& value, Span<const String> names)
 
 // --- Animation Viewer -------------------------------------------------------------------------------------------------------
 
+u32 AddClipsFromModel(Editor& ed, Animator& animator, StringView modelPath)
+{
+    if (!ed.assets)
+        return 0;
+    const asset::AssetId id = ed.assets->LoadPath(modelPath);
+    ed.assets->WaitIdle();
+    const asset::PrefabAsset* prefab = id.IsValid() ? ed.assets->GetPrefab(id) : nullptr;
+    if (!prefab) {
+        ZX_LOG_WARN(LogAnimationEditor, "Add Clips: {} is not a model that could be loaded", Path::FileName(modelPath));
+        return 0;
+    }
+    u32 added = 0;
+    for (const asset::PrefabNode& n : prefab->nodes)
+        for (const asset::AssetId& clip : n.animations)
+            if (!animator.clips.Contains(clip)) {
+                animator.clips.PushBack(clip);
+                ++added;
+            }
+    if (added == 0) {
+        ZX_LOG_INFO(LogAnimationEditor, "Add Clips: the animator already has every clip of {}", Path::FileName(modelPath));
+        return 0;
+    }
+    if (!animator.clip.IsValid() && animator.graph.Empty())
+        animator.clip = animator.clips[animator.clips.Size() - added];
+    ZX_LOG_INFO(LogAnimationEditor, "Added {} clips from {} (retargeted to this skeleton by bone names)", added, Path::FileName(modelPath));
+    return added;
+}
+
+String ClipLabel(Editor& ed, const Animator& animator, asset::AssetId clip)
+{
+    const String name = ed.assets ? ed.assets->GetName(clip) : String();
+    const String label = name.Empty() ? String("(loading)") : name;
+    if (!ed.assets || !animator.skeleton.IsValid())
+        return label;
+    const String from = ed.assets->GetSourcePath(clip), own = ed.assets->GetSourcePath(animator.skeleton);
+    if (from.Empty() || from == own)
+        return label;
+    return String::Format("{}  ({})", label, Path::Stem(from));
+}
+
 void OpenAnimationViewer(Editor& ed, StringView modelPath)
 {
     AnimationViewerState& st = ed.animViewer;

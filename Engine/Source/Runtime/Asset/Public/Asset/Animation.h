@@ -3,9 +3,9 @@
 // Skeletons and animation clips (imported from glTF skins / animations, cooked as their own assets) and the pure math
 // that turns a clip into a pose:
 //
-//   Array<Transform> local(skeleton.BoneCount());
+//   Array<Transform> local; local.Resize(skeleton.BoneCount());
 //   anim::SampleClip(clip, skeleton, time, /*loop*/ true, local.View());   // bone local transforms (bind pose where untracked)
-//   Array<Mat4> model(skeleton.BoneCount());
+//   Array<Mat4> model; model.Resize(skeleton.BoneCount());
 //   anim::LocalToModel(skeleton, local.View(), model.View());              // skeleton space
 //   palette[b] = model[b] * skeleton.inverseBind[b];                       // skinning matrices
 //
@@ -13,6 +13,7 @@
 
 #include "Core/Containers/Array.h"
 #include "Core/Containers/Span.h"
+#include "Core/Hash/Guid.h"
 #include "Core/Math/Math.h"
 #include "Core/String/String.h"
 
@@ -25,6 +26,8 @@ struct Skeleton
     Array<i32> parents;       // parent bone (-1: root); parents precede children
     Array<Transform> bindPose; // rest local transforms
     Array<Mat4> inverseBind;   // skeleton space -> bone space at bind time
+    Transform toModel;         // skeleton space -> the model's root space (where characters face +Z); retargeting
+                               // aligns two skeletons through it. Set on import (identity: unknown / the same space)
 
     u32 BoneCount() const { return u32(boneNames.Size()); }
     i32 FindBone(StringView bone) const;
@@ -63,6 +66,8 @@ struct AnimationClip
     String name;
     f32 duration = 0.0f;
     u32 boneCount = 0; // bones of the skeleton it was made for
+    Guid skeleton;     // the Skeleton asset it was made for (set by the cooker; invalid = unknown). Animators with
+                       // another skeleton play it retargeted (Asset/Retarget.h)
     Array<AnimationTrack> tracks;
     Array<MorphTrack> morphTracks; // usually none or one (the skinned mesh's weights)
 };

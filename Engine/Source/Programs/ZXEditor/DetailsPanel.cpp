@@ -119,6 +119,49 @@ bool EditFloat(const FieldInfo& f, f32* v, const String& id)
 
 bool EditStruct(const FieldInfo* field, const TypeInfo& type, void* p, const String& id, StringView label);
 
+/// Animator::clips: the clips by name (other models' marked with their source), remove buttons, and a slot that takes a
+/// model dropped from the Content Browser (its clips are added, retargeted to this skeleton).
+bool EditAnimatorClips(Editor& ed, Animator& a, const String& id)
+{
+    bool changed = false;
+    if (!ui::TreeNode(String::Format("{} clips{}", a.clips.Size(), id), ui::TreeNodeFlags::DefaultOpen))
+        return false;
+    usize remove = usize(-1);
+    for (usize i = 0; i < a.clips.Size(); ++i) {
+        ui::PushID(i32(i));
+        if (ui::IconButton(ZX_ICON_X, "Remove this clip from the animator"))
+            remove = i;
+        ui::SameLine(0.0f, 6.0f);
+        const String label = ClipLabel(ed, a, a.clips[i]);
+        if (a.clips[i] == a.clip)
+            ui::Text(String::Format(ZX_ICON_FILM "  {}", label));
+        else
+            ui::TextDisabled(String::Format(ZX_ICON_FILM "  {}", label));
+        if (label.Contains(StringView("  (")))
+            ui::ItemTooltip("A clip of another model: it plays retargeted to this skeleton (bones matched by name, rest pose "
+                            "and proportions adapted)");
+        ui::PopID();
+    }
+    if (remove < a.clips.Size()) {
+        if (a.clips[remove] == a.clip)
+            a.clip = asset::AssetId();
+        a.clips.RemoveAt(remove);
+        changed = true;
+    }
+    String hint = String("Drop a model here to add its clips");
+    ui::SetNextItemWidth(-1.0f);
+    ui::InputText(String::Format("##addclips{}", id), hint, ui::InputTextFlags::ReadOnly);
+    ui::ItemTooltip("Drop a .glb / .gltf / .fbx with animations from the Content Browser: its clips play on this "
+                    "character, retargeted to its skeleton (e.g. SK_Human's Walk on another humanoid)");
+    if (const void* payload = ui::AcceptDragDropPayload("asset")) {
+        const StringView path(static_cast<const char*>(payload));
+        if (Path::HasExtension(path, ".glb") || Path::HasExtension(path, ".gltf") || Path::HasExtension(path, ".fbx"))
+            changed |= AddClipsFromModel(ed, a, path) > 0;
+    }
+    ui::TreePop();
+    return changed;
+}
+
 bool EditValue(const FieldInfo* field, const TypeInfo& type, void* p, const String& id, StringView label)
 {
     const bool isColor = (field && field->meta.Has(Meta::KeyColor())) || type.meta.Has(Meta::KeyColor());
@@ -287,6 +330,9 @@ bool EditValue(const FieldInfo* field, const TypeInfo& type, void* p, const Stri
         return EditStruct(field, type, p, id, label);
     }
     case TypeKind::Array: {
+        if (field && field->name == zx::Name("clips") && field->meta.GetText(Meta::KeyAssetType()) == "Animation" && g_editor &&
+            g_editor->assets && g_component == "Animator")
+            return EditAnimatorClips(*g_editor, *reinterpret_cast<Animator*>(static_cast<u8*>(p) - field->offset), id);
         const usize count = type.arrayOps->size(p);
         bool changed = false;
         if (ui::TreeNode(String::Format("{} elements{}", count, id))) {

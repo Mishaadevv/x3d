@@ -801,6 +801,9 @@ void Serialize(const Skeleton& s, Array<u8>& out)
     BinaryWriter w(out);
     WriteHeader(w, AssetType::Skeleton);
     w.WriteString(s.name);
+    WritePod(w, s.toModel.position);
+    WritePod(w, s.toModel.rotation);
+    WritePod(w, s.toModel.scale);
     w.WriteVarU64(s.boneNames.Size());
     for (usize b = 0; b < s.boneNames.Size(); ++b) {
         w.WriteString(s.boneNames[b]);
@@ -818,6 +821,9 @@ bool Deserialize(ByteSpan data, Skeleton& s)
     if (!ReadHeader(r, AssetType::Skeleton))
         return false;
     s.name = r.ReadString();
+    ReadPod(r, s.toModel.position);
+    ReadPod(r, s.toModel.rotation);
+    ReadPod(r, s.toModel.scale);
     const u64 bones = r.ReadVarU64();
     if (bones > 4096)
         return false;
@@ -846,6 +852,7 @@ void Serialize(const AnimationClip& c, Array<u8>& out)
     w.WriteString(c.name);
     w.Write<f32>(c.duration);
     w.Write<u32>(c.boneCount);
+    WriteGuid(w, c.skeleton);
     w.WriteVarU64(c.tracks.Size());
     for (const AnimationTrack& t : c.tracks) {
         w.Write<u32>(t.bone);
@@ -874,6 +881,7 @@ bool Deserialize(ByteSpan data, AnimationClip& c)
     c.name = r.ReadString();
     c.duration = r.Read<f32>();
     c.boneCount = r.Read<u32>();
+    c.skeleton = ReadGuid(r);
     const u64 tracks = r.ReadVarU64();
     if (tracks > 4096)
         return false;

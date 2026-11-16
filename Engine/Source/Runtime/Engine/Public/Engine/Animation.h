@@ -8,7 +8,8 @@
 //   animation.Tick(world, dt, playing);          // editor: animators with Preview In Editor run while editing too
 //   Span<const Mat4> palette = animation.Palette(entity); // skinning matrices (mesh space) for the renderer
 //
-// Clips come with the imported model (glTF animations made for its skin). Without a graph the Animator plays `clip`
+// Clips come with the imported model (glTF / FBX animations made for its skin); clips of other models play retargeted
+// to this skeleton (matched by bone names, Asset/Retarget.h). Without a graph the Animator plays `clip`
 // (changing it cross-fades over Blend Time). With an AnimGraph (.zanimgraph, Engine/AnimGraph.h) the graph's state
 // machine picks and blends clips from parameters; a Character Controller on the entity or an ancestor sets "Speed",
 // "VerticalSpeed" and "Grounded" automatically. Scripts and C++ set parameters (SetParam / SetTrigger) or play clips.
@@ -16,6 +17,7 @@
 #include "Asset/Animation.h"
 #include "Asset/AssetManager.h"
 #include "Core/Containers/HashMap.h"
+#include "Core/Memory/Pointers.h"
 #include "Core/Reflection/Reflection.h"
 #include "Engine/AnimGraph.h"
 #include "Scene/ECS/World.h"
@@ -101,11 +103,12 @@ public:
     String ClipName(asset::AssetId clip) const { return m_assets.GetName(clip); }
     /// Seconds into the current clip (without a graph).
     f32 Time(ecs::Entity e) const;
-    /// Drops all runtime state (Play start / stop, scene change); graph files are re-read.
+    /// Drops all runtime state (Play start / stop, scene change); graph files are re-read, retargeted clips re-baked.
     void Clear()
     {
         m_states.Clear();
         m_graphs.Clear();
+        m_retargeted.Clear(); // re-baked from the current clips (a reimport may have changed them)
     }
     u32 AnimatorCount() const { return u32(m_states.Size()); }
 
@@ -161,6 +164,9 @@ private:
         bool alive = false;
     };
     const GraphFile* LoadGraph(StringView path);
+    /// Clip `id` ready for `a`'s skeleton: as cooked when made for it, else retargeted once (Asset/Retarget.h) and
+    /// cached. Requests the loads; nullptr while the clip or a skeleton is loading.
+    const asset::AnimationClip* ClipFor(asset::AssetId id, const Animator& a);
     const asset::AnimationClip* ClipByName(const Animator& a, StringView name);
     struct ClipWeight
     {
@@ -193,6 +199,7 @@ private:
     asset::AssetManager& m_assets;
     HashMap<u64, State> m_states; // entity -> state
     HashMap<String, GraphFile> m_graphs;
+    HashMap<asset::AssetId, UniquePtr<asset::AnimationClip>> m_retargeted; // by clip + target skeleton
     bool m_wasPlaying = false;
 };
 
