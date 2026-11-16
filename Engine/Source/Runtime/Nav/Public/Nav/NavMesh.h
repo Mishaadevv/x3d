@@ -8,6 +8,11 @@
 //   3. polygons: walkable cells (connected to their neighbors within agentClimb) are merged greedily into rectangles -
 //      convex polygons that follow the connections, so stacked floors and bridges stay apart
 //   4. links: neighboring rectangles share portals (the overlapping part of their touching edges)
+// Tiles: with tileSize > 0 the bounds are cut into square tiles built one by one (each voxelized with a border as wide
+// as the agent, so erosion near the tile edge matches a single build), then stitched: the walkable cells along
+// facing tile edges link up like neighbor cells do (within a step, room for the agent). RebuildTiles rebuilds only the
+// tiles an area touches (moving obstacles, changed level geometry) and stitches them back in.
+// Obstacles: boxes that carve the floor under them (doors, crates) - passed to Build / RebuildTiles.
 // Queries: FindPath = A* over the rectangles, then the funnel algorithm through the portals (the shortest path
 // that stays on the mesh); NearestPoint snaps a position onto the mesh.
 
@@ -29,6 +34,7 @@ struct BuildSettings
     f32 maxSlope = 45.0f;       // degrees
     u32 maxRectCells = 24;      // rectangle side limit (cells): keeps them flat enough on slopes
     u32 minRegionCells = 6;     // smaller islands of walkable cells are dropped
+    f32 tileSize = 0.0f;        // meters per tile side (0 = one tile over the bounds)
 };
 
 struct BuildStats
@@ -38,6 +44,7 @@ struct BuildStats
     u32 walkableCells = 0;
     u32 polys = 0;
     u32 links = 0;
+    u32 tilesBuilt = 0;
     f64 milliseconds = 0.0;
 };
 
@@ -59,11 +66,19 @@ struct Link
 class NavMesh
 {
 public:
-    /// Builds from world-space triangles (`indices` in triples). Replaces the previous mesh. Returns false if nothing
-    /// walkable was found.
-    bool Build(Span<const Vec3> vertices, Span<const u32> indices, const BuildSettings& settings, BuildStats* stats = nullptr);
+    /// Builds from world-space triangles (`indices` in triples), carving `obstacles` (world boxes). Replaces the previous
+    /// mesh. Returns false if nothing walkable was found.
+    bool Build(Span<const Vec3> vertices, Span<const u32> indices, const BuildSettings& settings, BuildStats* stats = nullptr,
+               Span<const AABB> obstacles = {});
+    /// The tiles `area` touches, with their borders: the geometry RebuildTiles needs (empty when nothing is built).
+    AABB TileBuildBounds(const AABB& area) const;
+    /// Rebuilds the tiles `area` touches from geometry covering TileBuildBounds(area) and stitches them back in. False
+    /// when no tile was rebuilt (empty mesh, area outside the bounds).
+    bool RebuildTiles(Span<const Vec3> vertices, Span<const u32> indices, const AABB& area, Span<const AABB> obstacles = {},
+                      BuildStats* stats = nullptr);
     void Clear();
     bool IsEmpty() const { return m_polys.Empty(); }
+    u32 TileCount() const { return m_tilesX * m_tilesZ; }
 
     /// Polygon under / nearest to `p` within `searchDistance` (meters), -1 if none; `onMesh` gets the snapped point.
     i32 FindNearestPoly(Vec3 p, f32 searchDistance, Vec3* onMesh = nullptr) const;
@@ -85,8 +100,31 @@ public:
     bool Deserialize(Span<const u8> data);
 
 private:
+    /// A walkable cell on a tile's edge (stitching): `along` = global cell index along the edge.
+    struct EdgeCell
+    {
+        u32 along;
+        u16 y, ceiling;
+        u32 poly; // in the tile
+    };
+    struct Tile
+    {
+        Array<Poly> polys; // links local to the tile
+        Array<Link> links;
+        Array<EdgeCell> edges[4]; // -x, +z, +x, -z
+    };
+    void BuildTile(u32 tx, u32 tz, Span<const Vec3> vertices, Span<const u32> indices, Span<const AABB> obstacles, BuildStats& stats);
+    /// Cell ranges [x0, x1) x [z0, z1) of a tile's core and of its voxelized area (core + border, inside the bounds).
+    void TileCells(u32 tx, u32 tz, i32& x0, i32& x1, i32& z0, i32& z1, bool withBorder) const;
+    /// All tiles into m_polys / m_links (offsets, stitches between neighbors), then the search grid.
+    void Assemble();
     void BuildGrid();
     BuildSettings m_settings;
+    i32 m_cellsX = 0, m_cellsZ = 0;          // cells over the bounds
+    i32 m_tileCellsX = 0, m_tileCellsZ = 0;  // cells per tile side
+    i32 m_border = 0;                        // cells voxelized around a tile
+    u32 m_tilesX = 0, m_tilesZ = 0;
+    Array<Tile> m_tiles;
     Array<Poly> m_polys;
     Array<Link> m_links;
     // Spatial grid of polygons (xz buckets) for nearest-polygon queries.

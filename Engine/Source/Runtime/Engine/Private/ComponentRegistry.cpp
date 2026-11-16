@@ -65,6 +65,7 @@ void RegisterEngineComponents()
     RegisterComponent<SpatiallyLoaded>("Spatially Loaded", "\xEE\x88\x96");       // World Partition streaming
     RegisterComponent<Foliage>("Foliage", "\xEE\x85\xB8");                         // plants, rocks
     RegisterComponent<NavMeshBounds>("Nav Mesh Bounds", "\xEE\x94\xBE");          // route
+    RegisterComponent<NavMeshObstacle>("Nav Mesh Obstacle", "\xEE\x8E\xB4");      // construction
     RegisterComponent<NavMeshAgent>("Nav Mesh Agent", "\xEE\x86\xBB");            // bot
     RegisterComponent<BehaviorTree>("Behavior Tree", "\xEE\x86\xBB");             // bot
     RegisterComponent<SequencePlayer>("Sequence Player", "\xEE\x8A\x9B");         // clapperboard

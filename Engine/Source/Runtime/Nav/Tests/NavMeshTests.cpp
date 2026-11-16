@@ -180,3 +180,110 @@ ZX_TEST(NavMesh, SerializeRoundTrip)
     ZX_EXPECT(!copy.Deserialize(bytes.View()));
     ZX_EXPECT(copy.IsEmpty());
 }
+
+namespace {
+
+f32 MeshArea(const NavMesh& nav)
+{
+    f32 area = 0.0f;
+    for (const Poly& p : nav.Polys())
+        area += (p.corners[2].x - p.corners[0].x) * (p.corners[2].z - p.corners[0].z);
+    return area;
+}
+
+} // namespace
+
+ZX_TEST(NavMesh, TilesMatchASingleBuild)
+{
+    Soup soup;
+    soup.Floor(-20, -20, 20, 20, 0);
+    soup.Box(Vec3(-12, 0, -0.5f), Vec3(12, 2, 0.5f)); // a wall across several tiles
+    soup.Box(Vec3(5, 0, 6), Vec3(9, 0.3f, 14));       // a step on a tile corner
+    const AABB bounds(Vec3(-22, -1, -22), Vec3(22, 4, 22));
+    NavMesh single, tiled;
+    ZX_REQUIRE(soup.Build(single, bounds));
+    BuildSettings s;
+    s.bounds = bounds;
+    s.tileSize = 8.0f;
+    BuildStats stats;
+    ZX_REQUIRE(tiled.Build(soup.v.View(), soup.i.View(), s, &stats));
+    ZX_EXPECT_EQ(tiled.TileCount(), 36u); // 44 m / 8 m -> 6 x 6
+    ZX_EXPECT_EQ(stats.tilesBuilt, 36u);
+    ZX_EXPECT_EQ(single.TileCount(), 1u);
+    // The same walkable area (the erosion near tile edges sees the neighbors' cells).
+    ZX_EXPECT_NEAR(MeshArea(tiled), MeshArea(single), MeshArea(single) * 0.002f);
+    // Paths cross tile edges as they cross open floor. The polygon A* picks a corridor through smaller rectangles, so a
+    // path may be a few percent longer (never shorter than the single build's).
+    const Vec3 pairs[][2] = {{Vec3(1, 0, -8), Vec3(1.5f, 0, 8)}, {Vec3(-18, 0, -18), Vec3(18, 0, 18)}, {Vec3(-15, 0, 15), Vec3(7, 0.3f, 10)}};
+    for (const auto& p : pairs) {
+        Array<Vec3> a, b;
+        ZX_REQUIRE(single.FindPath(p[0], p[1], a));
+        ZX_REQUIRE(tiled.FindPath(p[0], p[1], b));
+        ZX_EXPECT(PathLength(b) > PathLength(a) - 0.05f);
+        ZX_EXPECT(PathLength(b) < PathLength(a) * 1.03f + 0.1f);
+    }
+    ZX_EXPECT(tiled.Raycast(Vec3(-18, 0, -18), Vec3(-2, 0, -14))); // straight over several tile edges
+    // Tiles survive saving.
+    Array<u8> bytes;
+    tiled.Serialize(bytes);
+    NavMesh copy;
+    ZX_REQUIRE(copy.Deserialize(bytes.View()));
+    ZX_EXPECT_EQ(copy.TileCount(), 36u);
+    ZX_EXPECT_EQ(copy.Polys().Size(), tiled.Polys().Size());
+    ZX_EXPECT_EQ(copy.Links().Size(), tiled.Links().Size());
+}
+
+ZX_TEST(NavMesh, TileSeamsLinkOnlyTheSameFloor)
+{
+    Soup soup;
+    soup.Floor(-10, -10, 10, 10, 0);
+    soup.Floor(-8, -3, 8, 3, 4.0f); // a bridge overhead across several tiles
+    BuildSettings s;
+    s.bounds = AABB(Vec3(-12, -1, -12), Vec3(12, 8, 12));
+    s.tileSize = 6.0f;
+    NavMesh nav;
+    ZX_REQUIRE(nav.Build(soup.v.View(), soup.i.View(), s));
+    Array<Vec3> path;
+    ZX_REQUIRE(nav.FindPath(Vec3(-7, 4, 0), Vec3(7, 4, 0), path)); // along the bridge
+    for (const Vec3& p : path)
+        ZX_EXPECT_NEAR(p.y, 4.0f, 0.3f);
+    ZX_REQUIRE(nav.FindPath(Vec3(-7, 0, 0), Vec3(7, 0, 0), path)); // below it
+    for (const Vec3& p : path)
+        ZX_EXPECT(p.y < 0.5f);
+    ZX_EXPECT(!nav.FindPath(Vec3(-7, 0, 0), Vec3(7, 4, 0), path)); // no way up
+}
+
+ZX_TEST(NavMesh, ObstaclesCarveAndRebuildOnlyTheirTiles)
+{
+    // A wall with one door in the middle.
+    Soup soup;
+    soup.Floor(-16, -16, 16, 16, 0);
+    soup.Box(Vec3(-16, 0, -0.5f), Vec3(-1.2f, 2, 0.5f));
+    soup.Box(Vec3(1.2f, 0, -0.5f), Vec3(16, 2, 0.5f));
+    BuildSettings s;
+    s.bounds = AABB(Vec3(-16, -1, -16), Vec3(16, 4, 16));
+    s.tileSize = 8.0f;
+    NavMesh nav;
+    ZX_REQUIRE(nav.Build(soup.v.View(), soup.i.View(), s));
+    const Vec3 a(0, 0, -8), b(0, 0, 8);
+    Array<Vec3> path;
+    ZX_REQUIRE(nav.FindPath(a, b, path));
+    ZX_EXPECT(PathLength(path) < 16.5f); // through the door
+    // A crate shut in the door: only its tiles rebuild, and the way is cut.
+    const AABB crate(Vec3(-1.5f, 0, -1), Vec3(1.5f, 1.5f, 1));
+    const AABB need = nav.TileBuildBounds(crate);
+    ZX_EXPECT(need.IsValid() && need.min.x < crate.min.x && need.max.x > crate.max.x);
+    BuildStats stats;
+    ZX_REQUIRE(nav.RebuildTiles(soup.v.View(), soup.i.View(), crate, Span<const AABB>(&crate, 1), &stats));
+    ZX_EXPECT(stats.tilesBuilt >= 1u && stats.tilesBuilt <= 4u);
+    bool partial = false;
+    ZX_EXPECT(!nav.FindPath(a, b, path, &partial));
+    ZX_EXPECT(partial);
+    ZX_EXPECT(path.Back().z < 0.0f); // led up to the crate's side
+    // The crate is gone: the door is open again.
+    ZX_REQUIRE(nav.RebuildTiles(soup.v.View(), soup.i.View(), crate));
+    ZX_REQUIRE(nav.FindPath(a, b, path));
+    ZX_EXPECT(PathLength(path) < 16.5f);
+    // Outside the bounds: nothing to rebuild.
+    ZX_EXPECT(!nav.RebuildTiles(soup.v.View(), soup.i.View(), AABB(Vec3(100, 0, 100), Vec3(101, 1, 101))));
+}

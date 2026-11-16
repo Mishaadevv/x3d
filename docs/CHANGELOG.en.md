@@ -2,6 +2,20 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.17.18 — Tiled navigation mesh and obstacles (2026-11-16)
+- **Tiles**: the navigation mesh is built in tiles (Nav Mesh Bounds → `Tile Size`, 32 m by default, 0 = one piece). Tiles are stitched by their edge cells, so floors and bridges link only to their own level. The mesh's area matches a single build cell for cell.
+- **Nav Mesh Obstacle** (new component; Create → Create Nav Mesh Obstacle, `create obstacle`): a box agents walk around, such as a door, a car or a crate. In Play, an obstacle that appears, moves, is switched off or is removed rebuilds only the tiles under it, at most 5 times a second. Agents on the way look for a new path.
+- `NavigationSystem::RebuildArea(world, box)` rebuilds part of the mesh from C++ after the level changes.
+- Editor: obstacles are drawn as orange boxes (the selected one always, all of them with Show → Navigation), and `nav.stats` shows the tiles and the rebuild count.
+- A* over polygons is still approximate: a path through the tiles' smaller rectangles can be 1–3 % longer than the shortest one. The test and ADR-113 record this.
+- Old `.znav` files (version 1) no longer load: rebuild the mesh (Build → Build Navigation). The game builds it at start when the file is missing.
+- **Checked**:
+  - NavMesh.TilesMatchASingleBuild: 36 tiles, the same area, paths at most 3 % longer and never shorter, saving.
+  - NavMesh.TileSeamsLinkOnlyTheSameFloor.
+  - NavMesh.ObstaclesCarveAndRebuildOnlyTheirTiles: a crate in a doorway rebuilds at most 4 tiles and cuts the path; once it's removed, the path is back.
+  - Navigation.MovingObstaclesRebuildTheirTiles: the agent stops at the crate and arrives after the crate is moved away.
+  - In the editor, the Third Person template: 4 tiles, and an obstacle in Play triggered a rebuild, with no errors.
+
 ## 0.17.17 — AI hearing (2026-11-16)
 - **AI hears**: a Behavior Tree picks up noises (shots, thrown stones, alarms) and its target's footsteps. Footsteps carry speed × 1.5 m: a player walking at 3 m/s is heard within 4.5 m, one running at 7 m/s within 10 m. Sneaking up works.
 - A noise's range is multiplied by the component's new **Hearing** field (0 = deaf). Through walls (physics) it carries half as far. An AI doesn't hear its own noises.

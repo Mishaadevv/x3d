@@ -205,6 +205,7 @@ void RegisterEditorActions(Editor& ed)
     Add(ed, "create.terrainFlat", "Create Flat Terrain", "Create", ZX_ICON_SQUARE, "", [](Editor& e) { e.CreateTerrain(true); });
     Add(ed, "create.windZone", "Create Wind Zone", "Create", ZX_ICON_WIND, "", [](Editor& e) { e.CreateWindZone(); });
     Add(ed, "create.navMeshBounds", "Create Nav Mesh Bounds", "Create", ZX_ICON_ROUTE, "", [spawn](Editor& e) { e.CreateNavMeshBounds(spawn(e)); });
+    Add(ed, "create.navObstacle", "Create Nav Mesh Obstacle", "Create", ZX_ICON_CONSTRUCTION, "", [spawn](Editor& e) { e.CreateNavObstacle(spawn(e)); });
     Add(ed, "create.navAgent", "Create AI Agent", "Create", ZX_ICON_BOT, "", [spawn](Editor& e) { e.CreateNavAgent(spawn(e)); });
     Add(ed, "create.cinematic", "Create Cinematic", "Create", ZX_ICON_CLAPPERBOARD, "", [](Editor& e) { CreateCinematic(e); },
         [](Editor& e) { return !e.IsPlaying() && !e.contentRoot.Empty(); });

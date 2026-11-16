@@ -21,6 +21,13 @@ ZX_REFLECT_STRUCT_BEGIN(NavMeshBounds)
     ZX_FIELD(agentClimb, Meta::Range(0.0f, 2.0f), Meta::Units("m"), Meta::Tooltip("Highest step an agent walks up"))
     ZX_FIELD(maxSlope, Meta::Range(0.0f, 89.0f), Meta::Units("deg"), Meta::Tooltip("Steeper ground is not walkable"))
     ZX_FIELD(cellSize, Meta::Range(0.05f, 2.0f), Meta::Units("m"), Meta::Tooltip("Voxel size: smaller = more detail, slower builds"))
+    ZX_FIELD(tileSize, Meta::Range(0.0f, 512.0f), Meta::Units("m"),
+             Meta::Tooltip("The mesh is built in tiles this wide: obstacles moving in Play rebuild only their tiles (0 = one piece)"))
+ZX_REFLECT_STRUCT_END()
+
+ZX_REFLECT_STRUCT_BEGIN(NavMeshObstacle)
+    ZX_FIELD(size, Meta::Units("m"), Meta::Tooltip("Box (centered on the entity, rotated and scaled with it) the agents walk around"))
+    ZX_FIELD(enabled, Meta::Tooltip("Off: agents walk through (an open door). Switching it in Play rebuilds the mesh around it"))
 ZX_REFLECT_STRUCT_END()
 
 ZX_REFLECT_STRUCT_BEGIN(NavMeshAgent)
@@ -145,8 +152,17 @@ bool NavigationSystem::Build(ecs::World& world, render::RenderAssets* assets, Na
 {
     Stopwatch timer;
     m_volumes.Clear();
+    m_obstacles.Clear();
+    m_dirty = AABB();
+    m_rebuilds = 0;
+    renderAssets = assets;
     scene::UpdateWorldTransforms(world);
     NavBuildReport r;
+    Array<AABB> obstacles;
+    Array<u64> obstacleIds;
+    GatherObstacles(world, obstacles, &obstacleIds);
+    for (usize i = 0; i < obstacles.Size(); ++i)
+        m_obstacles.InsertOrAssign(obstacleIds[i], obstacles[i]);
     struct Pending
     {
         AABB bounds;
@@ -169,12 +185,14 @@ bool NavigationSystem::Build(ecs::World& world, render::RenderAssets* assets, Na
         s.agentHeight = b.agentHeight;
         s.agentClimb = b.agentClimb;
         s.maxSlope = b.maxSlope;
+        s.tileSize = Max(b.tileSize, 0.0f);
         Volume v;
         v.bounds = bounds;
         r.triangles += u32(indices.Size() / 3);
-        if (!v.mesh.Build(vertices.View(), indices.View(), s))
+        if (!v.mesh.Build(vertices.View(), indices.View(), s, nullptr, obstacles.View()))
             continue;
         r.polys += u32(v.mesh.Polys().Size());
+        r.tiles += v.mesh.TileCount();
         m_volumes.PushBack(move(v));
     }
     r.volumes = u32(m_volumes.Size());
@@ -182,6 +200,104 @@ bool NavigationSystem::Build(ecs::World& world, render::RenderAssets* assets, Na
     if (report)
         *report = r;
     return !m_volumes.Empty();
+}
+
+AABB NavObstacleBounds(const NavMeshObstacle& o, const Mat4& world)
+{
+    AABB box;
+    const Vec3 h = Max(o.size, Vec3(0.01f)) * 0.5f;
+    for (u32 i = 0; i < 8; ++i)
+        box.Expand(world.TransformPointAffine(Vec3(i & 1 ? h.x : -h.x, i & 2 ? h.y : -h.y, i & 4 ? h.z : -h.z)));
+    return box;
+}
+
+void NavigationSystem::GatherObstacles(ecs::World& world, Array<AABB>& out, Array<u64>* ids) const
+{
+    world.Query<const NavMeshObstacle>().Each([&](ecs::Entity e, const NavMeshObstacle& o) {
+        if (!o.enabled)
+            return;
+        out.PushBack(NavObstacleBounds(o, scene::ComputeWorldMatrix(world, e)));
+        if (ids)
+            ids->PushBack(e.Pack());
+    });
+}
+
+bool NavigationSystem::RebuildArea(ecs::World& world, const AABB& area, NavBuildReport* report)
+{
+    Stopwatch timer;
+    NavBuildReport r;
+    Array<AABB> obstacles;
+    GatherObstacles(world, obstacles);
+    bool any = false;
+    for (Volume& v : m_volumes) {
+        const AABB need = v.mesh.TileBuildBounds(area);
+        if (!need.IsValid())
+            continue;
+        Array<Vec3> vertices;
+        Array<u32> indices;
+        GatherNavGeometry(world, renderAssets, need, vertices, indices);
+        nav::BuildStats stats;
+        if (v.mesh.RebuildTiles(vertices.View(), indices.View(), area, obstacles.View(), &stats)) {
+            any = true;
+            r.tiles += stats.tilesBuilt;
+            r.triangles += u32(indices.Size() / 3);
+        }
+        r.polys += u32(v.mesh.Polys().Size());
+        ++r.volumes;
+    }
+    if (any) {
+        ++m_rebuilds;
+        // Paths may cross what changed: every walking agent looks for a new one.
+        world.Query<NavMeshAgent>().Each([](ecs::Entity, NavMeshAgent& a) {
+            if (a.hasDestination)
+                a.repath = true;
+        });
+    }
+    r.milliseconds = timer.ElapsedMilliseconds();
+    if (report)
+        *report = r;
+    return any;
+}
+
+void NavigationSystem::UpdateObstacles(ecs::World& world, f32 dt)
+{
+    m_sinceRebuild += dt;
+    if (m_volumes.Empty())
+        return;
+    Array<AABB> boxes;
+    Array<u64> ids;
+    GatherObstacles(world, boxes, &ids);
+    auto markDirty = [&](const AABB& b) {
+        m_dirty.Expand(b.min);
+        m_dirty.Expand(b.max);
+    };
+    // Appeared or moved (by more than a fraction of a cell: pushed crates settle).
+    for (usize i = 0; i < boxes.Size(); ++i) {
+        const AABB* had = m_obstacles.Find(ids[i]);
+        if (had && Distance(had->min, boxes[i].min) < 0.15f && Distance(had->max, boxes[i].max) < 0.15f)
+            continue;
+        if (had)
+            markDirty(*had);
+        markDirty(boxes[i]);
+        m_obstacles.InsertOrAssign(ids[i], boxes[i]);
+    }
+    // Gone (destroyed or disabled).
+    if (m_obstacles.Size() > boxes.Size() || !m_dirty.IsValid()) {
+        Array<u64> gone;
+        for (const auto& [id, box] : m_obstacles)
+            if (!ids.Contains(id)) {
+                gone.PushBack(id);
+                markDirty(box);
+            }
+        for (u64 id : gone)
+            m_obstacles.Remove(id);
+    }
+    // A few rebuilds per second at most (a moving obstacle drags one rebuild along every 0.2 s).
+    if (m_dirty.IsValid() && m_sinceRebuild >= 0.2f) {
+        RebuildArea(world, m_dirty);
+        m_dirty = AABB();
+        m_sinceRebuild = 0.0f;
+    }
 }
 
 bool NavigationSystem::Save(StringView path) const
@@ -288,6 +404,7 @@ void NavigationSystem::Tick(ecs::World& world, f32 dt)
 {
     if (dt <= 0.0f)
         return;
+    UpdateObstacles(world, dt);
     world.Query<NavMeshAgent, Transform, const scene::WorldTransform>().Each(
         [&](ecs::Entity e, NavMeshAgent& a, Transform& t, const scene::WorldTransform& wt) {
             const Vec3 pos = wt.GetPosition();

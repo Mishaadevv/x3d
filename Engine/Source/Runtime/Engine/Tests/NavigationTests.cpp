@@ -95,3 +95,72 @@ ZX_TEST(Navigation, UnreachableAndBakedFile)
     ZX_EXPECT_EQ(loaded.Volumes()[0].mesh.Polys().Size(), nav.Volumes()[0].mesh.Polys().Size());
     platform::DeleteFileAt(file.View());
 }
+
+ZX_TEST(Navigation, MovingObstaclesRebuildTheirTiles)
+{
+    ecs::World w;
+    MakeLevel(w);
+    w.Get<NavMeshBounds>(w.Query<const NavMeshBounds>().First())->tileSize = 8.0f;
+    // A wall of obstacles across the level (past the volume's sides) with a 2 m door at x = 0.
+    auto obstacle = [&](StringView name, Vec3 at, Vec3 size) {
+        const ecs::Entity e = scene::CreateNode(w, name, Transform(at));
+        NavMeshObstacle o;
+        o.size = size;
+        w.Add(e, o);
+        return e;
+    };
+    obstacle("Wall West", Vec3(-14, 3, 0), Vec3(26, 2, 1));
+    obstacle("Wall East", Vec3(14, 3, 0), Vec3(26, 2, 1));
+    scene::UpdateWorldTransforms(w);
+    NavigationSystem nav;
+    NavBuildReport report;
+    ZX_REQUIRE(nav.Build(w, nullptr, &report));
+    ZX_EXPECT(report.tiles > 1u);
+    const Vec3 a(0, 2, -10), b(0, 2, 10);
+    Array<Vec3> path;
+    ZX_REQUIRE(nav.FindPath(a, b, path));
+    ZX_EXPECT(path.Size() == 2u); // straight through the door
+    // An agent heads through it; a crate drops into the door.
+    const ecs::Entity agent = scene::CreateNode(w, "Agent", Transform(a));
+    w.Add(agent, NavMeshAgent{});
+    scene::UpdateWorldTransforms(w);
+    ZX_REQUIRE(nav.SetDestination(w, agent, b));
+    nav.Tick(w, 1.0f / 60.0f);
+    const ecs::Entity crate = obstacle("Crate", Vec3(0, 3, 0), Vec3(3, 2, 1.2f));
+    scene::UpdateWorldTransforms(w);
+    for (u32 i = 0; i < 30; ++i) { // 0.5 s: the rebuild waits a fraction of a second at most
+        nav.Tick(w, 1.0f / 60.0f);
+        scene::UpdateWorldTransforms(w);
+    }
+    ZX_EXPECT_EQ(nav.RebuildCount(), 1u);
+    bool partial = false;
+    ZX_EXPECT(!nav.FindPath(a, b, path, &partial));
+    ZX_EXPECT(partial);
+    for (u32 i = 0; i < 60 * 6; ++i) {
+        nav.Tick(w, 1.0f / 60.0f);
+        scene::UpdateWorldTransforms(w);
+    }
+    ZX_EXPECT(w.Get<const Transform>(agent)->position.z < 0.0f); // stopped at the crate
+    ZX_EXPECT(w.Get<const NavMeshAgent>(agent)->status == NavAgentStatus::Partial);
+    // The crate is pushed into the wall: the door opens, the agent walks on when sent again.
+    w.Get<Transform>(crate)->position = Vec3(8, 3, 0);
+    scene::UpdateWorldTransforms(w);
+    for (u32 i = 0; i < 30; ++i)
+        nav.Tick(w, 1.0f / 60.0f);
+    ZX_EXPECT_EQ(nav.RebuildCount(), 2u);
+    ZX_REQUIRE(nav.FindPath(a, b, path));
+    ZX_REQUIRE(nav.SetDestination(w, agent, b));
+    for (u32 i = 0; i < 60 * 8; ++i) {
+        nav.Tick(w, 1.0f / 60.0f);
+        scene::UpdateWorldTransforms(w);
+    }
+    ZX_EXPECT(w.Get<const NavMeshAgent>(agent)->status == NavAgentStatus::Arrived);
+    // Disabling an obstacle counts as removing it; standing still costs nothing.
+    w.Get<NavMeshObstacle>(crate)->enabled = false;
+    for (u32 i = 0; i < 60; ++i)
+        nav.Tick(w, 1.0f / 60.0f);
+    ZX_EXPECT_EQ(nav.RebuildCount(), 3u);
+    for (u32 i = 0; i < 60; ++i)
+        nav.Tick(w, 1.0f / 60.0f);
+    ZX_EXPECT_EQ(nav.RebuildCount(), 3u);
+}

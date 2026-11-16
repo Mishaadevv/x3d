@@ -1949,6 +1949,14 @@ void Editor::DrawNavigationDebug()
             const Vec3 c = scene::ComputeWorldMatrix(world, selected).GetTranslation();
             debugDraw->Box(AABB::FromCenterExtents(c, b->size * 0.5f), Mat4::Identity(), Color(90, 200, 255));
         }
+    // Obstacles: the selected one always, all of them with Show > Navigation (orange; grey when off).
+    world.Query<const NavMeshObstacle>().Each([&](ecs::Entity e, const NavMeshObstacle& o) {
+        if (!showNavigation && e != selected)
+            return;
+        // The box as the entity holds it (rotated and scaled); the mesh is carved by its world bounds.
+        debugDraw->Box(AABB::FromCenterExtents(Vec3::Zero(), o.size * 0.5f), scene::ComputeWorldMatrix(world, e),
+                       o.enabled ? Color(255, 150, 50) : Color(130, 130, 130));
+    });
     if (!showNavigation)
         return;
     const Vec3 lift(0.0f, 0.06f, 0.0f);
@@ -2026,6 +2034,14 @@ void Editor::CreateNavMeshBounds(Vec3 position)
     const ecs::Entity e = CreateEntity("Nav Mesh Bounds", Transform(GroundBelow(*this, position) + Vec3(0.0f, NavMeshBounds{}.size.y * 0.3f, 0.0f)));
     world.Add(e, NavMeshBounds{});
     CommitCreated(e, "Create Nav Mesh Bounds");
+    Select(e);
+}
+
+void Editor::CreateNavObstacle(Vec3 position)
+{
+    const ecs::Entity e = CreateEntity("Nav Mesh Obstacle", Transform(GroundBelow(*this, position) + Vec3(0.0f, NavMeshObstacle{}.size.y * 0.5f, 0.0f)));
+    world.Add(e, NavMeshObstacle{});
+    CommitCreated(e, "Create Nav Mesh Obstacle");
     Select(e);
 }
 

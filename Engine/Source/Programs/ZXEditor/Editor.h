@@ -463,6 +463,7 @@ public:
     /// A directional Wind Zone blowing the way the camera looks (level).
     void CreateWindZone();
     void CreateNavMeshBounds(Vec3 position);
+    void CreateNavObstacle(Vec3 position);
     void CreateNavAgent(Vec3 position); // a capsule-like stand-in with a Nav Mesh Agent (pivot at the feet)
     void CreateTerrain(bool flat = false);                     // 200 m terrain under the scene (flat: no hills, to sculpt from scratch)
     void DrawPhysicsDebug();

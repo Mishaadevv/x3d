@@ -58,6 +58,8 @@ void BeginGame(ecs::World& world, GameSystems& s)
     // Navigation: the mesh baked next to the scene (loaded by the host), else built now from the loaded geometry.
     if (s.navigation && !s.navigation->HasMesh() && world.Query<const NavMeshBounds>().Count() > 0)
         s.navigation->Build(world, s.renderAssets);
+    if (s.navigation) // a loaded .znav: obstacles moving in Play rebuild tiles from these meshes
+        s.navigation->renderAssets = s.renderAssets;
     if (s.behavior)
         s.behavior->Reset(world);
     if (s.sequencer) {

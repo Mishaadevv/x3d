@@ -1,5 +1,6 @@
 #include "Nav/NavMesh.h"
 #include "Core/Containers/Algorithm.h"
+#include "Core/Containers/HashMap.h"
 #include "Core/Serialization/Binary.h"
 #include "Core/Time/Time.h"
 
@@ -25,8 +26,13 @@ struct HSpan
 struct Heightfield
 {
     i32 w = 0, h = 0;
-    Vec3 origin;
+    Vec3 origin;      // the bounds' min corner (shared by every tile: cell edges land on the same floats)
+    i32 ox = 0, oz = 0; // the field's first cell in the bounds' grid
     f32 cs = 0.3f, ch = 0.2f;
+    f32 X(i32 x) const { return origin.x + f32(x + ox) * cs; }
+    f32 Z(i32 z) const { return origin.z + f32(z + oz) * cs; }
+    i32 CellX(f32 wx) const { return i32(std::floor((wx - origin.x) / cs)) - ox; }
+    i32 CellZ(f32 wz) const { return i32(std::floor((wz - origin.z) / cs)) - oz; }
     Array<u32> columns; // first span of each column (lowest)
     Array<HSpan> spans;
 
@@ -93,16 +99,16 @@ void RasterizeTriangle(Heightfield& hf, Vec3 a, Vec3 b, Vec3 c, u8 area, i32 mer
     const f32 fieldTop = 65535.0f * hf.ch;
     if (bmaxY < hf.origin.y || bminY - hf.origin.y > fieldTop)
         return;
-    const i32 x0 = Max(0, i32(std::floor((bminX - hf.origin.x) / hf.cs)));
-    const i32 x1 = Min(hf.w - 1, i32(std::floor((bmaxX - hf.origin.x) / hf.cs)));
-    const i32 z0 = Max(0, i32(std::floor((bminZ - hf.origin.z) / hf.cs)));
-    const i32 z1 = Min(hf.h - 1, i32(std::floor((bmaxZ - hf.origin.z) / hf.cs)));
+    const i32 x0 = Max(0, hf.CellX(bminX));
+    const i32 x1 = Min(hf.w - 1, hf.CellX(bmaxX));
+    const i32 z0 = Max(0, hf.CellZ(bminZ));
+    const i32 z1 = Min(hf.h - 1, hf.CellZ(bmaxZ));
     if (x0 > x1 || z0 > z1)
         return;
     Vec3 tri[3] = {a, b, c};
     Vec3 row[7], rowTmp[7], cell[7], cellTmp[7];
     for (i32 z = z0; z <= z1; ++z) {
-        const f32 cz0 = hf.origin.z + f32(z) * hf.cs, cz1 = cz0 + hf.cs;
+        const f32 cz0 = hf.Z(z), cz1 = hf.Z(z + 1);
         u32 n = ClipPoly(tri, 3, rowTmp, 2, cz0, -1.0f); // z >= cz0
         if (n < 3)
             continue;
@@ -110,7 +116,7 @@ void RasterizeTriangle(Heightfield& hf, Vec3 a, Vec3 b, Vec3 c, u8 area, i32 mer
         if (n < 3)
             continue;
         for (i32 x = x0; x <= x1; ++x) {
-            const f32 cx0 = hf.origin.x + f32(x) * hf.cs, cx1 = cx0 + hf.cs;
+            const f32 cx0 = hf.X(x), cx1 = hf.X(x + 1);
             u32 m = ClipPoly(row, n, cellTmp, 0, cx0, -1.0f);
             if (m < 3)
                 continue;
@@ -195,12 +201,15 @@ f32 TriArea2(Vec3 a, Vec3 b, Vec3 c)
 bool NearlyEqualXZ(Vec3 a, Vec3 b) { return Abs(a.x - b.x) < 1e-4f && Abs(a.z - b.z) < 1e-4f; }
 
 constexpr u32 NavMagic = 0x56414E5A; // "ZNAV"
-constexpr u32 NavVersion = 1;
+constexpr u32 NavVersion = 2; // 2: tiles
 
 } // namespace
 
 void NavMesh::Clear()
 {
+    m_tiles.Clear();
+    m_tilesX = m_tilesZ = 0;
+    m_cellsX = m_cellsZ = m_tileCellsX = m_tileCellsZ = m_border = 0;
     m_polys.Clear();
     m_links.Clear();
     m_gridStart.Clear();
@@ -208,24 +217,32 @@ void NavMesh::Clear()
     m_gridW = m_gridH = 0;
 }
 
-bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const BuildSettings& s, BuildStats* stats)
+void NavMesh::BuildTile(u32 tx, u32 tz, Span<const Vec3> vertices, Span<const u32> indices, Span<const AABB> obstacles, BuildStats& stats)
 {
-    Stopwatch timer;
-    Clear();
-    m_settings = s;
-    if (!s.bounds.IsValid() || s.cellSize <= 0.0f || s.cellHeight <= 0.0f)
-        return false;
+    const BuildSettings& s = m_settings;
+    Tile& tile = m_tiles[usize(tz) * m_tilesX + tx];
+    tile = Tile{};
+    Array<Poly>& polys = tile.polys;
+    Array<Link>& links = tile.links;
+    // The tile's core (its rectangles) and the area voxelized around it (cells of the whole bounds' grid).
+    i32 coreX0, coreX1, coreZ0, coreZ1, ax0, ax1, az0, az1;
+    TileCells(tx, tz, coreX0, coreX1, coreZ0, coreZ1, false);
+    TileCells(tx, tz, ax0, ax1, az0, az1, true);
 
     // 1. Voxelize.
     Heightfield hf;
     hf.cs = s.cellSize;
     hf.ch = s.cellHeight;
     hf.origin = s.bounds.min;
-    const Vec3 size = s.bounds.Size();
-    hf.w = Max(1, i32(std::ceil(size.x / s.cellSize)));
-    hf.h = Max(1, i32(std::ceil(size.z / s.cellSize)));
-    if (u64(hf.w) * u64(hf.h) > 64ull * 1024 * 1024)
-        return false; // too large for one build: split the bounds
+    hf.ox = ax0;
+    hf.oz = az0;
+    hf.w = ax1 - ax0;
+    hf.h = az1 - az0;
+    if (hf.w <= 0 || hf.h <= 0 || u64(hf.w) * u64(hf.h) > 64ull * 1024 * 1024)
+        return; // too large for one tile: use tiles
+    // Core in the tile's cells.
+    const i32 cx0 = coreX0 - ax0, cx1 = coreX1 - ax0, cz0 = coreZ0 - az0, cz1 = coreZ1 - az0;
+    auto inCore = [&](i32 x, i32 z) { return x >= cx0 && x < cx1 && z >= cz0 && z < cz1; };
     hf.columns.Resize(usize(hf.w) * usize(hf.h), None);
     const i32 climb = i32(std::floor(s.agentClimb / s.cellHeight));
     const i32 agentH = i32(std::ceil(s.agentHeight / s.cellHeight));
@@ -255,6 +272,18 @@ bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const Bu
             prevArea = sp.area;
             prev = i;
         }
+    }
+    // Obstacles carve the floor under them (where the agent can't pass beneath).
+    for (const AABB& o : obstacles) {
+        const i32 ox0 = Max(0, hf.CellX(o.min.x)), ox1 = Min(hf.w - 1, hf.CellX(o.max.x));
+        const i32 oz0 = Max(0, hf.CellZ(o.min.z)), oz1 = Min(hf.h - 1, hf.CellZ(o.max.z));
+        for (i32 z = oz0; z <= oz1; ++z)
+            for (i32 x = ox0; x <= ox1; ++x)
+                for (u32 i = hf.columns[usize(z * hf.w + x)]; i != None; i = hf.spans[i].next) {
+                    const f32 top = hf.origin.y + f32(hf.spans[i].smax) * hf.ch;
+                    if (top >= o.min.y - s.agentHeight && top <= o.max.y + s.agentClimb)
+                        hf.spans[i].area = AreaNone;
+                }
     }
     auto ceilingOf = [&](const HSpan& sp) { return sp.next != None ? i32(hf.spans[sp.next].smin) : 0xFFFF + agentH * 2; };
     Array<u8> keep;
@@ -384,7 +413,7 @@ bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const Bu
     };
     unlinkDead();
 
-    // Drop small islands (flood fill over the connections).
+    // Drop small islands (flood fill over the connections; ones reaching the border may go on in a neighbor tile).
     {
         Array<u32> island, stack;
         island.Resize(cells.Size(), None);
@@ -393,11 +422,13 @@ bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const Bu
             if (!alive[i] || island[i] != None)
                 continue;
             Array<u32> members;
+            bool reachesBorder = false;
             stack.PushBack(u32(i));
             island[i] = islands;
             while (!stack.Empty()) {
                 const u32 c = stack.PopBackValue();
                 members.PushBack(c);
+                reachesBorder |= !inCore(cells[c].x, cells[c].z);
                 for (i32 d = 0; d < 4; ++d) {
                     const u32 n = cells[c].conn[d];
                     if (n != None && island[n] == None) {
@@ -406,13 +437,17 @@ bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const Bu
                     }
                 }
             }
-            if (members.Size() < s.minRegionCells)
+            if (members.Size() < s.minRegionCells && (!reachesBorder || m_border == 0))
                 for (u32 m : members)
                     alive[m] = 0;
             ++islands;
         }
-        unlinkDead();
     }
+    // Only the core becomes rectangles (the border belongs to the neighbor tiles).
+    for (usize i = 0; i < cells.Size(); ++i)
+        if (!inCore(cells[i].x, cells[i].z))
+            alive[i] = 0;
+    unlinkDead();
     u32 walkable = 0;
     for (u8 a : alive)
         walkable += a;
@@ -427,7 +462,7 @@ bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const Bu
                 const u32 start = columnFirst[col] + k;
                 if (!alive[start] || cells[start].rect != None)
                     continue;
-                const u32 id = u32(m_polys.Size());
+                const u32 id = u32(polys.Size());
                 // Width of the first row.
                 u32 w = 1;
                 for (u32 c = start; w < maxSide;) {
@@ -479,15 +514,15 @@ bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const Bu
                     endLast = cells[endLast].conn[2];
                 }
                 Poly p;
-                const f32 wx0 = hf.origin.x + f32(x) * hf.cs, wx1 = wx0 + f32(w) * hf.cs;
-                const f32 wz0 = hf.origin.z + f32(z) * hf.cs, wz1 = wz0 + f32(rows) * hf.cs;
+                const f32 wx0 = hf.X(x), wx1 = hf.X(x + i32(w));
+                const f32 wz0 = hf.Z(z), wz1 = hf.Z(z + i32(rows));
                 p.corners[0] = Vec3(wx0, cellY(rowStarts[0]), wz0);
                 p.corners[1] = Vec3(wx1, cellY(endFirst), wz0);
                 p.corners[2] = Vec3(wx1, cellY(endLast), wz1);
                 p.corners[3] = Vec3(wx0, cellY(rowStarts[rows - 1]), wz1);
                 p.minY = minY;
                 p.maxY = maxY;
-                m_polys.PushBack(p);
+                polys.PushBack(p);
             }
         }
 
@@ -495,13 +530,13 @@ bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const Bu
     {
         // Index the cells of each rectangle's corner so edges can be walked: store the first cell.
         Array<u32> rectFirst;
-        rectFirst.Resize(m_polys.Size(), None);
+        rectFirst.Resize(polys.Size(), None);
         for (u32 i = 0; i < cells.Size(); ++i)
             if (cells[i].rect != None && rectFirst[cells[i].rect] == None)
                 rectFirst[cells[i].rect] = i; // scan order: the (x0, z0) cell comes first
-        for (u32 pi = 0; pi < m_polys.Size(); ++pi) {
-            Poly& p = m_polys[pi];
-            p.firstLink = u32(m_links.Size());
+        for (u32 pi = 0; pi < polys.Size(); ++pi) {
+            Poly& p = polys[pi];
+            p.firstLink = u32(links.Size());
             const u32 w = u32(std::lround((p.corners[1].x - p.corners[0].x) / hf.cs));
             const u32 rows = u32(std::lround((p.corners[3].z - p.corners[0].z) / hf.cs));
             // Walk an edge: `start` cell, step direction along the edge, outward direction.
@@ -512,7 +547,7 @@ bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const Bu
                 auto edgePoint = [&](u32 cell, bool far) {
                     // Point on the edge at the start (or end) of `cell`, y halfway to the neighbor's floor.
                     const Cell& e = cells[cell];
-                    f32 ex = hf.origin.x + f32(e.x) * hf.cs, ez = hf.origin.z + f32(e.z) * hf.cs;
+                    f32 ex = hf.X(e.x), ez = hf.Z(e.z);
                     if (out == 2)
                         ex += hf.cs;
                     if (out == 1)
@@ -533,7 +568,7 @@ bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const Bu
                     const u32 to = n != None ? cells[n].rect : None;
                     if (to != runTo) {
                         if (runTo != None)
-                            m_links.PushBack(Link{runTo, runA, edgePoint(last, true)});
+                            links.PushBack(Link{runTo, runA, edgePoint(last, true)});
                         runTo = to;
                         if (to != None)
                             runA = edgePoint(c, false);
@@ -543,7 +578,7 @@ bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const Bu
                         c = cells[c].conn[along];
                 }
                 if (runTo != None)
-                    m_links.PushBack(Link{runTo, runA, edgePoint(last, true)});
+                    links.PushBack(Link{runTo, runA, edgePoint(last, true)});
             };
             const u32 c00 = rectFirst[pi];
             u32 c10 = c00, c01 = c00;
@@ -555,21 +590,236 @@ bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const Bu
             walkEdge(c01, 2, w, 1);    // +z edge
             walkEdge(c00, 1, rows, 0); // -x edge
             walkEdge(c10, 1, rows, 2); // +x edge
-            p.linkCount = u32(m_links.Size()) - p.firstLink;
+            p.linkCount = u32(links.Size()) - p.firstLink;
         }
     }
 
-    BuildGrid();
+    // 7. Edge cells (stitching with the neighbor tiles): walkable core cells on the core's sides.
+    for (usize i = 0; i < cells.Size(); ++i) {
+        const Cell& c = cells[i];
+        if (!alive[i] || c.rect == None)
+            continue;
+        const u32 gx = u32(c.x + ax0), gz = u32(c.z + az0);
+        const EdgeCell xe{gz, c.y, c.ceiling, c.rect}, ze{gx, c.y, c.ceiling, c.rect};
+        if (c.x == cx0)
+            tile.edges[0].PushBack(xe);
+        if (c.x == cx1 - 1)
+            tile.edges[2].PushBack(xe);
+        if (c.z == cz1 - 1)
+            tile.edges[1].PushBack(ze);
+        if (c.z == cz0)
+            tile.edges[3].PushBack(ze);
+    }
+    stats.spans += spanCount;
+    stats.walkableCells += walkable;
+    ++stats.tilesBuilt;
+}
+
+void NavMesh::TileCells(u32 tx, u32 tz, i32& x0, i32& x1, i32& z0, i32& z1, bool withBorder) const
+{
+    const i32 b = withBorder ? m_border : 0;
+    x0 = Max(i32(tx) * m_tileCellsX - b, 0);
+    x1 = Min((i32(tx) + 1) * m_tileCellsX + b, m_cellsX);
+    z0 = Max(i32(tz) * m_tileCellsZ - b, 0);
+    z1 = Min((i32(tz) + 1) * m_tileCellsZ + b, m_cellsZ);
+}
+
+bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const BuildSettings& s, BuildStats* stats, Span<const AABB> obstacles)
+{
+    Stopwatch timer;
+    Clear();
+    m_settings = s;
+    if (!s.bounds.IsValid() || s.cellSize <= 0.0f || s.cellHeight <= 0.0f)
+        return false;
+    const Vec3 size = s.bounds.Size();
+    m_cellsX = Max(1, i32(std::ceil(size.x / s.cellSize)));
+    m_cellsZ = Max(1, i32(std::ceil(size.z / s.cellSize)));
+    if (s.tileSize > 0.0f) {
+        m_tileCellsX = m_tileCellsZ = Max(16, i32(std::lround(s.tileSize / s.cellSize)));
+        // Wide enough for the erosion and the ledge test next to the tile's edge to see what a single build would.
+        m_border = i32(std::ceil(s.agentRadius / s.cellSize)) + 3;
+    } else {
+        m_tileCellsX = m_cellsX;
+        m_tileCellsZ = m_cellsZ;
+        m_border = 0;
+    }
+    m_tilesX = u32((m_cellsX + m_tileCellsX - 1) / m_tileCellsX);
+    m_tilesZ = u32((m_cellsZ + m_tileCellsZ - 1) / m_tileCellsZ);
+    m_tiles.Resize(usize(m_tilesX) * m_tilesZ);
+    BuildStats st;
+    for (u32 tz = 0; tz < m_tilesZ; ++tz)
+        for (u32 tx = 0; tx < m_tilesX; ++tx)
+            BuildTile(tx, tz, vertices, indices, obstacles, st);
+    Assemble();
     if (stats) {
-        stats->columnsX = u32(hf.w);
-        stats->columnsZ = u32(hf.h);
-        stats->spans = spanCount;
-        stats->walkableCells = walkable;
+        *stats = st;
+        stats->columnsX = u32(m_cellsX);
+        stats->columnsZ = u32(m_cellsZ);
         stats->polys = u32(m_polys.Size());
         stats->links = u32(m_links.Size());
         stats->milliseconds = timer.ElapsedMilliseconds();
     }
     return !m_polys.Empty();
+}
+
+AABB NavMesh::TileBuildBounds(const AABB& area) const
+{
+    AABB out;
+    if (m_tiles.Empty())
+        return out;
+    const f32 cs = m_settings.cellSize;
+    const Vec3 o = m_settings.bounds.min;
+    const i32 tx0 = Max(0, i32(std::floor((area.min.x - o.x) / (cs * f32(m_tileCellsX))))), tx1 = Min(i32(m_tilesX) - 1, i32(std::floor((area.max.x - o.x) / (cs * f32(m_tileCellsX)))));
+    const i32 tz0 = Max(0, i32(std::floor((area.min.z - o.z) / (cs * f32(m_tileCellsZ))))), tz1 = Min(i32(m_tilesZ) - 1, i32(std::floor((area.max.z - o.z) / (cs * f32(m_tileCellsZ)))));
+    if (tx0 > tx1 || tz0 > tz1 || area.max.y < m_settings.bounds.min.y || area.min.y > m_settings.bounds.max.y)
+        return out;
+    i32 x0, x1, z0, z1, x2, x3, z2, z3;
+    TileCells(u32(tx0), u32(tz0), x0, x1, z0, z1, true);
+    TileCells(u32(tx1), u32(tz1), x2, x3, z2, z3, true);
+    out.min = Vec3(o.x + f32(x0) * cs, m_settings.bounds.min.y, o.z + f32(z0) * cs);
+    out.max = Vec3(o.x + f32(x3) * cs, m_settings.bounds.max.y, o.z + f32(z3) * cs);
+    return out;
+}
+
+bool NavMesh::RebuildTiles(Span<const Vec3> vertices, Span<const u32> indices, const AABB& area, Span<const AABB> obstacles, BuildStats* stats)
+{
+    Stopwatch timer;
+    if (m_tiles.Empty())
+        return false;
+    const f32 cs = m_settings.cellSize;
+    const Vec3 o = m_settings.bounds.min;
+    const i32 tx0 = Max(0, i32(std::floor((area.min.x - o.x) / (cs * f32(m_tileCellsX))))), tx1 = Min(i32(m_tilesX) - 1, i32(std::floor((area.max.x - o.x) / (cs * f32(m_tileCellsX)))));
+    const i32 tz0 = Max(0, i32(std::floor((area.min.z - o.z) / (cs * f32(m_tileCellsZ))))), tz1 = Min(i32(m_tilesZ) - 1, i32(std::floor((area.max.z - o.z) / (cs * f32(m_tileCellsZ)))));
+    if (tx0 > tx1 || tz0 > tz1 || area.max.y < m_settings.bounds.min.y || area.min.y > m_settings.bounds.max.y)
+        return false;
+    BuildStats st;
+    for (i32 tz = tz0; tz <= tz1; ++tz)
+        for (i32 tx = tx0; tx <= tx1; ++tx)
+            BuildTile(u32(tx), u32(tz), vertices, indices, obstacles, st);
+    Assemble();
+    if (stats) {
+        *stats = st;
+        stats->columnsX = u32(m_cellsX);
+        stats->columnsZ = u32(m_cellsZ);
+        stats->polys = u32(m_polys.Size());
+        stats->links = u32(m_links.Size());
+        stats->milliseconds = timer.ElapsedMilliseconds();
+    }
+    return st.tilesBuilt > 0;
+}
+
+void NavMesh::Assemble()
+{
+    m_polys.Clear();
+    m_links.Clear();
+    Array<u32> offset;
+    offset.Resize(m_tiles.Size(), 0);
+    u32 total = 0;
+    for (usize t = 0; t < m_tiles.Size(); ++t) {
+        offset[t] = total;
+        total += u32(m_tiles[t].polys.Size());
+    }
+    // Stitches: walkable cells facing each other across a tile edge (within a step, room for the agent) link their
+    // rectangles; consecutive cells of one pair of rectangles make one portal.
+    struct Cross
+    {
+        u32 from;
+        Link link;
+    };
+    Array<Cross> cross;
+    const f32 cs = m_settings.cellSize, ch = m_settings.cellHeight;
+    const Vec3 o = m_settings.bounds.min;
+    const i32 climb = i32(std::floor(m_settings.agentClimb / ch));
+    const i32 agentH = i32(std::ceil(m_settings.agentHeight / ch));
+    struct Pair
+    {
+        u32 a, b;      // global polys
+        u32 along;
+        f32 y;         // portal height (between the two floors)
+    };
+    Array<Pair> pairs;
+    for (u32 tz = 0; tz < m_tilesZ; ++tz)
+        for (u32 tx = 0; tx < m_tilesX; ++tx)
+            for (u32 dir : {2u, 1u}) { // +x and +z neighbors (each edge once)
+                const u32 nx = tx + (dir == 2 ? 1 : 0), nz = tz + (dir == 1 ? 1 : 0);
+                if (nx >= m_tilesX || nz >= m_tilesZ)
+                    continue;
+                const usize ta = usize(tz) * m_tilesX + tx, tb = usize(nz) * m_tilesX + nx;
+                const Array<EdgeCell>& ea = m_tiles[ta].edges[dir];
+                const Array<EdgeCell>& eb = m_tiles[tb].edges[dir == 2 ? 0 : 3];
+                if (ea.Empty() || eb.Empty())
+                    continue;
+                // Facing cells by `along`.
+                HashMap<u32, Array<u32>> byAlong;
+                for (u32 j = 0; j < eb.Size(); ++j) {
+                    Array<u32>* list = byAlong.Find(eb[j].along);
+                    if (!list) {
+                        byAlong.InsertOrAssign(eb[j].along, Array<u32>{});
+                        list = byAlong.Find(eb[j].along);
+                    }
+                    list->PushBack(j);
+                }
+                pairs.Clear();
+                for (const EdgeCell& c : ea) {
+                    const Array<u32>* list = byAlong.Find(c.along);
+                    if (!list)
+                        continue;
+                    i32 best = 0x7FFFFFFF;
+                    u32 bestJ = None;
+                    for (u32 j : *list) {
+                        const EdgeCell& n = eb[j];
+                        const i32 dy = Abs(i32(n.y) - i32(c.y));
+                        const i32 gap = Min(i32(c.ceiling), i32(n.ceiling)) - Max(i32(c.y), i32(n.y));
+                        if (dy <= climb && gap >= agentH && dy < best) {
+                            best = dy;
+                            bestJ = j;
+                        }
+                    }
+                    if (bestJ != None)
+                        pairs.PushBack(Pair{offset[ta] + c.poly, offset[tb] + eb[bestJ].poly, c.along, o.y + (f32(c.y) + f32(eb[bestJ].y)) * 0.5f * ch});
+                }
+                Sort(pairs, [](const Pair& l, const Pair& r) {
+                    return l.a != r.a ? l.a < r.a : l.b != r.b ? l.b < r.b : l.along < r.along;
+                });
+                // The edge line: x (dir 2) or z (dir 1) of the shared side.
+                const f32 line = dir == 2 ? o.x + f32((i32(tx) + 1) * m_tileCellsX) * cs : o.z + f32((i32(tz) + 1) * m_tileCellsZ) * cs;
+                auto point = [&](u32 along, f32 y) {
+                    return dir == 2 ? Vec3(line, y, o.z + f32(along) * cs) : Vec3(o.x + f32(along) * cs, y, line);
+                };
+                for (usize i = 0; i < pairs.Size();) {
+                    usize j = i;
+                    while (j + 1 < pairs.Size() && pairs[j + 1].a == pairs[i].a && pairs[j + 1].b == pairs[i].b && pairs[j + 1].along == pairs[j].along + 1)
+                        ++j;
+                    const Vec3 pa = point(pairs[i].along, pairs[i].y), pb = point(pairs[j].along + 1, pairs[j].y);
+                    cross.PushBack(Cross{pairs[i].a, Link{pairs[i].b, pa, pb}});
+                    cross.PushBack(Cross{pairs[i].b, Link{pairs[i].a, pa, pb}});
+                    i = j + 1;
+                }
+            }
+    Sort(cross, [](const Cross& l, const Cross& r) { return l.from < r.from; });
+    m_polys.Reserve(total);
+    usize ci = 0;
+    for (usize t = 0; t < m_tiles.Size(); ++t) {
+        const Tile& tile = m_tiles[t];
+        for (u32 pi = 0; pi < tile.polys.Size(); ++pi) {
+            Poly p = tile.polys[pi];
+            const u32 global = offset[t] + pi;
+            const u32 first = u32(m_links.Size());
+            for (u32 l = 0; l < p.linkCount; ++l) {
+                Link link = tile.links[p.firstLink + l];
+                link.to += offset[t];
+                m_links.PushBack(link);
+            }
+            while (ci < cross.Size() && cross[ci].from < global)
+                ++ci;
+            while (ci < cross.Size() && cross[ci].from == global)
+                m_links.PushBack(cross[ci++].link);
+            p.firstLink = first;
+            p.linkCount = u32(m_links.Size()) - first;
+            m_polys.PushBack(p);
+        }
+    }
+    BuildGrid();
 }
 
 void NavMesh::BuildGrid()
@@ -882,8 +1132,19 @@ void NavMesh::Serialize(Array<u8>& out) const
     w.Write(NavMagic);
     w.Write(NavVersion);
     w.Write(m_settings);
-    w.WriteArray(m_polys.View());
-    w.WriteArray(m_links.View());
+    w.Write(m_cellsX);
+    w.Write(m_cellsZ);
+    w.Write(m_tileCellsX);
+    w.Write(m_tileCellsZ);
+    w.Write(m_border);
+    w.Write(m_tilesX);
+    w.Write(m_tilesZ);
+    for (const Tile& t : m_tiles) {
+        w.WriteArray(t.polys.View());
+        w.WriteArray(t.links.View());
+        for (const Array<EdgeCell>& e : t.edges)
+            w.WriteArray(e.View());
+    }
 }
 
 bool NavMesh::Deserialize(Span<const u8> data)
@@ -893,18 +1154,36 @@ bool NavMesh::Deserialize(Span<const u8> data)
     if (r.Read<u32>() != NavMagic || r.Read<u32>() != NavVersion)
         return false;
     r.Read(m_settings);
-    r.ReadArray(m_polys);
-    r.ReadArray(m_links);
-    bool ok = !r.HasError();
-    for (const Poly& p : m_polys)
-        ok &= p.firstLink + p.linkCount <= m_links.Size();
-    for (const Link& l : m_links)
-        ok &= l.to < m_polys.Size();
+    m_cellsX = r.Read<i32>();
+    m_cellsZ = r.Read<i32>();
+    m_tileCellsX = r.Read<i32>();
+    m_tileCellsZ = r.Read<i32>();
+    m_border = r.Read<i32>();
+    m_tilesX = r.Read<u32>();
+    m_tilesZ = r.Read<u32>();
+    bool ok = !r.HasError() && m_tilesX > 0 && m_tilesZ > 0 && u64(m_tilesX) * m_tilesZ <= 1u << 20;
+    if (ok) {
+        m_tiles.Resize(usize(m_tilesX) * m_tilesZ);
+        for (Tile& t : m_tiles) {
+            r.ReadArray(t.polys);
+            r.ReadArray(t.links);
+            for (Array<EdgeCell>& e : t.edges)
+                r.ReadArray(e);
+            for (const Poly& p : t.polys)
+                ok &= p.firstLink + p.linkCount <= t.links.Size();
+            for (const Link& l : t.links)
+                ok &= l.to < t.polys.Size();
+            for (const Array<EdgeCell>& e : t.edges)
+                for (const EdgeCell& c : e)
+                    ok &= c.poly < t.polys.Size();
+        }
+        ok &= !r.HasError();
+    }
     if (!ok) {
         Clear();
         return false;
     }
-    BuildGrid();
+    Assemble();
     return true;
 }
 
