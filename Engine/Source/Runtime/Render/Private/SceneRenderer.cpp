@@ -122,7 +122,10 @@ SceneRenderer::~SceneRenderer()
     for (Buffer* b : m_instanceBuffers)
         m_device.Destroy(b);
     for (Cascade& c : m_cascades)
+    {
         m_device.Destroy(c.map);
+        m_device.Destroy(c.staticMap);
+    }
     for (Buffer* b : m_lightBuffers)
         m_device.Destroy(b);
     for (Buffer* b : m_decalBuffers)
@@ -131,6 +134,7 @@ SceneRenderer::~SceneRenderer()
         m_device.Destroy(b);
     m_device.Destroy(m_localAtlas);
     m_device.Destroy(m_clearTilePipeline);
+    m_device.Destroy(m_restoreShadowPipeline);
     m_device.Destroy(m_deferredPipeline);
     m_device.Destroy(m_skinPipeline);
     for (Buffer* b : m_paletteBuffers)
@@ -383,6 +387,17 @@ bool SceneRenderer::Init(Format colorFormat, Format depthFormat)
         pd.depthFormat = Format::D32_FLOAT;
         pd.debugName = "ShadowAtlas.ClearTile";
         m_clearTilePipeline = m_device.CreateGraphicsPipeline(pd);
+        ShaderCompileDesc rd = vd;
+        rd.entryPoint = "RestoreShadowPS";
+        rd.stage = ShaderStage::Pixel;
+        if (Result<ShaderBytecode> rp = ShaderCompiler::Compile(rd)) {
+            m_restoreShadowPS = move(*rp);
+            pd.pixelShader = &m_restoreShadowPS;
+            pd.debugName = "SunShadow.Restore";
+            m_restoreShadowPipeline = m_device.CreateGraphicsPipeline(pd);
+        } else {
+            ZX_LOG_WARN(LogSceneRenderer, "{} (cascades redraw their static casters)", rp.GetError().message);
+        }
         for (Buffer*& b : m_localFaceBuffers)
             b = m_device.CreateBuffer(BufferDesc{u64(MaxLocalFaces) * LocalFaceStride, BufferUsage::ShaderResource,
                                                  MemoryType::Upload, 0, "LocalShadowFaces"});
@@ -561,19 +576,35 @@ void SceneRenderer::SetupCascades(const RenderView& view, const SceneLighting& l
     if (ss.resolution != m_shadowResolution) {
         for (Cascade& c : m_cascades) {
             m_device.Destroy(c.map); // deferred
+            m_device.Destroy(c.staticMap);
             c.map = nullptr;
+            c.staticMap = nullptr;
         }
         m_shadowResolution = ss.resolution;
     }
-    for (u32 c = 0; c < count; ++c)
+    // GPU-driven frames draw only skinned meshes from the CPU lists, so a cascade can keep its static casters in a
+    // map of their own: animated characters then cost a depth copy + their own draws, not the whole cascade again.
+    const bool splitStatic = ss.cache && m_restoreShadowPipeline && m_settings.gpuDriven && m_settings.depthPrepass && m_cullPipeline &&
+                       m_cullInitPipeline && m_hizPipeline;
+    if (splitStatic != m_shadowSplit) {
+        InvalidateShadows();
+        m_shadowSplit = splitStatic;
+    }
+    for (u32 c = 0; c < count; ++c) {
+        TextureDesc td;
+        td.width = td.height = ss.resolution;
+        td.format = Format::D32_FLOAT;
+        td.usage = TextureUsage::DepthStencil | TextureUsage::ShaderResource;
         if (!m_cascades[c].map) {
-            TextureDesc td;
-            td.width = td.height = ss.resolution;
-            td.format = Format::D32_FLOAT;
-            td.usage = TextureUsage::DepthStencil | TextureUsage::ShaderResource;
             td.debugName = "SunShadowCascade";
             m_cascades[c].map = m_device.CreateTexture(td);
         }
+        if (splitStatic && !m_cascades[c].staticMap) {
+            td.debugName = "SunShadowCascadeStatic";
+            m_cascades[c].staticMap = m_device.CreateTexture(td);
+            m_cascades[c].valid = false;
+        }
+    }
     m_cascadeCount = count;
     m_viewConstants.cascadeCount = count;
     if (!count)
@@ -617,8 +648,8 @@ void SceneRenderer::SetupCascades(const RenderView& view, const SceneLighting& l
     // Decide which cascades to re-render: invalid ones, those whose slice left the cached bounds (at most
     // maxUpdatesPerFrame per frame, the nearest first) and those a moved caster touches (always: a stale shadow is
     // wrong, not just blurry). The rest keep last frame's map.
-    auto touchedByMovedCaster = [&](const Cascade& k) {
-        for (const Sphere& s : m_movedCasters) {
+    auto touchedBy = [&](const Cascade& k, Span<const Sphere> casters) {
+        for (const Sphere& s : casters) {
             const Vec3 d = s.center - k.center;
             const f32 along = Dot(d, lightDir); // the map spans [-(radius + back), radius] along the light
             const f32 reach = k.radius * 1.4143f + s.radius; // square map: its corners
@@ -633,15 +664,23 @@ void SceneRenderer::SetupCascades(const RenderView& view, const SceneLighting& l
     for (u32 c = 0; c < count; ++c) {
         Cascade& k = m_cascades[c];
         const bool inside = k.valid && Length(desired[c].center - k.center) + desired[c].radius <= k.radius;
-        const bool dirty = k.valid && touchedByMovedCaster(k);
+        const bool dirty = k.valid && touchedBy(k, m_movedCasters.View());
+        k.staticUpdate = false;
         if (dirty && inside) { // same bounds, new content
-            k.update = true;
+            k.update = k.staticUpdate = true;
             ++updates;
+            k.hasDynamic = splitStatic && touchedBy(k, m_dynamicCasters.View());
             continue;
         }
         k.update = (!inside && (updates < Max(1u, ss.maxUpdatesPerFrame) || !k.valid)) || dirty;
-        if (!k.update)
+        if (!k.update) {
+            // Static content unchanged: only animated casters (now or last frame) need the map rewritten.
+            const bool dynamic = splitStatic && k.valid && touchedBy(k, m_dynamicCasters.View());
+            k.update = dynamic || (splitStatic && k.valid && k.hasDynamic);
+            k.hasDynamic = dynamic;
             continue;
+        }
+        k.staticUpdate = true;
         ++updates;
         f32 radius = desired[c].radius * (1.0f + (ss.cache ? ss.cacheMargin : 0.0f));
         radius = std::ceil(radius * 16.0f) / 16.0f;
@@ -656,6 +695,7 @@ void SceneRenderer::SetupCascades(const RenderView& view, const SceneLighting& l
         k.center = center;
         k.radius = radius;
         k.valid = true;
+        k.hasDynamic = splitStatic && touchedBy(k, m_dynamicCasters.View());
     }
     m_stats.cascadesUpdated = updates;
     // NDC -> uv (y down).
@@ -869,9 +909,14 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
         }
     }
     m_movedCasters.Clear();
+    m_dynamicCasters.Clear();
+    PrepareSkinning(instances);
+    const bool splitShadows = m_shadowSplit; // as decided last frame; a change invalidates every cascade anyway
     for (u32 i : m_movedInstances) {
         if (i >= instances.Size() || !instances[i].castShadows)
             continue;
+        if (splitShadows && SkinSlot(i) != InvalidIndex)
+            continue; // animated: drawn over the static casters (m_dynamicCasters)
         const RenderInstance& inst = instances[i];
         const GpuMesh* mesh = m_assets.GetMesh(inst.mesh);
         if (!mesh)
@@ -881,13 +926,13 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
             m_movedCasters.PushBack(Sphere{inst.prevWorld->TransformPoint(mesh->sphere.center), mesh->sphere.radius * MaxScale(*inst.prevWorld)});
     }
     m_movedInstances.Clear();
-    PrepareSkinning(instances);
     for (const SkinJob& j : m_skinJobs) {
         const RenderInstance& inst = instances[j.instance];
         if (!inst.castShadows)
             continue;
         if (const GpuMesh* mesh = m_assets.GetMesh(inst.mesh))
-            m_movedCasters.PushBack(Sphere{inst.world.TransformPoint(mesh->sphere.center), mesh->sphere.radius * 1.5f * MaxScale(inst.world)});
+            (splitShadows ? m_dynamicCasters : m_movedCasters)
+                .PushBack(Sphere{inst.world.TransformPoint(mesh->sphere.center), mesh->sphere.radius * 1.5f * MaxScale(inst.world)});
     }
     SetupCascades(view, lighting);
     Frustum cascadeFrustums[MaxCascades];
@@ -1405,12 +1450,12 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
         gpuCandidates = graph.ImportBuffer(m_candidates, ResourceState::UnorderedAccess);
         u32 viewMask = 3u;
         for (u32 c = 0; c < m_cascadeCount; ++c)
-            if (m_cascades[c].update)
+            if (m_cascades[c].staticUpdate)
                 viewMask |= 1u << (2 + c);
         AddCullInitPass(graph, gpuArgs, gpuCandidates, viewMask);
         AddCullPass(graph, 0, occlusion && m_hizValid ? 1u : 0u, m_cullViewProj, gpuArgs, gpuLists, gpuCandidates, 0, 0.0f, 0);
         for (u32 c = 0; c < m_cascadeCount; ++c)
-            if (m_cascades[c].update) // casters only (item flag 1), skipping ones under ~1 shadow texel
+            if (m_cascades[c].staticUpdate) // casters only (item flag 1), skipping ones under ~1 shadow texel
                 AddCullPass(graph, 2 + c, 0, m_cascades[c].viewProj, gpuArgs, gpuLists, gpuCandidates, 1u,
                             m_viewConstants.cascadeTexelWorld[c], m_settings.shadows.lodBias);
     }
@@ -1430,9 +1475,51 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
         shadowMaps[c] = graph.ImportTexture(m_cascades[c].map, ResourceState::ShaderResource);
         if (!m_cascades[c].update)
             continue;
-        if (nano) // the cascades share one cluster region: cull right before drawing
+        if (nano && m_cascades[c].staticUpdate) // the cascades share one cluster region: cull right before drawing
             AddNanoCullPass(graph, 2 + c, 0, m_cascades[c].viewProj, nanoBuffers);
         const RGTexture target = shadowMaps[c];
+        if (m_shadowSplit && m_cascades[c].staticMap) {
+            // Static casters into their own map (when they changed), then map = static depth + the animated casters.
+            const RGTexture staticTarget = graph.ImportTexture(m_cascades[c].staticMap, ResourceState::ShaderResource);
+            if (m_cascades[c].staticUpdate)
+                graph.AddPass(
+                    Name(String::Format("SunShadowStatic{}", c)).CStr(), PassType::Graphics,
+                    [staticTarget, readIndirect](PassBuilder& b) {
+                        b.DepthStencil(staticTarget, LoadOp::Clear, 0.0f);
+                        b.SideEffects(); // persistent cache
+                        readIndirect(b);
+                    },
+                    [this, c, regular, nano](PassContext& ctx) {
+                        ViewConstants cascadeView = m_viewConstants;
+                        cascadeView.viewProj = m_cascades[c].viewProj;
+                        ctx.cmd.SetConstants(1, &cascadeView, sizeof(cascadeView));
+                        if (nano)
+                            DrawNano(ctx.cmd, 2 + c, VariantShadow);
+                        if (regular)
+                            DrawIndirect(ctx.cmd, 2 + c, VariantShadow);
+                    });
+            graph.AddPass(
+                Name(String::Format("SunShadow{}", c)).CStr(), PassType::Graphics,
+                [target, staticTarget](PassBuilder& b) {
+                    b.ReadTexture(staticTarget);
+                    b.DepthStencil(target, LoadOp::DontCare, 0.0f);
+                    b.SideEffects();
+                },
+                [this, c](PassContext& ctx) {
+                    DrawPush restore{};
+                    restore.instanceIndex = m_cascades[c].staticMap->GetSrvIndex();
+                    ctx.cmd.SetPipeline(m_restoreShadowPipeline);
+                    ctx.cmd.SetPushConstants(restore);
+                    ctx.cmd.Draw(3);
+                    ViewConstants cascadeView = m_viewConstants;
+                    cascadeView.viewProj = m_cascades[c].viewProj;
+                    ctx.cmd.SetConstants(1, &cascadeView, sizeof(cascadeView));
+                    Pipeline* bound = nullptr;
+                    for (const DrawItem& d : m_shadowDraws[c]) // skinned meshes only in GPU-driven frames
+                        Draw(ctx.cmd, d, VariantShadow, bound);
+                });
+            continue;
+        }
         graph.AddPass(
             Name(String::Format("SunShadow{}", c)).CStr(), PassType::Graphics,
             [target, readIndirect](PassBuilder& b) {

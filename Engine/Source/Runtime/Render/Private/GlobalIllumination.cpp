@@ -306,9 +306,18 @@ void GlobalIllumination::EnsureResources(const GISettings& settings)
     }
 }
 
+void GlobalIllumination::ResetLightingOutputs(SceneLighting& lighting)
+{
+    lighting.gi = GIVolumeConstants();
+    lighting.ssgiTexture = rhi::InvalidDescriptor;
+    lighting.lightmapAtlas = rhi::InvalidDescriptor;
+    lighting.lightmapIntensity = 1.0f;
+}
+
 void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 cameraPosition, f32 exposure, const GISettings& settings,
                                  SceneLighting& lighting)
 {
+    ResetLightingOutputs(lighting);
     m_stats = Stats{};
     m_rebuild = ~0u;
     m_voxelDraws.Clear();

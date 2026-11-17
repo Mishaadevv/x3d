@@ -719,6 +719,10 @@ private:
     rhi::Buffer* m_localFaceBuffers[rhi::FramesInFlight] = {};
     rhi::ShaderBytecode m_clearTileVS;
     rhi::Pipeline* m_clearTilePipeline = nullptr;
+    rhi::ShaderBytecode m_restoreShadowPS;
+    rhi::Pipeline* m_restoreShadowPipeline = nullptr; // copies a cascade's static depth (D32 cannot be copied in parts)
+    Array<Sphere> m_dynamicCasters;                   // skinned casters this frame (split cascades)
+    bool m_shadowSplit = false;                       // this frame's cascades keep static and skinned casters apart
     void PrepareLocalShadows(Span<const LightDesc> lights, const RenderView& view, struct GpuLightData* gpuLights,
                              Span<const u32> gpuIndexOfLight);
     struct AOParams
@@ -781,11 +785,16 @@ private:
     struct Cascade
     {
         rhi::Texture* map = nullptr;
+        /// GPU-driven frames: the static casters alone (kept while nothing static moves); `map` = this + the skinned
+        /// casters, restored from it whenever an animated character in the cascade changes its pose.
+        rhi::Texture* staticMap = nullptr;
         Vec3 center;
         f32 radius = 0.0f;
         Mat4 viewProj;
         bool valid = false;
-        bool update = false;
+        bool update = false;       // `map` is written this frame
+        bool staticUpdate = false; // ... with its static casters drawn again (else restored from staticMap)
+        bool hasDynamic = false;   // skinned casters were drawn into `map` (they must be erased when they leave)
     };
     Cascade m_cascades[MaxCascades];
     LightingInputs m_lightingInputs;

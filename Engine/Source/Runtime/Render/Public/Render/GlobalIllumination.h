@@ -137,6 +137,9 @@ public:
     bool TakeBake(BakedGI& out);
     /// Probes used in GIMode::Baked (null = none). Uploaded on the next AddPasses.
     void SetBaked(const BakedGI* data);
+    /// Clears what Prepare writes into the lighting (probes, lightmap atlas, screen-space GI): the lighting outlives the
+    /// frame, so a mode switched off (GI off, baked -> dynamic, bake cleared) must not keep last frame's resources.
+    static void ResetLightingOutputs(SceneLighting& lighting);
     bool HasBaked() const { return m_bakedValid || m_bakedPending; }
 
     struct Stats

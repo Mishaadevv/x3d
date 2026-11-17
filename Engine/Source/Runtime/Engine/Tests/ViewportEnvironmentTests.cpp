@@ -78,3 +78,15 @@ ZX_TEST(ViewportEnvironment, RenderCVarsLiveInTheRuntime)
     ZX_EXPECT(Console::Execute("r.GI.Spacing 0.9", CVarSetBy::Console));
     ZX_EXPECT(Console::FindCVar("r.GI.Spacing")->GetValueString().StartsWith("0.9"));
 }
+
+ZX_TEST(ViewportEnvironment, OvercastHdriKeepsTheScenesDirectionalLight)
+{
+    // An overcast panorama has no sun to take: with Sun = From HDRI the scene's Directional Light stays the sun (it
+    // used to be switched off, so the scene had neither direct light nor shadows while the cascades still rendered).
+    ZX_EXPECT(HdriSunSource(HdriSunMode::FromHDRI, true, true) == SunSource::Panorama);
+    ZX_EXPECT(HdriSunSource(HdriSunMode::FromHDRI, true, false) == SunSource::Panorama);
+    ZX_EXPECT(HdriSunSource(HdriSunMode::FromHDRI, false, true) == SunSource::Scene);
+    ZX_EXPECT(HdriSunSource(HdriSunMode::FromHDRI, false, false) == SunSource::None);
+    ZX_EXPECT(HdriSunSource(HdriSunMode::SceneSun, true, false) == SunSource::Scene);
+    ZX_EXPECT(HdriSunSource(HdriSunMode::None, true, true) == SunSource::None);
+}

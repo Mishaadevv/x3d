@@ -2,6 +2,30 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.17.21 — Shadows, the sun and baked lighting (2026-11-17)
+- **The sun disappeared under an overcast HDRI**: with HDRI Sky `Sun = From HDRI` the engine took the sun from the panorama. When the panorama had none (an overcast sky), it switched the directional light off completely, even with a Directional Light in the scene.
+  - The result was no direct light and no shadows, yet the shadow cascades still rendered every frame, wasting about 8 ms.
+  - A panorama without a sun now keeps the scene's Directional Light (`HdriSunSource`), and the Sun menu says where the sun comes from.
+  - With no direct sun at all (Sun = None, a night without a moon), the cascades and contact shadows are no longer rendered.
+- **Lightmap bakes baked the sun's shadow in**: rays left a texel 1.5 voxels of the finest distance-field level away. Away from the bake center the field is coarser (0.5–1 m), so a ray "hit" its own surface at once and brought back that surface's direct sunlight, sharp cascade shadow included.
+  - Sunlit areas got the sun twice; shaded areas turned almost black because the sky was lost.
+  - The offset now uses the voxel of the level that holds the texel. After a rebake, the shaded side of a street is lit by the sky.
+- **Stale GI**: the GI outputs (probes, lightmap atlas, screen-space GI) lived in `SceneLighting` across frames and were never cleared.
+  - After `r.GI 0`, a Baked → Dynamic switch or `gi.clearbake`, last frame's data stayed in use; in the last case that was the descriptor of a destroyed texture.
+  - `GlobalIllumination::Prepare` now starts with `ResetLightingOutputs`.
+- **Static cache for sun cascades**: any animated character inside a cascade made the whole cascade redraw every frame. In a game with zombies that meant all three cascades, always, about 10 ms on this laptop.
+  - In GPU-driven frames each cascade now keeps a map of its static casters. It is redrawn only when something static, the camera or the sun moves.
+  - The final map is a copy of the static map (the `RestoreShadowPS` shader) with the skinned meshes drawn on top.
+  - In Dead City, shadows dropped from about 10 ms to about 3.5 ms, contact shadows included.
+- Dead City: lighting rebaked (`Main.zgi`) with the fixed lightmaps. The full bake (23,400 probes, a 1024×3776 atlas for 177 objects) took 61 s.
+- The bake log now counts the lightmap in the file size (it said 34.5 MB for a 64 MB file).
+- **Remaining**: facade lightmaps far from the bake center are blotchy. The distance field is coarse there (0.5–1 m voxels on a street about 90 m long). A lightmap bake pass with the field centered on groups of objects is needed.
+- **Checked**:
+  - New tests: ViewportEnvironment.OvercastHdriKeepsTheScenesDirectionalLight, GI.LightingOutputsAreResetEachFrame.
+  - All tests pass in Debug and Development. The Debug editor smoke test has 0 debug layer errors.
+  - In the editor on Dead City: buildings, cars, zombies and the player all cast shadows. Moving in Play leaves no trail of old shadows.
+  - The Indirect Light view (r.ViewMode 9) no longer shows a copy of the sun's shadow.
+
 ## 0.17.20 — Fixes found with Dead City (2026-11-17)
 - **Low integrity**: the `Zeqou Ecosystem` folder carries a Low Mandatory Level label (some tools' sandboxes set it), so every exe built inside it ran at Low integrity and couldn't write %TEMP% or %LOCALAPPDATA%. Because of that the nano page file wasn't created, tests needed TEMP inside Saved, and AI settings, recent projects, the engine profile and game saves silently failed to save. The engine now detects this (`platform::IsLowIntegrityProcess`), keeps temp files and settings in `LocalLow`, and logs a warning with the command that fixes the folder. Tests pass without TEMP overrides.
 - **Saving through an 8.3 short name**: a file saved through a path like `AI_SET~1.JSO` was replaced by a new file with that literal name, and the original was lost. `MoveFileAt` now replaces the existing file under its long name.

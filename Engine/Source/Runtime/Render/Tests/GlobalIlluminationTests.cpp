@@ -102,3 +102,20 @@ ZX_TEST(GI, BakedProbesRoundTrip)
     fs::Shutdown();
     platform::DeleteDirectoryTree(dir);
 }
+
+ZX_TEST(GI, LightingOutputsAreResetEachFrame)
+{
+    // SceneLighting outlives the frame: after r.GI 0, a switch from baked to dynamic or gi.clearbake, last frame's
+    // probes / lightmap atlas (possibly destroyed) must not stay bound.
+    SceneLighting l;
+    l.gi.irradiance = 5;
+    l.gi.distance = 6;
+    l.gi.probeData = 7;
+    l.ssgiTexture = 8;
+    l.lightmapAtlas = 9;
+    l.lightmapIntensity = 3.0f;
+    GlobalIllumination::ResetLightingOutputs(l);
+    ZX_EXPECT(l.gi.irradiance == rhi::InvalidDescriptor && l.gi.distance == rhi::InvalidDescriptor && l.gi.probeData == rhi::InvalidDescriptor);
+    ZX_EXPECT(l.ssgiTexture == rhi::InvalidDescriptor && l.lightmapAtlas == rhi::InvalidDescriptor);
+    ZX_EXPECT_EQ(l.lightmapIntensity, 1.0f);
+}

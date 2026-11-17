@@ -507,8 +507,9 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
         ui::OpenPopup("##sun");
     if (ui::BeginPopup("##sun")) {
         if (ed.viewport->LastHdri().IsActive())
-            ui::TextDisabled(ed.viewport->HdriSunFound() ? "HDRI Sky active: its sun lights the scene\n(turn it with Rotation in Details)"
-                                                         : "HDRI Sky active: these apply with Sun = Scene Sun");
+            ui::TextDisabled(ed.viewport->HdriSun() == SunSource::Panorama ? "HDRI Sky active: its sun lights the scene\n(turn it with Rotation in Details)"
+                             : ed.viewport->HdriSun() == SunSource::Scene  ? "HDRI Sky active: the panorama has no sun,\nthe scene's sun below lights the scene"
+                                                                           : "HDRI Sky active: Sun = None (no direct light)");
         // With a Directional Light in the scene the sliders turn it (its rotation is the sun); otherwise the editor sun.
         const ecs::Entity sunEntity = ed.FindSunEntity();
         Transform* sunTransform = sunEntity ? ed.world.Get<Transform>(sunEntity) : nullptr;

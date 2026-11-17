@@ -314,7 +314,7 @@ void SceneRenderer::PrepareNano(Span<const RenderInstance> instances, const Rend
     const f32 pixelsPerUnit = f32(view.height) * invTanHalfFov * 0.5f;
     addView(0, frustum, false, pixelsPerUnit, Max(ns.pixelError, 0.1f) * m_nanoErrorScale, false);
     for (u32 c = 0; c < m_cascadeCount; ++c)
-        if (m_cascades[c].update)
+        if (m_cascades[c].staticUpdate)
             addView(2 + c, cascadeFrustums[c], true, 1.0f / Max(m_viewConstants.cascadeTexelWorld[c], 1e-6f),
                     Max(ns.shadowPixelError, 0.1f) * m_nanoShadowErrorScale, true);
     // Virtual shadow levels rendering pages this frame: casters inside the rectangle around those pages.

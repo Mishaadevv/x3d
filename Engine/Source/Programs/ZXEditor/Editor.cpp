@@ -4098,7 +4098,7 @@ void Editor::UpdateLightingBake()
     platform::CreateDirectoryTree(Path::Parent(path));
     if (render::SaveBakedGI(path, data))
         ZX_LOG_INFO(LogEditor, "Lighting baked -> {} ({:.1f} MB)", path,
-                    f64(data.irradiance.Size() + data.distance.Size() + data.probeData.Size()) / (1024.0 * 1024.0));
+                    f64(data.irradiance.Size() + data.distance.Size() + data.probeData.Size() + data.lightmap.Size()) / (1024.0 * 1024.0));
     else
         ZX_LOG_ERROR(LogEditor, "Can't write {}", path);
     gi.SetBaked(&data);

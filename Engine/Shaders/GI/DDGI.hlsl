@@ -461,8 +461,12 @@ void LightmapTraceCS(uint2 id : SV_DispatchThreadID)
     n = dot(n, n) > 1e-6 ? normalize(n) : float3(0, 1, 0);
     const float3 t = normalize(abs(n.y) < 0.99 ? cross(float3(0, 1, 0), n) : cross(float3(1, 0, 0), n));
     const float3 b = cross(n, t);
-    const float voxel = g_Probe.sdf.levelMin[0].w;
-    // Start past the surface's own voxels (the field is 1 voxel thick there; a ray starting inside would hit itself).
+    // Start past the surface's own voxels (the field is 1 voxel thick there; a ray starting inside would hit itself)
+    // - voxels of the level that holds the texel: away from the camera that is a coarse level, and an offset in level
+    // 0 voxels let the rays hit their own surface, which then brought its direct sunlight (sharp cascade shadows)
+    // into the lightmap.
+    const uint level = min(SdfLevelAt(g_Probe.sdf, pos.xyz, 1.0), g_Probe.sdf.levels - 1);
+    const float voxel = g_Probe.sdf.levelMin[level].w;
     const float3 origin = pos.xyz + n * voxel * 1.5;
     float3 sum = 0.0;
     float valid = 0.0;

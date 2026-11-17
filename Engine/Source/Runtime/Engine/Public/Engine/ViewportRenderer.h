@@ -58,6 +58,16 @@ void WriteEnvironmentGraphics(JsonValue& json, const ViewportEnvironment& env);
 void ReadEnvironmentGraphics(const JsonValue& json, ViewportEnvironment& env);
 f32 ResolveEnvironmentExposure(const ViewportEnvironment& env, f32 sceneEV, bool hasAutoEV, f32 autoEV);
 
+/// Where the directional light comes from under an HDRI Sky.
+enum class SunSource : u8
+{
+    Panorama, // the sun found in the panorama
+    Scene,    // the scene's Directional Light (or the editor's Sun settings)
+    None,     // no directional light: the panorama lights everything
+};
+/// Sun = From HDRI takes the panorama's sun; a panorama without one (overcast) keeps the scene's Directional Light.
+SunSource HdriSunSource(HdriSunMode mode, bool panoramaHasSun, bool sceneHasDirectionalLight);
+
 /// Subsystems switched off for the project (Features window); applied on top of ViewportSettings each frame.
 struct ViewportFeatures
 {
@@ -172,6 +182,8 @@ public:
     /// The HDRI sky of the last frame (inactive = physical sky) and whether its sun lights the scene.
     const render::HdriSkySettings& LastHdri() const { return m_sky.Hdri(); }
     bool HdriSunFound() const { return m_hdriHasSun; }
+    /// The directional light under the active HDRI Sky (Scene when there is none).
+    SunSource HdriSun() const { return m_sky.Hdri().IsActive() ? m_hdriSunSource : SunSource::Scene; }
 
     /// Entities whose meshes get the selection outline (editor). Pass the selected entity and its descendants.
     void SetOutlinedEntities(Span<const ecs::Entity> entities) { m_outlined.Clear(); m_outlined.Append(entities); }
@@ -224,7 +236,7 @@ private:
     f32 m_lastScale = 1.0f;
     // HDRI Sky of this frame (resolved before the environment: its sun is the directional light).
     asset::HdrInfo m_hdriInfo;
-    HdriSunMode m_hdriSun = HdriSunMode::SceneSun;
+    SunSource m_hdriSunSource = SunSource::Scene;
     bool m_hdriHasSun = false;
     f32 m_dynamicTimer = 0.0f;
     Array<render::RenderInstance> m_instances;

@@ -100,6 +100,18 @@ bool ViewportRenderer::Init(bool lite, Format outputFormat)
            m_clouds.Init(m_hdrFormat, lite) && m_fluids.Init(m_hdrFormat);
 }
 
+SunSource HdriSunSource(HdriSunMode mode, bool panoramaHasSun, bool sceneHasDirectionalLight)
+{
+    switch (mode) {
+    case HdriSunMode::FromHDRI:
+        if (panoramaHasSun)
+            return SunSource::Panorama;
+        return sceneHasDirectionalLight ? SunSource::Scene : SunSource::None;
+    case HdriSunMode::SceneSun: return SunSource::Scene;
+    default: return SunSource::None;
+    }
+}
+
 void ViewportRenderer::ResolveHdriSky(ecs::World& world)
 {
     render::HdriSkySettings& h = m_settings.sky.hdri;
@@ -119,8 +131,8 @@ void ViewportRenderer::ResolveHdriSky(ecs::World& world)
     h.width = texture->GetDesc().width;
     h.intensity = Max(sky->intensity, 0.0f);
     h.rotation = DegToRad(sky->rotation);
-    m_hdriSun = sky->sun;
-    m_hdriHasSun = m_hdriInfo.hasSun && sky->sun == HdriSunMode::FromHDRI;
+    m_hdriSunSource = HdriSunSource(sky->sun, m_hdriInfo.hasSun, FindDirectionalLight(world) != nullptr);
+    m_hdriHasSun = m_hdriSunSource == SunSource::Panorama;
     if (m_hdriHasSun) {
         // The sun leaves the sky lighting and becomes the directional light.
         h.clampDirection = HdriToWorld(m_hdriInfo.sunDirection, h.rotation);
@@ -198,8 +210,8 @@ void ViewportRenderer::ApplyEnvironment(const ViewportEnvironment& env)
             l.sunDirection = -m_dirToSun;
             l.sunIlluminance = sun * hdri.intensity;
             l.sunColor = sun > 0.0f ? m_hdriInfo.sunIlluminance / sun : Vec3(1, 1, 1);
-        } else if (m_hdriSun != HdriSunMode::SceneSun) {
-            l.sunIlluminance = 0.0f; // None, or no distinct sun in the panorama
+        } else if (m_hdriSunSource == SunSource::None) {
+            l.sunIlluminance = 0.0f; // Sun = None, or an overcast panorama and no Directional Light in the scene
         }
     }
     m_settings.post.autoExposure = env.autoExposure;
@@ -399,6 +411,12 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
     if (const SkyLight* skyLight = FindSkyLight(world))
         m_settings.sky.skyBrightness *= Max(skyLight->skyBrightness, 0.0f);
     ApplyEnvironment(sceneEnv);
+    if (m_lighting.sunIlluminance <= 0.0f) {
+        // No direct sunlight (Sun = None, night without a moon): its cascades and contact shadows would be multiplied
+        // by zero - don't render them.
+        m_settings.scene.shadows.enabled = false;
+        m_settings.scene.contactShadows.enabled = false;
+    }
     m_lights.Clear();
     GatherLights(world, m_lights);
     if (m_particleSource) {

@@ -377,6 +377,13 @@ float4 ClearTileVS(uint vertexId : SV_VertexID) : SV_Position
     return float4(uv * float2(2, -2) + float2(-1, 1), 0.0, 1.0);
 }
 
+/// Cached sun cascade: copies the static casters' depth (texture g_Draw.instanceIndex) into the cascade map, which then
+/// gets the animated casters on top.
+float RestoreShadowPS(float4 position : SV_Position) : SV_Depth
+{
+    return GetTexture2D(g_Draw.instanceIndex).Load(int3(position.xy, 0)).r;
+}
+
 #ifdef ZX_GRAPH_MATERIAL
 MaterialInputs GraphInputs(Material m, float4 uv)
 {
