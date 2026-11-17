@@ -54,6 +54,11 @@ public:
     void Load(AssetId id);
     /// RegisterSource + Load. Returns an invalid id if the source is unknown/unsupported (logged).
     AssetId LoadPath(StringView path);
+    /// Cooks a registered source again with its current .zmeta settings (import scale, virtualGeometry, generateLods,
+    /// texture srgb / normalMap / compression) and file contents. Assets made from it that were loaded load again;
+    /// their ids go to `reloaded` (GPU copies must be refreshed: RenderAssets::ReloadMesh / ReloadTexture). Waits for
+    /// running jobs first. False if the source is unknown.
+    bool Reimport(AssetId source, Array<AssetId>* reloaded = nullptr);
 
     AssetState GetState(AssetId id) const;
     AssetType GetType(AssetId id) const;

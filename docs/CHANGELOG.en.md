@@ -2,6 +2,24 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.17.20 — Fixes found with Dead City (2026-11-17)
+- **Low integrity**: the `Zeqou Ecosystem` folder carries a Low Mandatory Level label (some tools' sandboxes set it), so every exe built inside it ran at Low integrity and couldn't write %TEMP% or %LOCALAPPDATA%. Because of that the nano page file wasn't created, tests needed TEMP inside Saved, and AI settings, recent projects, the engine profile and game saves silently failed to save. The engine now detects this (`platform::IsLowIntegrityProcess`), keeps temp files and settings in `LocalLow`, and logs a warning with the command that fixes the folder. Tests pass without TEMP overrides.
+- **Saving through an 8.3 short name**: a file saved through a path like `AI_SET~1.JSO` was replaced by a new file with that literal name, and the original was lost. `MoveFileAt` now replaces the existing file under its long name.
+- **Asset reimport**: `asset.reimport <path>` and Content Browser → Reimport cook a model or texture again with its current `.zmeta` settings (scale, virtualGeometry, generateLods, srgb, normalMap, compression). Meshes and textures in the scene are replaced in place, without restarting the editor. API: `AssetManager::Reimport`, `RenderAssets::ReloadTexture`.
+- **Render variables `r.*` in the built game**: they moved from the editor into the Engine module (`Engine/ViewportCVars.h`). A project's `startupCommands` and the game's command line now change the graphics in ZXGame too.
+- **GI near walls**: whether a probe is stuck inside geometry was decided again on every update from 64 random rays. Probes near walls switched off and on at random and left stable dark patches on facades. The flag is now averaged over updates like the probe's light, and the patches are much reduced.
+  - **Remaining**: at 1.6 m spacing, fine relief (plaster 2 cm proud of brick) still shows patches up close. A denser scene probe spacing fixes it (`scene.giSpacing 0.8` or Settings → Scene graphics); Dead City uses that.
+- Fixed: `material.assign` assigned the material only to the primary selected object, not the whole selection (in Dead City this left one sidewalk white). It now covers the whole selection in one undo step.
+- Fixed: the viewport view-mode menu lacked modes 9 (Indirect Light) and 10 (Lightmap UV Density), and its label said "Local Shadows" for them.
+- New command `scene.giSpacing [m]` sets the scene's GI probe spacing from the console and over MCP.
+- **Correction to 0.17.19**: the "holes from LOD and nano simplification in the facades" were a misdiagnosis; GI alone caused the patches. Dead City's facades have their LODs and nano back, and ForwardOpaque on the street dropped from 23 to 15 ms.
+- Dead City: textured sidewalks; zombies stop at 1.15 m, so they no longer fill the screen in first person; darker, smaller blood.
+- **Checked**:
+  - New tests: FileSystem.TempAndAppDataAreWritable, FileSystem.WritingThroughAShortNameKeepsTheLongName, AssetManager.ReimportAppliesNewMetaSettings, ViewportEnvironment.RenderCVarsLiveInTheRuntime.
+  - All 504 tests pass in Debug and Development without TEMP overrides. The Debug editor smoke test has 0 debug layer errors.
+  - In the editor: `asset.reimport Buildings/Facades.glb` re-cooked 12 meshes and 15 textures in 5 s with no errors.
+  - Play in Dead City: a first-person fight, KILLS 1.
+
 ## 0.17.19 — Weapons on bones, calls between scripts, the Dead City test game (2026-11-17)
 - **Bone Attachment** (new component): an entity rides on a bone of an animated model, such as an axe in the right hand or a lamp on the head. The model is found among the entity's ancestors or next to them (the weapon is a child of the character's root, beside the mesh). The offset is in meters in the bone's space and doesn't depend on the rig's scale (Mixamo's centimeter skeletons). `followRotation` off keeps only the position.
 - **Bones by short name**: `Skeleton::FindBone("LeftFoot")` finds `mixamorig:LeftFoot` and `Armature|LeftFoot`, case-insensitively. This works in scripts, graph layer masks and Bone Attachment. An exact name still wins.

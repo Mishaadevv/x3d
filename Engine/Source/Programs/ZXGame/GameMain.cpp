@@ -8,6 +8,7 @@
 #include "Asset/AssetManager.h"
 #include "Audio/AudioEngine.h"
 #include "Core/Console/Console.h"
+#include "Engine/ViewportCVars.h"
 #include "Core/CoreInit.h"
 #include "Core/HAL/PlatformMisc.h"
 #include "Core/FileSystem/Pak.h"
@@ -190,6 +191,8 @@ private:
 
 bool Game::Initialize(const String& exeDir, const GameConfig& config)
 {
+    if (platform::IsLowIntegrityProcess())
+        ZX_LOG_WARN(LogGame, "Running at Low integrity: saves and temp files go to LocalLow (a folder above the game has a Low mandatory label)");
     m_config = config;
     m_loadStart = Clock::NowSeconds();
     RegisterEngineComponents();
@@ -330,6 +333,7 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     m_pool.Reset(new TransientResourcePool(*m_device));
     if (!m_renderAssets->Init() || !m_viewport->Init(lite, Format::R8G8B8A8_UNORM))
         return false;
+    BindViewportCVars(m_viewport.Get()); // r.* for the command line and the project's startupCommands
     m_materials->ScanContent();
 
     // The startup scene and its environment.
@@ -564,6 +568,7 @@ void Game::Shutdown()
         m_audioEngine->Shutdown();
     m_audioEngine.Reset();
     m_particles.Clear();
+    BindViewportCVars(nullptr);
     m_viewport.Reset();
     m_materials.Reset();
     m_prefabs.Reset();

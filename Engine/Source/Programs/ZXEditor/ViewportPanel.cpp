@@ -449,19 +449,22 @@ void ViewportToolbar(Editor& ed, const Rect& r, f32 s)
     ViewportSettings& vs = ed.viewport->Settings();
     ui::SetCursorPos(r.min + Vec2(8.0f * s, 6.0f * s));
     // The last entry is a post-processing view (focus check: near blur red, far blur blue, in focus green).
+    // Entries 0..10 are the scene debug modes (r.ViewMode, ForwardPBR.hlsl), in the same order.
     static const StringView ViewModes[] = {"Lit", "Base Color", "Normals", "Roughness / Metallic", "LOD", "Shadow Cascades",
-                                           "Light Clusters", "Ambient Occlusion", "Local Shadows", "Depth of Field Focus"};
-    const u32 current = vs.post.viewMode == 5 ? 9u : Min(vs.scene.debugMode, 8u);
+                                           "Light Clusters", "Ambient Occlusion", "Local Shadows", "Indirect Light (GI)",
+                                           "Lightmap UV Density", "Depth of Field Focus"};
+    constexpr u32 SceneModes = 11, FocusMode = 11;
+    const u32 current = vs.post.viewMode == 5 ? FocusMode : Min(vs.scene.debugMode, SceneModes - 1);
     const String litLabel = String::Format(ZX_ICON_SUN "  {}  " ZX_ICON_CHEVRON_DOWN "##viewmode", ViewModes[current]);
     if (ui::Button(litLabel, Vec2::Zero(), ui::ButtonVariant::Default))
         ui::OpenPopup("##viewmodes");
     if (ui::BeginPopup("##viewmodes")) {
-        for (u32 i = 0; i < 10; ++i) {
-            if (i == 9)
+        for (u32 i = 0; i <= FocusMode; ++i) {
+            if (i == FocusMode)
                 ui::Separator();
             if (ui::MenuItem(ViewModes[i], {}, current == i)) {
-                vs.scene.debugMode = i == 9 ? 0u : i;
-                vs.post.viewMode = i == 9 ? 5u : 0u;
+                vs.scene.debugMode = i == FocusMode ? 0u : i;
+                vs.post.viewMode = i == FocusMode ? 5u : 0u;
             }
         }
         ui::EndPopup();

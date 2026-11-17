@@ -133,6 +133,9 @@ public:
     /// Forgets a mesh (its GPU copy is freed once the GPU is done with it); the next GetMesh loads it again. For
     /// memory meshes that were replaced (generated terrain).
     void ReloadMesh(AssetId id);
+    /// Drops the GPU copy of a texture (after AssetManager::Reimport): it is loaded again on next use, and every
+    /// material row / graph parameter block is rewritten with the new descriptor.
+    void ReloadTexture(AssetId id);
     /// Rewrites vertices [firstVertex, firstVertex + count) of a resident mesh in place (uploaded by the next Update) and
     /// its bounds - for meshes edited live (terrain sculpting) without a reload (no flicker, no probe recapture).
     /// Returns false if the mesh is not resident (then reload it instead).

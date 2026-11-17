@@ -2,6 +2,7 @@
 #include "Core/CoreInit.h"
 #include "Core/FileSystem/FileSystem.h"
 #include "Core/HAL/PlatformFile.h"
+#include "Core/Serialization/Json.h"
 #include "Core/Jobs/JobSystem.h"
 #include "Core/String/Path.h"
 #include "Core/Testing/Test.h"
@@ -204,4 +205,58 @@ ZX_TEST(AssetManager, CopiedSourceGetsItsOwnCook)
             ZX_EXPECT(assets.GetMesh(n.mesh) != nullptr);
             ZX_EXPECT_EQ(assets.GetSourcePath(n.mesh), assets.GetSourcePath(b));
         }
+}
+
+ZX_TEST(AssetManager, ReimportAppliesNewMetaSettings)
+{
+    // A .zmeta edited while the editor runs (import scale, srgb...) takes effect through Reimport: the loaded assets
+    // made from the source load again from the new cook, with the same ids.
+    JobsScope jobsScope;
+    TempProject project;
+    AssetManagerSettings settings;
+    settings.ddcDirectory = project.root + "/Intermediate/DDC";
+    AssetManager assets(settings);
+    const String model = project.root + "/Content/BoxTextured.glb";
+    const String image = project.root + "/Content/rgba8.png";
+    const AssetId glbId = assets.LoadPath(model);
+    const AssetId pngId = assets.LoadPath(image);
+    assets.WaitIdle();
+    const PrefabAsset* prefab = assets.GetPrefab(glbId);
+    ZX_REQUIRE(prefab != nullptr);
+    AssetId meshId;
+    for (const PrefabNode& n : prefab->nodes)
+        if (n.mesh.IsValid())
+            meshId = n.mesh;
+    ZX_REQUIRE(meshId.IsValid());
+    assets.Load(meshId);
+    assets.WaitIdle();
+    ZX_REQUIRE(assets.GetMesh(meshId) != nullptr && assets.GetTexture(pngId) != nullptr);
+    const f32 sizeBefore = Length(assets.GetMesh(meshId)->bounds.Extents());
+    const TextureFormat formatBefore = assets.GetTexture(pngId)->format;
+
+    auto setMeta = [](const String& path, StringView key, const JsonValue& value) {
+        String text;
+        JsonValue meta;
+        ZX_REQUIRE(fs::ReadTextFile(path + ".zmeta", text) && ParseJson(text.View(), meta));
+        JsonValue settingsObject = meta.Get("settings");
+        if (!settingsObject.IsObject())
+            settingsObject = JsonValue::MakeObject();
+        settingsObject.Set(key, value);
+        meta.Set("settings", move(settingsObject));
+        ZX_REQUIRE(fs::WriteTextFile(path + ".zmeta", ToJsonString(meta)));
+    };
+    setMeta(model, "scale", JsonValue(2.0f));
+    setMeta(image, "srgb", JsonValue(false));
+
+    Array<AssetId> reloaded;
+    ZX_EXPECT(assets.Reimport(glbId, &reloaded));
+    ZX_EXPECT(reloaded.Contains(meshId) && reloaded.Contains(glbId));
+    ZX_EXPECT(assets.Reimport(pngId));
+    assets.WaitIdle();
+    ZX_REQUIRE(assets.GetState(meshId) == AssetState::Loaded && assets.GetMesh(meshId) != nullptr);
+    ZX_EXPECT_NEAR(Length(assets.GetMesh(meshId)->bounds.Extents()), sizeBefore * 2.0f, sizeBefore * 0.01f);
+    ZX_REQUIRE(assets.GetTexture(pngId) != nullptr);
+    ZX_EXPECT(assets.GetTexture(pngId)->format != formatBefore); // linear instead of sRGB
+    ZX_EXPECT(!assets.Reimport(Guid::FromName(Guid(), "nothing")));
+    ZX_EXPECT_EQ(assets.GetStats().failed, 0u);
 }

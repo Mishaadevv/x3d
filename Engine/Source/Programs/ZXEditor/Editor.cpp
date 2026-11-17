@@ -85,6 +85,8 @@ Editor::~Editor() = default;
 bool Editor::Initialize()
 {
     engineRoot = FindEngineRootDirectory();
+    if (platform::IsLowIntegrityProcess())
+        ZX_LOG_WARN(LogEditor, "Running at Low integrity: a folder above the executable has a Low mandatory label (some sandboxes set it). Temp files and settings go to LocalLow; Documents and other folders may refuse writes. Fix: icacls \"<folder>\" /setintegritylevel (OI)(CI)M");
     contentRoot = engineRoot + "/Samples/Content";
     m_layoutPath = "/Saved/Config/EditorLayout.ini";
     RegisterEngineComponents();
@@ -2886,19 +2888,57 @@ Guid Editor::CreateMaterial(StringView physicalPath)
     return guid;
 }
 
+bool Editor::ReimportAsset(StringView physicalPath)
+{
+    Result<asset::AssetId> id = assets->RegisterSource(physicalPath);
+    if (!id) {
+        ZX_LOG_WARN(LogEditor, "Reimport: {}", id.GetError().message);
+        return false;
+    }
+    Array<asset::AssetId> reloaded;
+    if (!assets->Reimport(*id, &reloaded))
+        return false;
+    assets->WaitIdle(); // the cook and the loads it started
+    u32 meshes = 0, textures = 0;
+    for (const asset::AssetId& a : reloaded) {
+        const asset::AssetType type = assets->GetType(a);
+        if (type == asset::AssetType::Mesh) {
+            renderAssets->ReloadMesh(a);
+            ++meshes;
+        } else if (type == asset::AssetType::Texture) {
+            renderAssets->ReloadTexture(a);
+            ++textures;
+        }
+    }
+    ZX_LOG_INFO(LogEditor, "Reimported {}: {} mesh(es), {} texture(s) reloaded", Path::FileName(physicalPath), meshes, textures);
+    return true;
+}
+
 void Editor::AssignMaterial(ecs::Entity e, const Guid& material)
 {
-    MeshRenderer* mr = world.Get<MeshRenderer>(e);
-    if (!mr)
+    AssignMaterial(Span<const ecs::Entity>(&e, 1), material);
+}
+
+void Editor::AssignMaterial(Span<const ecs::Entity> entities, const Guid& material)
+{
+    bool any = false;
+    for (ecs::Entity e : entities)
+        any |= world.Has<MeshRenderer>(e);
+    if (!any)
         return;
-    const render::GpuMesh* mesh = renderAssets->GetMesh(mr->mesh);
-    const usize slots = Max<usize>(mesh ? mesh->materialSlots : 1, Max<usize>(mr->materials.Size(), 1));
     undo.Begin("Assign Material");
-    undo.Record(e);
-    mr = world.Get<MeshRenderer>(e);
-    mr->materials.Resize(slots);
-    for (asset::AssetId& m : mr->materials)
-        m = material;
+    for (ecs::Entity e : entities) {
+        MeshRenderer* mr = world.Get<MeshRenderer>(e);
+        if (!mr)
+            continue;
+        const render::GpuMesh* mesh = renderAssets->GetMesh(mr->mesh);
+        const usize slots = Max<usize>(mesh ? mesh->materialSlots : 1, Max<usize>(mr->materials.Size(), 1));
+        undo.Record(e);
+        mr = world.Get<MeshRenderer>(e);
+        mr->materials.Resize(slots);
+        for (asset::AssetId& m : mr->materials)
+            m = material;
+    }
     undo.End();
 }
 

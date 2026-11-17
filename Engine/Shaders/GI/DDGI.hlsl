@@ -379,13 +379,18 @@ void UpdateIrradianceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadI
     RWTexture2D<float4> tex = GetRWTexture2D(g_Probe.irradianceUav);
     float h = BlendWeight(slot);
     // (No history read for fresh probes: the texture may hold anything.)
-    const float3 history = h > 0.0 ? tex[texel].rgb * g_Probe.exposureRatio : result;
+    const float4 previous = h > 0.0 ? tex[texel] : float4(result, usable);
+    const float3 history = h > 0.0 ? previous.rgb * g_Probe.exposureRatio : result;
     // Big changes (a light switched on, the sun moved a lot) converge faster.
     const float change = max(abs(result.r - history.r), max(abs(result.g - history.g), abs(result.b - history.b)));
     const float scale = max(max(result.r, max(result.g, result.b)), max(history.r, max(history.g, history.b)));
     if (change > 0.5 * scale && g_Probe.baking == 0)
         h = min(h, 0.8);
-    tex[texel] = float4(lerp(result, history, h), usable);
+    // Usability is averaged like the light: with 64 random rays a probe next to a wall (or in a thin gap behind it)
+    // flips between "inside" and "usable" from update to update, and a probe switched off or on at random left
+    // stable dark patches on walls, shaped by tiny depth steps of the surface (plaster over brick).
+    const float usableAverage = lerp(usable, saturate(previous.a), min(h, 0.9));
+    tex[texel] = float4(lerp(result, history, h), usableAverage);
 }
 
 [numthreads(16, 16, 1)]

@@ -144,6 +144,32 @@ AssetManager::Entry& AssetManager::GetOrAddEntry(AssetId id)
     return *raw;
 }
 
+namespace {
+
+/// Import settings of a .zmeta's "settings" object (defaults when missing).
+struct MetaSettings
+{
+    TextureSettings texture;
+    f32 importScale = 1.0f;
+    NanoMode nano = NanoMode::Auto;
+    bool generateLods = true;
+};
+
+MetaSettings ParseMetaSettings(const JsonValue& s)
+{
+    MetaSettings m;
+    m.texture.srgb = s.Get("srgb").AsBool(true);
+    m.texture.normalMap = s.Get("normalMap").AsBool(false);
+    m.texture.compression = ParseTextureCompression(s.Get("compression").AsString());
+    m.importScale = Clamp(s.Get("scale").AsFloat(1.0f), 1e-4f, 1e4f);
+    if (const JsonValue* vg = s.Find("virtualGeometry"); vg && vg->IsBool())
+        m.nano = vg->AsBool() ? NanoMode::On : NanoMode::Off;
+    m.generateLods = s.Get("generateLods").AsBool(true);
+    return m;
+}
+
+} // namespace
+
 Result<AssetId> AssetManager::RegisterSource(StringView pathIn)
 {
     const String path = Path::Normalize(pathIn);
@@ -155,25 +181,16 @@ Result<AssetId> AssetManager::RegisterSource(StringView pathIn)
 
     // GUID from the .zmeta (created on first import).
     AssetId id;
-    TextureSettings texSettings;
-    f32 importScale = 1.0f;
-    NanoMode nanoMode = NanoMode::Auto;
-    bool generateLods = true;
+    MetaSettings settingsOfMeta;
     const String metaPath = path + ".zmeta";
     String metaText;
     JsonValue meta;
     if (fs::ReadTextFile(metaPath, metaText) && ParseJson(metaText.View(), meta)) {
         if (Optional<Guid> g = Guid::Parse(meta.Get("guid").AsString()))
             id = *g;
-        const JsonValue& s = meta.Get("settings");
-        texSettings.srgb = s.Get("srgb").AsBool(true);
-        texSettings.normalMap = s.Get("normalMap").AsBool(false);
-        texSettings.compression = ParseTextureCompression(s.Get("compression").AsString());
-        importScale = Clamp(s.Get("scale").AsFloat(1.0f), 1e-4f, 1e4f);
-        if (const JsonValue* vg = s.Find("virtualGeometry"); vg && vg->IsBool())
-            nanoMode = vg->AsBool() ? NanoMode::On : NanoMode::Off;
-        generateLods = s.Get("generateLods").AsBool(true);
+        settingsOfMeta = ParseMetaSettings(meta.Get("settings"));
     }
+    const TextureSettings& texSettings = settingsOfMeta.texture;
     if (!id.IsValid()) {
         if (m_settings.writeMetaFiles) {
             id = Guid::New();
@@ -199,9 +216,9 @@ Result<AssetId> AssetManager::RegisterSource(StringView pathIn)
         s->id = id;
         s->path = path;
         s->kind = scene ? SourceKind::Scene : SourceKind::Image;
-        s->importScale = importScale;
-        s->nano = nanoMode;
-        s->generateLods = generateLods;
+        s->importScale = settingsOfMeta.importScale;
+        s->nano = settingsOfMeta.nano;
+        s->generateLods = settingsOfMeta.generateLods;
         m_sources.InsertOrAssign(id, move(s));
         Entry& e = GetOrAddEntry(id);
         e.source = id;
@@ -227,6 +244,70 @@ AssetId AssetManager::LoadPath(StringView path)
     }
     Load(*id);
     return *id;
+}
+
+bool AssetManager::Reimport(AssetId sourceId, Array<AssetId>* reloaded)
+{
+    WaitIdle(); // nothing may hold or fill the entries reset below
+    String path;
+    {
+        ScopedLock lock(m_mutex);
+        const UniquePtr<Source>* s = m_sources.Find(sourceId);
+        if (!s)
+            return false;
+        path = (*s)->path;
+    }
+    MetaSettings settings;
+    String metaText;
+    JsonValue meta;
+    if (fs::ReadTextFile(path + ".zmeta", metaText) && ParseJson(metaText.View(), meta))
+        settings = ParseMetaSettings(meta.Get("settings"));
+
+    Array<AssetId> wasLoaded;
+    Source* cook = nullptr;
+    bool loadImage = false;
+    {
+        ScopedLock lock(m_mutex);
+        Source& s = *m_sources.Find(sourceId)->Get();
+        s.importScale = settings.importScale;
+        s.nano = settings.nano;
+        s.generateLods = settings.generateLods;
+        for (auto& kv : m_entries) {
+            Entry& e = *kv.second;
+            if (e.source != sourceId)
+                continue;
+            const AssetState state = e.state.load(std::memory_order_acquire);
+            const bool loaded = state == AssetState::Loaded;
+            if (loaded)
+                wasLoaded.PushBack(e.id);
+            e.mesh.Reset();
+            e.tex.Reset();
+            e.material.Reset();
+            e.prefab.Reset();
+            e.skeleton.Reset();
+            e.animation.Reset();
+            e.error.Clear();
+            if (s.kind == SourceKind::Image) {
+                e.texture = settings.texture; // the image itself is the origin
+                e.state.store(AssetState::Unknown, std::memory_order_release);
+                loadImage |= loaded;
+            } else {
+                // Sub-assets wait for the new cook (it gives them their new DDC files and starts the queued loads).
+                e.origin = EntryOrigin::None;
+                e.state.store(loaded ? AssetState::Queued : AssetState::Unknown, std::memory_order_release);
+            }
+        }
+        s.state.store(0);
+        if (s.kind == SourceKind::Scene && !wasLoaded.Empty())
+            cook = &s;
+    }
+    if (cook)
+        StartSourceCook(*cook);
+    if (loadImage)
+        Load(sourceId);
+    if (reloaded)
+        *reloaded = move(wasLoaded);
+    return true;
 }
 
 void AssetManager::Load(AssetId id)

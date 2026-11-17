@@ -92,6 +92,10 @@ String GetAbsolutePath(StringView path);
 String GetUserLocalAppDataDirectory();
 String GetUserDocumentsDirectory();
 String GetTempDirectory();
+/// True when the process runs at Low integrity (Windows: the executable or a folder above it carries a Low mandatory
+/// label, as some sandboxes set). Such a process can't write %TEMP% or %LOCALAPPDATA%, so GetTempDirectory() and
+/// GetUserLocalAppDataDirectory() return folders under LocalLow instead.
+bool IsLowIntegrityProcess();
 
 /// Watches a directory tree for changes (ReadDirectoryChangesW). Callbacks are queued and delivered on Poll().
 class DirectoryWatcher

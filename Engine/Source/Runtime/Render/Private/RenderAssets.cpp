@@ -303,6 +303,36 @@ const GpuMesh* RenderAssets::GetMesh(AssetId id)
     return e->resident ? &e->mesh : nullptr;
 }
 
+void RenderAssets::ReloadTexture(AssetId id)
+{
+    TextureEntry* e = m_textures.Find(id);
+    if (!e)
+        return;
+    m_device.Destroy(e->texture);
+    m_textures.Remove(id);
+    for (usize i = 0; i < m_pendingTextures.Size(); ++i)
+        if (m_pendingTextures[i] == id) {
+            m_pendingTextures.RemoveAtSwap(i);
+            break;
+        }
+    // Material rows and graph blocks hold the old descriptor: write them again (they request the texture anew).
+    for (auto& kv : m_materials) {
+        if (!kv.second.resolved)
+            continue;
+        kv.second.resolved = false;
+        bool queued = false;
+        for (const AssetId& p : m_pendingMaterials)
+            queued |= p == kv.first;
+        if (!queued)
+            m_pendingMaterials.PushBack(kv.first);
+    }
+    for (auto& kv : m_graphs)
+        for (const Pair<u32, AssetId>& t : kv.second.textures)
+            if (t.second == id)
+                kv.second.texturesPending = true;
+    ++m_contentVersion;
+}
+
 void RenderAssets::ReloadMesh(AssetId id)
 {
     UniquePtr<MeshEntry>* found = m_meshes.Find(id);

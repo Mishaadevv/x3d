@@ -222,7 +222,19 @@ bool DeleteDirectoryTree(StringView path)
 bool MoveFileAt(StringView from, StringView to, bool overwrite)
 {
     const Array<wchar_t> a = WidePath(from);
-    const Array<wchar_t> b = WidePath(to);
+    Array<wchar_t> b = WidePath(to);
+    // Replacing a file named by its short 8.3 alias ("AI_SET~1.JSO") would give the new file that alias as its real
+    // name and lose the original one: replace the existing file under its long name.
+    if (overwrite) {
+        wchar_t longName[1024];
+        const DWORD n = ::GetLongPathNameW(b.Data(), longName, ZX_ARRAY_COUNT(longName));
+        if (n > 0 && n < ZX_ARRAY_COUNT(longName)) {
+            b.Clear();
+            b.Append(Span<const wchar_t>(longName, n));
+            b.PushBack(L'\0');
+            b.PopBack();
+        }
+    }
     return ::MoveFileExW(a.Data(), b.Data(), MOVEFILE_COPY_ALLOWED | (overwrite ? MOVEFILE_REPLACE_EXISTING : 0)) != 0;
 }
 
@@ -282,11 +294,32 @@ String GetAbsolutePath(StringView path)
     return FromWide(buffer, n);
 }
 
+bool IsLowIntegrityProcess()
+{
+    static const bool low = [] {
+        HANDLE token = nullptr;
+        if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token))
+            return false;
+        alignas(8) BYTE buffer[128];
+        DWORD size = 0;
+        bool result = false;
+        if (::GetTokenInformation(token, TokenIntegrityLevel, buffer, sizeof(buffer), &size)) {
+            const auto* label = reinterpret_cast<const TOKEN_MANDATORY_LABEL*>(buffer);
+            const DWORD level = *::GetSidSubAuthority(label->Label.Sid, DWORD(*::GetSidSubAuthorityCount(label->Label.Sid) - 1));
+            result = level < SECURITY_MANDATORY_MEDIUM_RID;
+        }
+        ::CloseHandle(token);
+        return result;
+    }();
+    return low;
+}
+
 String GetUserLocalAppDataDirectory()
 {
     PWSTR p = nullptr;
     String result;
-    if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &p)))
+    // A Low integrity process can only write LocalLow (settings, recent projects, game saves would silently not save).
+    if (SUCCEEDED(::SHGetKnownFolderPath(IsLowIntegrityProcess() ? FOLDERID_LocalAppDataLow : FOLDERID_LocalAppData, 0, nullptr, &p)))
         result = FromWide(p, wcslen(p));
     ::CoTaskMemFree(p);
     return result;
@@ -305,6 +338,15 @@ String GetUserDocumentsDirectory()
 String GetTempDirectory()
 {
     wchar_t buffer[MAX_PATH + 1];
+    if (IsLowIntegrityProcess()) {
+        // %TEMP% is not writable at Low integrity: LocalLow/ZeqouX3D/Temp (created on first use).
+        const String low = GetUserLocalAppDataDirectory();
+        if (!low.Empty()) {
+            const String dir = low + "/ZeqouX3D/Temp";
+            CreateDirectoryTree(dir);
+            return dir;
+        }
+    }
     DWORD n = ::GetTempPathW(ZX_ARRAY_COUNT(buffer), buffer);
     String r = FromWide(buffer, n);
     while (r.EndsWith("/"))

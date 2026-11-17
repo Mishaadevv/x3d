@@ -65,6 +65,15 @@ FileKind KindOf(const FileItem& item)
 /// HDR panorama: double click / drag into the viewport makes it the HDRI Sky.
 bool IsHdrImage(StringView path) { return Path::HasExtension(path, ".hdr") || Path::HasExtension(path, ".exr"); }
 
+bool IsImageFile(StringView path)
+{
+    for (StringView ext : {StringView(".png"), StringView(".jpg"), StringView(".jpeg"), StringView(".tga"), StringView(".bmp"), StringView(".hdr"),
+                           StringView(".exr"), StringView(".dds")})
+        if (Path::HasExtension(path, ext))
+            return true;
+    return false;
+}
+
 /// Can be placed in the scene (double click / drag into the viewport).
 bool IsModel(StringView path)
 {
@@ -493,6 +502,9 @@ void DrawContentBrowserPanel(Editor& ed)
                     if (ui::MenuItem(ZX_ICON_PLUS "  Add to Selected Entity", {}, false, canAttach))
                         ed.AttachScript(ed.selected, item.path);
                 }
+                const bool importable = (IsModel(item.path) && !Path::HasExtension(item.path, ".zprefab")) || IsImageFile(item.path);
+                if (importable && ui::MenuItem(ZX_ICON_REFRESH_CW "  Reimport", {}, false, !ed.IsPlaying()))
+                    ed.ReimportAsset(item.path); // after editing its .zmeta (scale, virtualGeometry, generateLods, srgb...)
                 if (ui::MenuItem(ZX_ICON_FOLDER_SEARCH "  Show in Explorer"))
                     platform::RevealInFileExplorer(item.path);
                 if (ui::MenuItem(ZX_ICON_CLIPBOARD_COPY "  Copy Path"))

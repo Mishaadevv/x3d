@@ -451,6 +451,7 @@ public:
     Guid CreateMaterial(StringView physicalPath);
     /// Sets every material slot of the entity's mesh (undoable).
     void AssignMaterial(ecs::Entity e, const Guid& material);
+    void AssignMaterial(Span<const ecs::Entity> entities, const Guid& material); // one undo step
     /// Creates an empty entity / light at `position` (child of `parent`), as one undo step, and selects it.
     void CreateEmpty(Vec3 position, ecs::Entity parent = {});
     void CreatePointLight(Vec3 position, ecs::Entity parent = {});
@@ -483,6 +484,9 @@ public:
     void CreateFluid(Vec3 position, bool isFire, ecs::Entity parent = {});
     /// Sets the scene's HDRI Sky to the Content-relative panorama (creates the entity when there is none; undoable).
     void UseHdriSky(StringView texture);
+    /// Cooks a model or texture again with its current .zmeta settings (Content Browser > Reimport, asset.reimport):
+    /// its meshes and textures in the scene are replaced in place. False if the file is not an imported asset.
+    bool ReimportAsset(StringView physicalPath);
     /// The listener while playing: the game camera when it is shown, else the editor camera.
     ListenerPose CurrentListener();
     void CreateShape(BuiltinShape shape, Vec3 position, ecs::Entity parent = {});

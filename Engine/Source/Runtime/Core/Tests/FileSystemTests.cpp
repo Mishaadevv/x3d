@@ -102,3 +102,54 @@ ZX_TEST(FileSystem, AsyncReads)
         Thread::SleepMs(1);
     ZX_EXPECT_EQ(fs::PendingIORequests(), 0u);
 }
+
+ZX_TEST(FileSystem, TempAndAppDataAreWritable)
+{
+    // Even at Low integrity (an executable under a folder with a Low mandatory label) the engine must be able to write
+    // its scratch files and settings: the platform layer moves both to LocalLow then.
+    for (const String& base : {platform::GetTempDirectory(), platform::GetUserLocalAppDataDirectory() + "/ZeqouX3D"}) {
+        ZX_REQUIRE(!base.Empty());
+        const String dir = String::Format("{}/zx_writable_test_{}", base, Thread::CurrentId());
+        ZX_EXPECT(platform::CreateDirectoryTree(dir));
+        const String file = dir + "/probe.txt";
+        platform::File f;
+        ZX_EXPECT(f.Open(file, platform::FileMode::Write));
+        f.Close();
+        ZX_EXPECT(platform::FileExists(file));
+        platform::DeleteDirectoryTree(dir);
+    }
+}
+
+#if defined(_WIN32)
+#include <windows.h>
+ZX_TEST(FileSystem, WritingThroughAShortNameKeepsTheLongName)
+{
+    // Settings saved through an 8.3 alias (a path passed as AI_SET~1.JSO) replace the real file instead of creating
+    // a file literally named after the alias.
+    const String dir = String::Format("{}/zx_shortname_test_{}", platform::GetTempDirectory(), Thread::CurrentId());
+    platform::DeleteDirectoryTree(dir);
+    ZX_REQUIRE(platform::CreateDirectoryTree(dir));
+    const String longPath = dir + "/assistant_settings.json";
+    ZX_REQUIRE(fs::WriteTextFile(longPath, "{\"v\": 1}"));
+    wchar_t wideLong[512], wideShort[512];
+    String native = longPath;
+    native.ReplaceChar('/', '\\');
+    ::MultiByteToWideChar(CP_UTF8, 0, native.Data(), int(native.Size()) + 1, wideLong, 512);
+    const DWORD n = ::GetShortPathNameW(wideLong, wideShort, 512);
+    char shortUtf8[1024] = {};
+    ::WideCharToMultiByte(CP_UTF8, 0, wideShort, int(n) + 1, shortUtf8, sizeof(shortUtf8), nullptr, nullptr);
+    const String shortPath(shortUtf8);
+    if (n == 0 || Path::FileName(shortPath) == Path::FileName(native)) {
+        platform::DeleteDirectoryTree(dir);
+        return; // no 8.3 names on this volume
+    }
+    ZX_EXPECT(fs::WriteTextFile(shortPath, "{\"v\": 2}"));
+    Array<platform::DirectoryEntry> entries;
+    ZX_REQUIRE(platform::ListDirectory(dir, entries));
+    ZX_EXPECT_EQ(entries.Size(), usize(1));
+    ZX_EXPECT(!entries.Empty() && entries[0].name == "assistant_settings.json");
+    String text;
+    ZX_EXPECT(fs::ReadTextFile(longPath, text) && text.Contains("2"));
+    platform::DeleteDirectoryTree(dir);
+}
+#endif

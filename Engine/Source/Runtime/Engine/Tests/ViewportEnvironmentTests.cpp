@@ -2,6 +2,8 @@
 #include "Core/Serialization/Json.h"
 #include "Engine/ViewportRenderer.h"
 #include "Engine/SceneUndo.h"
+#include "Engine/ViewportCVars.h"
+#include "Core/Console/Console.h"
 
 using namespace zx;
 
@@ -64,4 +66,15 @@ ZX_TEST(ViewportEnvironment, ExternalSceneChangeIsDirtyUntilSavedOrCleared)
     undo.MarkExternalChange();
     undo.Clear();
     ZX_EXPECT(!undo.IsDirty());
+}
+
+ZX_TEST(ViewportEnvironment, RenderCVarsLiveInTheRuntime)
+{
+    // r.* variables belong to the Engine module (not the editor), so a packaged game and a project's startupCommands
+    // can set them. Unbound (no viewport) they still take values.
+    BindViewportCVars(nullptr);
+    for (StringView name : {StringView("r.GI.Spacing"), StringView("r.ScreenPercentage"), StringView("r.Nano"), StringView("r.ViewMode")})
+        ZX_EXPECT(Console::FindCVar(name) != nullptr);
+    ZX_EXPECT(Console::Execute("r.GI.Spacing 0.9", CVarSetBy::Console));
+    ZX_EXPECT(Console::FindCVar("r.GI.Spacing")->GetValueString().StartsWith("0.9"));
 }

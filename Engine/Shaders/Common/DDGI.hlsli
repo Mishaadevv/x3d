@@ -137,7 +137,7 @@ float3 DDGIIrradianceEx(DDGIVolume v, float3 worldPos, float3 n, float3 toCamera
         if (weight < 0.2)
             weight *= weight * weight / 0.04;
         const float4 irr = irradianceTex.SampleLevel(g_LinearClamp, DDGIProbeUV(v, slot, n, DDGI_IRRADIANCE_TEXELS, v.invIrradianceSize), 0);
-        weight *= irr.a; // probes stuck inside geometry don't count
+        weight *= saturate((irr.a - 0.25) * 2.0); // probes stuck inside geometry don't count (alpha: share of usable updates)
         sum += irr.rgb * weight;
         weightSum += weight;
     }
