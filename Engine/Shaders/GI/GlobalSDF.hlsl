@@ -31,7 +31,7 @@ struct BuildParams
     uint distanceUav;
     uint step;
     uint maxCells;        // per-triangle work cap
-    uint pad;
+    uint facesUav;        // RWByteAddressBuffer: face directions, one byte per voxel of every level
 };
 ZX_PASS_CONSTANTS(BuildParams, g_Build);
 
@@ -50,6 +50,8 @@ void ClearCS(uint3 id : SV_DispatchThreadID)
     GetRWTexture3D(g_Build.albedoUav)[SlabCoord(id)] = 0.0;
     GetRWTexture3D(g_Build.normalUav)[SlabCoord(id)] = 0.0;
     GetRWBuffer(g_Build.seedsUav).Store(VoxelIndex(id) * 4, EmptySeed);
+    if ((id.x & 3u) == 0)
+        GetRWBuffer(g_Build.facesUav).Store(SdfFaceAddress(g_Build.level, id), 0u); // 4 voxels per word
 }
 
 uint LoadIndex(ByteAddressBuffer ib, uint i)
@@ -142,6 +144,8 @@ void VoxelizeCS(uint3 id : SV_DispatchThreadID)
     const float dz = 0.5 * (abs(N.x) + abs(N.y)) / max(abs(N.z), 1e-6);
     const float4 albedoOut = float4(albedo, 1.0);
     const float4 normalOut = float4(n * 0.5 + 0.5, 1.0);
+    const uint faceBits = SdfFaceBits(n);
+    RWByteAddressBuffer faceBuffer = GetRWBuffer(g_Build.facesUav);
     RWTexture3D<float4> albedoTex = GetRWTexture3D(g_Build.albedoUav);
     RWTexture3D<float4> normalTex = GetRWTexture3D(g_Build.normalUav);
     RWByteAddressBuffer seeds = GetRWBuffer(g_Build.seedsUav);
@@ -164,6 +168,8 @@ void VoxelizeCS(uint3 id : SV_DispatchThreadID)
                 albedoTex[SlabCoord(v)] = albedoOut;
                 normalTex[SlabCoord(v)] = normalOut;
                 seeds.Store(VoxelIndex(v) * 4, PackVoxel(v));
+                const uint faceAddress = SdfFaceAddress(g_Build.level, v);
+                faceBuffer.InterlockedOr(faceAddress & ~3u, faceBits << ((faceAddress & 3u) * 8));
             }
         }
     }

@@ -77,6 +77,10 @@ struct ProbeParams
     uint2 pxSize;
     uint pxFrame;
     uint pxRays;
+    float3 lmTileMin;       // lightmap bake: only texels inside this box are traced this iteration
+    float lmPadA;
+    float3 lmTileMax;
+    float lmPadB;
 };
 ZX_PASS_CONSTANTS(ProbeParams, g_Probe);
 
@@ -210,10 +214,12 @@ float3 ShadeRay(float3 origin, float3 dir, out float distance)
         SdfSurface(g_Probe.sdf, hit.level, hit.position, albedo, n);
         if (dot(n, n) < 0.5)
             n = -dir;
-        if (dot(n, dir) > 0.2) {
+        if (SdfBackFace(g_Probe.sdf, hit.level, hit.position, dir, n)) {
             // The back of a surface: the probe is inside something (negative = back face; relocation moves it out).
             distance = -hit.t;
         } else {
+            if (dot(n, dir) > 0.0)
+                n = -n; // a two-sided voxel (thin wall) stored its other side: light the side the ray met
             const float voxel = g_Probe.sdf.levelMin[hit.level].w;
             const float3 p = hit.position + n * voxel * 0.75;
             float3 direct = 0.0;
@@ -360,12 +366,15 @@ void UpdateIrradianceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadI
     float3 sum = 0.0;
     float weightSum = 0.0;
     uint backfaces = 0;
+    uint close = 0; // front faces within a quarter spacing
+    const float closeDistance = 0.25 * v.spacing.x;
     [loop] for (uint i = 0; i < g_Probe.raysPerProbe; ++i) {
         const float4 r = s_ray[i];
         if (r.w < 0.0) {
             ++backfaces;
             continue;
         }
+        close += r.w < closeDistance ? 1u : 0u;
         const float w = saturate(dot(texelDir, s_dir[i]));
         sum += r.rgb * w;
         weightSum += w;
@@ -373,8 +382,10 @@ void UpdateIrradianceCS(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadI
     const float3 result = weightSum > 1e-4 ? sum / weightSum : 0.0;
     if (flat == 0 && g_Probe.probeDataUav != ZX_INVALID_INDEX)
         RelocateProbe(slot);
-    // A probe whose rays mostly hit back faces sits inside geometry.
-    const float usable = float(backfaces) < 0.25 * float(g_Probe.raysPerProbe) ? 1.0 : 0.0;
+    // A probe whose rays mostly hit back faces sits inside geometry; one that most rays leave by less than a quarter
+    // spacing is shut in (a gap behind a wall, where relocation pushed it out of a block): both only see darkness the
+    // surfaces around them don't get. Next to a wall about 1/8 of the rays are that short, in a corner about 1/4.
+    const float usable = float(backfaces) < 0.25 * float(g_Probe.raysPerProbe) && float(close) < 0.5 * float(g_Probe.raysPerProbe) ? 1.0 : 0.0;
     const uint2 texel = DDGITile(v, slot, DDGI_IRRADIANCE_TEXELS) + thread.xy;
     RWTexture2D<float4> tex = GetRWTexture2D(g_Probe.irradianceUav);
     float h = BlendWeight(slot);
@@ -443,6 +454,25 @@ void AmbientCubeCS(uint3 id : SV_DispatchThreadID)
 
 // --- Lightmap baking ---------------------------------------------------------------------------------------------------
 
+uint LightmapPcg(uint v)
+{
+    const uint state = v * 747796405u + 2891336453u;
+    const uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+/// Radical inverse of k in `base` (Halton sequence element).
+float LightmapHalton(uint k, uint base)
+{
+    float f = 1.0, r = 0.0;
+    [loop] while (k > 0) {
+        f /= float(base);
+        r += f * float(k % base);
+        k /= base;
+    }
+    return r;
+}
+
 /// One iteration for every covered atlas texel: lmRays cosine-distributed rays from the surface; the running average of
 /// their radiance is the texel's indirect diffuse irradiance (SkyIrradiance convention). Rays that start inside
 /// geometry (back faces) count as dark.
@@ -457,6 +487,8 @@ void LightmapTraceCS(uint2 id : SV_DispatchThreadID)
             GetRWTexture2D(g_Probe.lmAccumUav)[id] = 0.0; // not covered (the dilation fills it)
         return;
     }
+    if (any(pos.xyz < g_Probe.lmTileMin) || any(pos.xyz >= g_Probe.lmTileMax))
+        return; // another tile's texel (traced with the field centered there)
     float3 n = GetTexture2D(g_Probe.lmNormal).Load(int3(id, 0)).xyz;
     n = dot(n, n) > 1e-6 ? normalize(n) : float3(0, 1, 0);
     const float3 t = normalize(abs(n.y) < 0.99 ? cross(float3(0, 1, 0), n) : cross(float3(1, 0, 0), n));
@@ -470,12 +502,14 @@ void LightmapTraceCS(uint2 id : SV_DispatchThreadID)
     const float3 origin = pos.xyz + n * voxel * 1.5;
     float3 sum = 0.0;
     float valid = 0.0;
+    // Directions: a Halton (2, 3) sequence over all of the texel's rays (every iteration continues it), shifted by a
+    // random offset per texel (Cranley-Patterson). The old linear hash gave neighboring texels correlated rays, which
+    // left blotches the size of many texels instead of fine noise.
+    const uint seed = LightmapPcg(id.x + LightmapPcg(id.y));
+    const float2 shift = float2(LightmapPcg(seed), LightmapPcg(seed ^ 0x9E3779B9u)) * (1.0 / 4294967296.0);
     for (uint r = 0; r < g_Probe.lmRays; ++r) {
-        uint h = (id.x * 73856093u) ^ (id.y * 19349663u) ^ ((g_Probe.lmIteration * 16 + r) * 83492791u);
-        h ^= h >> 13;
-        h *= 0x5bd1e995u;
-        h ^= h >> 15;
-        const float u1 = float(h & 0xFFFFu) / 65536.0, u2 = float(h >> 16) / 65536.0;
+        const uint k = g_Probe.lmIteration * g_Probe.lmRays + r + 1;
+        const float u1 = frac(LightmapHalton(k, 2) + shift.x), u2 = frac(LightmapHalton(k, 3) + shift.y);
         const float phi = 6.2831853 * u2, radius = sqrt(u1);
         const float3 dir = normalize(t * (radius * cos(phi)) + b * (radius * sin(phi)) + n * sqrt(max(1.0 - u1, 0.0)));
         float distance;

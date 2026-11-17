@@ -20,7 +20,11 @@ struct GlobalSDF
     uint distanceTex;
     uint albedoTex;
     uint normalTex;
-    uint levels;
+    uint levels;   // built levels (rays use these)
+    uint faces;    // ByteAddressBuffer: one byte per voxel, bits 2a / 2a+1 = a face pointing along +axis a / -axis a
+    uint slabs;    // levels the textures hold
+    uint pad0;
+    uint pad1;
 };
 
 /// The finest level that holds `p` with a margin of `margin` voxels, or levels when none does.
@@ -39,7 +43,8 @@ float3 SdfUVW(GlobalSDF s, uint k, float3 p)
 {
     float3 local = (p - s.levelMin[k].xyz) / s.levelMin[k].w;
     local = clamp(local, 0.5, float(SDF_RESOLUTION) - 0.5);
-    return float3(local.xy / float(SDF_RESOLUTION), (local.z + float(k * SDF_RESOLUTION)) / float(SDF_RESOLUTION * s.levels));
+    // The textures hold `slabs` levels even while the outer ones are being rebuilt (levels < slabs).
+    return float3(local.xy / float(SDF_RESOLUTION), (local.z + float(k * SDF_RESOLUTION)) / float(SDF_RESOLUTION * max(s.slabs, s.levels)));
 }
 
 /// Distance (meters) to the nearest surface at `p` in level k.
@@ -115,6 +120,53 @@ void SdfSurface(GlobalSDF s, uint k, float3 p, out float3 albedo, out float3 nor
     normal = n.a > 1e-3 ? n.rgb / n.a * 2.0 - 1.0 : 0.0;
     const float len = length(normal);
     normal = len > 1e-3 ? normal / len : 0.0;
+}
+
+/// Face direction bits of a normal (see GlobalSDF::faces).
+uint SdfFaceBits(float3 n)
+{
+    uint bits = 0;
+    [unroll] for (uint a = 0; a < 3; ++a) {
+        if (n[a] > 0.3)
+            bits |= 1u << (2 * a);
+        else if (n[a] < -0.3)
+            bits |= 2u << (2 * a);
+    }
+    return bits;
+}
+
+/// Byte address of voxel v of level k in the face buffer.
+uint SdfFaceAddress(uint k, uint3 v) { return ((k * SDF_RESOLUTION + v.z) * SDF_RESOLUTION + v.y) * SDF_RESOLUTION + v.x; }
+
+/// Whether a ray travelling along `dir` that stopped at `p` (level k) met only the backs of surfaces (it started inside
+/// something). Uses the face directions of the 8 voxels around p: a thin wall holds both of its sides in one voxel,
+/// and its single stored normal would make one side look like a back face at random. `n`: the sampled normal
+/// (fallback without face data).
+bool SdfBackFace(GlobalSDF s, uint k, float3 p, float3 dir, float3 n)
+{
+    if (s.faces == ZX_INVALID_INDEX)
+        return dot(n, dir) > 0.2;
+    ByteAddressBuffer faces = GetBuffer(s.faces);
+    const int3 base = int3(floor((p - s.levelMin[k].xyz) / s.levelMin[k].w - 0.5));
+    uint bits = 0;
+    [unroll] for (uint i = 0; i < 8; ++i) {
+        const int3 v = base + int3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+        if (any(v < 0) || any(v >= int(SDF_RESOLUTION)))
+            continue;
+        const uint address = SdfFaceAddress(k, uint3(v));
+        bits |= (faces.Load(address & ~3u) >> ((address & 3u) * 8)) & 0xFFu;
+    }
+    if (bits == 0)
+        return dot(n, dir) > 0.2;
+    // Faces turned towards the ray: their normal points against its direction.
+    uint toward = 0;
+    [unroll] for (uint a = 0; a < 3; ++a) {
+        if (dir[a] > 0.2)
+            toward |= 2u << (2 * a);
+        else if (dir[a] < -0.2)
+            toward |= 1u << (2 * a);
+    }
+    return (bits & toward) == 0;
 }
 
 #endif // ZX_GLOBAL_SDF_HLSLI

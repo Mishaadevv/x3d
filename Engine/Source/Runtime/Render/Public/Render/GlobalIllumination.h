@@ -95,7 +95,7 @@ struct GIBakeSettings
     bool lightmaps = true;
     f32 lightmapDensity = 4.0f;  // texels per meter
     u32 lightmapIterations = 32;
-    u32 lightmapRays = 8;        // per texel and iteration
+    u32 lightmapRays = 32;       // per texel and iteration (8 left visible noise on large facades)
     u32 lightmapWidth = 1024;    // atlas width (height grows with the content, up to 8192)
 };
 
@@ -203,6 +203,8 @@ private:
         Array<Item> candidates; // static instances with lightmap UVs (gathered while baking)
         Array<Item> items;      // placed in the atlas
         UVec2 lmSize;
+        Array<AABB> lmTiles; // world boxes traced one after another, each with the distance field centered on it
+        u32 lmTile = 0;
         u32 lmIteration = 0;
         bool lmRasterized = false;
         rhi::Texture* lmPosition = nullptr;
@@ -214,6 +216,11 @@ private:
     void EnsureResources(const GISettings& settings);
     void AddBakeReadback(RenderGraph& graph);
     bool PlaceLightmaps();
+public:
+    /// Boxes of `tileSize` (a grid over the objects' world bounds, cells without any left out) the lightmap texels are traced in, one
+    /// after another: each gets the finest distance field level, so far-away texels are not traced through coarse ones.
+    static Array<AABB> LightmapTiles(Span<const AABB> boxes, f32 tileSize);
+private:
     void DestroyLightmapTargets();
     void FinishBakeReadback();
     void DestroyResources();
@@ -253,6 +260,7 @@ private:
     rhi::Texture* m_distance = nullptr;
     rhi::Texture* m_albedo = nullptr;
     rhi::Texture* m_normal = nullptr;
+    rhi::Buffer* m_faces = nullptr; // per voxel: directions of the faces in it (GlobalSDF.hlsli SdfBackFace)
     rhi::Buffer* m_seeds[2] = {};
     // Probes.
     rhi::Texture* m_irradiance = nullptr;

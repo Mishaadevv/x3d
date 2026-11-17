@@ -36,6 +36,10 @@ float2 ProjectUV(float3 p)
 
 float InterleavedGradientNoise(float2 p) { return frac(52.9829189 * frac(dot(p, float2(0.06711056, 0.00583715)))); }
 
+// Beyond ~40 m the occluders contact shadows catch are under a pixel and the cascades cover the rest: fade them out
+// (and skip the march) there.
+static const float ContactFadeStart = 30.0, ContactFadeEnd = 45.0;
+
 [numthreads(8, 8, 1)]
 void ContactShadowsCS(uint2 id : SV_DispatchThreadID)
 {
@@ -50,13 +54,22 @@ void ContactShadowsCS(uint2 id : SV_DispatchThreadID)
         return;
     }
     float3 P = ViewPos(uv, d);
+    const float fade = 1.0 - saturate((P.z - ContactFadeStart) / (ContactFadeEnd - ContactFadeStart));
+    if (fade <= 0.0) {
+        output[id] = 1.0;
+        return;
+    }
     // Geometric normal from the depth neighbours (the smaller discontinuity, as in GTAO): the ray starts off the
     // surface, otherwise rays at grazing sun angles hit the pixel's own (bumpy) surface a few centimeters on.
+    // Two gathers fetch the four neighbours: (x+1, y), (x, y+1) from the 2x2 block below-right, (x-1, y), (x, y-1) from
+    // the one above-left (gather order: x = (u0, v1), y = (u1, v1), z = (u1, v0), w = (u0, v0)).
     const float2 t1 = g_Contact.invSize;
-    const float3 px = ViewPos(uv + float2(t1.x, 0), depthTex.SampleLevel(g_PointClamp, uv + float2(t1.x, 0), 0).r);
-    const float3 nx = ViewPos(uv - float2(t1.x, 0), depthTex.SampleLevel(g_PointClamp, uv - float2(t1.x, 0), 0).r);
-    const float3 py = ViewPos(uv + float2(0, t1.y), depthTex.SampleLevel(g_PointClamp, uv + float2(0, t1.y), 0).r);
-    const float3 ny = ViewPos(uv - float2(0, t1.y), depthTex.SampleLevel(g_PointClamp, uv - float2(0, t1.y), 0).r);
+    const float4 g1 = depthTex.GatherRed(g_PointClamp, uv + 0.5 * t1);
+    const float4 g2 = depthTex.GatherRed(g_PointClamp, uv - 0.5 * t1);
+    const float3 px = ViewPos(uv + float2(t1.x, 0), g1.z);
+    const float3 py = ViewPos(uv + float2(0, t1.y), g1.x);
+    const float3 nx = ViewPos(uv - float2(t1.x, 0), g2.x);
+    const float3 ny = ViewPos(uv - float2(0, t1.y), g2.z);
     const float3 dx = abs(px.z - P.z) < abs(P.z - nx.z) ? px - P : P - nx;
     const float3 dy = abs(py.z - P.z) < abs(P.z - ny.z) ? py - P : P - ny;
     float3 N = normalize(cross(dx, dy));
@@ -78,8 +91,10 @@ void ContactShadowsCS(uint2 id : SV_DispatchThreadID)
     const float jitter = frac(InterleavedGradientNoise(float2(id)) + float(g_Contact.frame % 8) * 0.618034);
     const float thickness = g_Contact.thickness * max(P.z, 1.0);
     float occlusion = 0.0;
-    for (uint s = 0; s < g_Contact.stepCount; ++s) {
-        const float t = (s + jitter) / g_Contact.stepCount;
+    // Far away the ray covers few pixels: half the steps.
+    const uint steps = P.z > 15.0 ? max(g_Contact.stepCount / 2, 4u) : g_Contact.stepCount;
+    for (uint s = 0; s < steps; ++s) {
+        const float t = (s + jitter) / steps;
         const float3 q = lerp(P, rayEnd, t * t * 0.9 + t * 0.1); // denser near the pixel
         const float2 suv = ProjectUV(q);
         if (any(suv < 0.0) || any(suv > 1.0))
@@ -97,5 +112,5 @@ void ContactShadowsCS(uint2 id : SV_DispatchThreadID)
                 break;
         }
     }
-    output[id] = 1.0 - occlusion * saturate(NdotL * 4.0);
+    output[id] = 1.0 - occlusion * saturate(NdotL * 4.0) * fade;
 }

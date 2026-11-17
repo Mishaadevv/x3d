@@ -27,7 +27,7 @@ struct SdfBuildParams
     u32 vertexBuffer, indexBuffer, firstIndex, triangleCount;
     u32 index16, materialBuffer, materialIndex, level;
     u32 albedoUav, normalUav, seedsUav, seedsInUav;
-    u32 distanceUav, step, maxCells, pad;
+    u32 distanceUav, step, maxCells, facesUav;
 };
 static_assert(sizeof(SdfBuildParams) == 128);
 
@@ -36,8 +36,11 @@ struct GlobalSdfConstants
 {
     Vec4 levelMin[GlobalIllumination::MaxLevels];
     u32 distanceTex, albedoTex, normalTex, levels;
+    u32 faces;  // ByteAddressBuffer: face directions per voxel (one byte), invalid = none
+    u32 slabs;  // levels the textures hold (levels = how many of them are built)
+    u32 pad[2];
 };
-static_assert(sizeof(GlobalSdfConstants) == 80);
+static_assert(sizeof(GlobalSdfConstants) == 96);
 
 // Keep in sync with ProbeParams (Shaders/GI/DDGI.hlsl).
 struct ProbeParams
@@ -83,8 +86,12 @@ struct ProbeParams
     u32 pxColor, pxDepth, pxNormals, pxOut;
     UVec2 pxSize;
     u32 pxFrame, pxRays;
+    Vec3 lmTileMin; // lightmap bake: only texels inside this box are traced this iteration
+    f32 pad4;
+    Vec3 lmTileMax;
+    f32 pad5;
 };
-static_assert(sizeof(ProbeParams) == 944);
+static_assert(sizeof(ProbeParams) == 992);
 
 // Keep in sync with RasterParams (Shaders/GI/Lightmap.hlsl).
 struct LightmapRasterParams
@@ -98,6 +105,9 @@ static_assert(sizeof(LightmapRasterParams) <= 128);
 
 constexpr u32 IrradianceTexels = 8, DistanceTexels = 16;
 constexpr u32 SnapVoxels = 16; // levels move in steps of this many voxels
+// Lightmap bake tiles: the finest level spans 128 voxels and may sit up to SnapVoxels off the tile center, so a tile
+// of 80 voxels keeps every texel in it inside the finest level.
+constexpr u32 LightmapTileVoxels = 80;
 
 u64 HashFloats(u64 h, const f32* v, u32 n)
 {
@@ -206,7 +216,7 @@ void GlobalIllumination::DestroyResources()
         m_device.Destroy(t);
         t = nullptr;
     }
-    for (Buffer** b : {&m_seeds[0], &m_seeds[1], &m_rays, &m_flags}) {
+    for (Buffer** b : {&m_seeds[0], &m_seeds[1], &m_rays, &m_flags, &m_faces}) {
         m_device.Destroy(*b);
         *b = nullptr;
     }
@@ -245,6 +255,10 @@ void GlobalIllumination::EnsureResources(const GISettings& settings)
         m_albedo = m_device.CreateTexture(d);
         d.debugName = "GI.Normal";
         m_normal = m_device.CreateTexture(d);
+        // One byte per voxel: which way the faces in it point (thin walls hold both sides in one voxel).
+        m_device.Destroy(m_faces);
+        m_faces = m_device.CreateBuffer(BufferDesc{u64(SdfResolution) * SdfResolution * SdfResolution * levels,
+                                                   BufferUsage::ShaderResource | BufferUsage::UnorderedAccess, MemoryType::GpuOnly, 0, "GI.Faces"});
         if (!m_seeds[0]) {
             const u64 bytes = u64(SdfResolution) * SdfResolution * SdfResolution * 4;
             for (Buffer*& b : m_seeds)
@@ -401,10 +415,13 @@ void GlobalIllumination::Prepare(Span<const RenderInstance> instances, Vec3 came
         s.raysPerProbe = m_bake.settings.raysPerProbe;
         s.probeStride = 1;
         cameraPosition = m_bake.center;
+        // Lightmaps: the distance field follows the tile being traced (its finest level covers the whole tile).
+        if (m_bake.state == BakeState::Lightmaps && m_bake.lmTile < m_bake.lmTiles.Size())
+            cameraPosition = m_bake.lmTiles[m_bake.lmTile].Center();
     }
     m_settings = s;
     EnsureResources(s);
-    if (!m_distance || !m_albedo || !m_normal || !m_seeds[0] || !m_seeds[1] || !m_irradiance || !m_probeDistance || !m_rays || !m_cubes[5] || !m_probeData || !m_flags) {
+    if (!m_distance || !m_albedo || !m_normal || !m_faces || !m_seeds[0] || !m_seeds[1] || !m_irradiance || !m_probeDistance || !m_rays || !m_cubes[5] || !m_probeData || !m_flags) {
         m_active = false;
         return;
     }
@@ -558,7 +575,9 @@ void GlobalIllumination::AddLevelBuild(RenderGraph& graph, u32 level)
     const RGTexture normal = graph.ImportTexture(m_normal, ResourceState::ShaderResource);
     const RGBuffer seedsA = graph.ImportBuffer(m_seeds[0], ResourceState::ShaderResource);
     const RGBuffer seedsB = graph.ImportBuffer(m_seeds[1], ResourceState::ShaderResource);
+    const RGBuffer faces = graph.ImportBuffer(m_faces, ResourceState::ShaderResource);
     SdfBuildParams base = {};
+    base.facesUav = m_faces->GetUavIndex();
     base.levelMin = Vec4(m_rebuildMin, m_voxel * f32(1u << level));
     base.level = level;
     base.materialBuffer = m_assets.GetMaterialBuffer()->GetSrvIndex();
@@ -573,6 +592,7 @@ void GlobalIllumination::AddLevelBuild(RenderGraph& graph, u32 level)
             b.WriteTexture(albedo);
             b.WriteTexture(normal);
             b.WriteBuffer(seedsA);
+            b.WriteBuffer(faces);
         },
         [=, this](PassContext& ctx) {
             SdfBuildParams p = base;
@@ -588,6 +608,7 @@ void GlobalIllumination::AddLevelBuild(RenderGraph& graph, u32 level)
             b.WriteTexture(albedo);
             b.WriteTexture(normal);
             b.WriteBuffer(seedsA);
+            b.WriteBuffer(faces);
         },
         [=, this](PassContext& ctx) {
             ctx.cmd.SetPipeline(m_voxelizePipeline);
@@ -739,6 +760,8 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
     p.sdf.albedoTex = m_albedo->GetSrvIndex();
     p.sdf.normalTex = m_normal->GetSrvIndex();
     p.sdf.levels = levels;
+    p.sdf.faces = m_faces->GetSrvIndex();
+    p.sdf.slabs = m_levelCount;
     // A random rotation of the ray pattern per frame.
     Random rng(m_seed + m_frame * 0x9E3779B97F4A7C15ull);
     const Vec3 axis = SafeNormalize(Vec3(rng.Range(-1.0f, 1.0f), rng.Range(-1.0f, 1.0f), rng.Range(-1.0f, 1.0f)), Vec3(0, 1, 0));
@@ -824,81 +847,86 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
         p.phase = (p.probeStride - u32(m_frame % p.probeStride)) % p.probeStride;
     }
     const u32 groups = p.compactStride > 0 ? (probes + p.compactStride - 1) / p.compactStride : probes;
-    graph.AddPass(
-        "GI.ProbeTrace", PassType::Compute,
-        [=](PassBuilder& b) {
-            b.ReadTexture(distance);
-            b.ReadTexture(albedo);
-            b.ReadTexture(normal);
-            b.ReadTexture(irradiance);
-            b.ReadTexture(probeDistance);
-            if (hasSky)
-                b.ReadBuffer(skySHHandle, ResourceState::ConstantBuffer);
-            for (u32 c = 0; c < li.cascadeCount; ++c)
-                if (li.shadowTextures[c].IsValid())
-                    b.ReadTexture(li.shadowTextures[c]);
-            for (const RGTexture& t : cubes)
-                b.ReadTexture(t);
-            b.ReadTexture(probeData);
-            b.WriteBuffer(rays);
-            b.WriteBuffer(flags);
-        },
-        [=, this](PassContext& ctx) {
-            ctx.cmd.SetPipeline(m_tracePipeline);
-            ctx.cmd.SetConstants(0, &p, sizeof(p));
-            if (hasSky)
-                ctx.cmd.SetConstantBuffer(1, skySH->GetGpuAddress());
-            ctx.cmd.Dispatch(groups, rayGroups);
-        });
     ProbeParams up = p;
     up.rayBuffer = m_rays->GetSrvIndex();
     up.flagsBuffer = m_flags->GetSrvIndex();
-    graph.AddPass(
-        "GI.ProbeIrradiance", PassType::Compute,
-        [=](PassBuilder& b) {
-            b.ReadBuffer(rays);
-            b.ReadBuffer(flags);
-            b.WriteTexture(irradiance);
-            b.WriteTexture(probeData);
-        },
-        [=, this](PassContext& ctx) {
-            ctx.cmd.SetPipeline(m_irradiancePipeline);
-            ctx.cmd.SetConstants(0, &up, sizeof(up));
-            ctx.cmd.Dispatch(groups);
-        });
-    graph.AddPass(
-        "GI.ProbeDistance", PassType::Compute,
-        [=](PassBuilder& b) {
-            b.ReadBuffer(rays);
-            b.ReadBuffer(flags);
-            b.WriteTexture(probeDistance);
-        },
-        [=, this](PassContext& ctx) {
-            ctx.cmd.SetPipeline(m_distancePipeline);
-            ctx.cmd.SetConstants(0, &up, sizeof(up));
-            ctx.cmd.Dispatch(groups);
-        });
-    // Ambient cubes of the updated probes for next frame's rays.
-    ProbeParams cp = up;
-    cp.volume.irradiance = m_irradiance->GetSrvIndex();
-    graph.AddPass(
-        "GI.AmbientCubes", PassType::Compute,
-        [=](PassBuilder& b) {
-            b.ReadTexture(irradiance);
-            for (const RGTexture& t : cubes)
-                b.WriteTexture(t);
-        },
-        [=, this](PassContext& ctx) {
-            ctx.cmd.SetPipeline(m_cubePipeline);
-            ctx.cmd.SetConstants(0, &cp, sizeof(cp));
-            ctx.cmd.Dispatch((probes * 6 + 63) / 64);
-        });
-    m_stats.probesUpdated = (probes + p.probeStride - 1) / p.probeStride;
-    m_stats.rays = m_stats.probesUpdated * m_rayCount;
-    m_probesValid = true;
-    m_updatedOrigin = m_originIndex;
-    m_prevExposure = m_exposure;
-    if (baking && fieldReady)
+    // The probes are finished when the lightmap stage begins: they stay as baked (the field moves from tile to tile
+    // now, and a field change would restart their average).
+    const bool lightmapStage = m_bake.state == BakeState::Lightmaps;
+    if (!lightmapStage) {
+        graph.AddPass(
+            "GI.ProbeTrace", PassType::Compute,
+            [=](PassBuilder& b) {
+                b.ReadTexture(distance);
+                b.ReadTexture(albedo);
+                b.ReadTexture(normal);
+                b.ReadTexture(irradiance);
+                b.ReadTexture(probeDistance);
+                if (hasSky)
+                    b.ReadBuffer(skySHHandle, ResourceState::ConstantBuffer);
+                for (u32 c = 0; c < li.cascadeCount; ++c)
+                    if (li.shadowTextures[c].IsValid())
+                        b.ReadTexture(li.shadowTextures[c]);
+                for (const RGTexture& t : cubes)
+                    b.ReadTexture(t);
+                b.ReadTexture(probeData);
+                b.WriteBuffer(rays);
+                b.WriteBuffer(flags);
+            },
+            [=, this](PassContext& ctx) {
+                ctx.cmd.SetPipeline(m_tracePipeline);
+                ctx.cmd.SetConstants(0, &p, sizeof(p));
+                if (hasSky)
+                    ctx.cmd.SetConstantBuffer(1, skySH->GetGpuAddress());
+                ctx.cmd.Dispatch(groups, rayGroups);
+            });
+        graph.AddPass(
+            "GI.ProbeIrradiance", PassType::Compute,
+            [=](PassBuilder& b) {
+                b.ReadBuffer(rays);
+                b.ReadBuffer(flags);
+                b.WriteTexture(irradiance);
+                b.WriteTexture(probeData);
+            },
+            [=, this](PassContext& ctx) {
+                ctx.cmd.SetPipeline(m_irradiancePipeline);
+                ctx.cmd.SetConstants(0, &up, sizeof(up));
+                ctx.cmd.Dispatch(groups);
+            });
+        graph.AddPass(
+            "GI.ProbeDistance", PassType::Compute,
+            [=](PassBuilder& b) {
+                b.ReadBuffer(rays);
+                b.ReadBuffer(flags);
+                b.WriteTexture(probeDistance);
+            },
+            [=, this](PassContext& ctx) {
+                ctx.cmd.SetPipeline(m_distancePipeline);
+                ctx.cmd.SetConstants(0, &up, sizeof(up));
+                ctx.cmd.Dispatch(groups);
+            });
+        // Ambient cubes of the updated probes for next frame's rays.
+        ProbeParams cp = up;
+        cp.volume.irradiance = m_irradiance->GetSrvIndex();
+        graph.AddPass(
+            "GI.AmbientCubes", PassType::Compute,
+            [=](PassBuilder& b) {
+                b.ReadTexture(irradiance);
+                for (const RGTexture& t : cubes)
+                    b.WriteTexture(t);
+            },
+            [=, this](PassContext& ctx) {
+                ctx.cmd.SetPipeline(m_cubePipeline);
+                ctx.cmd.SetConstants(0, &cp, sizeof(cp));
+                ctx.cmd.Dispatch((probes * 6 + 63) / 64);
+            });
+        m_stats.probesUpdated = (probes + p.probeStride - 1) / p.probeStride;
+        m_stats.rays = m_stats.probesUpdated * m_rayCount;
+        m_probesValid = true;
+        m_updatedOrigin = m_originIndex;
+        m_prevExposure = m_exposure;
+    }
+    if (baking && fieldReady && !lightmapStage)
         ++m_bake.iteration;
     if (m_bake.state == BakeState::Running && fieldReady && m_bake.iteration >= Max(m_bake.settings.iterations, 1u)) {
         if (m_bake.settings.lightmaps && PlaceLightmaps()) {
@@ -954,6 +982,13 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
     lp.lmSize = lmSize;
     lp.lmIteration = bk.lmIteration;
     lp.lmRays = Clamp(bk.settings.lightmapRays, 1u, 64u);
+    if (bk.lmTile < bk.lmTiles.Size()) {
+        lp.lmTileMin = bk.lmTiles[bk.lmTile].min;
+        lp.lmTileMax = bk.lmTiles[bk.lmTile].max;
+    } else {
+        lp.lmTileMin = Vec3(-1e30f);
+        lp.lmTileMax = Vec3(1e30f);
+    }
     lp.volume.irradiance = m_irradiance->GetSrvIndex();
     graph.AddPass(
         "GI.LightmapTrace", PassType::Compute,
@@ -982,6 +1017,11 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
         });
     if (++bk.lmIteration < Max(bk.settings.lightmapIterations, 1u))
         return;
+    if (bk.lmTile + 1 < bk.lmTiles.Size()) { // next tile (the field re-centers on it before its first iteration)
+        ++bk.lmTile;
+        bk.lmIteration = 0;
+        return;
+    }
     // Dilation: accum -> dilated -> accum -> dilated (each pass grows the charts by a texel).
     for (u32 pass = 0; pass < 3; ++pass) {
         const bool toDilated = pass % 2 == 0;
@@ -1003,6 +1043,32 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
             });
     }
     AddBakeReadback(graph);
+}
+
+Array<AABB> GlobalIllumination::LightmapTiles(Span<const AABB> boxes, f32 tileSize)
+{
+    Array<AABB> tiles;
+    if (boxes.Empty() || tileSize <= 0.0f)
+        return tiles;
+    AABB all;
+    for (const AABB& b : boxes)
+        all.Expand(b);
+    // A grid from the scene's minimum; one cell more than needed so the maximum lies inside a cell (cells are
+    // half-open: a texel belongs to exactly one).
+    const Vec3 extent = all.max - all.min;
+    const u32 nx = u32(extent.x / tileSize) + 1, ny = u32(extent.y / tileSize) + 1, nz = u32(extent.z / tileSize) + 1;
+    for (u32 z = 0; z < nz; ++z)
+        for (u32 y = 0; y < ny; ++y)
+            for (u32 x = 0; x < nx; ++x) {
+                const Vec3 mn = all.min + Vec3(f32(x), f32(y), f32(z)) * tileSize;
+                const AABB cell{mn, mn + Vec3(tileSize)};
+                for (const AABB& b : boxes)
+                    if (b.Intersects(cell)) {
+                        tiles.PushBack(cell);
+                        break;
+                    }
+            }
+    return tiles;
 }
 
 bool GlobalIllumination::PlaceLightmaps()
@@ -1077,6 +1143,11 @@ bool GlobalIllumination::PlaceLightmaps()
     bk.lmDilated = m_device.CreateTexture(d);
     bk.lmIteration = 0;
     bk.lmRasterized = false;
+    Array<AABB> boxes;
+    for (const Bake::Item& it : bk.items)
+        boxes.PushBack(it.mesh->bounds.Transformed(it.world));
+    bk.lmTiles = LightmapTiles(boxes, m_voxel * f32(LightmapTileVoxels));
+    bk.lmTile = 0;
     return bk.lmPosition && bk.lmNormal && bk.lmAccum && bk.lmDilated;
 }
 
@@ -1281,7 +1352,11 @@ f32 GlobalIllumination::BakeProgress() const
     case BakeState::Pending: return 0.0f;
     case BakeState::Running:
         return (m_bake.settings.lightmaps ? 0.5f : 0.95f) * f32(m_bake.iteration) / f32(Max(m_bake.settings.iterations, 1u));
-    case BakeState::Lightmaps: return 0.5f + 0.45f * f32(m_bake.lmIteration) / f32(Max(m_bake.settings.lightmapIterations, 1u));
+    case BakeState::Lightmaps: {
+        const u32 iterations = Max(m_bake.settings.lightmapIterations, 1u);
+        const u32 tiles = Max(u32(m_bake.lmTiles.Size()), 1u);
+        return 0.5f + 0.45f * f32(m_bake.lmTile * iterations + m_bake.lmIteration) / f32(tiles * iterations);
+    }
     case BakeState::Readback: return 0.97f;
     case BakeState::Done: return 1.0f;
     default: return 0.0f;

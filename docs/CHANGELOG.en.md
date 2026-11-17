@@ -2,6 +2,27 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.17.22 — GI without patches, clean lightmaps, cheaper contact shadows (2026-11-17)
+- **Dark dynamic GI patches on walls** (a known issue since 0.17.19): the cause was found from the baked probe data.
+  - The distance field stored one normal per voxel, whichever triangle wrote last. A thin wall (a facade module) puts its front and back faces into the same 0.25 m voxel, so from the street parts of the wall looked like back faces.
+  - Probes a meter in front of the facade were then declared "inside geometry" and switched off. Dark probes that relocation had pushed against the wall did the lighting instead.
+  - Each voxel now keeps a mask of its face directions: one byte per voxel (`GI.Faces`), filled by an atomic OR during voxelization.
+  - A ray hits a back face only when no face in the voxel looks towards it (`SdfBackFace`). Two-sided voxels light the side the ray sees.
+- **Probes in gaps**: a probe whose rays mostly stop within a quarter spacing is shut in (for example, the gap between a block and a facade) and is no longer used.
+- The patches are gone at the default 1.6 m probe spacing, so Dead City no longer needs its 0.8 m spacing workaround, and GI is cheaper.
+- **Distance field during rebuilds**: field lookups scaled the slice by the number of built levels instead of the levels the texture holds. While an outer level was being rebuilt (after the camera moved), rays read the wrong level. Fixed with `GlobalSDF::slabs`.
+- **Blotchy lightmaps**:
+  - The ray direction generator (a linear hash) gave neighboring texels correlated rays, so the noise clumped into blocks many texels wide. It now uses a Halton (2, 3) sequence with a per-texel Cranley–Patterson shift, and 32 rays per iteration instead of 8.
+  - Lightmaps are also baked in 20 m tiles. The distance field is centered on each tile, so far texels are traced through the finest level (0.25 m) instead of coarse ones.
+  - The probes stay frozen during the lightmap stage; a field change would otherwise have reset their average.
+  - The Dead City bake (23,400 probes plus 177 lightmapped objects) took 101 s.
+- **Cheaper contact shadows**: two `GatherRed` fetches replace four separate neighbor depth samples. Beyond 30 m the shadows fade out, and past 45 m the pass skips the pixel. Past 15 m half the steps are used.
+  - Dead City street overview: 1.66 → 1.18 ms. Close-ups are unchanged (~1.24 ms).
+- **Checked**:
+  - New test: GI.LightmapTilesCoverEveryObjectOnce.
+  - 507 tests pass in Debug and Development. The Debug editor under the debug layer (smoke test and 400 frames of Dead City) has 0 errors.
+  - Dead City in the editor: walls show no patches in dynamic GI at 1.6 m spacing (r.ViewMode 9 and Lit), and the baked facade lightmaps are smooth.
+
 ## 0.17.21 — Shadows, the sun and baked lighting (2026-11-17)
 - **The sun disappeared under an overcast HDRI**: with HDRI Sky `Sun = From HDRI` the engine took the sun from the panorama. When the panorama had none (an overcast sky), it switched the directional light off completely, even with a Directional Light in the scene.
   - The result was no direct light and no shadows, yet the shadow cascades still rendered every frame, wasting about 8 ms.

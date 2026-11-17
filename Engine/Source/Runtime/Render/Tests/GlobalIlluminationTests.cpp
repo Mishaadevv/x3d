@@ -119,3 +119,31 @@ ZX_TEST(GI, LightingOutputsAreResetEachFrame)
     ZX_EXPECT(l.ssgiTexture == rhi::InvalidDescriptor && l.lightmapAtlas == rhi::InvalidDescriptor);
     ZX_EXPECT_EQ(l.lightmapIntensity, 1.0f);
 }
+
+ZX_TEST(GI, LightmapTilesCoverEveryObjectOnce)
+{
+    // A 90 m street of facades: the lightmap bake traces it tile by tile (each tile within the finest distance field
+    // level); every point of every object lies in exactly one tile, and empty space gets none.
+    const Array<AABB> boxes = {AABB(Vec3(-15, 0, -45), Vec3(-8, 18, 45)), AABB(Vec3(8, 0, -45), Vec3(15, 18, 45)),
+                               AABB(Vec3(-8, -0.2f, -45), Vec3(8, 0.0f, 45)), AABB(Vec3(200, 0, 0), Vec3(201, 1, 1))};
+    const f32 tile = 20.0f;
+    const Array<AABB> tiles = GlobalIllumination::LightmapTiles(boxes, tile);
+    ZX_REQUIRE(!tiles.Empty());
+    for (const AABB& t : tiles)
+        ZX_EXPECT(Length(t.Size() - Vec3(tile)) < 1e-4f);
+    // The lone box 185 m away adds one tile, not the whole empty stretch in between.
+    usize farTiles = 0;
+    for (const AABB& t : tiles)
+        farTiles += t.max.x > 150.0f ? 1 : 0;
+    ZX_EXPECT_EQ(farTiles, usize(1));
+    ZX_EXPECT(tiles.Size() < 40u);
+    // Corners and centers of every box (maxima included) are in exactly one half-open tile.
+    for (const AABB& b : boxes)
+        for (const Vec3& p : {b.min, b.max, b.Center(), Vec3(b.min.x, b.max.y, b.max.z)}) {
+            u32 inside = 0;
+            for (const AABB& t : tiles)
+                inside += (p.x >= t.min.x && p.y >= t.min.y && p.z >= t.min.z && p.x < t.max.x && p.y < t.max.y && p.z < t.max.z) ? 1 : 0;
+            ZX_EXPECT_EQ(inside, 1u);
+        }
+    ZX_EXPECT(GlobalIllumination::LightmapTiles({}, tile).Empty());
+}
