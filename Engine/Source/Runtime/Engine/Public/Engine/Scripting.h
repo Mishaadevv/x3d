@@ -140,6 +140,8 @@ private:
     void Report(StringView message, bool isError);
     void StartInstances(ecs::World& world);
     void RebindGlobals(RunningScript& rs);
+    /// entity.call: runs `function` on the running scripts of `e` (nested in the calling script); false on a script error.
+    bool CallOn(ecs::Entity e, StringView function, Span<const script::Value> args, script::Value& out);
 
     String m_contentRoot;
     UniquePtr<script::VM> m_vm;

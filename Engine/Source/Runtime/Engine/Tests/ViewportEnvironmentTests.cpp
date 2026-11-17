@@ -18,6 +18,14 @@ ZX_TEST(ViewportEnvironment, GraphicsRoundTripAndLegacyDefaults)
     ReadEnvironmentGraphics(json, loaded);
     ZX_EXPECT(!loaded.autoExposure && loaded.manualExposure && !loaded.fog);
     ZX_EXPECT_NEAR(loaded.manualEV100, 7.5f, 1e-5f);
+    ZX_EXPECT_EQ(loaded.giProbeSpacing, 0.0f); // not set: the engine profile's
+    source.giProbeSpacing = 0.8f;
+    WriteEnvironmentGraphics(json, source);
+    ReadEnvironmentGraphics(json, loaded);
+    ZX_EXPECT_NEAR(loaded.giProbeSpacing, 0.8f, 1e-5f);
+    json.Set("giProbeSpacing", 0.01f); // clamped like r.GI.Spacing
+    ReadEnvironmentGraphics(json, loaded);
+    ZX_EXPECT_NEAR(loaded.giProbeSpacing, 0.25f, 1e-5f);
 
     // Old scenes without the new keys retain their sky-based exposure and fog.
     JsonValue legacy = JsonValue::MakeObject();

@@ -324,6 +324,8 @@ private:
     void CreateBodies(ecs::World& world, bool onlyNew);
     void CreateJoints(ecs::World& world);
     bool CreateBody(ecs::World& world, ecs::Entity e, bool dynamic);
+    /// The kinematic capsule that follows a Character Controller.
+    physics::BodyId CreateCharacterBody(ecs::World& world, ecs::Entity e);
     physics::HullId HullOf(const render::GpuMesh* mesh, Vec3 scale); // null mesh: unit cylinder (diameter 1, height 1)
     /// Bodies for entities that appeared since Begin / the last sync (streamed cells), and frees those of removed ones.
     void SyncStreamed(ecs::World& world);

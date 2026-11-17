@@ -746,6 +746,10 @@ ToolResult WriteFileTool(Editor& ed, const JsonValue& args)
     String note;
     if (Path::HasExtension(path, ".zs"))
         note = " Scripts reload automatically; check get_log for compile errors.";
+    if (Path::HasExtension(path, ".zmat") && ed.materials) {
+        ed.materials->ScanContent(); // a new material is assignable at once (material.assign <name>)
+        note = " The material is in the library now (material.assign).";
+    }
     return ToolResult::Ok(String::Format("{} {} ({} bytes).{}", existed ? "Updated" : "Created", rel, args.Get("content").AsString().Size(), note));
 }
 

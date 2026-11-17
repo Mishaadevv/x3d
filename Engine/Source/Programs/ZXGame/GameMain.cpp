@@ -74,6 +74,7 @@ struct GameConfig
     u32 textureMaxSize = 0;  // the cook setting (DDC keys depend on it)
     Array<String> disabledFeatures;
     String graphicsEra = "modern";
+    Array<String> startupCommands; // project console lines (r.GI.Spacing 0.8 ...)
     bool fullscreen = true;
     UVec2 resolution = UVec2(1600, 900);
 };
@@ -100,6 +101,8 @@ bool ReadConfig(const String& dir, GameConfig& c)
     for (const JsonValue& f2 : j.Get("disabledFeatures").Elements())
         c.disabledFeatures.PushBack(String(f2.AsString()));
     c.graphicsEra = String(j.Get("graphicsEra").AsString("modern"));
+    for (const JsonValue& cmd : j.Get("startupCommands").Elements())
+        c.startupCommands.PushBack(String(cmd.AsString()));
     return true;
 }
 
@@ -366,6 +369,8 @@ bool Game::Initialize(const String& exeDir, const GameConfig& config)
     const Vec3 fwd(Sin(yaw) * Cos(pitch), -Sin(pitch), Cos(yaw) * Cos(pitch));
     m_sceneCamera = ViewportCamera{Mat4::LookAt(camPos, camPos + fwd, Vec3::Up()), camPos, DegToRad(60.0f), 0.05f};
     ZX_LOG_INFO(LogGame, "{}: scene {} ({} entities)", m_config.name, m_config.scene, m_world.EntityCount());
+    for (const String& command : m_config.startupCommands)
+        Console::Execute(command, CVarSetBy::Console);
     return true;
 }
 

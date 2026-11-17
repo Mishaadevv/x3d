@@ -833,25 +833,32 @@ void PhysicsSystem::CreateBodies(ecs::World& world, bool onlyNew)
         if (!CreateFoliageBodies(world, e))
             m_pendingFoliage.PushBack(e);
     // Characters push dynamic bodies: a kinematic capsule follows each Character Controller.
-    world.Query<const CharacterController>().Each([&](Entity e, const CharacterController& c) {
+    world.Query<const CharacterController>().Each([&](Entity e, const CharacterController&) {
         if (m_byEntity.Contains(e.Pack()))
             return;
         const Pose pose = WorldPose(world, e);
-        BodyDesc d;
-        d.motion = MotionType::Kinematic;
-        d.position = pose.position;
-        d.userData = e.Pack();
-        const f32 r = Max(c.radius, 0.05f);
-        d.shapes.PushBack(ShapeDesc::Capsule(r, Max(c.height * 0.5f - r, 0.0f), Vec3(0.0f, c.height * 0.5f, 0.0f)));
         Tracked t;
         t.entity = e;
-        t.body = m_world->CreateBody(d);
+        t.body = CreateCharacterBody(world, e);
         t.moves = false; // the character moves itself; the body only follows
         t.kinematic = true;
         t.prevPos = t.currPos = t.written = pose.position;
         m_byEntity.InsertOrAssign(e.Pack(), u32(m_tracked.Size()));
         m_tracked.PushBack(t);
     });
+}
+
+physics::BodyId PhysicsSystem::CreateCharacterBody(ecs::World& world, Entity e)
+{
+    const CharacterController& c = *world.Get<const CharacterController>(e);
+    const Pose pose = WorldPose(world, e);
+    BodyDesc d;
+    d.motion = MotionType::Kinematic;
+    d.position = pose.position;
+    d.userData = e.Pack();
+    const f32 r = Max(c.radius, 0.05f);
+    d.shapes.PushBack(ShapeDesc::Capsule(r, Max(c.height * 0.5f - r, 0.0f), Vec3(0.0f, c.height * 0.5f, 0.0f)));
+    return m_world->CreateBody(d);
 }
 
 void PhysicsSystem::CreateJoints(ecs::World& world)
@@ -977,6 +984,15 @@ void PhysicsSystem::Tick(ecs::World& world, f32 dt)
                 m_world->DestroyBody(t.body);
             continue;
         }
+        // Characters whose collisions a script switched off lose their capsule (and get it back when switched on).
+        if (t.kinematic)
+            if (const CharacterState* cs = world.Get<const CharacterState>(t.entity)) {
+                const bool valid = m_world->IsValid(t.body);
+                if (!cs->collisions && valid)
+                    m_world->DestroyBody(t.body);
+                else if (cs->collisions && !valid && world.Has<CharacterController>(t.entity))
+                    t.body = CreateCharacterBody(world, t.entity);
+            }
         if (!t.kinematic && !t.moves)
             continue;
         const Pose p = WorldPose(world, t.entity);

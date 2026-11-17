@@ -29,6 +29,7 @@ struct ProjectDescriptor
     u32 color = 0;                    // 0xRRGGBB tile color in the Project Browser (0 = derived from the name)
     Array<String> disabledFeatures;   // engine features / editor tools switched off in the Features window
     String graphicsEra = "modern";    // graphics generation: "modern", "2017", "2011", "2008" (Engine/ViewportRenderer.h)
+    Array<String> startupCommands;    // console lines run when the project opens and the packaged game starts ("r.GI.Spacing 0.8")
     bool IsFeatureEnabled(StringView id) const
     {
         for (const String& f : disabledFeatures)

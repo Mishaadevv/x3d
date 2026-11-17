@@ -325,3 +325,19 @@ ZX_TEST(Animation, ImportsMorphTargetsAndTheirAnimation)
     const Vec3 n(0.5f, -1.25f, 1.99f);
     ZX_EXPECT_LT(Length(UnpackMorphNormal(PackMorphNormal(n)) - n), 0.01f);
 }
+
+ZX_TEST(Animation, FindsBonesWithoutTheRigPrefix)
+{
+    // Mixamo / Blender rigs name bones "mixamorig:LeftFoot" or "Armature|Head": scripts, layer masks and attachments
+    // can say just "LeftFoot". Exact names still win.
+    Skeleton sk;
+    sk.boneNames = {String("mixamorig:Hips"), String("mixamorig:LeftFoot"), String("Armature|Head"), String("Spine")};
+    sk.parents = {-1, 0, 0, 0};
+    ZX_EXPECT_EQ(sk.FindBone("mixamorig:LeftFoot"), 1);
+    ZX_EXPECT_EQ(sk.FindBone("LeftFoot"), 1);
+    ZX_EXPECT_EQ(sk.FindBone("leftfoot"), 1);
+    ZX_EXPECT_EQ(sk.FindBone("Head"), 2);
+    ZX_EXPECT_EQ(sk.FindBone("Spine"), 3);
+    ZX_EXPECT_EQ(sk.FindBone("RightFoot"), -1);
+    ZX_EXPECT_EQ(sk.FindBone(""), -1);
+}

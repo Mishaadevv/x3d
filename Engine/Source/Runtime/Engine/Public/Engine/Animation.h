@@ -59,6 +59,18 @@ struct AnimEvent
 
 ZX_DECLARE_TYPE(Animator);
 
+/// Keeps the entity on a bone of an animated model: a weapon in the hand, a first-person camera at the head. The model
+/// is the nearest ancestor with an Animator, or an Animator below an ancestor (a weapon under the player, next to the
+/// player's mesh). The entity's Transform is rewritten every frame after the animation.
+struct BoneAttachment
+{
+    String bone = "RightHand";  // bone name; rig prefixes are optional ("RightHand" finds "mixamorig:RightHand")
+    Vec3 offset;                // meters, in the bone's space
+    Vec3 rotation;              // degrees (pitch, yaw, roll), in the bone's space
+    bool followRotation = true; // off: only the position follows (a first-person camera the mouse turns)
+};
+ZX_DECLARE_TYPE(BoneAttachment);
+
 class AnimationSystem
 {
 public:
@@ -103,6 +115,11 @@ public:
     String ClipName(asset::AssetId clip) const { return m_assets.GetName(clip); }
     /// Seconds into the current clip (without a graph).
     f32 Time(ecs::Entity e) const;
+    /// World matrix of a bone of the entity's animated model this frame (the Animator on the entity or below it; bone
+    /// names as in BoneAttachment). False while the skeleton is loading or the bone is unknown.
+    bool BoneWorldMatrix(const ecs::World& world, ecs::Entity e, StringView bone, Mat4& out) const;
+    /// Moves every Bone Attachment onto its bone (Tick does it after posing; call again after moving characters).
+    void UpdateAttachments(ecs::World& world);
     /// Drops all runtime state (Play start / stop, scene change); graph files are re-read, retargeted clips re-baked.
     void Clear()
     {

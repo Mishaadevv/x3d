@@ -43,6 +43,8 @@ struct ViewportEnvironment
     bool manualExposure = false; // when auto exposure is off, use manualEV100 instead of the legacy sky-based EV
     f32 manualEV100 = 13.5f;
     bool fog = true; // atmospheric height fog and volumetric fog (not underwater fog or particles)
+    f32 giProbeSpacing = 0.0f; // meters between dynamic GI probes (0 = the engine profile's); denser = less light leaking
+                               // through thin walls in tight streets and rooms, smaller area around the camera
     bool playing = false; // Play-in-Editor / game: every Fluid Volume simulates
     // Time of Day (set by the renderer from the component): continuous day, dusk and night instead of `night`.
     bool timeOfDay = false;

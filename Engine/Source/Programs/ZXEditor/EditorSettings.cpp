@@ -321,6 +321,15 @@ void DrawSettingsWindow(Editor& ed)
                     else
                         ui::TextDisabled("Manual Exposure off: exposure follows the sky (legacy mode).");
                 }
+                bool customGI = ed.environment.giProbeSpacing > 0.0f;
+                if (ui::Checkbox("Custom GI Probe Spacing", &customGI)) {
+                    ed.environment.giProbeSpacing = customGI ? 0.8f : 0.0f;
+                    sceneChanged = true;
+                }
+                if (customGI) {
+                    sceneChanged |= ui::SliderFloat("GI Probe Spacing (m)", &ed.environment.giProbeSpacing, 0.25f, 4.0f, "{:.2f}");
+                    ui::TextDisabled("Denser probes leak less light through thin walls (narrow streets, rooms) but cover a smaller area.");
+                }
                 if (sceneChanged)
                     ed.undo.MarkExternalChange();
                 ui::Spacing();

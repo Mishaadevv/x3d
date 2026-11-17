@@ -607,3 +607,38 @@ ZX_TEST(AnimationSystem, PlaysAnotherModelsClipsRetargeted)
     ZX_EXPECT_GT(lift[0], 0.03f);
     ZX_EXPECT_GT(lift[1], 0.03f);
 }
+
+ZX_TEST(AnimationSystem, BoneAttachmentFollowsTheHand)
+{
+    // A weapon entity next to the model (a child of the character's root) rides on its RightHand bone.
+    AnimatedCharacter ch;
+    ZX_REQUIRE(bool(ch.skinned));
+    AnimationSystem anim(*ch.assets);
+    ch.Warm(anim, true);
+    const ecs::Entity root = scene::GetParent(ch.world, ch.skinned);
+    ZX_REQUIRE(bool(root));
+    const ecs::Entity weapon = scene::CreateNode(ch.world, "Weapon", Transform::Identity(), root);
+    BoneAttachment attach;
+    attach.bone = "RightHand";
+    attach.offset = Vec3(0.0f, 0.1f, 0.0f);
+    ch.world.Add(weapon, attach);
+    Mat4 hand;
+    ZX_REQUIRE(anim.BoneWorldMatrix(ch.world, ch.skinned, "RightHand", hand));
+    Vec3 previous;
+    f32 travelled = 0.0f;
+    for (u32 i = 0; i < 40; ++i) {
+        anim.Tick(ch.world, 1.0f / 30.0f, true);
+        ZX_REQUIRE(anim.BoneWorldMatrix(ch.world, ch.skinned, "RightHand", hand));
+        const Vec3 at = ch.world.Get<scene::WorldTransform>(weapon)->GetPosition();
+        // On the bone; the offset turns with it but stays in meters (rigs are often scaled).
+        Vec3 bonePos, boneScale;
+        Quat boneRot;
+        Decompose(hand, bonePos, boneRot, boneScale);
+        ZX_EXPECT_LT(Distance(at, bonePos + Normalize(boneRot) * Vec3(0.0f, 0.1f, 0.0f)), 1e-3f);
+        if (i > 0)
+            travelled += Distance(at, previous);
+        previous = at;
+    }
+    ZX_EXPECT_GT(travelled, 0.01f); // the idle sways the hand (about 4 cm here), the weapon goes with it
+    ZX_EXPECT(!anim.BoneWorldMatrix(ch.world, ch.skinned, "NoSuchBone", hand));
+}

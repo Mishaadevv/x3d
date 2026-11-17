@@ -84,6 +84,7 @@ void RegisterEngineComponents()
     RegisterComponent<Terrain>("Terrain", "\xEE\x88\xB1");                            // mountain
     RegisterComponent<ParticleEmitter>("Particle Emitter", "\xEE\x90\x92");        // sparkles
     RegisterComponent<Animator>("Animator", "\xEE\x8D\x98");                         // bone
+    RegisterComponent<BoneAttachment>("Bone Attachment", "\xEE\x84\x82");            // link
     RegisterComponent<SoftBody>("Soft Body", "\xEE\x87\x95");                        // car
     RegisterComponent<WindZone>("Wind Zone", "\xEE\x86\xB0");                        // wind
     RegisterComponent<WindResponse>("Wind Response", "\xEE\x86\xB0");                // wind

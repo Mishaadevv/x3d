@@ -50,9 +50,11 @@ ZX_TEST(Project, CreateLoadAndValidate)
     // Round trip of the descriptor.
     ProjectDescriptor d = p->descriptor;
     d.startupScene = "Content/Scenes/Main.zscene";
+    d.startupCommands = {String("r.GI.Spacing 0.8"), String("r.Bloom 0")};
     ZX_EXPECT(SaveProjectDescriptor(p->descriptorPath, d));
     Result<ProjectInfo> again = LoadProject(p->descriptorPath);
     ZX_EXPECT(again.IsOk() && again->descriptor.startupScene == "Content/Scenes/Main.zscene");
+    ZX_EXPECT(again.IsOk() && again->descriptor.startupCommands.Size() == 2 && again->descriptor.startupCommands[0] == "r.GI.Spacing 0.8");
 
     fs::WriteTextFile(parent + "/broken.zproj", "{ \"format\": \"other\" }");
     ZX_EXPECT(!LoadProject(parent + "/broken.zproj").IsOk());

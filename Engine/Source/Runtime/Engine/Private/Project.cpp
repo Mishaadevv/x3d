@@ -130,6 +130,9 @@ Result<ProjectInfo> LoadProject(StringView descriptorPath)
     for (const JsonValue& f : doc.Get("disabledFeatures").Elements())
         if (f.IsString())
             p.descriptor.disabledFeatures.PushBack(String(f.AsString()));
+    for (const JsonValue& c : doc.Get("startupCommands").Elements())
+        if (c.IsString() && !c.AsString().Empty())
+            p.descriptor.startupCommands.PushBack(String(c.AsString()));
     const StringView color = doc.Get("color").AsString();
     if (color.Size() == 7 && color[0] == '#')
         for (usize i = 1; i < 7; ++i) {
@@ -161,6 +164,12 @@ bool SaveProjectDescriptor(StringView descriptorPath, const ProjectDescriptor& d
         for (const String& f : d.disabledFeatures)
             list.PushBack(JsonValue(f));
         doc.Set("disabledFeatures", move(list));
+    }
+    if (!d.startupCommands.Empty()) {
+        JsonValue list = JsonValue::MakeArray();
+        for (const String& c : d.startupCommands)
+            list.PushBack(JsonValue(c));
+        doc.Set("startupCommands", move(list));
     }
     return fs::WriteTextFile(descriptorPath, ToJsonString(doc));
 }

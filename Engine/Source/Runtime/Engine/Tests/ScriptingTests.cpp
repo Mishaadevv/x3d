@@ -3,6 +3,8 @@
 #include "Core/String/Path.h"
 #include "Core/Testing/Test.h"
 #include "Core/Threading/Thread.h"
+#include "Engine/Gameplay.h"
+#include "Engine/Navigation.h"
 #include "Engine/Scripting.h"
 #include "Scene/Hierarchy.h"
 
@@ -186,5 +188,65 @@ ZX_TEST(Scripting, NoisesReachTheAI)
     ZX_EXPECT(Distance(bang.position, Vec3(1, 2, 3)) < 1e-4f && bang.range == 12.0f && bang.tag == "bang" && !bang.instigator);
     const BehaviorSystem::Noise& own = behavior.LastNoises()[1];
     ZX_EXPECT(Distance(own.position, Vec3(5, 0, 0)) < 1e-4f && own.range == 4.0f && own.instigator == e);
+    scripts.End();
+}
+
+ZX_TEST(Scripting, CallsFunctionsOfOtherEntitiesScripts)
+{
+    // entity.call(fn, args...): one script runs a function of another entity's script (a hit dealing damage) and
+    // gets its result; nil when the entity has no such function. entity.collisions / navSpeed reach the components.
+    const String root = ScriptRoot("call");
+    ZX_REQUIRE(fs::WriteTextFile(root + "/Scripts/Target.zs", R"zs(
+        script Target {
+            var hp = 100
+            fn takeDamage(amount, from) {
+                hp -= amount
+                entity.position = from
+                return hp
+            }
+        }
+    )zs"));
+    ZX_REQUIRE(fs::WriteTextFile(root + "/Scripts/Hitter.zs", R"zs(
+        script Hitter {
+            var done = false
+            fn update(dt) {
+                if done { return }
+                done = true
+                let t = find("Target")
+                let left = t.call("takeDamage", 30, vec3(1, 2, 3))
+                let none = t.call("missing")
+                let mine = entity.call("own", 2)
+                log("left " + str(left) + " none " + str(none == nil) + " own " + str(mine))
+                t.collisions = false
+                t.navSpeed = 2.5
+                log("collisions " + str(t.collisions) + " speed " + str(t.navSpeed))
+            }
+            fn own(x) { return x * 10 }
+        }
+    )zs"));
+    ScriptSystem scripts;
+    scripts.SetContentRoot(root);
+    String log;
+    u32 errors = 0;
+    scripts.onLog = [&](StringView s, bool isError) {
+        log += s;
+        log += '\n';
+        errors += isError;
+    };
+    ecs::World world;
+    const ecs::Entity target = Spawn(world, "Target", "Scripts/Target.zs");
+    world.Add(target, CharacterController{});
+    world.Add(target, NavMeshAgent{});
+    Spawn(world, "Hitter", "Scripts/Hitter.zs");
+    scripts.Begin(world);
+    scripts.Tick(world, 0.1f, nullptr);
+    scripts.Tick(world, 0.1f, nullptr);
+    ZX_EXPECT_EQ(errors, 0u);
+    ZX_EXPECT(log.Contains("left 70 none true own 20"));
+    ZX_EXPECT(log.Contains("collisions false speed 2.5"));
+    ZX_EXPECT(Distance(world.Get<Transform>(target)->position, Vec3(1, 2, 3)) < 1e-5f); // ran as the target's script
+    ZX_REQUIRE(world.Get<CharacterState>(target) != nullptr);
+    ZX_EXPECT(!world.Get<CharacterState>(target)->collisions);
+    ZX_EXPECT_NEAR(world.Get<NavMeshAgent>(target)->speed, 2.5f, 1e-5f);
     scripts.End();
 }

@@ -301,6 +301,22 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             out = Value(sys.physics ? (m == "velocity" ? sys.physics->GetVelocity(e) : sys.physics->GetAngularVelocity(e)) : Vec3());
             return true;
         }
+        if (m == "collisions") {
+            // A Character Controller collides (true without one).
+            ecs::World* w = SystemOf(o).context.world;
+            e = ecs::Entity::Unpack(o.id);
+            const CharacterState* cs = w && w->IsAlive(e) ? w->Get<const CharacterState>(e) : nullptr;
+            out = Value(!cs || cs->collisions);
+            return true;
+        }
+        if (m == "navSpeed") {
+            // The Nav Mesh Agent's walking speed (m/s; 0 without one).
+            ecs::World* w = SystemOf(o).context.world;
+            e = ecs::Entity::Unpack(o.id);
+            const NavMeshAgent* agent = w && w->IsAlive(e) ? w->Get<const NavMeshAgent>(e) : nullptr;
+            out = Value(agent ? agent->speed : 0.0f);
+            return true;
+        }
         if (m == "emitting") {
             // The entity's Particle Emitter is emitting (false without one).
             ecs::World* w = SystemOf(o).context.world;
@@ -416,6 +432,28 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             const ecs::Entity parent = scene::GetParent(*w, e);
             t->position = parent ? Transform::FromMatrix(scene::ComputeWorldMatrix(*w, parent)).Inverse().TransformPoint(value.AsVec3())
                                  : value.AsVec3();
+            return true;
+        }
+        if (m == "collisions") {
+            // false: the character stops moving and loses its capsule (corpses), true: back.
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = SystemOf(o).context.world;
+            if (!w || !w->IsAlive(e) || !w->Has<CharacterController>(e))
+                return v.Fail("entity.collisions works on entities with a Character Controller");
+            if (!w->Has<CharacterState>(e))
+                w->Add(e, CharacterState{});
+            w->Get<CharacterState>(e)->collisions = value.AsBool();
+            return true;
+        }
+        if (m == "navSpeed") {
+            e = ecs::Entity::Unpack(o.id);
+            ecs::World* w = SystemOf(o).context.world;
+            NavMeshAgent* agent = w && w->IsAlive(e) ? w->Get<NavMeshAgent>(e) : nullptr;
+            if (!agent)
+                return v.Fail("This entity has no Nav Mesh Agent component (Add Component > Nav Mesh Agent)");
+            if (!value.IsNumber())
+                return v.Fail("navSpeed must be a number (m/s)");
+            agent->speed = Max(f32(value.AsNumber()), 0.0f);
             return true;
         }
         if (m == "emitting") {
@@ -882,6 +920,32 @@ ScriptSystem::ScriptSystem() : m_vm(MakeUnique<script::VM>())
             else if (!sys.animation->Play(*w, target, name))
                 return v.Fail(String::Format("The model has no clip named '{}'", name));
             return true;
+        }
+        if (m == "bonePosition" || m == "boneRotation") {
+            // bonePosition(bone) / boneRotation(bone): world pose of a bone of the animated model on this entity or below
+            // it (nil while the model loads or without such a bone).
+            if (a.Size() != 1 || a[0].Type() != ValueType::String)
+                return v.Fail(String::Format("entity.{}(bone: string)", m));
+            ScriptSystem& sys = SystemOf(o);
+            e = ecs::Entity::Unpack(o.id);
+            Mat4 bone;
+            if (!sys.context.world || !sys.animation || !sys.animation->BoneWorldMatrix(*sys.context.world, e, a[0].AsString(), bone)) {
+                out = Value();
+                return true;
+            }
+            Vec3 position, scale;
+            Quat rotation;
+            Decompose(bone, position, rotation, scale);
+            out = m == "bonePosition" ? Value(position) : Value(Normalize(rotation));
+            return true;
+        }
+        if (m == "call") {
+            // call(function, args...): runs `function` on the scripts of that entity that define it (damage, pick up,
+            // open...) and returns its result (nil when none has it).
+            if (a.Empty() || a[0].Type() != ValueType::String)
+                return v.Fail("entity.call(function: string, args...)");
+            ScriptSystem& sys = SystemOf(o);
+            return sys.CallOn(ecs::Entity::Unpack(o.id), a[0].AsString(), a.SubSpan(1), out);
         }
         if (m == "emit") {
             // emit([count]): a burst from the entity's Particle Emitter (default: its Burst setting, else 10).
@@ -1627,6 +1691,30 @@ bool ScriptSystem::ReadField(ecs::Entity entity, StringView file, StringView fie
                 return true;
             }
     return false;
+}
+
+bool ScriptSystem::CallOn(ecs::Entity e, StringView function, Span<const Value> args, Value& out)
+{
+    out = Value();
+    RunningScript* caller = m_current;
+    bool ok = true;
+    // By index: instances are only appended between frames, but the callee may destroy entities (deferred).
+    for (usize i = 0; i < m_instances.Size() && ok; ++i) {
+        RunningScript& rs = *m_instances[i];
+        if (rs.failed || !rs.started || rs.entity != e || !rs.instance->HasFunction(function))
+            continue;
+        RebindGlobals(rs);
+        Value result;
+        if (!rs.instance->Call(function, args, &result)) {
+            rs.failed = true; // the error stops the caller too (the VM reports it with the callee's line)
+            ok = false;
+        } else if (!result.IsNil()) {
+            out = move(result);
+        }
+    }
+    if (caller)
+        RebindGlobals(*caller);
+    return ok;
 }
 
 void ScriptSystem::RebindGlobals(RunningScript& rs)

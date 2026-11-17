@@ -450,6 +450,8 @@ bool Editor::OpenProject(StringView descriptorPath)
         TouchRecentProject(project, recentProjectsFile);
     window->SetTitle(String::Format("{} - ZeqouX3D Editor", project.descriptor.name));
     ZX_LOG_INFO(LogEditor, "Opened project '{}' ({})", project.descriptor.name, project.root);
+    for (const String& command : project.descriptor.startupCommands) // project-wide settings (.zproj startupCommands)
+        Console::Execute(command, CVarSetBy::Console); // over the profile defaults the editor binds (CVarSetBy::Code)
 
     StringView sceneArg;
     const String startup = project.descriptor.startupScene.Empty() ? String() : Path::Join(project.root, project.descriptor.startupScene);
@@ -4441,13 +4443,15 @@ bool Editor::Frame()
         });
     }
     // Console input.press: a key held for a few frames (works in automated runs too).
-    if (simulatedKey != Key::Unknown) {
-        input.SetKey(simulatedKey, simulatedFrames > 0);
-        if (simulatedFrames > 0)
-            --simulatedFrames;
+    // Each key is released (one frame with the key up) before it leaves the list, whatever else was pressed meanwhile.
+    for (SimulatedKey& k : simulatedKeys) {
+        input.SetKey(k.key, k.frames > 0);
+        if (k.frames > 0)
+            --k.frames;
         else
-            simulatedKey = Key::Unknown;
+            k.key = Key::Unknown;
     }
+    simulatedKeys.RemoveIf([](const SimulatedKey& k) { return k.key == Key::Unknown; });
     const UVec2 client = window->GetClientSize();
     if (client.x == 0 || client.y == 0 || window->IsMinimized()) {
         Thread::SleepMs(16);

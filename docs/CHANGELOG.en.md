@@ -2,6 +2,33 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.17.19 — Weapons on bones, calls between scripts, the Dead City test game (2026-11-17)
+- **Bone Attachment** (new component): an entity rides on a bone of an animated model, such as an axe in the right hand or a lamp on the head. The model is found among the entity's ancestors or next to them (the weapon is a child of the character's root, beside the mesh). The offset is in meters in the bone's space and doesn't depend on the rig's scale (Mixamo's centimeter skeletons). `followRotation` off keeps only the position.
+- **Bones by short name**: `Skeleton::FindBone("LeftFoot")` finds `mixamorig:LeftFoot` and `Armature|LeftFoot`, case-insensitively. This works in scripts, graph layer masks and Bone Attachment. An exact name still wins.
+- **ZeqouScript**:
+  - `entity.call("fn", args...)` runs a function of another entity's script and returns its result; this is how a blow deals damage.
+  - `entity.bonePosition` / `boneRotation` return a bone's position and rotation (a first-person camera at the eyes).
+  - `entity.collisions = false` stops a character and removes its capsule from physics, so corpses don't block the way.
+  - `entity.navSpeed` sets a nav mesh agent's speed.
+- **GI probe spacing per scene**: Settings → Scene graphics → Custom GI Probe Spacing. It is saved with the scene and works in the built game too. In a narrow street, probes 1.6 m apart ended up inside the houses and left dark round patches on the facades; at 0.8 m they are gone.
+- **`generateLods: false`** in a model's `.zmeta` keeps every mesh of the file at full detail. This is for kits where simplification eats thin overlays: plaster patches over cut-outs in brick turned into holes.
+- **`startupCommands`** in `.zproj`: console lines run when the project opens in the editor and when the built game starts. Render variables (`r.*`) exist only in the editor so far.
+- `material.rescan` picks up materials added to Content from outside (scripts, other programs). MCP `write_file` does this for `.zmat` files.
+- Fixed: `input.press` (console and MCP) held only one key. A new press replaced the old one, and the old key stayed down forever: a test's W kept running forward, even in later Play sessions. Keys are now held together (W + F) and each one is released.
+- **Dead City** (`Games/DeadCity`, outside the repository) is a test game made with the engine:
+  - A 66 m street built from Poly Haven's facade kit (joined in Blender into 12 meshes), with cars, barricades, street lamps and litter (CC0).
+  - 10 Mixamo zombies with animations: wandering, a scream, chasing, attacking, two hit reactions and two deaths. The AI sees and hears and walks on the nav mesh.
+  - A survivor with an axe: a three-hit combo, blood, an over-the-shoulder third-person view and a first-person view from the model's eyes (V), a HUD with health, kills and death, and getting up with R.
+  - The level is built by a script over MCP (`DeadCitySource/tools/build_level.py`).
+- **Known issues**:
+  - Nano clusters and regular LODs simplify the facade kit into holes (see `generateLods`). The fix belongs in the simplifier: keep small islands of a material.
+  - ForwardOpaque takes 17–24 ms on this street on the test laptop.
+  - In this environment, the editor couldn't create the nano page file in the system TEMP (tests have the same problem, which is why they run with TEMP in Saved/TestTemp). TEMP inside Saved works. This looks like a limit of the environment rather than an engine bug, but it isn't proven.
+- **Checked**:
+  - New tests: Animation.FindsBonesWithoutTheRigPrefix, AnimationSystem.BoneAttachmentFollowsTheHand, Scripting.CallsFunctionsOfOtherEntitiesScripts, Project.CreateLoadAndValidate (startupCommands), ViewportEnvironment.GraphicsRoundTripAndLegacyDefaults (giProbeSpacing).
+  - All 500 tests pass in Debug and Development. The Debug editor smoke test has 0 debug layer errors.
+  - In Dead City (Play over MCP): walking up with W, three blows kill a zombie (KILLS 1, then 2 in first person), the axe is in the hand in both views, blood flies, the player takes damage, and there are no script errors.
+
 ## 0.17.18 — Tiled navigation mesh and obstacles (2026-11-16)
 - **Tiles**: the navigation mesh is built in tiles (Nav Mesh Bounds → `Tile Size`, 32 m by default, 0 = one piece). Tiles are stitched by their edge cells, so floors and bridges link only to their own level. The mesh's area matches a single build cell for cell.
 - **Nav Mesh Obstacle** (new component; Create → Create Nav Mesh Obstacle, `create obstacle`): a box agents walk around, such as a door, a car or a crate. In Play, an obstacle that appears, moves, is switched off or is removed rebuilds only the tiles under it, at most 5 times a second. Agents on the way look for a new path.

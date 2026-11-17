@@ -19,6 +19,8 @@ void WriteEnvironmentGraphics(JsonValue& json, const ViewportEnvironment& env)
     json.Set("manualExposure", env.manualExposure);
     json.Set("manualEV100", env.manualEV100);
     json.Set("fog", env.fog);
+    if (env.giProbeSpacing > 0.0f)
+        json.Set("giProbeSpacing", env.giProbeSpacing);
 }
 
 void ReadEnvironmentGraphics(const JsonValue& json, ViewportEnvironment& env)
@@ -27,6 +29,8 @@ void ReadEnvironmentGraphics(const JsonValue& json, ViewportEnvironment& env)
     env.manualExposure = json.Get("manualExposure").AsBool(false);
     env.manualEV100 = Clamp(json.Get("manualEV100").AsFloat(13.5f), -10.0f, 20.0f);
     env.fog = json.Get("fog").AsBool(true);
+    const f32 spacing = json.Get("giProbeSpacing").AsFloat(0.0f);
+    env.giProbeSpacing = spacing > 0.0f ? Clamp(spacing, 0.25f, 16.0f) : 0.0f;
 }
 
 f32 ResolveEnvironmentExposure(const ViewportEnvironment& env, f32 sceneEV, bool hasAutoEV, f32 autoEV)
@@ -523,6 +527,8 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         gi.enabled &= features.globalIllumination;
         gi.screenSpace &= m_settings.scene.debugMode == 0; // it gathers the lit frame: debug views would feed back into it
         gi.lumen &= m_settings.scene.debugMode == 0;
+        if (env.giProbeSpacing > 0.0f)
+            gi.probeSpacing = env.giProbeSpacing; // the scene's own (Settings > Scene graphics)
         m_gi.Prepare(m_instances.View(), view.position, exposure, gi, m_lighting);
     }
     m_scene.Prepare(m_instances.View(), view, m_lighting, m_settings.scene);

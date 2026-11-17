@@ -92,6 +92,7 @@ struct AssetManager::Source
     SourceKind kind = SourceKind::Scene;
     f32 importScale = 1.0f; // scenes: .zmeta settings.scale (models authored in other units)
     NanoMode nano = NanoMode::Auto; // .zmeta settings.virtualGeometry: true / false / "auto"
+    bool generateLods = true;       // .zmeta settings.generateLods: false keeps every mesh of the file at full detail
     std::atomic<u8> state{0}; // 0 = not cooked, 1 = cooking, 2 = cooked, 3 = failed
 };
 
@@ -157,6 +158,7 @@ Result<AssetId> AssetManager::RegisterSource(StringView pathIn)
     TextureSettings texSettings;
     f32 importScale = 1.0f;
     NanoMode nanoMode = NanoMode::Auto;
+    bool generateLods = true;
     const String metaPath = path + ".zmeta";
     String metaText;
     JsonValue meta;
@@ -170,6 +172,7 @@ Result<AssetId> AssetManager::RegisterSource(StringView pathIn)
         importScale = Clamp(s.Get("scale").AsFloat(1.0f), 1e-4f, 1e4f);
         if (const JsonValue* vg = s.Find("virtualGeometry"); vg && vg->IsBool())
             nanoMode = vg->AsBool() ? NanoMode::On : NanoMode::Off;
+        generateLods = s.Get("generateLods").AsBool(true);
     }
     if (!id.IsValid()) {
         if (m_settings.writeMetaFiles) {
@@ -198,6 +201,7 @@ Result<AssetId> AssetManager::RegisterSource(StringView pathIn)
         s->kind = scene ? SourceKind::Scene : SourceKind::Image;
         s->importScale = importScale;
         s->nano = nanoMode;
+        s->generateLods = generateLods;
         m_sources.InsertOrAssign(id, move(s));
         Entry& e = GetOrAddEntry(id);
         e.source = id;
@@ -398,6 +402,7 @@ void AssetManager::CookSource(Source& s)
     h.UpdateValue(m_settings.textureMaxSize);
     h.UpdateValue(s.importScale);
     h.UpdateValue(u8(s.nano));
+    h.UpdateValue(s.generateLods);
     // The manifest holds sub-asset ids derived from the source GUID and absolute paths of external textures, so a
     // copy of the same file (another project, a duplicate) must not share it.
     h.UpdateValue(s.id.high);
@@ -531,7 +536,7 @@ void AssetManager::CookSource(Source& s)
         SetWork(String::Format("{}: optimizing meshes, building LODs", Path::FileName(s.path)));
         jobs::ParallelFor(u32(scene.meshes.Size()), 1, [&](u32 begin, u32 end) {
             for (u32 m = begin; m < end; ++m) {
-                CookedMesh cooked = CookMesh(scene.meshes[m], m_settings.generateMeshLods, s.nano);
+                CookedMesh cooked = CookMesh(scene.meshes[m], m_settings.generateMeshLods && s.generateLods, s.nano);
                 if (cooked.name.Empty())
                     cooked.name = String::Format("{}_{}", Path::Stem(s.path), m);
                 slotMaterials[m] = cooked.slotSourceMaterial;

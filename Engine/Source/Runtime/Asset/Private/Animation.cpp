@@ -9,6 +9,18 @@ i32 Skeleton::FindBone(StringView bone) const
     for (usize i = 0; i < boneNames.Size(); ++i)
         if (boneNames[i].View() == bone)
             return i32(i);
+    // Namespaced rigs ("mixamorig:LeftFoot", "Armature|Hips"): the name after the prefix, ignoring case.
+    auto local = [](StringView s) {
+        const usize colon = s.RFind(':'), bar = s.RFind('|');
+        const usize cut = colon == StringView::NPos ? bar : (bar == StringView::NPos ? colon : Max(colon, bar));
+        return cut == StringView::NPos ? s : s.SubStr(cut + 1);
+    };
+    const StringView want = local(bone);
+    if (want.Empty())
+        return -1;
+    for (usize i = 0; i < boneNames.Size(); ++i)
+        if (local(boneNames[i].View()).EqualsIgnoreCase(want))
+            return i32(i);
     return -1;
 }
 

@@ -62,6 +62,7 @@ struct CharacterState
     f32 jumpSpeed = 0.0f; // requested jump (applied when grounded)
     bool grounded = false;
     bool initialized = false;
+    bool collisions = true; // false (scripts: entity.collisions): no capsule, not moved - a corpse others walk through
     Vec3 spawn; // respawn point when falling out of the world
     // Moving ground (physics): the body it stands on and the feet in that body's frame (rides platforms).
     u32 groundBodyIndex = ~0u;

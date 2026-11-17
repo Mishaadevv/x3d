@@ -32,6 +32,7 @@ struct PackageOptions
     bool fullscreen = true;
     Array<String> disabledFeatures;
     String graphicsEra = "modern";
+    Array<String> startupCommands; // project console lines, run when the game starts (Game.json)
 };
 
 struct PackageReport

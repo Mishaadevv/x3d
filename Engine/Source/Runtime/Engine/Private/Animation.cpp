@@ -38,6 +38,14 @@ ZX_REFLECT_STRUCT_BEGIN(Animator)
     ZX_FIELD(skinToNode, Meta::Hidden())
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_STRUCT_BEGIN(BoneAttachment)
+    ZX_FIELD(bone, Meta::Tooltip("Bone of the animated model this entity sits on (RightHand, Head...); rig prefixes such as "
+                                 "mixamorig: are optional"))
+    ZX_FIELD(offset, Meta::Units("m"), Meta::Tooltip("Position in the bone's space"))
+    ZX_FIELD(rotation, Meta::Units("deg"), Meta::Tooltip("Rotation (pitch, yaw, roll) in the bone's space"))
+    ZX_FIELD(followRotation, Meta::Tooltip("Off: only the position follows the bone (a first-person camera turned by the mouse)"))
+ZX_REFLECT_STRUCT_END()
+
 namespace {
 
 String Lower(StringView s)
@@ -402,8 +410,8 @@ void AnimationSystem::TickGraph(const AnimGraph& g, const Animator& a, const ass
             mask.Resize(bones);
             for (u32 b = 0; b < bones; ++b) {
                 bool in = g.layers[l].mask.Empty();
-                for (const String& name : g.layers[l].mask)
-                    in |= skeleton.boneNames[b].View().EqualsIgnoreCase(name);
+                for (const String& name : g.layers[l].mask) // "Spine" also finds "mixamorig:Spine"
+                    in |= skeleton.boneNames[b].View().EqualsIgnoreCase(name) || skeleton.FindBone(name.View()) == i32(b);
                 const i32 parent = skeleton.parents[b];
                 mask[b] = in || (parent >= 0 && mask[u32(parent)]) ? 1 : 0;
             }
@@ -582,6 +590,7 @@ void AnimationSystem::Tick(ecs::World& world, f32 dt, bool playing)
         asset::anim::SkinningMatrices(*skeleton, s.model.View(), a.skinToNode.ToMatrix(), s.palette.View());
     });
     m_states.RemoveIf([](u64, const State& s) { return !s.alive; });
+    UpdateAttachments(world);
 }
 
 void AnimationSystem::ApplyIK(ecs::World& world, ecs::Entity e, const Animator& a, const asset::Skeleton& skeleton, State& s, f32 dt,
@@ -831,6 +840,87 @@ bool AnimationSystem::Play(ecs::World& world, ecs::Entity e, StringView clip)
             return true;
         }
     return false;
+}
+
+namespace {
+
+/// `e` or the first entity below it (depth-first, `depth` levels) with an Animator.
+ecs::Entity FindAnimatorBelow(const ecs::World& world, ecs::Entity e, u32 depth)
+{
+    if (world.Get<const Animator>(e))
+        return e;
+    if (depth == 0)
+        return {};
+    for (ecs::Entity c : scene::GetChildren(world, e))
+        if (const ecs::Entity found = FindAnimatorBelow(world, c, depth - 1))
+            return found;
+    return {};
+}
+
+/// The animated model a Bone Attachment follows: the nearest ancestor with an Animator, or an Animator below an
+/// ancestor (outside the attachment itself).
+ecs::Entity AttachmentModel(const ecs::World& world, ecs::Entity e)
+{
+    for (ecs::Entity p = scene::GetParent(world, e); p; p = scene::GetParent(world, p)) {
+        if (world.Get<const Animator>(p))
+            return p;
+        for (ecs::Entity c : scene::GetChildren(world, p))
+            if (!scene::IsAncestorOf(world, c, e) && c != e)
+                if (const ecs::Entity found = FindAnimatorBelow(world, c, 3))
+                    return found;
+    }
+    return {};
+}
+
+Mat4 WorldMatrixOf(const ecs::World& world, ecs::Entity e)
+{
+    const scene::WorldTransform* wt = world.Get<const scene::WorldTransform>(e);
+    return wt ? wt->matrix : scene::ComputeWorldMatrix(world, e);
+}
+
+} // namespace
+
+bool AnimationSystem::BoneWorldMatrix(const ecs::World& world, ecs::Entity e, StringView bone, Mat4& out) const
+{
+    const ecs::Entity model = world.IsAlive(e) ? FindAnimatorBelow(world, e, 4) : ecs::Entity();
+    if (!model)
+        return false;
+    const Animator& a = *world.Get<const Animator>(model);
+    const State* s = m_states.Find(model.Pack());
+    const asset::Skeleton* skeleton = a.skeleton.IsValid() ? m_assets.GetSkeleton(a.skeleton) : nullptr;
+    if (!s || !skeleton || s->model.Size() != skeleton->BoneCount())
+        return false;
+    const i32 b = skeleton->FindBone(bone);
+    if (b < 0)
+        return false;
+    out = WorldMatrixOf(world, model) * a.skinToNode.ToMatrix() * s->model[u32(b)];
+    return true;
+}
+
+void AnimationSystem::UpdateAttachments(ecs::World& world)
+{
+    bool moved = false;
+    world.Query<const BoneAttachment>().Each([&](ecs::Entity e, const BoneAttachment& att) {
+        Transform* local = world.Get<Transform>(e);
+        const ecs::Entity model = AttachmentModel(world, e);
+        Mat4 bone;
+        if (!local || !model || !BoneWorldMatrix(world, model, att.bone.View(), bone))
+            return;
+        // The bone's position and rotation only: rigs are often scaled (centimeter skeletons), the attachment keeps its size.
+        Vec3 position, scale;
+        Quat rotation;
+        Decompose(bone, position, rotation, scale);
+        rotation = Normalize(rotation);
+        const Vec3 worldPos = position + rotation * att.offset;
+        const ecs::Entity parent = scene::GetParent(world, e);
+        const Transform parentWorld = parent ? Transform::FromMatrix(WorldMatrixOf(world, parent)) : Transform();
+        local->position = parentWorld.InverseTransformPoint(worldPos);
+        if (att.followRotation)
+            local->rotation = Normalize(Inverse(Normalize(parentWorld.rotation)) * rotation * Quat::FromEulerDegrees(att.rotation));
+        moved = true;
+    });
+    if (moved)
+        scene::UpdateWorldTransforms(world);
 }
 
 } // namespace zx

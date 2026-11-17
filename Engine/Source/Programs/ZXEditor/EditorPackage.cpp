@@ -67,6 +67,7 @@ bool Editor::StartPackage(StringView outputDir)
     o.fullscreen = packageFullscreen;
     o.disabledFeatures = project.descriptor.disabledFeatures;
     o.graphicsEra = project.descriptor.graphicsEra;
+    o.startupCommands = project.descriptor.startupCommands;
     packageJob.Reset(new PackageJob());
     PackageJob* job = packageJob.Get();
     job->outputDir = o.outputDir;

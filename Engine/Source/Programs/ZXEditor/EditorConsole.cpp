@@ -804,7 +804,7 @@ ConCommand CmdTerrainOp("terrain.op", "Whole-terrain operation: terrain.op <flat
                                 ZX_LOG_WARN(LogCmd, "terrain.op: unknown operation '{}'", op);
                         });
 
-ConCommand CmdInputPress("input.press", "Presses a key for the game in Play (captures the game input): input.press <Tab|Enter|Escape|Space|Up|Down|Left|Right|A..Z|0..9> [frames]",
+ConCommand CmdInputPress("input.press", "Presses a key for the game in Play (captures the game input): input.press <Tab|Enter|Escape|Space|Up|Down|Left|Right|A..Z|0..9> [frames] (keys pressed meanwhile are held together)",
                           [](Span<const StringView> args) {
                               Editor* ed = Ed();
                               if (!ed || args.Empty())
@@ -834,8 +834,13 @@ ConCommand CmdInputPress("input.press", "Presses a key for the game in Play (cap
                                   return;
                               }
                               ed->SetGameInputCaptured(true);
-                              ed->simulatedKey = key;
-                              ed->simulatedFrames = args.Size() > 1 ? u32(Max<i64>(1, ParseInt(args[1]).ValueOr(2))) : 2u;
+                              const u32 frames = args.Size() > 1 ? u32(Max<i64>(1, ParseInt(args[1]).ValueOr(2))) : 2u;
+                              for (Editor::SimulatedKey& held : ed->simulatedKeys)
+                                  if (held.key == key) { // pressed again: held longer
+                                      held.frames = Max(held.frames, frames);
+                                      return;
+                                  }
+                              ed->simulatedKeys.PushBack(Editor::SimulatedKey{key, frames});
                           });
 
 ConCommand CmdLang("lang", "Game UI language: lang (lists them) / lang <code> (en, ru, ...) - previews it in the viewport",
@@ -1405,6 +1410,14 @@ MaterialLibrary::Material* FindMaterial(StringView name)
     ZX_LOG_WARN(LogCmd, "No material named '{}'", name);
     return nullptr;
 }
+
+ConCommand CmdMaterialRescan("material.rescan", "Finds materials added to Content outside the editor (scripts, other tools)",
+                              [](Span<const StringView>) {
+                                  if (Ed() && Ed()->materials) {
+                                      Ed()->materials->ScanContent();
+                                      ZX_LOG_INFO(LogCmd, "{} materials", Ed()->materials->All().Size());
+                                  }
+                              });
 
 ConCommand CmdMaterialCreate("material.create", "Creates a material graph: material.create <name> (Content/Materials)",
                               [](Span<const StringView> args) {

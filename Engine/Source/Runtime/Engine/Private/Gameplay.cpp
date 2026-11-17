@@ -167,6 +167,11 @@ void TickCharacters(ecs::World& world, f32 dt, const MeshBoundsFn& meshBounds)
             st.initialized = true;
             st.spawn = t.position;
         }
+        if (!st.collisions) {
+            st.desiredMove = st.rootMotion = st.velocity = Vec3();
+            st.jumpSpeed = 0.0f;
+            continue;
+        }
         Vec3 feet = t.position;
         // Vertical velocity: jumps (only from the ground) and gravity.
         if (st.jumpSpeed > 0.0f && st.grounded) {
@@ -238,6 +243,11 @@ void TickCharacters(ecs::World& world, f32 dt, PhysicsSystem& physics)
         if (!st.initialized) {
             st.initialized = true;
             st.spawn = t.position;
+        }
+        if (!st.collisions) { // switched off: stays where it is
+            st.desiredMove = st.rootMotion = st.velocity = Vec3();
+            st.jumpSpeed = 0.0f;
+            continue;
         }
         const physics::BodyId self = physics.BodyOf(e);
         const f32 r = Max(c.radius, 0.05f);
