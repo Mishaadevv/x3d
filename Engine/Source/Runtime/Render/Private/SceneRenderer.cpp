@@ -1163,7 +1163,10 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
     {
         const ContactShadowSettings& cs = settings.contactShadows;
         m_contactParams = {};
-        m_contactParams.size = Vec2(f32(view.width), f32(view.height));
+        // Half resolution (one rotating pixel per 2x2 block; TAA resolves it): a quarter of the threads.
+        const u32 shift = cs.halfResolution ? 1u : 0u;
+        m_contactParams.halfResolution = shift;
+        m_contactParams.size = Vec2(f32((view.width + shift) >> shift), f32((view.height + shift) >> shift));
         m_contactParams.invSize = Vec2(1.0f / f32(view.width), 1.0f / f32(view.height));
         m_contactParams.tanHalfY = Tan(view.fovY * 0.5f);
         m_contactParams.tanHalfX = m_contactParams.tanHalfY * f32(view.width) / f32(Max(view.height, 1u));
@@ -1174,6 +1177,15 @@ void SceneRenderer::Prepare(Span<const RenderInstance> instances, const RenderVi
         m_contactParams.frame = u32(m_frame);
         const Vec4 toSun = view.view * Vec4(-Normalize(lighting.sunDirection), 0.0f);
         m_contactParams.toSunView = Normalize(toSun.XYZ());
+        // The cascades (rendered before this pass): pixels already in the sun's shadow need no contact shadow.
+        if (!m_vsmActive && cs.skipShadowed) {
+            const Mat4 viewToWorld = InverseAffine(view.view);
+            m_contactParams.cascadeCount = m_cascadeCount;
+            for (u32 c = 0; c < m_cascadeCount; ++c) {
+                m_contactParams.shadowMaps[c] = m_viewConstants.shadowMaps[c];
+                m_contactParams.shadowFromView[c] = m_viewConstants.shadowMatrices[c] * viewToWorld;
+            }
+        }
     }
 
     m_viewConstants.viewProj = view.viewProj;
@@ -1672,16 +1684,19 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
     const bool hasContact = prepass && m_settings.contactShadows.enabled && m_contactPipeline && m_viewConstants.lightIntensity > 0.0f;
     if (hasContact) {
         TextureDesc cd;
-        cd.width = m_renderSize.x;
-        cd.height = m_renderSize.y;
+        cd.width = u32(m_contactParams.size.x);
+        cd.height = u32(m_contactParams.size.y);
         cd.format = Format::R8_UNORM;
         cd.usage = TextureUsage::ShaderResource | TextureUsage::UnorderedAccess;
         cd.debugName = "ContactShadows";
         contactTexture = graph.CreateTexture(cd);
         graph.AddPass(
             "ContactShadows", PassType::Compute,
-            [depth, contactTexture](PassBuilder& b) {
+            [depth, contactTexture, shadowMaps, this](PassBuilder& b) {
                 b.ReadTexture(depth);
+                for (u32 c = 0; c < m_contactParams.cascadeCount; ++c)
+                    if (shadowMaps[c].IsValid())
+                        b.ReadTexture(shadowMaps[c]);
                 b.WriteTexture(contactTexture);
             },
             [this, depth, contactTexture](PassContext& ctx) {
@@ -1689,8 +1704,8 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
                 p.depth = ctx.Texture(depth)->GetSrvIndex();
                 p.output = ctx.Texture(contactTexture)->GetUavIndex();
                 ctx.cmd.SetPipeline(m_contactPipeline);
-                ctx.cmd.SetPushConstants(p);
-                ctx.cmd.Dispatch((m_renderSize.x + 7) / 8, (m_renderSize.y + 7) / 8);
+                ctx.cmd.SetConstants(0, &p, sizeof(p));
+                ctx.cmd.Dispatch((u32(p.size.x) + 7) / 8, (u32(p.size.y) + 7) / 8);
             });
     }
 
@@ -1731,6 +1746,7 @@ void SceneRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
     auto bindView = [this, skySH, aoTexture, hasAO, contactTexture, hasContact](PassContext& ctx) {
         m_viewConstants.aoTexture = hasAO ? ctx.Texture(aoTexture)->GetSrvIndex() : InvalidDescriptor;
         m_viewConstants.contactShadows = hasContact ? ctx.Texture(contactTexture)->GetSrvIndex() : InvalidDescriptor;
+        m_viewConstants.contactShift = m_contactParams.halfResolution;
         ctx.cmd.SetConstants(1, &m_viewConstants, sizeof(m_viewConstants));
         if (skySH)
             ctx.cmd.SetConstantBuffer(0, skySH->GetGpuAddress());

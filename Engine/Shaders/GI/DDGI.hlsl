@@ -527,6 +527,68 @@ void LightmapTraceCS(uint2 id : SV_DispatchThreadID)
     accum[id] = count > 0.0 ? float4((prev.rgb * prev.a + sum) / count, count) : 0.0;
 }
 
+/// Edge-aware a-trous filter over the traced lightmap (two passes, lmIteration = tap step 1 / 2): even 1024 rays per
+/// texel leave grain on large, evenly lit facades. Taps count only from the same surface - matching normal, on the
+/// texel's plane, within a few texels in world space - so neighboring charts in the atlas never mix and corners keep
+/// their contact darkening. a (the ray count) passes through.
+[numthreads(8, 8, 1)]
+void LightmapDenoiseCS(uint2 id : SV_DispatchThreadID)
+{
+    if (any(id >= g_Probe.lmSize))
+        return;
+    Texture2D<float4> src = GetTexture2D(g_Probe.lmAccumSrv);
+    Texture2D<float4> positions = GetTexture2D(g_Probe.lmPosition);
+    Texture2D<float4> normals = GetTexture2D(g_Probe.lmNormal);
+    const float4 c = src.Load(int3(id, 0));
+    const float4 p = positions.Load(int3(id, 0));
+    if (c.a <= 0.0 || p.w <= 0.0) {
+        GetRWTexture2D(g_Probe.lmOutUav)[id] = c;
+        return;
+    }
+    float3 n = normals.Load(int3(id, 0)).xyz;
+    n = dot(n, n) > 1e-6 ? normalize(n) : float3(0, 1, 0);
+    const int step = int(max(g_Probe.lmIteration, 1u));
+    // World size of a texel: the nearest covered direct neighbor (charts are rasterized without gaps inside).
+    float texel = 1e9;
+    [unroll] for (uint k = 0; k < 4; ++k) {
+        const int2 q = int2(id) + int2(k == 0 ? 1 : (k == 1 ? -1 : 0), k == 2 ? 1 : (k == 3 ? -1 : 0));
+        if (any(q < 0) || any(q >= int2(g_Probe.lmSize)))
+            continue;
+        const float4 pq = positions.Load(int3(q, 0));
+        if (pq.w > 0.0)
+            texel = min(texel, max(length(pq.xyz - p.xyz), 1e-3));
+    }
+    if (texel > 1e8) {
+        GetRWTexture2D(g_Probe.lmOutUav)[id] = c;
+        return;
+    }
+    const float maxDistance = 2.9 * float(step) * texel;
+    const float planeSigma = max(0.25 * texel, 0.01);
+    static const float kernel[3] = {0.375, 0.25, 0.0625}; // B3 spline
+    float3 sum = 0.0;
+    float weightSum = 0.0;
+    [unroll] for (int y = -2; y <= 2; ++y)
+        [unroll] for (int x = -2; x <= 2; ++x) {
+            const int2 q = int2(id) + int2(x, y) * step;
+            if (any(q < 0) || any(q >= int2(g_Probe.lmSize)))
+                continue;
+            const float4 s = src.Load(int3(q, 0));
+            const float4 pq = positions.Load(int3(q, 0));
+            if (s.a <= 0.0 || pq.w <= 0.0)
+                continue;
+            const float3 d = pq.xyz - p.xyz;
+            if (dot(d, d) > maxDistance * maxDistance)
+                continue; // another chart, or across a gap
+            float3 nq = normals.Load(int3(q, 0)).xyz;
+            nq = dot(nq, nq) > 1e-6 ? normalize(nq) : float3(0, 1, 0);
+            const float plane = dot(d, n) / planeSigma;
+            const float w = kernel[abs(x)] * kernel[abs(y)] * pow(saturate(dot(n, nq)), 64.0) * exp(-0.5 * plane * plane);
+            sum += s.rgb * w;
+            weightSum += w;
+        }
+    GetRWTexture2D(g_Probe.lmOutUav)[id] = float4(weightSum > 1e-6 ? sum / weightSum : c.rgb, c.a);
+}
+
 /// Fills uncovered texels (gutters, texels no triangle center reached) with the average of covered neighbors, so
 /// bilinear filtering at chart borders never pulls in black. a = 1: covered / filled.
 [numthreads(8, 8, 1)]

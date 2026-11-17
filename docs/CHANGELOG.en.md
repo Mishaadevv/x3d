@@ -2,6 +2,19 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.17.23 — contact shadows 3x cheaper, lightmaps without grain (2026-11-17)
+- **Half-resolution contact shadows**: with TAA on, one pixel of each 2×2 block is traced, a different one every frame, and TAA resolves full resolution. Without TAA and in reflection captures the pass runs at full resolution (`ContactShadowSettings::halfResolution`, `ViewData::contactShift`). The pass constants moved from push constants to the pass constant buffer (b1).
+- **Pixels in the cascades' shadow are skipped**: the point is tested against the cascades (2×2 comparison), and if it is already in the sun's shadow the march does not run. Turn it off with `r.ContactShadows.SkipShadowed 0`; it is not used with VSM.
+- Dead City: close-up 1.24 → 0.42 ms, street overview 1.18 → 0.41 ms. The character's shadow and the contact at the feet are unchanged, and there is no flicker without TAA.
+- **Lightmaps without grain**: after tracing, two edge-aware à-trous passes run (`LightmapDenoiseCS`, steps of 1 and 2 texels, B3 kernel).
+  - A neighbor counts only if it has the same normal, lies on the texel's plane and is within a few texels in world space.
+  - Neighboring atlas charts therefore never mix, and corners keep their contact darkening.
+  - Dead City facades are smooth up close in r.ViewMode 9. The bake takes 81 s.
+- **Checked**:
+  - 507 tests pass in Debug and Development.
+  - Debug editor under the debug layer (smoke test and 400 frames of Dead City): 0 errors.
+  - Dead City was rebaked and saved.
+
 ## 0.17.22 — GI without patches, clean lightmaps, cheaper contact shadows (2026-11-17)
 - **Dark dynamic GI patches on walls** (a known issue since 0.17.19): the cause was found from the baked probe data.
   - The distance field stored one normal per voxel, whichever triangle wrote last. A thin wall (a facade module) puts its front and back faces into the same 0.25 m voxel, so from the street parts of the wall looked like back faces.

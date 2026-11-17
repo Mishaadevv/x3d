@@ -549,6 +549,8 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
             gi.probeSpacing = env.giProbeSpacing; // the scene's own (Settings > Scene graphics)
         m_gi.Prepare(m_instances.View(), view.position, exposure, gi, m_lighting);
     }
+    // Half-resolution contact shadows rotate through each 2x2 block: only TAA turns that into a full-resolution result.
+    m_settings.scene.contactShadows.halfResolution = m_settings.taa.enabled;
     m_scene.Prepare(m_instances.View(), view, m_lighting, m_settings.scene);
     // One face of a reflection probe per frame, rendered by a second scene renderer (sky reflections only, no SSR/AO).
     RGTexture faceColor, faceDepth;
@@ -569,6 +571,7 @@ void ViewportRenderer::AddPasses(RenderGraph& graph, ecs::World& world, const Vi
         cs.shadows.localEnabled = false;
         cs.shadows.cascades = Min(cs.shadows.cascades, 2u);
         cs.shadows.cache = false;
+        cs.contactShadows.halfResolution = false; // one-off faces: no TAA
         cs.occlusionCulling = false; // six unrelated face views: no previous depth to test against
         m_captureScene.SetTime(f32(std::fmod(m_time, 3600.0)));
         m_captureScene.Prepare(m_instances.View(), faceView, captureLighting, cs);

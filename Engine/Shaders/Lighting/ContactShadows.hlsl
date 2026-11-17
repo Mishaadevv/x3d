@@ -7,19 +7,36 @@
 struct ContactParams
 {
     uint depth;       // SRV, reversed-Z infinite perspective
-    uint output;      // UAV (R8): 1 = lit
+    uint output;      // UAV (R8, half the render size when halfResolution): 1 = lit
     uint frame;
     uint stepCount;
-    float2 size;      // render size
-    float2 invSize;
+    float2 size;      // output size
+    float2 invSize;   // 1 / render size
     float3 toSunView; // view space (x right, y up, z forward)
     float rayLength;  // meters
     float tanHalfX;
     float tanHalfY;
     float nearZ;
     float thickness;  // meters at 1 m (grows with distance)
+    uint cascadeCount; // > 0: pixels the sun cascades already shadow skip the march
+    uint halfResolution;
+    uint2 pad;
+    uint4 shadowMaps;
+    float4x4 shadowFromView[4]; // view space -> cascade uv + depth
 };
-ZX_PUSH_CONSTANTS(ContactParams, g_Contact);
+ZX_PASS_CONSTANTS(ContactParams, g_Contact);
+
+/// 0 when the sun's cascades fully shadow view-space point `p` (2x2 comparison), else > 0 (or no cascade holds it).
+float CascadeLight(float3 p)
+{
+    [loop] for (uint c = 0; c < g_Contact.cascadeCount; ++c) {
+        const float4 h = mul(g_Contact.shadowFromView[c], float4(p, 1.0));
+        const float3 uvz = h.xyz / h.w;
+        if (all(uvz.xy > 0.01) && all(uvz.xy < 0.99) && uvz.z > 0.0 && uvz.z < 1.0)
+            return GetTexture2D(g_Contact.shadowMaps[c]).SampleCmpLevelZero(g_ShadowSampler, uvz.xy, uvz.z);
+    }
+    return 1.0;
+}
 
 float ViewZ(float d) { return g_Contact.nearZ / max(d, 1e-7); }
 
@@ -47,7 +64,9 @@ void ContactShadowsCS(uint2 id : SV_DispatchThreadID)
         return;
     RWTexture2D<float4> output = GetRWTexture2D(g_Contact.output);
     Texture2D<float4> depthTex = GetTexture2D(g_Contact.depth);
-    const float2 uv = (float2(id) + 0.5) * g_Contact.invSize;
+    // Half resolution: one pixel of each 2x2 block, a different one every frame (TAA blends the four).
+    const uint2 pixel = g_Contact.halfResolution != 0 ? id * 2 + uint2(g_Contact.frame & 1u, (g_Contact.frame >> 1) & 1u) : id;
+    const float2 uv = (float2(pixel) + 0.5) * g_Contact.invSize;
     const float d = depthTex.SampleLevel(g_PointClamp, uv, 0).r;
     if (d <= 0.0 || g_Contact.toSunView.z < -0.999) {
         output[id] = 1.0;
@@ -81,6 +100,12 @@ void ContactShadowsCS(uint2 id : SV_DispatchThreadID)
         return;
     }
     P += N * (0.01 + 0.004 * P.z);
+    // Already in the cascades' shadow (tested a little towards the sun, past the surface's own depth bias): the
+    // forward pass darkens it anyway, so the march would be wasted - often half the screen.
+    if (g_Contact.cascadeCount > 0 && CascadeLight(P + g_Contact.toSunView * (0.15 + 0.01 * P.z)) <= 0.0) {
+        output[id] = 1.0;
+        return;
+    }
     // Longer rays far away (a fixed world length shrinks below a pixel), capped so near surfaces stay local.
     const float rayLength = g_Contact.rayLength * clamp(P.z * 0.1, 1.0, 2.0);
     const float3 rayEnd = P + g_Contact.toSunView * rayLength;
@@ -88,7 +113,7 @@ void ContactShadowsCS(uint2 id : SV_DispatchThreadID)
         output[id] = 1.0;
         return;
     }
-    const float jitter = frac(InterleavedGradientNoise(float2(id)) + float(g_Contact.frame % 8) * 0.618034);
+    const float jitter = frac(InterleavedGradientNoise(float2(pixel)) + float(g_Contact.frame % 8) * 0.618034);
     const float thickness = g_Contact.thickness * max(P.z, 1.0);
     float occlusion = 0.0;
     // Far away the ray covers few pixels: half the steps.

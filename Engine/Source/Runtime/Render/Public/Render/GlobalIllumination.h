@@ -237,10 +237,11 @@ private:
     rhi::Pipeline* m_irradiancePipeline = nullptr;
     rhi::Pipeline* m_distancePipeline = nullptr;
     rhi::Pipeline* m_cubePipeline = nullptr;
-    rhi::ShaderBytecode m_lmRasterVS, m_lmRasterPS, m_lmTraceCS, m_lmDilateCS;
+    rhi::ShaderBytecode m_lmRasterVS, m_lmRasterPS, m_lmTraceCS, m_lmDilateCS, m_lmDenoiseCS;
     rhi::Pipeline* m_lmRasterPipeline = nullptr;
     rhi::Pipeline* m_lmTracePipeline = nullptr;
     rhi::Pipeline* m_lmDilatePipeline = nullptr;
+    rhi::Pipeline* m_lmDenoisePipeline = nullptr;
     rhi::ShaderBytecode m_ssgiTraceCS, m_ssgiTemporalCS;
     rhi::Pipeline* m_ssgiTracePipeline = nullptr;
     rhi::Pipeline* m_ssgiTemporalPipeline = nullptr;

@@ -81,8 +81,8 @@ struct ViewData
     float4 cascadeDepthRange; // meters per unit of shadow depth
     float sunSourceTan;       // tan of the sun's angular radius
     float pcssMaxTexels;
-    uint contactShadows;      // R8 (1 = lit) at render size, or invalid
-    float shadowPad;
+    uint contactShadows;      // R8 (1 = lit), or invalid
+    uint contactShift;        // 1: at half the render size
     // Deferred path: the lighting pass reconstructs positions from depth and reads the G-buffer.
     float4x4 invViewProj;
     uint gbufferA;   // base color (sRGB) + material AO
@@ -1043,7 +1043,7 @@ float4 LightSurface(SurfaceData s, float3 worldPos, float4 svPosition, bool unli
     uint cascade;
     float shadow = SunShadow(worldPos, N, svPosition.xy, cascade);
     if (g_View.contactShadows != ZX_INVALID_INDEX) // small-scale occlusion the cascades miss
-        shadow *= GetTexture2D(g_View.contactShadows).Load(int3(svPosition.xy, 0)).r;
+        shadow *= GetTexture2D(g_View.contactShadows).Load(int3(uint2(svPosition.xy) >> g_View.contactShift, 0)).r;
     if (g_View.cloudShadow != ZX_INVALID_INDEX) // clouds passing over the sun
         shadow *= GetTexture2D(g_View.cloudShadow).SampleLevel(g_LinearClamp, (worldPos.xz - g_View.cloudShadowOrigin) * g_View.cloudShadowInvExtent, 0).r;
     switch (g_View.debugMode) {

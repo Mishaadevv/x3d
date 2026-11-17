@@ -130,7 +130,7 @@ GlobalIllumination::~GlobalIllumination()
     for (Buffer* b : m_bake.readback)
         m_device.Destroy(b);
     DestroyLightmapTargets();
-    for (Pipeline* p : {m_lmRasterPipeline, m_lmTracePipeline, m_lmDilatePipeline, m_pixelTracePipeline})
+    for (Pipeline* p : {m_lmRasterPipeline, m_lmTracePipeline, m_lmDilatePipeline, m_lmDenoisePipeline, m_pixelTracePipeline})
         m_device.Destroy(p);
     for (Pipeline* p : {m_clearPipeline, m_voxelizePipeline, m_jumpFloodPipeline, m_finalizePipeline, m_tracePipeline, m_irradiancePipeline,
                         m_distancePipeline, m_cubePipeline, m_ssgiTracePipeline, m_ssgiTemporalPipeline})
@@ -159,6 +159,7 @@ bool GlobalIllumination::Init()
                 {&m_ssgiTemporalCS, &m_ssgiTemporalPipeline, "/Shaders/GI/SSGI.hlsl", "TemporalCS"},
                 {&m_lmTraceCS, &m_lmTracePipeline, "/Shaders/GI/DDGI.hlsl", "LightmapTraceCS"},
                 {&m_lmDilateCS, &m_lmDilatePipeline, "/Shaders/GI/DDGI.hlsl", "LightmapDilateCS"},
+                {&m_lmDenoiseCS, &m_lmDenoisePipeline, "/Shaders/GI/DDGI.hlsl", "LightmapDenoiseCS"},
                 {&m_pixelTraceCS, &m_pixelTracePipeline, "/Shaders/GI/DDGI.hlsl", "PixelTraceCS"}};
     for (const Job& j : jobs) {
         ShaderCompileDesc d;
@@ -1021,6 +1022,29 @@ void GlobalIllumination::AddPasses(RenderGraph& graph, const SceneLighting& ligh
         ++bk.lmTile;
         bk.lmIteration = 0;
         return;
+    }
+    // Denoise: accum -> dilated (taps 1 texel apart) -> accum (2 apart); the dilation then starts from accum again.
+    for (u32 pass = 0; pass < 2; ++pass) {
+        const bool toDilated = pass == 0;
+        ProbeParams np = lp;
+        np.lmIteration = 1u << pass; // tap step
+        np.lmAccumSrv = (toDilated ? bk.lmAccum : bk.lmDilated)->GetSrvIndex();
+        np.lmOutUav = (toDilated ? bk.lmDilated : bk.lmAccum)->GetUavIndex();
+        const RGTexture src = toDilated ? lmAccum : lmDilated, dst = toDilated ? lmDilated : lmAccum;
+        graph.AddPass(
+            "GI.LightmapDenoise", PassType::Compute,
+            [=](PassBuilder& b) {
+                b.ReadTexture(src);
+                b.ReadTexture(lmPos);
+                b.ReadTexture(lmNrm);
+                b.WriteTexture(dst);
+                b.SideEffects();
+            },
+            [=, this](PassContext& ctx) {
+                ctx.cmd.SetPipeline(m_lmDenoisePipeline);
+                ctx.cmd.SetConstants(0, &np, sizeof(np));
+                ctx.cmd.Dispatch((lmSize.x + 7) / 8, (lmSize.y + 7) / 8);
+            });
     }
     // Dilation: accum -> dilated -> accum -> dilated (each pass grows the charts by a texel).
     for (u32 pass = 0; pass < 3; ++pass) {

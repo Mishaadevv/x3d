@@ -221,6 +221,8 @@ struct ContactShadowSettings
     f32 length = 0.3f;     // meters near the camera (grows with distance up to 2x)
     u32 steps = 8;
     f32 thickness = 0.03f; // assumed depth of the occluders, meters per meter of view distance
+    bool skipShadowed = true; // pixels the sun cascades already shadow skip the march
+    bool halfResolution = true; // one pixel per 2x2 block, rotating every frame (needs TAA; ViewportRenderer sets it)
 };
 
 /// ZNano virtual geometry (Asset/Nano.h): meshes cooked with clusters are drawn cluster by cluster at the detail the
@@ -616,8 +618,8 @@ private:
         Vec4 cascadeDepthRange; // meters per unit of shadow depth, per cascade
         f32 sunSourceTan;       // tan of the sun's angular radius
         f32 pcssMaxTexels;
-        u32 contactShadows;     // R8 render-size texture (1 = lit) or invalid
-        f32 shadowPad;
+        u32 contactShadows;     // R8 texture (1 = lit) or invalid
+        u32 contactShift;       // 1: the texture is at half the render size
         // Deferred lighting.
         Mat4 invViewProj;
         u32 gbufferA, gbufferB, gbufferC, sceneDepth;
@@ -756,6 +758,11 @@ private:
         f32 tanHalfY;
         f32 nearZ;
         f32 thickness;
+        u32 cascadeCount; // > 0: pixels the sun cascades already shadow skip the march
+        u32 halfResolution;
+        u32 pad[2];
+        u32 shadowMaps[MaxCascades];
+        Mat4 shadowFromView[MaxCascades]; // view space -> cascade uv + depth
     } m_contactParams = {};
     rhi::ShaderBytecode m_contactCS;
     rhi::Pipeline* m_contactPipeline = nullptr;
