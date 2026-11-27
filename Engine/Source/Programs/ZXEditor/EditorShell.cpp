@@ -186,10 +186,24 @@ void DrawMenus(Editor& ed)
         ui::MenuItem(ContentTitle, {}, &ed.showContent);
         ui::MenuItem(LogTitle, {}, &ed.showLog);
         ui::MenuItem(StatsTitle, {}, &ed.showStats);
+        ui::Separator();
+        // Everything that can be closed by its tab has an entry here, so a closed window is never lost.
         ui::MenuItem(AudioMixerTitle, {}, &ed.showMixer);
         ui::MenuItem(InputActionsTitle, {}, &ed.showInputActions);
         ui::MenuItem(LocalizationTitle, {}, &ed.showLocalization);
-        ActionMenuItem(ed, "window.sequencer", ed.seqEditor.open);
+        ui::MenuItem(MaterialEditorTitle, {}, &ed.materialEditor.open);
+        ui::MenuItem(AnimationViewerTitle, {}, &ed.animViewer.open);
+        ui::MenuItem(AnimGraphEditorTitle, {}, &ed.animGraphEditor.open);
+        ui::MenuItem(ScriptEditorTitle, {}, &ed.scriptEditor.open);
+        ui::MenuItem(ZGraphEditorTitle, {}, &ed.graphEditor.open);
+        ui::MenuItem(BTEditorTitle, {}, &ed.btEditor.open);
+        ui::MenuItem(SequencerTitle, {}, &ed.seqEditor.open);
+        ui::Separator();
+        ui::MenuItem(FeaturesTitle, {}, &ed.showFeatures);
+        ui::MenuItem(SettingsTitle, {}, &ed.showSettings);
+        ui::MenuItem(ZX_ICON_PACKAGE "  Package Project", {}, &ed.showPackageWindow);
+        if (ed.ai)
+            ui::MenuItem("Zeqou AI", "Ctrl+Space", &ed.ai->open);
         ui::Separator();
         ActionMenuItem(ed, "window.resetLayout");
         ActionMenuItem(ed, "view.fullscreen");

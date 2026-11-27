@@ -409,6 +409,80 @@ ZX_TEST(UI, FixedSizePopupFitsWindow)
     ZX_EXPECT(popupRect.max.x <= 320.0f + 0.5f && popupRect.max.y <= 240.0f + 0.5f);
 }
 
+// A floating window bigger than the screen is shrunk to it and stays fully visible, whatever size was requested.
+ZX_TEST(UI, FloatingWindowFitsTheDisplay)
+{
+    Harness h;
+    ZX_REQUIRE(h.ok);
+    h.display = Vec2(1280.0f, 800.0f);
+    Rect windowRect;
+    auto ui = [&] {
+        SetNextWindowPos(Vec2(400.0f, 300.0f), Cond::Always);
+        SetNextWindowSize(Vec2(3000.0f, 2000.0f), Cond::Always);
+        Begin("##huge", nullptr, WindowFlags::None);
+        Text("content");
+        windowRect = GetWindowRect();
+        End();
+    };
+    h.Frame(ui);
+    h.Frame(ui);
+    ZX_EXPECT(windowRect.Width() <= 1280.0f && windowRect.Height() <= 800.0f);
+    ZX_EXPECT(windowRect.max.x <= 1280.5f && windowRect.max.y <= 800.5f);
+
+    // A window that fits is kept fully inside the screen, not just its title bar.
+    auto placed = [&] {
+        SetNextWindowPos(Vec2(1100.0f, 700.0f), Cond::Always);
+        SetNextWindowSize(Vec2(400.0f, 300.0f), Cond::Always);
+        Begin("##placed", nullptr, WindowFlags::None);
+        Text("content");
+        windowRect = GetWindowRect();
+        End();
+    };
+    h.Frame(placed);
+    h.Frame(placed);
+    ZX_EXPECT(windowRect.max.x <= 1280.5f && windowRect.max.y <= 800.5f);
+}
+
+// A menu / popup taller than the screen is capped to it and scrolls with the wheel instead of running off the bottom.
+ZX_TEST(UI, TallPopupShrinksAndScrolls)
+{
+    Harness h;
+    ZX_REQUIRE(h.ok);
+    h.display = Vec2(1280.0f, 400.0f);
+    bool opened = false;
+    Rect popupRect;
+    f32 scrollAfterWheel = 0.0f;
+    auto ui = [&] {
+        BeginTestWindow();
+        if (!opened) {
+            opened = true;
+            OpenPopupAnchored("##tall", Rect(Vec2(200.0f, 60.0f), Vec2(300.0f, 80.0f)));
+        }
+        if (BeginPopup("##tall")) {
+            for (i32 i = 0; i < 60; ++i)
+                Text(String::Format("menu row {}", i));
+            popupRect = GetWindowRect();
+            scrollAfterWheel = GetScrollY();
+            EndPopup();
+        }
+        End();
+    };
+    h.Frame(ui);
+    h.Frame(ui);
+    h.Frame(ui);
+    ZX_REQUIRE(!popupRect.IsEmpty());
+    ZX_EXPECT(popupRect.Height() <= 400.0f);
+    ZX_EXPECT(popupRect.max.y <= 400.5f);
+    ZX_EXPECT_EQ(scrollAfterWheel, 0.0f);
+    h.Move(popupRect.Center());
+    h.Frame(ui);
+    h.input.AddWheel(-3.0f, 0.0f);
+    h.Frame(ui);
+    h.Move(popupRect.Center());
+    h.Frame(ui);
+    ZX_EXPECT(scrollAfterWheel > 0.0f);
+}
+
 // Chat inputs: Enter submits, Shift+Enter adds a line; the field keeps focus for the next message.
 ZX_TEST(UI, MultilineSubmitOnEnter)
 {

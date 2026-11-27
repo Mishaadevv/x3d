@@ -10,6 +10,10 @@
 //   Nav Mesh Obstacle (component): a box (`size`, centered on the entity, its rotation and scale applied) the agents
 //     walk around - a door, a car, a pushed crate. In Play, an obstacle that appears, moves or goes away rebuilds the
 //     tiles under it (a few times per second at most) and the agents find new paths.
+//   Nav Mesh Link (component): a way between two places the mesh does not join - a jump, a drop, a ladder. Agents walk to
+//     `start`, cross the link (`end` - the game slides the agent along it, no gravity) and go on; the search treats the
+//     crossing as costing its length plus `cost`. Both endpoints are offsets from the entity (rotated and scaled with
+//     it) and snap onto the mesh within a few meters.
 //   Nav Mesh Agent (component): walks the entity to a destination along the shortest path on the mesh (A* + funnel),
 //     with acceleration, arrival slow-down and turning. With a Character Controller it steers the character (the
 //     physics sweeps it); without one it moves the transform and keeps the feet on the mesh.
@@ -52,6 +56,16 @@ struct NavMeshObstacle
 };
 ZX_DECLARE_TYPE(NavMeshObstacle);
 
+/// Off-mesh link: a jump / drop / ladder between two points of the mesh (see the top of this file).
+struct NavMeshLink
+{
+    Vec3 start = Vec3(0.0f, 0.0f, 0.0f); // local offsets from the entity (rotated and scaled with it)
+    Vec3 end = Vec3(0.0f, 0.0f, 4.0f);
+    bool bidirectional = true; // both ways (a drop is usually one-way: down only)
+    f32 cost = 0.0f;           // extra meters of walking the crossing is worth (a slow ladder costs a few)
+};
+ZX_DECLARE_TYPE(NavMeshLink);
+
 enum class NavAgentStatus : u8
 {
     Idle,        // no destination
@@ -73,7 +87,9 @@ struct NavMeshAgent
     bool repath = false;
     NavAgentStatus status = NavAgentStatus::Idle;
     Array<Vec3> path;
+    Array<u8> pathJumps; // per path point: 1 = the segment from the previous point is an off-mesh link
     u32 corner = 0;
+    f32 linkProgress = -1.0f; // 0..1 while crossing an off-mesh link, -1 otherwise
     Vec3 velocity;
 };
 ZX_DECLARE_TYPE(NavMeshAgent);
@@ -84,6 +100,7 @@ struct NavBuildReport
     u32 triangles = 0;
     u32 polys = 0;
     u32 tiles = 0;
+    u32 links = 0;
     f64 milliseconds = 0.0;
 };
 
@@ -109,7 +126,7 @@ public:
 
     /// The mesh whose volume holds `p` (or the nearest one with a polygon within a few meters).
     const nav::NavMesh* MeshAt(Vec3 p) const;
-    bool FindPath(Vec3 start, Vec3 end, Array<Vec3>& path, bool* partial = nullptr) const;
+    bool FindPath(Vec3 start, Vec3 end, Array<Vec3>& path, bool* partial = nullptr, Array<u8>* jumps = nullptr) const;
     /// Snaps `p` onto the mesh (within `searchDistance`).
     bool NearestPoint(Vec3 p, f32 searchDistance, Vec3& onMesh) const;
 
@@ -134,6 +151,8 @@ public:
 private:
     /// World boxes of the enabled obstacles now.
     void GatherObstacles(ecs::World& world, Array<AABB>& out, Array<u64>* ids = nullptr) const;
+    /// Off-mesh links of the scene now, in world space.
+    void GatherLinks(ecs::World& world, Array<nav::OffMeshLink>& out) const;
     /// Obstacles that appeared, moved or went away mark their tiles dirty; rebuilt a few times per second.
     void UpdateObstacles(ecs::World& world, f32 dt);
     Array<Volume> m_volumes;
@@ -145,6 +164,9 @@ private:
 
 /// World box of an obstacle (its size, rotated and scaled with the entity).
 AABB NavObstacleBounds(const NavMeshObstacle& o, const Mat4& world);
+
+/// The link's endpoints in world space (its offsets transformed by the entity).
+void NavLinkWorld(const NavMeshLink& l, const Mat4& world, Vec3& start, Vec3& end);
 
 /// World-space triangles of the static geometry inside `bounds` (what Build voxelizes).
 void GatherNavGeometry(ecs::World& world, render::RenderAssets* assets, const AABB& bounds, Array<Vec3>& vertices, Array<u32>& indices);

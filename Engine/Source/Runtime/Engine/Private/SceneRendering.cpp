@@ -176,6 +176,9 @@ ZX_REFLECT_ENUM_BEGIN(WaterPreset)
     ZX_ENUM_VALUE(Pool)
     ZX_ENUM_VALUE(Storm)
     ZX_ENUM_VALUE(Tropical)
+    ZX_ENUM_VALUE(River)
+    ZX_ENUM_VALUE(Swamp)
+    ZX_ENUM_VALUE(Arctic)
 ZX_REFLECT_ENUM_END()
 
 ZX_REFLECT_STRUCT_BEGIN(Water)
@@ -197,47 +200,82 @@ ZX_REFLECT_STRUCT_BEGIN(Water)
     ZX_FIELD(shoreFoam, Meta::Range(0, 5), Meta::Units("m"), Meta::Tooltip("Width of the foam line along shores"))
     ZX_FIELD(caustics, Meta::Range(0, 3), Meta::Tooltip("Light patterns dancing on what lies below"))
     ZX_FIELD(reflections, Meta::Tooltip("The scene reflects in the water (screen space); off: only the sky"))
+    ZX_FIELD(absorption, Meta::Color(), Meta::Category("Reactions"),
+             Meta::Tooltip("How fast red, green and blue die with depth (per clarity distance)"))
+    ZX_FIELD(turbidity, Meta::Range(0.1, 5), Meta::Tooltip("0.2 = crystal clear, 3+ = muddy: the water's own color wins over what lies below"))
+    ZX_FIELD(skyReflection, Meta::Range(0, 3), Meta::Tooltip("How much of the sky (its sunset, its stars) mirrors in the surface"))
+    ZX_FIELD(sunGlitter, Meta::Range(0, 4), Meta::Tooltip("Strength of the sun and moon glints"))
+    ZX_FIELD(scatter, Meta::Range(0, 4), Meta::Tooltip("Light shining through the crests when looking towards the sun"))
+    ZX_FIELD(bioluminescence, Meta::Range(0, 4), Meta::Tooltip("Glowing plankton in foam and crests, mostly at night"))
+    ZX_FIELD(rain, Meta::Range(0, 1), Meta::Tooltip("Rain on the surface: ripple rings, churned foam, blurred reflections"))
+    ZX_FIELD(currentSpeed, Meta::Range(0, 10), Meta::Units("m/s"), Meta::Tooltip("Speed the foam and ripples drift at (a river)"))
+    ZX_FIELD(currentDirection, Meta::Range(-180, 180), Meta::Units("deg"), Meta::Tooltip("Where the current runs, around +Y (0 = towards +Z)"))
+    ZX_FIELD(gust, Meta::Range(0, 2), Meta::Tooltip("Slow breathing of the sea state (visual only: buoyancy follows the steady wind)"))
     ZX_FIELD(appliedPreset, Meta::Hidden())
 ZX_REFLECT_STRUCT_END()
 
 void ApplyWaterPreset(Water& w, WaterPreset preset)
 {
-    struct P
-    {
-        f32 wind, fetch, amount, chop;
-        Vec3 shallow, deep, scatter;
-        f32 clarity, roughness, foam, shore, caustics;
-    };
-    static const P Presets[] = {
-        // Custom: left as is.
-        {0, 0, 0, 0, {}, {}, {}, 0, 0, 0, 0, 0},
-        // Ocean: long swell under a fresh breeze, deep blue-green.
-        {11.0f, 400.0f, 1.0f, 1.1f, Vec3(0.03f, 0.36f, 0.42f), Vec3(0.004f, 0.03f, 0.07f), Vec3(0.03f, 0.45f, 0.42f), 6.0f, 0.06f, 1.0f, 1.5f, 0.8f},
-        // Lake: short, choppy waves, greener and murkier.
-        {6.0f, 3.0f, 1.0f, 0.8f, Vec3(0.12f, 0.40f, 0.32f), Vec3(0.01f, 0.05f, 0.06f), Vec3(0.06f, 0.35f, 0.25f), 3.0f, 0.05f, 0.4f, 0.6f, 0.8f},
-        // Pool: clear, bright, tiny ripples, strong caustics.
-        {3.0f, 0.03f, 1.5f, 0.5f, Vec3(0.20f, 0.75f, 0.80f), Vec3(0.02f, 0.25f, 0.45f), Vec3(0.10f, 0.60f, 0.70f), 12.0f, 0.02f, 0.0f, 0.15f, 1.5f},
-        // Storm: towering, breaking seas, white with foam.
-        {22.0f, 800.0f, 1.0f, 1.4f, Vec3(0.06f, 0.25f, 0.25f), Vec3(0.01f, 0.03f, 0.04f), Vec3(0.05f, 0.30f, 0.28f), 4.0f, 0.12f, 1.6f, 2.5f, 0.3f},
-        // Tropical: turquoise lagoon, crystal clear.
-        {5.0f, 30.0f, 0.8f, 0.9f, Vec3(0.15f, 0.85f, 0.75f), Vec3(0.0f, 0.12f, 0.25f), Vec3(0.05f, 0.70f, 0.60f), 9.0f, 0.04f, 0.5f, 1.2f, 1.6f},
-    };
     w.preset = w.appliedPreset = preset;
-    if (preset == WaterPreset::Custom)
+    switch (preset) {
+    case WaterPreset::Custom: return; // left as is
+    case WaterPreset::Ocean: // long swell under a fresh breeze, deep blue-green, a little plankton at night
+        w.windSpeed = 11.0f; w.fetch = 400.0f; w.waveAmount = 1.0f; w.choppiness = 1.1f;
+        w.shallowColor = Vec3(0.03f, 0.36f, 0.42f); w.deepColor = Vec3(0.004f, 0.03f, 0.07f); w.scatterColor = Vec3(0.03f, 0.45f, 0.42f);
+        w.clarity = 6.0f; w.roughness = 0.06f; w.foam = 1.0f; w.shoreFoam = 1.5f; w.caustics = 0.8f;
+        w.absorption = Vec3(2.6f, 0.85f, 0.5f); w.turbidity = 0.8f; w.skyReflection = 1.0f; w.sunGlitter = 1.0f;
+        w.scatter = 1.2f; w.bioluminescence = 0.15f; w.rain = 0.0f; w.currentSpeed = 0.0f; w.currentDirection = 0.0f; w.gust = 0.6f;
         return;
-    const P& p = Presets[u32(preset)];
-    w.windSpeed = p.wind;
-    w.fetch = p.fetch;
-    w.waveAmount = p.amount;
-    w.choppiness = p.chop;
-    w.shallowColor = p.shallow;
-    w.deepColor = p.deep;
-    w.scatterColor = p.scatter;
-    w.clarity = p.clarity;
-    w.roughness = p.roughness;
-    w.foam = p.foam;
-    w.shoreFoam = p.shore;
-    w.caustics = p.caustics;
+    case WaterPreset::Lake: // short choppy waves, greener and murkier
+        w.windSpeed = 6.0f; w.fetch = 3.0f; w.waveAmount = 1.0f; w.choppiness = 0.8f;
+        w.shallowColor = Vec3(0.12f, 0.40f, 0.32f); w.deepColor = Vec3(0.01f, 0.05f, 0.06f); w.scatterColor = Vec3(0.06f, 0.35f, 0.25f);
+        w.clarity = 3.0f; w.roughness = 0.05f; w.foam = 0.4f; w.shoreFoam = 0.6f; w.caustics = 0.8f;
+        w.absorption = Vec3(3.2f, 1.4f, 1.0f); w.turbidity = 1.3f; w.skyReflection = 0.8f; w.sunGlitter = 0.8f;
+        w.scatter = 0.7f; w.bioluminescence = 0.05f; w.rain = 0.0f; w.currentSpeed = 0.05f; w.currentDirection = 20.0f; w.gust = 0.4f;
+        return;
+    case WaterPreset::Pool: // clear, bright, tiny ripples, strong caustics
+        w.windSpeed = 3.0f; w.fetch = 0.03f; w.waveAmount = 1.5f; w.choppiness = 0.5f;
+        w.shallowColor = Vec3(0.20f, 0.75f, 0.80f); w.deepColor = Vec3(0.02f, 0.25f, 0.45f); w.scatterColor = Vec3(0.10f, 0.60f, 0.70f);
+        w.clarity = 12.0f; w.roughness = 0.02f; w.foam = 0.0f; w.shoreFoam = 0.15f; w.caustics = 1.5f;
+        w.absorption = Vec3(1.6f, 0.55f, 0.35f); w.turbidity = 0.5f; w.skyReflection = 1.2f; w.sunGlitter = 1.3f;
+        w.scatter = 1.0f; w.bioluminescence = 0.0f; w.rain = 0.0f; w.currentSpeed = 0.0f; w.currentDirection = 0.0f; w.gust = 0.25f;
+        return;
+    case WaterPreset::Storm: // towering breaking seas, white with foam, churned by rain
+        w.windSpeed = 22.0f; w.fetch = 800.0f; w.waveAmount = 1.0f; w.choppiness = 1.4f;
+        w.shallowColor = Vec3(0.06f, 0.25f, 0.25f); w.deepColor = Vec3(0.01f, 0.03f, 0.04f); w.scatterColor = Vec3(0.05f, 0.30f, 0.28f);
+        w.clarity = 4.0f; w.roughness = 0.12f; w.foam = 1.6f; w.shoreFoam = 2.5f; w.caustics = 0.3f;
+        w.absorption = Vec3(3.0f, 1.3f, 0.9f); w.turbidity = 1.8f; w.skyReflection = 0.6f; w.sunGlitter = 0.5f;
+        w.scatter = 0.9f; w.bioluminescence = 0.0f; w.rain = 0.55f; w.currentSpeed = 0.0f; w.currentDirection = 0.0f; w.gust = 0.9f;
+        return;
+    case WaterPreset::Tropical: // turquoise lagoon, crystal clear, teeming with plankton
+        w.windSpeed = 5.0f; w.fetch = 30.0f; w.waveAmount = 0.8f; w.choppiness = 0.9f;
+        w.shallowColor = Vec3(0.15f, 0.85f, 0.75f); w.deepColor = Vec3(0.0f, 0.12f, 0.25f); w.scatterColor = Vec3(0.05f, 0.70f, 0.60f);
+        w.clarity = 9.0f; w.roughness = 0.04f; w.foam = 0.5f; w.shoreFoam = 1.2f; w.caustics = 1.6f;
+        w.absorption = Vec3(1.3f, 0.45f, 0.3f); w.turbidity = 0.45f; w.skyReflection = 1.15f; w.sunGlitter = 1.25f;
+        w.scatter = 1.15f; w.bioluminescence = 0.35f; w.rain = 0.0f; w.currentSpeed = 0.08f; w.currentDirection = 40.0f; w.gust = 0.35f;
+        return;
+    case WaterPreset::River: // flowing freshwater: foam streams down the current, water slightly brown
+        w.windSpeed = 4.0f; w.fetch = 0.3f; w.waveAmount = 0.9f; w.choppiness = 0.9f;
+        w.shallowColor = Vec3(0.10f, 0.28f, 0.20f); w.deepColor = Vec3(0.008f, 0.03f, 0.03f); w.scatterColor = Vec3(0.06f, 0.30f, 0.22f);
+        w.clarity = 2.5f; w.roughness = 0.07f; w.foam = 0.6f; w.shoreFoam = 1.0f; w.caustics = 0.7f;
+        w.absorption = Vec3(3.0f, 1.2f, 0.8f); w.turbidity = 1.6f; w.skyReflection = 0.85f; w.sunGlitter = 0.9f;
+        w.scatter = 0.8f; w.bioluminescence = 0.05f; w.rain = 0.0f; w.currentSpeed = 2.2f; w.currentDirection = 0.0f; w.gust = 0.5f;
+        return;
+    case WaterPreset::Swamp: // still, murky, green-black, glowing at night
+        w.windSpeed = 2.5f; w.fetch = 0.2f; w.waveAmount = 0.6f; w.choppiness = 0.5f;
+        w.shallowColor = Vec3(0.08f, 0.14f, 0.05f); w.deepColor = Vec3(0.01f, 0.02f, 0.01f); w.scatterColor = Vec3(0.05f, 0.16f, 0.05f);
+        w.clarity = 1.2f; w.roughness = 0.14f; w.foam = 0.15f; w.shoreFoam = 0.5f; w.caustics = 0.4f;
+        w.absorption = Vec3(4.0f, 2.0f, 2.6f); w.turbidity = 2.6f; w.skyReflection = 0.7f; w.sunGlitter = 0.6f;
+        w.scatter = 0.6f; w.bioluminescence = 0.8f; w.rain = 0.0f; w.currentSpeed = 0.02f; w.currentDirection = 0.0f; w.gust = 0.2f;
+        return;
+    case WaterPreset::Arctic: // freezing, pale, glassy, very clear
+        w.windSpeed = 6.0f; w.fetch = 120.0f; w.waveAmount = 0.7f; w.choppiness = 0.6f;
+        w.shallowColor = Vec3(0.35f, 0.62f, 0.75f); w.deepColor = Vec3(0.05f, 0.16f, 0.30f); w.scatterColor = Vec3(0.25f, 0.55f, 0.72f);
+        w.clarity = 14.0f; w.roughness = 0.03f; w.foam = 0.3f; w.shoreFoam = 0.5f; w.caustics = 1.2f;
+        w.absorption = Vec3(1.1f, 0.5f, 0.35f); w.turbidity = 0.35f; w.skyReflection = 1.3f; w.sunGlitter = 1.4f;
+        w.scatter = 1.0f; w.bioluminescence = 0.0f; w.rain = 0.15f; w.currentSpeed = 0.12f; w.currentDirection = -30.0f; w.gust = 0.3f;
+        return;
+    }
 }
 
 void UpdateWaterPresets(ecs::World& world)
@@ -756,6 +794,16 @@ void GatherWater(World& world, Array<render::WaterSurface>& out)
         s.foam = w.foam;
         s.shoreFoam = w.shoreFoam;
         s.roughness = w.roughness;
+        s.absorption = w.absorption;
+        s.turbidity = w.turbidity;
+        s.skyReflection = w.skyReflection;
+        s.sunGlitter = w.sunGlitter;
+        s.scatter = w.scatter;
+        s.bioluminescence = w.bioluminescence;
+        s.rain = w.rain;
+        s.currentSpeed = w.currentSpeed;
+        s.currentDirection = DegToRad(w.currentDirection);
+        s.gust = w.gust;
     });
 }
 

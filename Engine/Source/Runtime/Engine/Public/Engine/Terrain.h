@@ -31,7 +31,14 @@ struct Terrain
     i32 octaves = 6;
     f32 roughness = 0.5f;    // amplitude kept per octave (more = rougher detail)
     f32 ridges = 0.25f;      // 0 = rolling hills, 1 = sharp ridged mountains
+    /// How strongly the noise is bent before it is sampled: 0 = hills follow the noise lattice (repetitive, reads as
+    /// machine-made), 0.35 = natural wandering ridges. Applied in world space, so neighboring tiles still meet.
+    f32 shapeWarp = 0.35f;
     f32 flatCenter = 20.0f;  // meters: radius of a flat area in the middle
+    /// Meters of a natural rim: over this distance before the plate edge the hills ease down to the ground level of
+    /// the middle, so a single terrain ends in a plain instead of a straight square wall (0 = keep the hard square
+    /// edge; tiles of an open world keep 0 so they still continue each other).
+    f32 edge = 0.0f;
     /// Where this terrain sits in a larger landscape (meters): neighbor tiles with the same settings and offsets one
     /// tile apart continue each other's hills without seams (open worlds are grids of terrain tiles).
     Vec2 noiseOffset;
@@ -59,6 +66,10 @@ void EncodeTerrainSculpt(Terrain& t, const Array<f32>& offsets);
 void EncodeTerrainPaint(Terrain& t, const Array<u8>& rgb);
 /// Generated height (meters, no sculpting) at local (x, z) - also outside the terrain (seamless normals at tile edges).
 f32 GeneratedTerrainHeight(const Terrain& t, f32 localX, f32 localZ);
+/// Distance (meters, negative outside) from local (x, z) to the populated footprint. With a natural rim (edge > 0) the
+/// footprint is an organic squircle instead of the square, and the mesh is cut along it; open-world tiles (edge = 0)
+/// keep the full square.
+f32 TerrainFootprintDistance(const Terrain& t, f32 localX, f32 localZ);
 /// A coarse copy of the terrain (`samples` per side, skirts on every chunk): far-away stand-ins (World Partition HLOD).
 asset::CookedMesh CookTerrainProxy(const Terrain& t, u32 samples);
 /// Hash of everything that changes the generated shape.

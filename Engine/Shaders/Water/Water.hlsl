@@ -141,6 +141,21 @@ struct WaterParams
     float uvOffset;       // half a texel: grid node j of a cascade sits at x = j * size / n (as on the CPU)
     float surfaceY;       // underwater pass: height of the surface at rest (world)
     float waveBound;      // underwater pass: max height of the waves above the rest height
+    // Reactions: what the world does to the water (filled once per pass) and how the surface answers.
+    float3 absorption;    // per-channel extinction per clarity distance
+    float turbidity;
+    float skyReflection;
+    float sunGlitter;
+    float scatter;
+    float bioluminescence;
+    float rain;
+    float gust;
+    float ambientFloor;   // 0 day, 1 night (the renderer's night weight)
+    float currentSpeed;
+    float2 currentDir;
+    float2 cloudShadowOrigin;
+    uint cloudShadow;
+    float cloudShadowInvExtent;
 };
 ZX_PASS_CONSTANTS(WaterParams, g_Water);
 
@@ -232,6 +247,48 @@ float Caustics(float2 p, float t)
     return min(a, b) * 2.2 + (a + b) * 0.25;
 }
 
+/// Fraction of the sunlight the clouds let through at world xz (1 when the scene has no clouds).
+float CloudsAt(float2 xz)
+{
+    if (g_Water.cloudShadow == ZX_INVALID_INDEX)
+        return 1.0;
+    return GetTexture2D(g_Water.cloudShadow).SampleLevel(g_LinearClamp, (xz - g_Water.cloudShadowOrigin) * g_Water.cloudShadowInvExtent, 0).r;
+}
+
+/// 0 in daylight, 1 at night (the renderer's ambient night weight; the moon then is the directional light).
+float NightAmount() { return saturate(g_Water.ambientFloor); }
+
+/// Where the current has carried the patterns by now (a river floats its foam downstream).
+float2 CurrentDrift(float t) { return g_Water.currentDir * (g_Water.currentSpeed * t); }
+
+/// Slow breathing of the sea (gusts). Visual only: buoyancy follows the steady wind.
+float Gust(float t) { return 1.0 + g_Water.gust * 0.3 * sin(t * 0.19) * sin(t * 0.071 + 1.7); }
+
+/// Rain dimples: expanding rings on a jittered grid, drifting with the current.
+float RainRipples(float2 p, float t)
+{
+    if (g_Water.rain <= 0.001)
+        return 0.0;
+    const float2 q = (p - CurrentDrift(t)) * 1.6;
+    const float2 cell = floor(q);
+    const float2 f = frac(q) - 0.5;
+    const float2 rnd = Hash2(cell);
+    const float phase = frac(t * 1.5 + rnd.x);
+    const float d = length(f - (rnd - 0.5) * 0.55);
+    const float ring = sin(saturate(1.0 - d / (0.12 + phase * 0.38)) * 3.14159265);
+    return ring * (1.0 - phase) * g_Water.rain;
+}
+
+/// Slope the raindrops add (finite differences of the rings).
+float2 RainSlope(float2 p, float t)
+{
+    if (g_Water.rain <= 0.001)
+        return 0;
+    const float e = 0.06;
+    const float r0 = RainRipples(p, t);
+    return float2(RainRipples(p + float2(e, 0), t) - r0, RainRipples(p + float2(0, e), t) - r0) / e * 0.05;
+}
+
 float3 SkyRadiance(float3 dir, float roughness)
 {
     if (g_Water.skyCube != ZX_INVALID_INDEX)
@@ -244,10 +301,12 @@ float3 SkyRadiance(float3 dir, float roughness)
 
 float LinearDepth(float d) { return g_Water.nearPlane / max(d, 1e-7); }
 
+/// Shadow of the sun at a world point: the cascades and whatever the clouds take away.
 float SunShadow(float3 worldPos, float viewDepth)
 {
+    const float clouds = CloudsAt(worldPos.xz);
     if (!g_Water.cascadesShadow)
-        return 1.0;
+        return clouds;
     [unroll] for (uint c = 0; c < 4; ++c) {
         if (viewDepth > g_Water.cascadeSplits[c])
             continue;
@@ -255,9 +314,9 @@ float SunShadow(float3 worldPos, float viewDepth)
         const float3 uvz = s.xyz / s.w;
         if (any(uvz.xy < 0.0) || any(uvz.xy > 1.0) || g_Water.shadowMaps[c] == ZX_INVALID_INDEX)
             continue;
-        return GetTexture2D(g_Water.shadowMaps[c]).SampleCmpLevelZero(g_ShadowSampler, uvz.xy, uvz.z);
+        return clouds * GetTexture2D(g_Water.shadowMaps[c]).SampleCmpLevelZero(g_ShadowSampler, uvz.xy, uvz.z);
     }
-    return 1.0;
+    return clouds;
 }
 
 float2 ToScreen(float3 world, out float clipW, out float ndcZ)
@@ -310,15 +369,21 @@ float4 TraceReflection(float3 origin, float3 dir, float distance)
 /// Light in the water at `depthBelow` meters under the surface: sunlight and skylight fade, red first.
 float3 UnderwaterLight(float depthBelow, float shadow)
 {
-    const float3 fade = exp(-max(depthBelow, 0.0) / max(g_Water.clarity, 0.05) * float3(1.2, 0.45, 0.25));
+    // Red dies first, then green; murky water swallows the light faster. The colour itself comes from the sun and the
+    // sky above, so a sunset or a moonlit night carries into the water by itself.
+    const float3 fade = exp(-max(depthBelow, 0.0) / max(g_Water.clarity, 0.05) * g_Water.absorption *
+                             (0.5 + 0.5 * g_Water.turbidity) * 0.5);
     const float sunUp = saturate(g_Water.dirToSun.y);
     return (g_Water.ambient + g_Water.sunRadiance * sunUp * shadow / ATM_PI) * fade;
 }
 
 float3 UnderwaterBodyColor(float depthBelow, float shadow)
 {
-    const float3 body = lerp(g_Water.shallowColor, g_Water.deepColor, saturate(depthBelow / max(g_Water.clarity * 3.0, 0.1)));
-    return body * UnderwaterLight(depthBelow, shadow) * 0.28;
+    const float3 body = lerp(g_Water.shallowColor, g_Water.deepColor,
+                             saturate(depthBelow * g_Water.turbidity / max(g_Water.clarity * 3.0, 0.1)));
+    // Murky water is lit by the light that has not been absorbed just above it, so it never goes pitch black.
+    const float3 light = UnderwaterLight(depthBelow * (0.6 + 0.4 * g_Water.turbidity), shadow);
+    return body * light * (0.22 + 0.1 * g_Water.turbidity);
 }
 
 /// Direction of the sunlight under the water (bent down by refraction).
@@ -380,6 +445,7 @@ float4 WaterPS(VSOut i) : SV_Target0
     }
     slope *= g_Water.amplitude * i.fade;
     crestHeight *= g_Water.amplitude * i.fade;
+    slope += RainSlope(i.baseXZ, t) * i.fade;
     float3 n = normalize(float3(-slope.x, 1.0, -slope.y));
     n = normalize(lerp(n, float3(0, 1, 0), saturate(distance / 1500.0) * 0.6)); // calmer towards the horizon
     if (!front)
@@ -419,8 +485,10 @@ float4 WaterPS(VSOut i) : SV_Target0
 
     // Absorption (red first) and the water's own color scattered back.
     const float depthFactor = thickness / max(g_Water.clarity, 0.05);
-    const float3 transmittance = exp(-depthFactor * float3(2.4, 0.8, 0.45));
-    const float3 bodyColor = lerp(g_Water.deepColor, g_Water.shallowColor, exp(-depthFactor * 0.7));
+    const float3 extinction = max(g_Water.absorption, 0.02) * (0.6 + 0.4 * g_Water.turbidity);
+    const float3 transmittance = exp(-depthFactor * extinction);
+    // Murky water shows its own color sooner: what lies below disappears as the turbidity rises.
+    const float3 bodyColor = lerp(g_Water.deepColor, g_Water.shallowColor, exp(-depthFactor * 0.7 * g_Water.turbidity));
     const float3 bodyLight = g_Water.ambient + g_Water.sunRadiance * sunUp * shadow / ATM_PI;
     float3 under = behind * transmittance + bodyColor * bodyLight * (1.0 - transmittance);
 
@@ -429,18 +497,20 @@ float4 WaterPS(VSOut i) : SV_Target0
     const float3 l = g_Water.dirToSun;
     const float towardsSun = pow(saturate(dot(-v, l) * 0.5 + 0.5), 4.0);
     const float thin = pow(saturate(0.5 - 0.5 * dot(l, n)), 3.0);
-    const float sss = (saturate(crestHeight * 0.6) * towardsSun * thin * 2.2 + pow(nDotV, 2.0) * 0.12) * (0.3 + 0.7 * shadow);
+    const float sss = (saturate(crestHeight * 0.6) * towardsSun * thin * 2.2 + pow(nDotV, 2.0) * 0.12) * (0.3 + 0.7 * shadow) *
+                      g_Water.scatter * Gust(t);
     under += g_Water.scatterColor * (g_Water.sunRadiance / ATM_PI * sss + g_Water.ambient * 0.08 * saturate(crestHeight));
 
     // Reflection: the scene where the screen has it, the prefiltered sky elsewhere.
     const float fresnel = 0.02 + 0.98 * pow(1.0 - nDotV, 5.0);
     float3 r = reflect(-v, n);
     r.y = abs(r.y);
-    const float roughness = saturate(g_Water.roughness + saturate(distance / 800.0) * 0.15);
-    float3 reflected = SkyRadiance(r, roughness);
+    // Rain and distance break the mirror; the sky (its sunset, its stars) is scaled by the surface's own setting.
+    const float roughness = saturate(g_Water.roughness + saturate(distance / 800.0) * 0.15 + g_Water.rain * 0.08);
+    float3 reflected = SkyRadiance(r, roughness) * g_Water.skyReflection;
     [branch] if (g_Water.ssr && front && fresnel > 0.04) { // looking down the reflection hardly shows
         const float4 hit = TraceReflection(i.worldPos + n * 0.05, r, distance);
-        reflected = lerp(reflected, hit.rgb, hit.a);
+        reflected = lerp(reflected, hit.rgb * g_Water.skyReflection, hit.a);
     }
     // The sun (GGX), shadowed.
     const float3 h = normalize(v + l);
@@ -448,21 +518,36 @@ float4 WaterPS(VSOut i) : SV_Target0
     const float nDotH = saturate(dot(n, h));
     const float dTerm = a2 / (ATM_PI * pow(nDotH * nDotH * (a2 - 1.0) + 1.0, 2.0));
     const float nDotL = saturate(dot(n, l));
-    const float3 glint = g_Water.sunRadiance * min(dTerm * fresnel * 0.25 / max(nDotV, 0.05), 80.0) * nDotL * shadow;
+    const float3 glint = g_Water.sunRadiance * min(dTerm * fresnel * 0.25 / max(nDotV, 0.05), 80.0) * nDotL * shadow * g_Water.sunGlitter;
     float3 color = lerp(under, reflected, fresnel) + glint;
 
     // Foam: whitecaps on breaking crests (from the simulation) and along shores / around objects.
     const float2 p = i.baseXZ;
+    const float2 drift = CurrentDrift(t); // the current carries the foam downstream
     const float shore = (1.0 - saturate(thickness / max(g_Water.shoreFoam, 0.01))) * saturate(1.0 - distance / 300.0);
-    const float bands = 0.6 + 0.4 * sin(thickness * 14.0 - t * 2.2 + Noise(p * 0.8) * 4.0);
-    const float caps = saturate(whitecaps * 1.5) * g_Water.foam;
+    const float bands = 0.6 + 0.4 * sin((thickness + dot(drift, normalize(float2(1, 0.3)))) * 14.0 - t * 2.2 + Noise(p * 0.8) * 4.0);
+    const float caps = saturate(whitecaps * 1.5) * g_Water.foam * Gust(t);
     float foamAmount = 0.0;
-    [branch] if (caps > 0.01 || shore > 0.01) {
-        const float pattern = FoamPattern(p * 0.9, t);
+    [branch] if (caps > 0.01 || shore > 0.01 || g_Water.rain > 0.01) {
+        const float pattern = FoamPattern(p * 0.9 - drift, t);
         foamAmount = saturate(max(caps * (0.35 + pattern), shore * bands * (0.45 + pattern)) * 1.4) * saturate(g_Water.foam + shore);
+        // Rain churns the surface into a fine, drifting haze of foam.
+        if (g_Water.rain > 0.01)
+            foamAmount = saturate(foamAmount + g_Water.rain * 0.3 * (0.35 + 0.65 * Noise(p * 3.1 - drift * 0.5 + t * 0.7)));
     }
     const float3 foamLight = 0.9 * (g_Water.ambient * 1.1 + g_Water.sunRadiance * saturate(dot(n, l) * 0.6 + 0.4) * shadow / ATM_PI);
     color = lerp(color, foamLight, foamAmount);
+
+    // Glowing plankton: sparkles in the foam and on the crests after dark (and in the deep, faintly).
+    [branch] if (g_Water.bioluminescence > 0.001) {
+        const float night = NightAmount();
+        if (night > 0.02) {
+            const float sparkle = Noise(p * 1.7 - drift * 0.3 + float2(t * 0.21, -t * 0.17));
+            const float glow = night * g_Water.bioluminescence * saturate(whitecaps * 1.4 + 0.1) * (0.15 + 0.85 * sparkle) *
+                               (0.4 + 0.6 * foamAmount);
+            color += float3(0.12, 0.85, 0.72) * glow * 2.5;
+        }
+    }
     return float4(min(color, 60000.0), 1.0);
 }
 
@@ -514,8 +599,9 @@ float4 UnderwaterPS(FullscreenOut i) : SV_Target0
     if (under > 0.004)
         return float4(sceneColor.SampleLevel(g_PointClamp, uv, 0).rgb, 1.0);
 
-    // Wobble.
-    const float2 wobble = float2(sin(uv.y * 40.0 + t * 2.1), cos(uv.x * 33.0 + t * 1.7)) * 0.0018;
+    // Wobble; raindrops dimple the surface right above the lens.
+    float2 wobble = float2(sin(uv.y * 40.0 + t * 2.1), cos(uv.x * 33.0 + t * 1.7)) * 0.0018;
+    wobble += RainSlope(nearPos.xz, t) * 0.006;
     const float2 suv = clamp(uv + wobble, 0.0, 1.0);
     const float rawDepth = GetTexture2D(g_Water.sceneDepth).SampleLevel(g_PointClamp, suv, 0).r;
     const float3 farPos = rawDepth > 0.0 ? Unproject(suv, rawDepth) : nearPos + normalize(nearPos - g_Water.cameraPosition) * 2000.0;
@@ -535,8 +621,8 @@ float4 UnderwaterPS(FullscreenOut i) : SV_Target0
         scene *= 1.0 + c * g_Water.caustics * sunUp * SunShadow(farPos, dist);
     }
 
-    // Absorption along the view ray and the light the water scatters back.
-    const float3 transmittance = exp(-dist / max(g_Water.clarity, 0.05) * float3(0.9, 0.32, 0.2));
+    // Absorption along the view ray (its own spectrum) and the light the water scatters back.
+    const float3 transmittance = exp(-dist / max(g_Water.clarity, 0.05) * max(g_Water.absorption, 0.02) * 0.4);
     const float3 inscatter = UnderwaterBodyColor(camDepth + max(-dir.y, 0.0) * min(dist, 30.0) * 0.5, shadow);
     float3 color = scene * transmittance + inscatter * (1.0 - transmittance);
 
@@ -552,8 +638,8 @@ float4 UnderwaterPS(FullscreenOut i) : SV_Target0
         shafts += Caustics(cp * 0.35, t * 0.6) * exp(-depthBelow / max(g_Water.clarity * 2.0, 0.1)) * exp(-d / max(g_Water.clarity * 1.5, 0.1));
     }
     const float towardsSun = 0.35 + 0.65 * pow(saturate(dot(dir, SunDirUnderwater())), 3.0);
-    color += g_Water.scatterColor * g_Water.sunRadiance / ATM_PI * (shafts / float(steps)) * reach * 0.02 * towardsSun * sunUp * shadow *
-             g_Water.caustics;
+    color += g_Water.scatterColor * g_Water.sunRadiance / ATM_PI * (shafts / float(steps)) * reach * 0.02 * towardsSun * sunUp *
+             shadow * g_Water.caustics * g_Water.scatter;
 
     // A thin dark meniscus where the waterline crosses the lens.
     color *= 1.0 - 0.6 * smoothstep(0.004, 0.0, abs(under));

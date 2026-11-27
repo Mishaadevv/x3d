@@ -13,6 +13,9 @@
 // facing tile edges link up like neighbor cells do (within a step, room for the agent). RebuildTiles rebuilds only the
 // tiles an area touches (moving obstacles, changed level geometry) and stitches them back in.
 // Obstacles: boxes that carve the floor under them (doors, crates) - passed to Build / RebuildTiles.
+// Off-mesh links: ways the mesh does not hold (a jump, a drop, a ladder) - endpoints snapped onto the polygons they
+// join, then used by the search like a portal that costs its length plus `cost`; the path marks where it crosses them
+// (FindPath's `jumps`), because the agent is moved over the gap there instead of walking.
 // Queries: FindPath = A* over the rectangles, then the funnel algorithm through the portals (the shortest path
 // that stays on the mesh); NearestPoint snaps a position onto the mesh.
 
@@ -63,28 +66,41 @@ struct Link
     Vec3 a, b;       // the portal (on the shared edge), in order along it
 };
 
+/// A way off the mesh: a jump, a ladder, a drop. The agent walks to `start`, crosses to `end` (the game moves it over
+/// the gap) and walks on. Points are world space; the build snaps them onto the mesh and fills in the polygons.
+struct OffMeshLink
+{
+    Vec3 start;
+    Vec3 end;
+    bool bidirectional = true; // both ways (a drop is usually one-way: down only)
+    f32 cost = 0.0f;           // extra meters of walking the crossing is worth (a slow ladder costs a few)
+    i32 startPoly = -1, endPoly = -1; // set by the build, -1 when the endpoint is not on the mesh
+};
+
 class NavMesh
 {
 public:
     /// Builds from world-space triangles (`indices` in triples), carving `obstacles` (world boxes). Replaces the previous
     /// mesh. Returns false if nothing walkable was found.
     bool Build(Span<const Vec3> vertices, Span<const u32> indices, const BuildSettings& settings, BuildStats* stats = nullptr,
-               Span<const AABB> obstacles = {});
+               Span<const AABB> obstacles = {}, Span<const OffMeshLink> links = {});
     /// The tiles `area` touches, with their borders: the geometry RebuildTiles needs (empty when nothing is built).
     AABB TileBuildBounds(const AABB& area) const;
     /// Rebuilds the tiles `area` touches from geometry covering TileBuildBounds(area) and stitches them back in. False
     /// when no tile was rebuilt (empty mesh, area outside the bounds).
     bool RebuildTiles(Span<const Vec3> vertices, Span<const u32> indices, const AABB& area, Span<const AABB> obstacles = {},
-                      BuildStats* stats = nullptr);
+                      BuildStats* stats = nullptr, Span<const OffMeshLink> links = {});
     void Clear();
     bool IsEmpty() const { return m_polys.Empty(); }
     u32 TileCount() const { return m_tilesX * m_tilesZ; }
 
     /// Polygon under / nearest to `p` within `searchDistance` (meters), -1 if none; `onMesh` gets the snapped point.
     i32 FindNearestPoly(Vec3 p, f32 searchDistance, Vec3* onMesh = nullptr) const;
-    /// Shortest path on the mesh (corners where it turns, start and end included). False if unreachable (the path
-    /// then leads as close as the mesh allows when `partial`).
-    bool FindPath(Vec3 start, Vec3 end, Array<Vec3>& path, bool* partial = nullptr) const;
+    /// Shortest path on the mesh (corners where it turns, start and end included), crossing off-mesh links where they
+    /// are the way through. False if unreachable (the path then leads as close as the mesh allows when `partial`).
+    /// `jumps` (one flag per path point) is 1 where the path leaves the mesh: the segment from the previous point to this
+    /// one is an off-mesh link, and the caller moves the agent across it instead of walking.
+    bool FindPath(Vec3 start, Vec3 end, Array<Vec3>& path, bool* partial = nullptr, Array<u8>* jumps = nullptr) const;
     /// Walks the mesh from `start` towards `end` (xz); true if the straight line stays on it. `hitT` gets the fraction
     /// of the way that was walkable.
     bool Raycast(Vec3 start, Vec3 end, f32* hitT = nullptr) const;
@@ -93,6 +109,7 @@ public:
 
     Span<const Poly> Polys() const { return m_polys.View(); }
     Span<const Link> Links() const { return m_links.View(); }
+    Span<const OffMeshLink> OffMeshLinks() const { return m_offLinks.View(); }
     const BuildSettings& Settings() const { return m_settings; }
 
     /// Binary form (saved next to scenes as .znav).
@@ -116,9 +133,11 @@ private:
     void BuildTile(u32 tx, u32 tz, Span<const Vec3> vertices, Span<const u32> indices, Span<const AABB> obstacles, BuildStats& stats);
     /// Cell ranges [x0, x1) x [z0, z1) of a tile's core and of its voxelized area (core + border, inside the bounds).
     void TileCells(u32 tx, u32 tz, i32& x0, i32& x1, i32& z0, i32& z1, bool withBorder) const;
-    /// All tiles into m_polys / m_links (offsets, stitches between neighbors), then the search grid.
+    /// All tiles into m_polys / m_links (offsets, stitches between neighbors), then the search grid and the off-mesh
+    /// link endpoints on the polygons they connect (their indices move when tiles are rebuilt).
     void Assemble();
     void BuildGrid();
+    void ResolveLinks();
     BuildSettings m_settings;
     i32 m_cellsX = 0, m_cellsZ = 0;          // cells over the bounds
     i32 m_tileCellsX = 0, m_tileCellsZ = 0;  // cells per tile side
@@ -133,6 +152,10 @@ private:
     u32 m_gridW = 0, m_gridH = 0;
     Array<u32> m_gridStart; // m_gridW * m_gridH + 1
     Array<u32> m_gridItems;
+    // Off-mesh links as authored (endpoints snapped by the build) and the polygons they leave, for the search.
+    Array<OffMeshLink> m_offLinks;
+    Array<u32> m_linkStart; // m_polys.Size() + 1
+    Array<u32> m_linkItems; // link index << 1 | crossed backwards
 };
 
 } // namespace zx::nav

@@ -175,8 +175,9 @@ bool Editor::Initialize()
         if (Result<rhi::Texture*> t = render::LoadTexture(*device, "/Engine/Branding/ZeqouX3D_Logo.png", brand))
             appLogo = t.Value();
         // Template thumbnails: real captures of each template level (Tools/make_template_thumbs.py).
-        static const char* const TemplateNames[] = {"Blank",   "Sample", "FirstPerson", "ThirdPerson", "Water", "Physics",
-                                                    "Vehicle", "Empty",  "Classic2017", "Classic2011", "Classic2008"};
+        static const char* const TemplateNames[] = {"Blank",   "Sample",     "FirstPerson", "ThirdPerson", "Water",
+                                                    "WaterPhysics", "Physics", "Vehicle", "Empty",  "Classic2017", "Classic2011",
+                                                    "Classic2008"};
         static_assert(ZX_ARRAY_COUNT(TemplateNames) == u32(ProjectTemplate::Count));
         render::TextureLoadOptions art;
         art.compression = render::TextureCompression::None;
@@ -359,6 +360,7 @@ bool Editor::Initialize()
                         : templateArg == "firstperson" ? ProjectTemplate::FirstPerson
                         : templateArg == "thirdperson" ? ProjectTemplate::ThirdPerson
                         : templateArg == "water"       ? ProjectTemplate::Water
+                        : templateArg == "waterphysics" || templateArg == "water-physics" ? ProjectTemplate::WaterPhysics
                         : templateArg == "physics"     ? ProjectTemplate::Physics
                         : templateArg == "vehicle"     ? ProjectTemplate::Vehicle
                         : templateArg == "empty"       ? ProjectTemplate::Empty
@@ -482,7 +484,8 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
     if (options.starterContent || (options.templ != ProjectTemplate::Blank && options.templ != ProjectTemplate::Empty))
         ZX_LOG_INFO(LogEditor, "Starter Content: {} files", WriteStarterContent(created->contentDir));
     const bool characterTemplate = options.templ == ProjectTemplate::FirstPerson || options.templ == ProjectTemplate::ThirdPerson ||
-                                   options.templ == ProjectTemplate::Water || options.templ == ProjectTemplate::Physics;
+                                   options.templ == ProjectTemplate::Water || options.templ == ProjectTemplate::Physics ||
+                                   options.templ == ProjectTemplate::WaterPhysics;
     if (characterTemplate)
         WriteGameplayScripts(created->contentDir);
     for (const String& pack : options.assetPacks)
@@ -565,6 +568,8 @@ bool Editor::CreateAndOpenProject(StringView parentDirectory, StringView name, c
     } else {
         if (options.templ == ProjectTemplate::Water)
             BuildWaterLevel();
+        else if (options.templ == ProjectTemplate::WaterPhysics)
+            BuildWaterPhysicsLevel();
         else if (options.templ == ProjectTemplate::Physics)
             BuildPhysicsLevel();
         else if (options.templ == ProjectTemplate::Vehicle)
@@ -1659,6 +1664,186 @@ void Editor::BuildWaterLevel()
     camera.LookAt(Vec3(-2.0f, 1.5f, 2.0f));
 }
 
+void Editor::BuildWaterPhysicsLevel()
+{
+    // A harbor basin: a concrete quay around a pool of real water, with buoyancy set up on everything that floats -
+    // crates, barrels, planks, a buoy and a small boat - a steel ball that sinks, and a ramp to shove it all in with.
+    // Play (F5) and push things off the deck: they splash, rock, drift with the current and calm down again.
+    auto material = [&](StringView name) {
+        const String path = String::Format("{}/StarterContent/Materials/{}.zmat", contentRoot, name);
+        if (!platform::FileExists(path) || !materials)
+            return Guid();
+        const MaterialLibrary::Material* m = materials->FindByPath(path);
+        return m ? m->guid : materials->LoadFile(path);
+    };
+    auto shape = [&](StringView label, BuiltinShape sh, Vec3 center, Vec3 size, StringView mat, Quat rotation = {}, ecs::Entity parent = {}) {
+        Transform t(center, rotation);
+        t.scale = size;
+        const ecs::Entity e = CreateEntity(label, t, parent);
+        MeshRenderer mr;
+        mr.mesh = builtin::Mesh(sh);
+        if (const Guid g = material(mat); g.IsValid())
+            mr.materials.PushBack(g);
+        world.Add(e, mr);
+        EnsureEntityGuid(world, e);
+        return e;
+    };
+    auto block = [&](StringView label, Vec3 min, Vec3 max, StringView mat) {
+        return shape(label, BuiltinShape::Cube, (min + max) * 0.5f, max - min, mat);
+    };
+    // Quay: the walkable concrete rim around a 36 m basin, 5 m deep, its top at y = 1.2.
+    const f32 deckTop = 1.2f, basin = 13.0f, floorY = -5.0f, rim = 2.0f;
+    block("Quay North", Vec3(-basin - rim, floorY, -basin - rim), Vec3(basin + rim, deckTop, -basin), "M_Proto_Grey");
+    block("Quay South", Vec3(-basin - rim, floorY, basin), Vec3(basin + rim, deckTop, basin + rim), "M_Proto_Grey");
+    block("Quay West", Vec3(-basin - rim, floorY, -basin), Vec3(-basin, deckTop, basin), "M_Proto_Grey");
+    block("Quay East", Vec3(basin, floorY, -basin), Vec3(basin + rim, deckTop, basin), "M_Proto_Grey");
+    block("Basin Floor", Vec3(-basin, floorY - 1.0f, -basin), Vec3(basin, floorY, basin), "M_Proto_Light");
+    block("Basin Ledge", Vec3(-basin, floorY - 1.0f, -basin), Vec3(basin, floorY + 0.6f, -basin + 2.0f), "M_Proto_Light");
+    // The yard around the harbor, so the basin is not a slab floating in the sky: concrete up to 45 m, grass beyond.
+    const f32 yard = 70.0f, paving = 45.0f, outer = basin + rim;
+    const struct
+    {
+        const char* name;
+        Vec3 min, max;
+        const char* material;
+    } ground[] = {
+        {"Yard North", Vec3(-paving, 0.0f, -paving), Vec3(paving, deckTop, -outer), "M_Proto_Light"},
+        {"Yard South", Vec3(-paving, 0.0f, outer), Vec3(paving, deckTop, paving), "M_Proto_Light"},
+        {"Yard West", Vec3(-paving, 0.0f, -outer), Vec3(-outer, deckTop, outer), "M_Proto_Light"},
+        {"Yard East", Vec3(outer, 0.0f, -outer), Vec3(paving, deckTop, outer), "M_Proto_Light"},
+        {"Meadow North", Vec3(-yard, 0.0f, -yard), Vec3(yard, deckTop, -paving), "M_Grass"},
+        {"Meadow South", Vec3(-yard, 0.0f, paving), Vec3(yard, deckTop, yard), "M_Grass"},
+        {"Meadow West", Vec3(-yard, 0.0f, -paving), Vec3(-paving, deckTop, paving), "M_Grass"},
+        {"Meadow East", Vec3(paving, 0.0f, -paving), Vec3(yard, deckTop, paving), "M_Grass"},
+    };
+    for (const auto& g : ground)
+        block(g.name, g.min, g.max, g.material);
+    // Bollards along the quay and two containers on the yard: scale references for the water.
+    for (u32 i = 0; i < 7; ++i)
+        shape(String::Format("Bollard {}", i + 1), BuiltinShape::Cylinder, Vec3(-12.0f + f32(i) * 4.0f, deckTop + 0.3f, -outer + 0.6f),
+              Vec3(0.34f, 0.6f, 0.34f), "M_Metal_Steel");
+    block("Container 1", Vec3(-34.0f, deckTop, -40.0f), Vec3(-28.0f, deckTop + 2.6f, -37.0f), "M_Plastic_White");
+    block("Container 2", Vec3(-33.0f, deckTop, -36.5f), Vec3(-27.0f, deckTop + 2.6f, -33.5f), "M_Metal_Copper");
+    // A slipway from the quay down into the water, for rolling things in.
+    shape("Ramp", BuiltinShape::Cube, Vec3(-8.0f, 0.02f, -8.5f), Vec3(4.0f, 0.3f, 10.5f), "M_Proto_Grey",
+          Quat::FromAxisAngle(Vec3(1.0f, 0.0f, 0.0f), DegToRad(13.0f)));
+    // A diving platform over the water: two posts and a wooden deck 4.4 m up.
+    for (f32 x : {-6.0f, 6.0f})
+        shape(String::Format("Platform Post {}", x < 0.0f ? 1 : 2), BuiltinShape::Cylinder, Vec3(x, floorY + 2.4f, -10.0f), Vec3(0.4f, 9.6f, 0.4f), "M_Wood");
+    shape("Platform", BuiltinShape::Cube, Vec3(0.0f, 4.4f, -10.0f), Vec3(13.0f, 0.25f, 3.0f), "M_Wood");
+    // Everything that floats: density decides how high (wood ~500, a sealed barrel ~300, steel sinks).
+    struct FloaterDesc
+    {
+        const char* name;
+        BuiltinShape shape;
+        Vec3 at, size, euler;
+        const char* material;
+        f32 density;
+    };
+    const FloaterDesc floaters[] = {
+        {"Crate 1", BuiltinShape::Cube, Vec3(-7.0f, 0.3f, 2.0f), Vec3(1.0f), Vec3(0, 12, 0), "M_Wood", 280.0f},
+        {"Crate 2", BuiltinShape::Cube, Vec3(-3.5f, 0.3f, 5.0f), Vec3(1.2f), Vec3(0, 47, 0), "M_Wood", 420.0f},
+        {"Crate 3", BuiltinShape::Cube, Vec3(2.0f, 0.3f, 1.5f), Vec3(0.8f), Vec3(8, 70, 3), "M_Wood", 620.0f},
+        {"Crate 4", BuiltinShape::Cube, Vec3(8.5f, 0.3f, 6.5f), Vec3(1.4f), Vec3(0, 25, 0), "M_Plastic_White", 240.0f},
+        {"Barrel 1", BuiltinShape::Cylinder, Vec3(5.0f, 0.2f, -3.0f), Vec3(0.8f, 1.1f, 0.8f), Vec3(90, 0, 20), "M_Wood", 320.0f},
+        {"Barrel 2", BuiltinShape::Cylinder, Vec3(-9.5f, 0.2f, -6.0f), Vec3(0.8f, 1.1f, 0.8f), Vec3(90, 40, 0), "M_Plastic_White", 520.0f},
+        {"Barrel 3", BuiltinShape::Cylinder, Vec3(1.0f, 0.2f, 9.0f), Vec3(0.9f, 1.2f, 0.9f), Vec3(90, 75, 0), "M_Wood", 700.0f},
+        {"Plank 1", BuiltinShape::Cube, Vec3(-1.0f, 0.1f, -4.0f), Vec3(3.2f, 0.12f, 0.6f), Vec3(0, 15, 0), "M_Wood", 540.0f},
+        {"Plank 2", BuiltinShape::Cube, Vec3(6.0f, 0.1f, 10.0f), Vec3(2.6f, 0.12f, 0.6f), Vec3(0, -35, 0), "M_Wood", 560.0f},
+        {"Buoy", BuiltinShape::Cylinder, Vec3(11.0f, 0.1f, -8.0f), Vec3(0.7f, 1.4f, 0.7f), Vec3(0, 0, 0), "M_Plastic_White", 120.0f},
+        {"Ice Block", BuiltinShape::Cube, Vec3(-11.0f, 0.3f, 9.0f), Vec3(1.3f, 1.0f, 1.3f), Vec3(0, 33, 0), "M_Plastic_White", 900.0f},
+    };
+    for (const FloaterDesc& f : floaters) {
+        const ecs::Entity e = shape(f.name, f.shape, f.at, f.size, f.material, Quat::FromEulerDegrees(f.euler));
+        RigidBody rb;
+        rb.angularDamping = 0.6f;
+        world.Add(e, rb);
+        if (f.shape == BuiltinShape::Cylinder)
+            world.Add(e, CylinderCollider{});
+        else
+            world.Add(e, BoxCollider{});
+        Buoyancy b;
+        b.density = f.density;
+        world.Add(e, b);
+    }
+    // A steel ball on the deck: heavier than water, so pushed in it sinks and rolls along the bottom (no Buoyancy).
+    {
+        const ecs::Entity ball = shape("Steel Ball", BuiltinShape::Sphere, Vec3(-6.0f, deckTop + 0.5f, -19.0f), Vec3(0.9f), "M_Metal_Steel");
+        RigidBody rb;
+        rb.mass = 160.0f;
+        rb.linearDamping = 0.05f;
+        world.Add(ball, rb);
+        world.Add(ball, SphereCollider{});
+    }
+    // Crates waiting on the deck to be pushed in (they start above the rim).
+    for (u32 i = 0; i < 3; ++i) {
+        const Vec3 at(-12.0f + f32(i) * 1.25f, deckTop + 0.55f + f32(i % 2) * 1.1f, -23.0f);
+        const ecs::Entity e = shape(String::Format("Deck Crate {}", i + 1), BuiltinShape::Cube, at, Vec3(1.0f), "M_Wood",
+                                    Quat::FromEulerDegrees(Vec3(0, f32(i) * 22.0f, 0)));
+        RigidBody rb;
+        world.Add(e, rb);
+        world.Add(e, BoxCollider{});
+        Buoyancy b;
+        b.density = 350.0f;
+        world.Add(e, b);
+    }
+    // The boat: a hollow hull that floats high and rocks with every wave.
+    {
+        const ecs::Entity boat = CreateEntity("Boat", Transform(Vec3(-2.0f, 0.15f, 11.0f), Quat::FromAxisAngle(Vec3(0, 1, 0), DegToRad(-14.0f))));
+        EnsureEntityGuid(world, boat);
+        for (const ecs::Entity part : {shape("Hull", BuiltinShape::Sphere, Vec3(0, 0, 0), Vec3(2.0f, 1.0f, 5.6f), "M_Plastic_White", {}, boat),
+                                       shape("Deck", BuiltinShape::Cube, Vec3(0, 0.42f, 0), Vec3(1.5f, 0.07f, 3.9f), "M_Wood", {}, boat),
+                                       shape("Bench", BuiltinShape::Cube, Vec3(0, 0.66f, -0.7f), Vec3(1.4f, 0.08f, 0.45f), "M_Wood", {}, boat)})
+            world.Get<MeshRenderer>(part)->collision = false; // one box collider stands for the whole boat
+        RigidBody rb;
+        rb.mass = 200.0f;
+        world.Add(boat, rb);
+        world.Add(boat, BoxCollider{Vec3(0, 0.05f, 0), Vec3(1.8f, 0.8f, 4.8f)});
+        Buoyancy b;
+        b.density = 230.0f;
+        world.Add(boat, b);
+    }
+    // The water: a calm basin (short fetch = small waves) with a slow current drifting the foam.
+    const ecs::Entity waterBody = CreateEntity("Water", Transform(Vec3(0, 0, 0)));
+    Water w;
+    ApplyWaterPreset(w, WaterPreset::Pool);
+    w.size = Vec2(basin * 2.0f + 1.0f, basin * 2.0f + 1.0f); // a little wider than the basin: no seam at the walls
+    w.windSpeed = 7.0f;
+    w.fetch = 0.5f; // a harbor: short, choppy waves rather than ocean swell
+    w.waveAmount = 1.2f;
+    w.foam = 0.5f;
+    w.currentSpeed = 0.25f;
+    w.currentDirection = 20.0f;
+    world.Add(waterBody, w);
+    EnsureEntityGuid(world, waterBody);
+    {
+        AudioSource waves;
+        waves.clip = "StarterContent/Sounds/Waves_Loop.ogg";
+        waves.volume = 0.45f;
+        waves.spatial = false;
+        waves.bus = audio::Bus::Music;
+        world.Add(waterBody, waves);
+        const ecs::Entity probe = CreateEntity("Basin Reflections", Transform(Vec3(0, 3.0f, 0)));
+        ReflectionProbe rp;
+        rp.extent = Vec3(basin, 8.0f, basin);
+        rp.blendDistance = 1.5f;
+        world.Add(probe, rp);
+        EnsureEntityGuid(world, probe);
+    }
+    // Player on the deck, looking out over the basin.
+    const ecs::Entity player = CreateEntity("Player", Transform(Vec3(0, deckTop + 0.9f, -24.0f)));
+    world.Add(player, CharacterController{});
+    world.Add(player, Script{String("Scripts/FirstPersonController.zs"), String()});
+    EnsureEntityGuid(world, player);
+    const ecs::Entity cam = CreateEntity("Camera", Transform(Vec3(0, 1.65f, 0)), player);
+    world.Add(cam, Camera{});
+    EnsureEntityGuid(world, cam);
+    environment.sunElevation = DegToRad(52.0f);
+    environment.sunAzimuth = DegToRad(-30.0f);
+    AddAtmosphere(0.0016f, 0.25f);
+    camera.position = Vec3(15.0f, 6.5f, -22.0f);
+    camera.LookAt(Vec3(0.0f, 0.3f, 0.0f));
+}
 void Editor::BuildStarterShowcase(bool withPrefabs)
 {
     if (withPrefabs) {
@@ -1953,6 +2138,18 @@ void Editor::DrawNavigationDebug()
             const Vec3 c = scene::ComputeWorldMatrix(world, selected).GetTranslation();
             debugDraw->Box(AABB::FromCenterExtents(c, b->size * 0.5f), Mat4::Identity(), Color(90, 200, 255));
         }
+    // Off-mesh links (jumps, ladders): the selected one always, all of them with Show > Navigation.
+    world.Query<const NavMeshLink>().Each([&](ecs::Entity e, const NavMeshLink& l) {
+        if (!showNavigation && e != selected)
+            return;
+        const Mat4 world4 = scene::ComputeWorldMatrix(world, e);
+        Vec3 a, b;
+        NavLinkWorld(l, world4, a, b);
+        const Color c = l.bidirectional ? Color(240, 90, 220) : Color(240, 160, 60);
+        debugDraw->Line(a, b, c);
+        debugDraw->Sphere(a, 0.1f, c, 8);
+        debugDraw->Sphere(b, 0.1f, c, 8);
+    });
     // Obstacles: the selected one always, all of them with Show > Navigation (orange; grey when off).
     world.Query<const NavMeshObstacle>().Each([&](ecs::Entity e, const NavMeshObstacle& o) {
         if (!showNavigation && e != selected)
@@ -1977,9 +2174,12 @@ void Editor::DrawNavigationDebug()
         if (!a.hasDestination)
             return;
         for (usize i = a.corner; i < a.path.Size(); ++i) {
+            // A segment that is an off-mesh link is drawn magenta: the agent is moved over the gap there.
+            const bool jump = i < a.pathJumps.Size() && a.pathJumps[i] != 0;
+            const Color c = jump ? Color(240, 90, 220) : Color(255, 220, 60);
             if (i > 0)
-                debugDraw->Line(a.path[i - 1] + lift * 2.0f, a.path[i] + lift * 2.0f, Color(255, 220, 60));
-            debugDraw->Sphere(a.path[i] + lift * 2.0f, 0.08f, Color(255, 220, 60), 8);
+                debugDraw->Line(a.path[i - 1] + lift * 2.0f, a.path[i] + lift * 2.0f, c);
+            debugDraw->Sphere(a.path[i] + lift * 2.0f, 0.08f, c, 8);
         }
     });
 }
@@ -2004,8 +2204,8 @@ bool Editor::BuildNavigation()
     navigationFor = path;
     platform::CreateDirectoryTree(Path::Parent(path));
     const bool saved = navigation.Save(path);
-    ZX_LOG_INFO(LogEditor, "Navigation built: {} volume(s), {} polygons from {} triangles in {:.0f} ms{}", r.volumes, r.polys, r.triangles,
-                r.milliseconds, saved ? String::Format(" -> {}", Path::FileName(path)).View() : StringView(" (not saved)"));
+    ZX_LOG_INFO(LogEditor, "Navigation built: {} volume(s), {} polygons from {} triangles in {:.0f} ms{}, {} off-mesh link(s)", r.volumes, r.polys,
+                r.triangles, r.milliseconds, saved ? String::Format(" -> {}", Path::FileName(path)).View() : StringView(" (not saved)"), r.links);
     return true;
 }
 
@@ -2046,6 +2246,16 @@ void Editor::CreateNavObstacle(Vec3 position)
     const ecs::Entity e = CreateEntity("Nav Mesh Obstacle", Transform(GroundBelow(*this, position) + Vec3(0.0f, NavMeshObstacle{}.size.y * 0.5f, 0.0f)));
     world.Add(e, NavMeshObstacle{});
     CommitCreated(e, "Create Nav Mesh Obstacle");
+    Select(e);
+}
+
+void Editor::CreateNavLink(Vec3 position)
+{
+    // A jump over a gap: 4 m forward, same height (drag the end in Details onto the far ledge).
+    NavMeshLink link;
+    const ecs::Entity e = CreateEntity("Nav Mesh Link", Transform(GroundBelow(*this, position)));
+    world.Add(e, link);
+    CommitCreated(e, "Create Nav Mesh Link");
     Select(e);
 }
 
@@ -2414,6 +2624,11 @@ void Editor::CreateTerrain(bool flat)
     });
     t.flatCenter = Clamp(radius + 4.0f, t.flatCenter, 120.0f);
     t.size = Max(t.size, t.flatCenter * 5.0f);
+    // A hand-placed terrain gets a natural look: bent (non-lattice) ridges and a rim that eases down to the ground
+    // level of the middle, so the plate does not end in a square wall. Open-world tiles keep the hard edge (they
+    // continue each other).
+    t.shapeWarp = 0.5f;
+    t.edge = Max(8.0f, t.size * 0.08f);
     if (flat)
         t.hills = false; // a blank sheet for the Terrain tool
     // The terrain material (painting needs it): written into projects without Starter Content.
@@ -4513,7 +4728,12 @@ bool Editor::Frame()
         StringView v;
         return CommandLine::GetValue("uiscale", v) ? Clamp(f32(ParseDouble(v).ValueOr(1.0)), 0.5f, 3.0f) : 1.0f;
     }();
-    fi.dpiScale = window->GetDpiScale() * s_uiScale * Clamp(prefs.uiScale, 0.5f, 3.0f);
+    // Auto UI scale: a window smaller than 1280x720 shrinks the whole interface (down to 70 %) so the panels keep fitting,
+    // instead of every window hanging off the screen edges.
+    const f32 fitScale = prefs.autoUIScale
+                             ? Clamp(Min(f32(client.x) / 1280.0f, f32(client.y) / 720.0f), 0.7f, 1.0f)
+                             : 1.0f;
+    fi.dpiScale = window->GetDpiScale() * s_uiScale * Clamp(prefs.uiScale, 0.5f, 3.0f) * fitScale;
     fi.input = flying ? nullptr : &input;
     fi.events = m_events.View();
     fi.hasFocus = window->IsFocused() || m_autotestFrames > 0;

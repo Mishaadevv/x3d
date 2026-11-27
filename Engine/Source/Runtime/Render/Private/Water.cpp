@@ -64,6 +64,21 @@ struct WaterParams
     f32 uvOffset;
     f32 surfaceY;
     f32 waveBound;
+    // Reactions: the world the water answers to (filled once per pass) and the per-surface response.
+    Vec3 absorption;
+    f32 turbidity;
+    f32 skyReflection;
+    f32 sunGlitter;
+    f32 scatter;
+    f32 bioluminescence;
+    f32 rain;
+    f32 gust;
+    f32 ambientFloor;
+    f32 currentSpeed;
+    Vec2 currentDir;
+    Vec2 cloudShadowOrigin;
+    u32 cloudShadow;
+    f32 cloudShadowInvExtent;
 };
 
 namespace {
@@ -257,6 +272,16 @@ void WaterRenderer::FillSurface(WaterParams& p, const WaterSurface& s, const Sim
     p.edgeFade = Min(3.0f, Min(p.size.x, p.size.y) * 0.1f);
     p.uvOffset = 0.5f / f32(m_n);
     p.surfaceY = s.world.GetTranslation().y;
+    p.absorption = s.absorption;
+    p.turbidity = Max(s.turbidity, 0.05f);
+    p.skyReflection = Max(s.skyReflection, 0.0f);
+    p.sunGlitter = Max(s.sunGlitter, 0.0f);
+    p.scatter = Max(s.scatter, 0.0f);
+    p.bioluminescence = Max(s.bioluminescence, 0.0f);
+    p.rain = Clamp(s.rain, 0.0f, 1.0f);
+    p.gust = Clamp(s.gust, 0.0f, 1.0f);
+    p.currentSpeed = Max(s.currentSpeed, 0.0f);
+    p.currentDir = Vec2(Sin(s.currentDirection), Cos(s.currentDirection));
     // Waves rarely rise above ~1/7 of the peak wavelength (they break); the swell cascade is 3.5 peak wavelengths.
     p.waveBound = p.amplitude * sim.patchSize[0] / 3.5f / 7.0f * 1.5f + 0.3f;
 }
@@ -428,6 +453,11 @@ void WaterRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
     base.skyCube = lighting.skyCube;
     base.skyCubeMips = lighting.skyCubeMips;
     base.reflectionExposure = lighting.reflectionExposure;
+    // The world above: cloud shadows dim the sun on the surface and in the water, the night ambient lifts it.
+    base.cloudShadow = lighting.cloudShadow;
+    base.cloudShadowOrigin = lighting.cloudShadowOrigin;
+    base.cloudShadowInvExtent = 1.0f / Max(lighting.cloudShadowExtent, 0.001f);
+    base.ambientFloor = lighting.ambientFloor;
     base.cascadeCount = Cascades;
     for (u32 c = 0; c < 4; ++c)
         base.shadowMaps[c] = InvalidDescriptor;

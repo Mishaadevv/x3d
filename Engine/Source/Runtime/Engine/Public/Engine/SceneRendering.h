@@ -93,6 +93,9 @@ enum class WaterPreset : u8
     Pool,
     Storm,
     Tropical,
+    River,
+    Swamp,
+    Arctic,
 };
 ZX_DECLARE_ENUM(WaterPreset);
 
@@ -120,6 +123,18 @@ struct Water
     f32 shoreFoam = 0.8f;   // meters
     f32 caustics = 1.0f;    // light patterns on what lies below
     bool reflections = true; // the scene reflects in the water (screen space), else only the sky
+    // Reactions: what the water does with the world around it. The sky, the sun and the moon (time of day), the cloud
+    // shadows and the wind are fed in from the scene, so the water follows them on its own; these scale the response.
+    Vec3 absorption = Vec3(2.4f, 0.9f, 0.55f); // how fast red, green and blue die with depth (per clarity)
+    f32 turbidity = 1.0f;      // 0.2 = crystal clear, 1 = normal, 3+ = muddy: light scatters and the body color wins
+    f32 skyReflection = 1.0f;  // how much of the sky (and its sunset / stars) mirrors in the surface
+    f32 sunGlitter = 1.0f;     // strength of the sun / moon glints
+    f32 scatter = 1.0f;        // light shining through the crests (when looking towards the sun)
+    f32 bioluminescence = 0.0f; // glowing plankton in the foam and crests, mostly at night
+    f32 rain = 0.0f;           // 0..1 rain on the surface: ripple rings, churned foam, blurred reflections
+    f32 currentSpeed = 0.0f;   // m/s the foam and ripples drift (a river)
+    f32 currentDirection = 0.0f; // degrees around +Y, 0 = towards +Z
+    f32 gust = 0.5f;           // slow breathing of the sea state (visual only, buoyancy stays with the steady wind)
     WaterPreset appliedPreset = WaterPreset::Custom; // the preset last applied (changing Preset applies the new one)
 };
 ZX_DECLARE_TYPE(Water);

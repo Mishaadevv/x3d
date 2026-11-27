@@ -51,6 +51,17 @@ struct WaterSurface
     f32 roughness = 0.05f; // sun glint sharpness
     f32 caustics = 1.0f;   // light patterns on what lies below
     bool reflections = true; // screen-space reflections of the scene (else only the sky)
+    // Reactions to the world (sky, time of day, clouds and wind are fed in by the renderer, these scale the response).
+    Vec3 absorption = Vec3(2.4f, 0.9f, 0.55f); // per-channel extinction per clarity distance
+    f32 turbidity = 1.0f;       // how much the body color hides what lies below
+    f32 skyReflection = 1.0f;   // sky / sunset / stars mirroring in the surface
+    f32 sunGlitter = 1.0f;      // sun and moon glints
+    f32 scatter = 1.0f;         // light through the crests
+    f32 bioluminescence = 0.0f; // glowing plankton, mostly at night
+    f32 rain = 0.0f;            // 0..1 rain: ripple rings, churned foam, blurred reflections
+    f32 currentSpeed = 0.0f;    // m/s the foam and ripples drift at
+    f32 currentDirection = 0.0f; // radians around +Y (0 = towards +Z)
+    f32 gust = 0.5f;            // slow visual breathing of the sea state
 };
 
 class WaterRenderer

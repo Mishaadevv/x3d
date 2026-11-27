@@ -37,6 +37,7 @@ ZX_REFLECT_ENUM_END()
 
 ZX_REFLECT_STRUCT_BEGIN(EditorSettings)
     ZX_FIELD(uiScale, Meta::Category("Editor"), Meta::DisplayName("UI Scale"), Meta::Range(0.5, 3), Meta::Tooltip("Size of the editor interface (x the Windows display scale)"))
+    ZX_FIELD(autoUIScale, Meta::DisplayName("Auto UI Scale"), Meta::Tooltip("Shrink the interface so every panel fits when the window is smaller than 1280x720"))
     ZX_FIELD(uiSounds, Meta::DisplayName("UI Sounds"), Meta::Tooltip("Feedback sounds: Play / Stop, builds, packaging"))
     ZX_FIELD(autosaveMinutes, Meta::Range(0, 60), Meta::Tooltip("Save the open scene every N minutes (0 = off)"))
     ZX_FIELD(cameraSpeed, Meta::Category("Viewport"), Meta::Range(0.1, 500), Meta::Units("m/s"), Meta::Tooltip("Fly speed (the mouse wheel changes it while flying)"))

@@ -2,6 +2,24 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.18.0 — open worlds closed, natural terrain, water as part of the world, the Water Physics template (2026-12-02)
+- **AI: jumps and drops off the navmesh** (ADR-118). The new Nav Mesh Link component sets a pair of points in the entity's local space (bidirectional, with a cost); link ends snap to the nearest polygons when the mesh is built, so a link survives tile rebuilds. Path search walks a link as an ordinary edge (cost = walk to the start + the hop), the corridor is split at links and the hop is reported outwards as a flag, so the funnel never crosses it. The agent walks to the start, is moved along an arc (up) or a straight line (down) with its velocity zeroed, and carries on. Console `create navlink`; links show in Show > Navigation (a jump in the path is magenta) and in `nav.stats`
+- **M18 acceptance**: a 4×4 km OpenWorld sample (`world.create 4 256`) — 256 cells of 256 m, 36 loaded, 16 as HLOD groups; a 25 s flight at 60 m/s: world update 4.16 ms average, 30.1 ms max, **0 frames over 50 ms** (31 frames over 16 ms), 0 debug-layer errors
+- **The terrain no longer reads as an AI square** (ADR-119). Two causes: the plate ended in a straight wall, and the noise sat on a lattice
+  - `Terrain::shapeWarp` (0.35 by default) warps the domain before the octaves; it is evaluated in world space, so open-world tiles still match across their seams
+  - `Terrain::edge` (meters) is the natural rim: the last edge meters of hills sink towards the average level (edge × 0.15 m lower), and the plate's outline is a squircle bent by noise (`TerrainFootprintDistance`). The mesh is cut per triangle by their centroid, so the outline is not stepped and has no overhangs; chunk skirts are skipped when an edge leaves the footprint
+  - `Create Terrain` sets `shapeWarp = 0.5` and `edge = max(8 m, 8 % of the size)`; open-world tiles (edge = 0) keep the square and continue their neighbors. Physics stays a full square: you can stand on invisible ground under the rim
+  - Test Terrain.NaturalHillsAndRimDoNotReadAsASquare
+- **Water reacts to everything around it** (ADR-120, following 0.13.7–0.13.9)
+  - Sky: the reflection's color and brightness come from the scene's sky and clouds, the clouds shade the water, at night the water darkens with `ambientFloor`, the moon's path and the horizon glow show up, and the time of day changes how deep the color is
+  - Own parameters instead of a single color: `absorption`, `turbidity`, `scatter` (glow inside the volume), `sunGlitter`, `skyReflection`, `bioluminescence` (night glow on the crests), `rain` (drop rings), `gust` (gusts), `currentSpeed`/`currentDirection` (drift)
+  - New River, Swamp and Arctic presets (next to Pool, Lake, Ocean, Storm); console `water.preset <name>` to look at them in the editor
+- **New Water Physics template** (the 12th starter-kit template): a harbor with a 26 m basin — a quay with bollards, a slipway to launch the boat, containers, a deck, a meadow around. 14 floating props of different densities (crates, barrels, a plank, a buoy, ice) that ride the waves, splash when they enter the water and drift with the current, a boat, a steel ball (it sinks) and crates on the deck. First-person player, reflections in the water. The harbor waves are short and choppy (`fetch 0.5`, `windSpeed 7`)
+- **Checked**:
+  - 514 tests in Debug and Development
+  - The Water Physics template is built and captured (`Engine/Content/Templates/WaterPhysics.png` for the project browser), 0 debug-layer errors
+  - Terrain: screenshots from above and at ground level — the outline is organic, no holes and no dangling skirts; test Terrain.NaturalHillsAndRimDoNotReadAsASquare
+
 ## 0.17.23 — contact shadows 3x cheaper, lightmaps without grain (2026-11-17)
 - **Half-resolution contact shadows**: with TAA on, one pixel of each 2×2 block is traced, a different one every frame, and TAA resolves full resolution. Without TAA and in reflection captures the pass runs at full resolution (`ContactShadowSettings::halfResolution`, `ViewData::contactShift`). The pass constants moved from push constants to the pass constant buffer (b1).
 - **Pixels in the cascades' shadow are skipped**: the point is tested against the cascades (2×2 comparison), and if it is already in the sun's shadow the march does not run. Turn it off with `r.ContactShadows.SkipShadowed 0`; it is not used with VSM.

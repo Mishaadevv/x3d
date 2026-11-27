@@ -183,6 +183,31 @@ ZX_TEST(NavMesh, SerializeRoundTrip)
 
 namespace {
 
+/// Two floors with a gap between them (x in [-17, -3] and [3, 17]); with `walkway` a strip over the gap at z in [6, 10]
+/// joins them the long way round.
+void TwoFloorsApart(Soup& soup, bool walkway)
+{
+    soup.Floor(-17, -10, -3, 10, 0);
+    soup.Floor(3, -10, 17, 10, 0);
+    if (walkway)
+        soup.Floor(-3, 6, 3, 10, 0);
+}
+
+bool BuildWithLinks(NavMesh& nav, const Soup& soup, Span<const OffMeshLink> links)
+{
+    BuildSettings s;
+    s.bounds = AABB(Vec3(-20, -1, -12), Vec3(20, 4, 12));
+    return nav.Build(soup.v.View(), soup.i.View(), s, nullptr, {}, links);
+}
+
+u32 JumpCount(const Array<u8>& jumps)
+{
+    u32 n = 0;
+    for (u8 j : jumps)
+        n += j != 0 ? 1 : 0;
+    return n;
+}
+
 f32 MeshArea(const NavMesh& nav)
 {
     f32 area = 0.0f;
@@ -287,3 +312,108 @@ ZX_TEST(NavMesh, ObstaclesCarveAndRebuildOnlyTheirTiles)
     // Outside the bounds: nothing to rebuild.
     ZX_EXPECT(!nav.RebuildTiles(soup.v.View(), soup.i.View(), AABB(Vec3(100, 0, 100), Vec3(101, 1, 101))));
 }
+
+ZX_TEST(NavMesh, OffMeshLinkJoinsFloorsTheAgentCannotWalkBetween)
+{
+    Soup soup;
+    TwoFloorsApart(soup, false);
+    // Without the link the gap is a wall: the path stops at its side.
+    NavMesh nav;
+    ZX_REQUIRE(BuildWithLinks(nav, soup, {}));
+    Array<Vec3> path;
+    Array<u8> jumps;
+    bool partial = false;
+    ZX_EXPECT(!nav.FindPath(Vec3(-10, 0, 0), Vec3(10, 0, 0), path, &partial, &jumps));
+    ZX_EXPECT(partial);
+
+    // A jump across the gap (the endpoints are in the air here: the build snaps them onto the mesh).
+    OffMeshLink link;
+    link.start = Vec3(-3.5f, 0.0f, 0.0f);
+    link.end = Vec3(3.5f, 0.0f, 0.0f);
+    const OffMeshLink links[1] = {link};
+    ZX_REQUIRE(BuildWithLinks(nav, soup, Span<const OffMeshLink>(links, 1)));
+    ZX_EXPECT_EQ(nav.OffMeshLinks().Size(), 1u);
+    if (nav.OffMeshLinks().Empty())
+        return;
+    const OffMeshLink& built = nav.OffMeshLinks()[0];
+    ZX_EXPECT(built.startPoly >= 0 && built.endPoly >= 0);
+    ZX_EXPECT(built.start.x < -3.1f && built.start.x > -3.8f); // on the mesh, inside its rim (the agent radius in)
+    ZX_EXPECT(built.end.x > 3.1f && built.end.x < 3.8f);
+
+    // Straight across: on foot to where it begins, over the gap, then on foot again.
+    ZX_REQUIRE(nav.FindPath(Vec3(-10, 0, 0), Vec3(10, 0, 0), path, &partial, &jumps));
+    ZX_EXPECT(!partial);
+    ZX_EXPECT_EQ(path.Size(), jumps.Size());
+    ZX_EXPECT_EQ(JumpCount(jumps), 1u);
+    if (JumpCount(jumps) != 1)
+        return;
+    usize jump = 0;
+    while (jump < jumps.Size() && !jumps[jump])
+        ++jump;
+    ZX_REQUIRE(jump > 0);
+    ZX_REQUIRE(jump + 1 < path.Size());
+    ZX_EXPECT_NEAR(path[jump - 1].x, built.start.x, 0.05f);
+    ZX_EXPECT_NEAR(path[jump].x, built.end.x, 0.05f);
+    ZX_EXPECT_NEAR(path[jump - 1].z, 0.0f, 0.05f);
+    ZX_EXPECT(PathLength(path) < 21.5f); // 20 m plus the walk to the rim
+
+    // The binary form keeps the link (its endpoints come back on the mesh).
+    Array<u8> bytes;
+    nav.Serialize(bytes);
+    NavMesh copy;
+    ZX_REQUIRE(copy.Deserialize(bytes.View()));
+    ZX_EXPECT_EQ(copy.OffMeshLinks().Size(), 1u);
+    ZX_EXPECT(!copy.OffMeshLinks().Empty() && copy.OffMeshLinks()[0].endPoly >= 0);
+    Array<Vec3> path2;
+    Array<u8> jumps2;
+    ZX_REQUIRE(copy.FindPath(Vec3(-10, 0, 0), Vec3(10, 0, 0), path2, nullptr, &jumps2));
+    ZX_EXPECT_EQ(JumpCount(jumps2), 1u);
+
+    // Rebuilding the tiles keeps the links from the arguments (a rebuilt mesh must not lose them).
+    ZX_REQUIRE(nav.RebuildTiles(soup.v.View(), soup.i.View(), AABB(Vec3(-2, -1, -2), Vec3(2, 1, 2)), {}, nullptr,
+                               Span<const OffMeshLink>(links, 1)));
+    ZX_REQUIRE(nav.FindPath(Vec3(-10, 0, 0), Vec3(10, 0, 0), path, nullptr, &jumps));
+    ZX_EXPECT_EQ(JumpCount(jumps), 1u);
+}
+
+ZX_TEST(NavMesh, OffMeshLinkCostDecidesWhetherToJump)
+{
+    Soup soup;
+    TwoFloorsApart(soup, true);
+    OffMeshLink link;
+    link.start = Vec3(-3.0f, 0.0f, 0.0f);
+    link.end = Vec3(3.0f, 0.0f, 0.0f);
+    const OffMeshLink links[1] = {link};
+    NavMesh nav;
+    ZX_REQUIRE(BuildWithLinks(nav, soup, Span<const OffMeshLink>(links, 1)));
+    Array<Vec3> path;
+    Array<u8> jumps;
+    // Free: straight over the gap (16 m) rather than around the walkway (about 23 m).
+    ZX_REQUIRE(nav.FindPath(Vec3(-8, 0, 0), Vec3(8, 0, 0), path, nullptr, &jumps));
+    ZX_EXPECT_EQ(JumpCount(jumps), 1u);
+    ZX_EXPECT(PathLength(path) < 17.5f);
+    // Worth 100 m of walking: the agents take the walkway around instead.
+    OffMeshLink slow = link;
+    slow.cost = 100.0f;
+    const OffMeshLink slowLinks[1] = {slow};
+    NavMesh walking;
+    ZX_REQUIRE(BuildWithLinks(walking, soup, Span<const OffMeshLink>(slowLinks, 1)));
+    ZX_REQUIRE(walking.FindPath(Vec3(-8, 0, 0), Vec3(8, 0, 0), path, nullptr, &jumps));
+    ZX_EXPECT_EQ(JumpCount(jumps), 0u);
+    ZX_EXPECT(PathLength(path) > 20.0f);
+    // Down only: from the far floor there is no way back up over the link.
+    OffMeshLink oneWay = link;
+    oneWay.bidirectional = false;
+    const OffMeshLink oneWayLinks[1] = {oneWay};
+    NavMesh down;
+    ZX_REQUIRE(BuildWithLinks(down, soup, Span<const OffMeshLink>(oneWayLinks, 1)));
+    bool partial = false;
+    // The link runs -x -> +x: crossing back is a walk around, straight there is allowed.
+    ZX_REQUIRE(down.FindPath(Vec3(-8, 0, 0), Vec3(8, 0, 0), path, &partial, &jumps));
+    ZX_EXPECT(!partial);
+    ZX_EXPECT_EQ(JumpCount(jumps), 1u);
+    ZX_REQUIRE(down.FindPath(Vec3(8, 0, 0), Vec3(-8, 0, 0), path, &partial, &jumps));
+    ZX_EXPECT_EQ(JumpCount(jumps), 0u);
+    ZX_EXPECT_GT(PathLength(path), 20.0f);
+}
+

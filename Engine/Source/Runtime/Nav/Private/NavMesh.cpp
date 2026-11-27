@@ -201,7 +201,7 @@ f32 TriArea2(Vec3 a, Vec3 b, Vec3 c)
 bool NearlyEqualXZ(Vec3 a, Vec3 b) { return Abs(a.x - b.x) < 1e-4f && Abs(a.z - b.z) < 1e-4f; }
 
 constexpr u32 NavMagic = 0x56414E5A; // "ZNAV"
-constexpr u32 NavVersion = 2; // 2: tiles
+constexpr u32 NavVersion = 3; // 2: tiles, 3: off-mesh links
 
 } // namespace
 
@@ -215,6 +215,9 @@ void NavMesh::Clear()
     m_gridStart.Clear();
     m_gridItems.Clear();
     m_gridW = m_gridH = 0;
+    m_offLinks.Clear();
+    m_linkStart.Clear();
+    m_linkItems.Clear();
 }
 
 void NavMesh::BuildTile(u32 tx, u32 tz, Span<const Vec3> vertices, Span<const u32> indices, Span<const AABB> obstacles, BuildStats& stats)
@@ -624,11 +627,14 @@ void NavMesh::TileCells(u32 tx, u32 tz, i32& x0, i32& x1, i32& z0, i32& z1, bool
     z1 = Min((i32(tz) + 1) * m_tileCellsZ + b, m_cellsZ);
 }
 
-bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const BuildSettings& s, BuildStats* stats, Span<const AABB> obstacles)
+bool NavMesh::Build(Span<const Vec3> vertices, Span<const u32> indices, const BuildSettings& s, BuildStats* stats, Span<const AABB> obstacles,
+                    Span<const OffMeshLink> links)
 {
     Stopwatch timer;
     Clear();
     m_settings = s;
+    for (const OffMeshLink& l : links)
+        m_offLinks.PushBack(l);
     if (!s.bounds.IsValid() || s.cellSize <= 0.0f || s.cellHeight <= 0.0f)
         return false;
     const Vec3 size = s.bounds.Size();
@@ -681,11 +687,16 @@ AABB NavMesh::TileBuildBounds(const AABB& area) const
     return out;
 }
 
-bool NavMesh::RebuildTiles(Span<const Vec3> vertices, Span<const u32> indices, const AABB& area, Span<const AABB> obstacles, BuildStats* stats)
+bool NavMesh::RebuildTiles(Span<const Vec3> vertices, Span<const u32> indices, const AABB& area, Span<const AABB> obstacles,
+                           BuildStats* stats, Span<const OffMeshLink> links)
 {
     Stopwatch timer;
     if (m_tiles.Empty())
         return false;
+    // The link definitions come from the scene each time; the polygons they connect are found again after the rebuild.
+    m_offLinks.Clear();
+    for (const OffMeshLink& l : links)
+        m_offLinks.PushBack(l);
     const f32 cs = m_settings.cellSize;
     const Vec3 o = m_settings.bounds.min;
     const i32 tx0 = Max(0, i32(std::floor((area.min.x - o.x) / (cs * f32(m_tileCellsX))))), tx1 = Min(i32(m_tilesX) - 1, i32(std::floor((area.max.x - o.x) / (cs * f32(m_tileCellsX)))));
@@ -820,6 +831,57 @@ void NavMesh::Assemble()
         }
     }
     BuildGrid();
+    ResolveLinks();
+}
+
+void NavMesh::ResolveLinks()
+{
+    m_linkStart.Clear();
+    m_linkItems.Clear();
+    const usize n = m_polys.Size();
+    if (m_offLinks.Empty())
+        return;
+    // Endpoints snap onto the mesh (as written in the scene they may sit in the air or on the wall); both must land on
+    // walkable polygons of different polygons for the link to be a shortcut.
+    const f32 search = Max(m_settings.agentHeight * 2.0f, m_settings.agentRadius * 4.0f + 1.0f);
+    Array<u32> counts;
+    counts.Resize(n, 0);
+    for (OffMeshLink& l : m_offLinks) {
+        Vec3 onMesh;
+        l.startPoly = FindNearestPoly(l.start, search, &onMesh);
+        if (l.startPoly >= 0)
+            l.start = onMesh;
+        l.endPoly = FindNearestPoly(l.end, search, &onMesh);
+        if (l.endPoly >= 0)
+            l.end = onMesh;
+        if (l.startPoly < 0 || l.endPoly < 0 || l.startPoly == l.endPoly)
+            continue;
+        ++counts[usize(l.startPoly)];
+        if (l.bidirectional)
+            ++counts[usize(l.endPoly)];
+    }
+    m_linkStart.Resize(n + 1, 0);
+    u32 running = 0;
+    for (usize p = 0; p < n; ++p) {
+        m_linkStart[p] = running;
+        running += counts[p];
+    }
+    m_linkStart[n] = running;
+    if (running == 0)
+        return;
+    m_linkItems.Resize(running, 0);
+    Array<u32> cursor;
+    cursor.Resize(n, 0);
+    for (usize p = 0; p < n; ++p)
+        cursor[p] = m_linkStart[p];
+    for (usize i = 0; i < m_offLinks.Size(); ++i) {
+        const OffMeshLink& l = m_offLinks[i];
+        if (l.startPoly < 0 || l.endPoly < 0 || l.startPoly == l.endPoly)
+            continue;
+        m_linkItems[cursor[usize(l.startPoly)]++] = u32(i) << 1;
+        if (l.bidirectional)
+            m_linkItems[cursor[usize(l.endPoly)]++] = (u32(i) << 1) | 1;
+    }
 }
 
 void NavMesh::BuildGrid()
@@ -920,9 +982,11 @@ i32 NavMesh::FindNearestPoly(Vec3 p, f32 searchDistance, Vec3* onMesh) const
     return best;
 }
 
-bool NavMesh::FindPath(Vec3 start, Vec3 end, Array<Vec3>& path, bool* partial) const
+bool NavMesh::FindPath(Vec3 start, Vec3 end, Array<Vec3>& path, bool* partial, Array<u8>* jumps) const
 {
     path.Clear();
+    if (jumps)
+        jumps->Clear();
     if (partial)
         *partial = false;
     const f32 search = Max(m_settings.agentHeight * 2.0f, m_settings.agentRadius * 4.0f + 1.0f);
@@ -931,15 +995,20 @@ bool NavMesh::FindPath(Vec3 start, Vec3 end, Array<Vec3>& path, bool* partial) c
     if (sp < 0)
         return false;
     i32 ep = FindNearestPoly(end, search, &e);
-    // A* over the polygons; a node sits where the path entered its polygon (the portal's closest point).
+    // A* over the polygons; a node sits where the path entered its polygon (the portal's closest point, or where an
+    // off-mesh link lands). `entryKind` / `entry` say which edge led into a node: a portal of the mesh, or a link
+    // crossed forwards (start -> end) or backwards.
+    constexpr u8 KindMesh = 0, KindLink = 1;
     const u32 n = u32(m_polys.Size());
     Array<f32> g;
-    Array<u32> parent, parentLink;
+    Array<u32> parent, entry;
+    Array<u8> entryKind, entryBack, closed;
     Array<Vec3> pos;
-    Array<u8> closed;
     g.Resize(n, 1e30f);
     parent.Resize(n, None);
-    parentLink.Resize(n, None);
+    entry.Resize(n, None);
+    entryKind.Resize(n, KindMesh);
+    entryBack.Resize(n, 0);
     pos.Resize(n, Vec3());
     closed.Resize(n, 0);
     Array<HeapItem> open;
@@ -981,11 +1050,36 @@ bool NavMesh::FindPath(Vec3 start, Vec3 end, Array<Vec3>& path, bool* partial) c
             if (cost < g[l.to]) {
                 g[l.to] = cost;
                 parent[l.to] = cur;
-                parentLink[l.to] = li;
+                entry[l.to] = li;
+                entryKind[l.to] = KindMesh;
                 pos[l.to] = q;
                 HeapPush(open, {cost + (i32(l.to) == ep ? 0.0f : Distance(q, goal)), l.to});
             }
         }
+        // Ways off the mesh: walk to the link, cross it, go on from where it lands.
+        if (!m_linkStart.Empty())
+            for (u32 k = m_linkStart[cur]; k < m_linkStart[cur + 1]; ++k) {
+                const u32 item = m_linkItems[k];
+                const OffMeshLink& l = m_offLinks[item >> 1];
+                const bool back = (item & 1) != 0;
+                const Vec3 from = back ? l.end : l.start;
+                const Vec3 to = back ? l.start : l.end;
+                const u32 next = u32(back ? l.startPoly : l.endPoly);
+                if (closed[next])
+                    continue;
+                f32 cost = g[cur] + Distance(pos[cur], from) + Distance(from, to) + Max(l.cost, 0.0f);
+                if (i32(next) == ep)
+                    cost += Distance(to, e);
+                if (cost < g[next]) {
+                    g[next] = cost;
+                    parent[next] = cur;
+                    entry[next] = item >> 1;
+                    entryKind[next] = KindLink;
+                    entryBack[next] = back ? 1 : 0;
+                    pos[next] = to;
+                    HeapPush(open, {cost + (i32(next) == ep ? 0.0f : Distance(to, goal)), next});
+                }
+            }
     }
     u32 last = found ? u32(ep) : bestPoly;
     if (!found) {
@@ -995,17 +1089,82 @@ bool NavMesh::FindPath(Vec3 start, Vec3 end, Array<Vec3>& path, bool* partial) c
         const f32 cx = Clamp(goal.x, p.corners[0].x, p.corners[2].x), cz = Clamp(goal.z, p.corners[0].z, p.corners[2].z);
         e = Vec3(cx, HeightAt(last, cx, cz), cz);
     }
-    // Corridor (polygon links from the start).
-    Array<u32> corridor;
+    // The corridor from the start: the portals and the links the search took, in order.
+    struct Step
+    {
+        u8 kind, back;
+        u32 index;
+    };
+    Array<Step> steps;
     for (u32 c = last; c != u32(sp); c = parent[c])
-        corridor.PushBack(parentLink[c]);
-    // Portals oriented (left, right) for the funnel; start and end are degenerate portals.
+        steps.PushBack({entryKind[c], entryBack[c], entry[c]});
+    auto pushPoint = [&](Vec3 p, u8 jump) {
+        path.PushBack(p);
+        if (jumps)
+            jumps->PushBack(jump);
+    };
+    // Corners: the funnel runs up to where a link starts, then the path jumps to where it lands and runs on (the
+    // funnel cannot do that itself - a gap is not something it can see across).
+    pushPoint(s, 0);
     Array<Vec3> lefts, rights;
-    lefts.PushBack(s);
-    rights.PushBack(s);
+    Vec3 apex = s;
+    auto endSegment = [&](Vec3 to) {
+        if (lefts.Empty()) {
+            lefts.PushBack(apex);
+            rights.PushBack(apex);
+        }
+        lefts.PushBack(to);
+        rights.PushBack(to);
+        Vec3 left = lefts[0], right = rights[0];
+        usize apexIndex = 0, leftIndex = 0, rightIndex = 0;
+        for (usize i = 1; i < lefts.Size(); ++i) {
+            const Vec3 l = lefts[i], r = rights[i];
+            if (TriArea2(apex, right, r) <= 0.0f) { // the right side tightens
+                if (NearlyEqualXZ(apex, right) || TriArea2(apex, left, r) > 0.0f) {
+                    right = r;
+                    rightIndex = i;
+                } else { // crossed over the left: the left point becomes a corner
+                    pushPoint(left, 0);
+                    apex = left;
+                    apexIndex = leftIndex;
+                    left = right = apex;
+                    leftIndex = rightIndex = apexIndex;
+                    i = apexIndex;
+                    continue;
+                }
+            }
+            if (TriArea2(apex, left, l) >= 0.0f) { // the left side tightens
+                if (NearlyEqualXZ(apex, left) || TriArea2(apex, right, l) < 0.0f) {
+                    left = l;
+                    leftIndex = i;
+                } else {
+                    pushPoint(right, 0);
+                    apex = right;
+                    apexIndex = rightIndex;
+                    left = right = apex;
+                    leftIndex = rightIndex = apexIndex;
+                    i = apexIndex;
+                    continue;
+                }
+            }
+        }
+        if (!NearlyEqualXZ(path.Back(), to) || Abs(path.Back().y - to.y) > 1e-3f)
+            pushPoint(to, 0);
+        apex = to;
+        lefts.Clear();
+        rights.Clear();
+    };
     u32 from = u32(sp);
-    for (usize i = corridor.Size(); i-- > 0;) {
-        const Link& l = m_links[corridor[i]];
+    for (usize i = steps.Size(); i-- > 0;) {
+        const Step& st = steps[i];
+        if (st.kind == KindLink) {
+            const OffMeshLink& l = m_offLinks[st.index];
+            endSegment(st.back ? l.end : l.start); // walk up to the link
+            pushPoint(st.back ? l.start : l.end, 1); // then be moved across it
+            apex = path.Back();
+            continue;
+        }
+        const Link& l = m_links[st.index];
         const Poly& a = m_polys[from];
         const Poly& b = m_polys[l.to];
         const Vec3 ca = (a.corners[0] + a.corners[2]) * 0.5f, cb = (b.corners[0] + b.corners[2]) * 0.5f;
@@ -1013,57 +1172,35 @@ bool NavMesh::FindPath(Vec3 start, Vec3 end, Array<Vec3>& path, bool* partial) c
         // `a` of the link is right of `b` when, facing along d, it lies on the +x side for d = +z.
         const bool aRight = d.z * (l.a.x - l.b.x) - d.x * (l.a.z - l.b.z) > 0.0f;
         // Pull the portal in by the agent radius is unnecessary: erosion already keeps the mesh off the walls.
+        if (lefts.Empty()) {
+            lefts.PushBack(apex);
+            rights.PushBack(apex);
+        }
         lefts.PushBack(aRight ? l.b : l.a);
         rights.PushBack(aRight ? l.a : l.b);
         from = l.to;
     }
-    lefts.PushBack(e);
-    rights.PushBack(e);
-
-    // Simple stupid funnel algorithm (Mononen).
-    path.PushBack(s);
-    Vec3 apex = s, left = lefts[0], right = rights[0];
-    usize apexIndex = 0, leftIndex = 0, rightIndex = 0;
-    for (usize i = 1; i < lefts.Size(); ++i) {
-        const Vec3 l = lefts[i], r = rights[i];
-        if (TriArea2(apex, right, r) <= 0.0f) { // the right side tightens
-            if (NearlyEqualXZ(apex, right) || TriArea2(apex, left, r) > 0.0f) {
-                right = r;
-                rightIndex = i;
-            } else { // crossed over the left: the left point becomes a corner
-                path.PushBack(left);
-                apex = left;
-                apexIndex = leftIndex;
-                left = right = apex;
-                leftIndex = rightIndex = apexIndex;
-                i = apexIndex;
-                continue;
-            }
-        }
-        if (TriArea2(apex, left, l) >= 0.0f) { // the left side tightens
-            if (NearlyEqualXZ(apex, left) || TriArea2(apex, right, l) < 0.0f) {
-                left = l;
-                leftIndex = i;
-            } else {
-                path.PushBack(right);
-                apex = right;
-                apexIndex = rightIndex;
-                left = right = apex;
-                leftIndex = rightIndex = apexIndex;
-                i = apexIndex;
-                continue;
-            }
-        }
-    }
-    if (!NearlyEqualXZ(path.Back(), e) || Abs(path.Back().y - e.y) > 1e-3f)
-        path.PushBack(e);
+    endSegment(e);
     // The corridor may pass a corner where four rectangles meet on the wrong side; drop corners the mesh can see past.
+    // Never across an off-mesh link: the way over a gap is the link, not a straight line.
     for (usize i = 0; i + 2 < path.Size();) {
-        usize j = path.Size() - 1;
+        if (jumps && (*jumps)[i + 1]) { // the next point is where a link landed
+            ++i;
+            continue;
+        }
+        usize limit = path.Size();
+        if (jumps)
+            for (usize k = i + 2; k < path.Size() && limit == path.Size(); ++k)
+                if ((*jumps)[k])
+                    limit = k;
+        usize j = limit - 1;
         while (j > i + 1 && !Raycast(path[i], path[j]))
             --j;
-        if (j > i + 1)
+        if (j > i + 1) {
             path.RemoveAt(i + 1, j - i - 1);
+            if (jumps)
+                jumps->RemoveAt(i + 1, j - i - 1);
+        }
         ++i;
     }
     return found;
@@ -1145,6 +1282,14 @@ void NavMesh::Serialize(Array<u8>& out) const
         for (const Array<EdgeCell>& e : t.edges)
             w.WriteArray(e.View());
     }
+    // Off-mesh links by their authored points; the polygons are found again when the mesh is loaded.
+    w.Write(u32(m_offLinks.Size()));
+    for (const OffMeshLink& l : m_offLinks) {
+        w.Write(l.start);
+        w.Write(l.end);
+        w.Write(u8(l.bidirectional ? 1 : 0));
+        w.Write(l.cost);
+    }
 }
 
 bool NavMesh::Deserialize(Span<const u8> data)
@@ -1176,6 +1321,15 @@ bool NavMesh::Deserialize(Span<const u8> data)
             for (const Array<EdgeCell>& e : t.edges)
                 for (const EdgeCell& c : e)
                     ok &= c.poly < t.polys.Size();
+        }
+        const u32 links = r.Read<u32>();
+        for (u32 i = 0; i < links && !r.HasError(); ++i) {
+            OffMeshLink l;
+            l.start = r.Read<Vec3>();
+            l.end = r.Read<Vec3>();
+            l.bidirectional = r.Read<u8>() != 0;
+            l.cost = r.Read<f32>();
+            m_offLinks.PushBack(l);
         }
         ok &= !r.HasError();
     }

@@ -30,6 +30,14 @@ ZX_REFLECT_STRUCT_BEGIN(NavMeshObstacle)
     ZX_FIELD(enabled, Meta::Tooltip("Off: agents walk through (an open door). Switching it in Play rebuilds the mesh around it"))
 ZX_REFLECT_STRUCT_END()
 
+ZX_REFLECT_STRUCT_BEGIN(NavMeshLink)
+    ZX_FIELD(start, Meta::Units("m"), Meta::Tooltip("Where the way begins (an offset from the entity, rotated and scaled with it)"))
+    ZX_FIELD(end, Meta::Units("m"), Meta::Tooltip("Where it ends: agents are moved over the gap to here"))
+    ZX_FIELD(bidirectional, Meta::Tooltip("Both ways (a drop is usually one-way: down only)"))
+    ZX_FIELD(cost, Meta::Range(0.0f, 1000.0f), Meta::Units("m"),
+             Meta::Tooltip("How many meters of walking the crossing is worth (a slow ladder costs a few)"))
+ZX_REFLECT_STRUCT_END()
+
 ZX_REFLECT_STRUCT_BEGIN(NavMeshAgent)
     ZX_FIELD(speed, Meta::Range(0.0f, 50.0f), Meta::Units("m/s"))
     ZX_FIELD(acceleration, Meta::Range(0.1f, 200.0f), Meta::Units("m/s2"))
@@ -177,6 +185,8 @@ bool NavigationSystem::Build(ecs::World& world, render::RenderAssets* assets, Na
         Array<Vec3> vertices;
         Array<u32> indices;
         GatherNavGeometry(world, assets, bounds, vertices, indices);
+        Array<nav::OffMeshLink> links;
+        GatherLinks(world, links);
         nav::BuildSettings s;
         s.bounds = bounds;
         s.cellSize = Max(b.cellSize, 0.05f);
@@ -189,10 +199,13 @@ bool NavigationSystem::Build(ecs::World& world, render::RenderAssets* assets, Na
         Volume v;
         v.bounds = bounds;
         r.triangles += u32(indices.Size() / 3);
-        if (!v.mesh.Build(vertices.View(), indices.View(), s, nullptr, obstacles.View()))
+        if (!v.mesh.Build(vertices.View(), indices.View(), s, nullptr, obstacles.View(), links.View()))
             continue;
         r.polys += u32(v.mesh.Polys().Size());
         r.tiles += v.mesh.TileCount();
+        for (const nav::OffMeshLink& l : v.mesh.OffMeshLinks())
+            if (l.startPoly >= 0 && l.endPoly >= 0)
+                ++r.links;
         m_volumes.PushBack(move(v));
     }
     r.volumes = u32(m_volumes.Size());
@@ -222,12 +235,31 @@ void NavigationSystem::GatherObstacles(ecs::World& world, Array<AABB>& out, Arra
     });
 }
 
+void NavLinkWorld(const NavMeshLink& l, const Mat4& world, Vec3& start, Vec3& end)
+{
+    start = world.TransformPointAffine(l.start);
+    end = world.TransformPointAffine(l.end);
+}
+
+void NavigationSystem::GatherLinks(ecs::World& world, Array<nav::OffMeshLink>& out) const
+{
+    world.Query<const NavMeshLink>().Each([&](ecs::Entity e, const NavMeshLink& l) {
+        nav::OffMeshLink link;
+        NavLinkWorld(l, scene::ComputeWorldMatrix(world, e), link.start, link.end);
+        link.bidirectional = l.bidirectional;
+        link.cost = l.cost;
+        out.PushBack(link);
+    });
+}
+
 bool NavigationSystem::RebuildArea(ecs::World& world, const AABB& area, NavBuildReport* report)
 {
     Stopwatch timer;
     NavBuildReport r;
     Array<AABB> obstacles;
     GatherObstacles(world, obstacles);
+    Array<nav::OffMeshLink> links;
+    GatherLinks(world, links);
     bool any = false;
     for (Volume& v : m_volumes) {
         const AABB need = v.mesh.TileBuildBounds(area);
@@ -237,7 +269,7 @@ bool NavigationSystem::RebuildArea(ecs::World& world, const AABB& area, NavBuild
         Array<u32> indices;
         GatherNavGeometry(world, renderAssets, need, vertices, indices);
         nav::BuildStats stats;
-        if (v.mesh.RebuildTiles(vertices.View(), indices.View(), area, obstacles.View(), &stats)) {
+        if (v.mesh.RebuildTiles(vertices.View(), indices.View(), area, obstacles.View(), &stats, links.View())) {
             any = true;
             r.tiles += stats.tilesBuilt;
             r.triangles += u32(indices.Size() / 3);
@@ -354,11 +386,13 @@ const nav::NavMesh* NavigationSystem::MeshAt(Vec3 p) const
     return best;
 }
 
-bool NavigationSystem::FindPath(Vec3 start, Vec3 end, Array<Vec3>& path, bool* partial) const
+bool NavigationSystem::FindPath(Vec3 start, Vec3 end, Array<Vec3>& path, bool* partial, Array<u8>* jumps) const
 {
     path.Clear();
+    if (jumps)
+        jumps->Clear();
     const nav::NavMesh* mesh = MeshAt(start);
-    return mesh && mesh->FindPath(start, end, path, partial);
+    return mesh && mesh->FindPath(start, end, path, partial, jumps);
 }
 
 bool NavigationSystem::NearestPoint(Vec3 p, f32 searchDistance, Vec3& onMesh) const
@@ -417,7 +451,8 @@ void NavigationSystem::Tick(ecs::World& world, f32 dt)
                 a.repath = false;
                 bool partial = false;
                 a.corner = 1;
-                if (!FindPath(pos, a.destination, a.path, &partial) && !partial) {
+                a.linkProgress = -1.0f;
+                if (!FindPath(pos, a.destination, a.path, &partial, &a.pathJumps) && !partial) {
                     a.path.Clear();
                     a.status = NavAgentStatus::NoMesh;
                     a.hasDestination = false;
@@ -427,8 +462,43 @@ void NavigationSystem::Tick(ecs::World& world, f32 dt)
             }
             // Next corner: skip the ones already reached (horizontally).
             auto flatDistance = [](Vec3 p, Vec3 q) { return Length(Vec2(q.x - p.x, q.z - p.z)); };
-            while (a.corner + 1 < a.path.Size() && flatDistance(pos, a.path[a.corner]) < Max(0.15f, a.speed * dt))
+            // A path point with a jump flag is where an off-mesh link lands: the segment into it is not walking.
+            auto onLink = [&](usize c) { return c < a.pathJumps.Size() && a.pathJumps[c] != 0; };
+            while (a.corner + 1 < a.path.Size() && flatDistance(pos, a.path[a.corner]) < Max(0.15f, a.speed * dt)) {
                 ++a.corner;
+                if (onLink(a.corner))
+                    break; // at the link: the agent is moved across it (see below), not walked past
+            }
+            if (a.corner < a.path.Size() && onLink(a.corner)) {
+                // Crossing: from where the link begins to where it lands, at walking speed, ignoring gravity and the
+                // mesh (there is a gap under it). A way up or across arcs a little; a drop goes straight down.
+                const Vec3 from = a.corner > 0 ? a.path[a.corner - 1] : pos;
+                const Vec3 to = a.path[a.corner];
+                const f32 len = Max(Distance(from, to), 1e-3f);
+                if (a.linkProgress < 0.0f)
+                    a.linkProgress = 0.0f;
+                a.linkProgress = Min(1.0f, a.linkProgress + Max(a.speed, 0.5f) * dt / len);
+                Vec3 at = from + (to - from) * a.linkProgress;
+                if (to.y >= from.y - 0.1f) {
+                    const f32 gap = Length(Vec2(to.x - from.x, to.z - from.z));
+                    at.y += Sin(Pi * a.linkProgress) * Min(gap * 0.25f + 0.2f, 1.2f);
+                }
+                a.velocity = Vec3();
+                if (character) {
+                    character->desiredMove = Vec3();
+                    character->velocity = Vec3();
+                }
+                const scene::Parent* parent = world.Get<const scene::Parent>(e);
+                t.position = parent && world.IsAlive(parent->entity)
+                                 ? Inverse(scene::ComputeWorldMatrix(world, parent->entity)).TransformPoint(at)
+                                 : at;
+                if (a.linkProgress >= 1.0f) {
+                    a.linkProgress = -1.0f;
+                    ++a.corner;
+                }
+                return;
+            }
+            a.linkProgress = -1.0f;
             const bool last = a.corner + 1 >= a.path.Size();
             const Vec3 target = a.corner < a.path.Size() ? a.path[a.corner] : pos;
             const f32 dist = flatDistance(pos, target);

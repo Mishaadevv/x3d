@@ -661,11 +661,22 @@ bool Context::Impl::BeginPopupWindow(u32 index, WindowFlags flags, StringView ti
     popupBeginStack.PushBack(index);
     // A fixed size (SetPopupSize) replaces the content size, clamped to the display: the popup can never grow past the
     // window it is shown in. It is applied as the next-window size below, so Begin() does not auto-size it.
+    // Popups that would be taller (or wider) than the display are capped to it and scrolled instead of hanging off the
+    // screen - menus of a hundred items, long lists, details popups.
+    const Vec2 cap(Max(display.x - S(16.0f), S(40.0f)), Max(display.y - S(16.0f), S(40.0f)));
     Vec2 fixed;
+    bool fixedSize = p.hasSize;
     if (p.hasSize)
-        fixed = Round(Vec2(Min(S(p.size.x), Max(display.x - S(16.0f), S(40.0f))), Min(S(p.size.y), Max(display.y - S(16.0f), S(40.0f)))));
+        fixed = Round(Vec2(Min(S(p.size.x), cap.x), Min(S(p.size.y), cap.y)));
+    if (!p.hasSize) {
+        const Vec2 wanted = w->contentSize;
+        if (wanted.y > cap.y + 0.5f || wanted.x > cap.x + 0.5f) {
+            fixed = Round(Vec2(Min(wanted.x, cap.x), Min(wanted.y, cap.y)));
+            fixedSize = true;
+        }
+    }
     // Position.
-    const Vec2 size = p.hasSize ? fixed : w->contentSize;
+    const Vec2 size = fixedSize ? fixed : w->contentSize;
     Vec2 pos;
     if (p.isModal) {
         pos = Round((display - w->size) * 0.5f);
@@ -678,8 +689,14 @@ bool Context::Impl::BeginPopupWindow(u32 index, WindowFlags flags, StringView ti
         pos = inMenuBar ? Vec2(p.anchor.min.x, p.anchor.max.y) : Vec2(p.anchor.max.x + S(2.0f), p.anchor.min.y - S(4.0f));
         if (!inMenuBar && pos.x + size.x > display.x)
             pos.x = p.anchor.min.x - size.x - S(2.0f);
+        // A menu whose items do not fit below the bar starts at the bottom of the screen instead of being cut off.
+        if (inMenuBar && pos.y + size.y > display.y - S(8.0f))
+            pos.y = display.y - size.y - S(8.0f);
     } else {
         pos = p.openPos + S(Vec2(2.0f, 2.0f));
+        // Anchored popups (context menus, "Add Component") open above the click when there is no room below it.
+        if (p.anchor.Height() > 0.0f && p.openPos.y + size.y > display.y - S(8.0f) && p.openPos.y - size.y > 0.0f)
+            pos.y = p.openPos.y - size.y - S(2.0f);
     }
     pos.x = Clamp(pos.x, 0.0f, Max(display.x - size.x, 0.0f));
     pos.y = Clamp(pos.y, 0.0f, Max(display.y - size.y, 0.0f));
@@ -687,12 +704,12 @@ bool Context::Impl::BeginPopupWindow(u32 index, WindowFlags flags, StringView ti
     nextPosCond = Cond::Always;
     nextPos = pos / scale;
     // A fixed-size popup takes the requested size, not its content: AlwaysAutoResize would overwrite that every frame.
-    if (p.hasSize) {
+    if (fixedSize) {
         nextSizeSet = true;
         nextSizeCond = Cond::Always;
         nextSize = fixed / scale;
     }
-    WindowFlags wf = flags | (p.hasSize ? WindowFlags::None : WindowFlags::AlwaysAutoResize) | WindowFlags::NoMove | WindowFlags::NoResize |
+    WindowFlags wf = flags | (fixedSize ? WindowFlags::None : WindowFlags::AlwaysAutoResize) | WindowFlags::NoMove | WindowFlags::NoResize |
                      WindowFlags::NoCollapse;
     if (!p.isModal)
         wf |= WindowFlags::NoTitleBar;
@@ -860,10 +877,19 @@ bool Begin(StringView title, bool* open, WindowFlags flags)
         w->size = Max(w->size, g.S(Vec2(120.0f, 60.0f)));
         g.intStorage.InsertOrAssign(resizeId, (hovered ? 1 : 0) | (held ? 2 : 0));
     }
-    // Keep at least part of the title bar on screen.
+    // Fit to the screen: a window that no longer fits (a smaller screen, a bigger UI scale) is shrunk to it and moved
+    // inside, and one that still fits is kept fully visible - no panel ever hangs off the right or bottom edge.
     if (!HasAnyFlags(flags, WindowFlags::Fullscreen) && !isPopup && !docked) {
-        w->pos.x = Clamp(w->pos.x, -w->size.x + g.S(60.0f), Max(g.display.x - g.S(60.0f), 0.0f));
-        w->pos.y = Clamp(w->pos.y, 0.0f, Max(g.display.y - g.S(30.0f), 0.0f));
+        const Vec2 limit(Max(g.display.x - g.S(8.0f), g.S(120.0f)), Max(g.display.y - g.S(8.0f), g.S(80.0f)));
+        w->size = Min(w->size, limit);
+        const bool fits = w->size.x <= g.display.x - g.S(8.0f) && w->size.y <= g.display.y - g.S(8.0f);
+        if (fits) {
+            w->pos.x = Clamp(w->pos.x, 0.0f, Max(g.display.x - w->size.x, 0.0f));
+            w->pos.y = Clamp(w->pos.y, 0.0f, Max(g.display.y - w->size.y, 0.0f));
+        } else {
+            w->pos.x = Clamp(w->pos.x, -w->size.x + g.S(60.0f), Max(g.display.x - g.S(60.0f), 0.0f));
+            w->pos.y = Clamp(w->pos.y, 0.0f, Max(g.display.y - g.S(30.0f), 0.0f));
+        }
     }
     w->pos = Round(w->pos);
     w->size = Round(w->size);

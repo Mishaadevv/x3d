@@ -353,14 +353,17 @@ ConCommand CmdNavStats("nav.stats", "Navigation mesh statistics and agent states
     Editor* ed = Ed();
     if (!ed)
         return;
-    u32 polys = 0, links = 0, tiles = 0;
+    u32 polys = 0, links = 0, tiles = 0, offLinks = 0;
     for (const NavigationSystem::Volume& v : ed->navigation.Volumes()) {
         polys += u32(v.mesh.Polys().Size());
         links += u32(v.mesh.Links().Size());
         tiles += v.mesh.TileCount();
+        for (const nav::OffMeshLink& l : v.mesh.OffMeshLinks())
+            if (l.startPoly >= 0 && l.endPoly >= 0)
+                ++offLinks;
     }
-    ZX_LOG_INFO(LogCmd, "Navigation: {} volume(s), {} tiles, {} polygons, {} links, {} rebuilds in Play", ed->navigation.Volumes().Size(), tiles, polys,
-                links, ed->navigation.RebuildCount());
+    ZX_LOG_INFO(LogCmd, "Navigation: {} volume(s), {} tiles, {} polygons, {} links, {} off-mesh links, {} rebuilds in Play",
+                ed->navigation.Volumes().Size(), tiles, polys, links, offLinks, ed->navigation.RebuildCount());
     ed->world.Query<const NavMeshAgent, const scene::WorldTransform>().Each([&](ecs::Entity e, const NavMeshAgent& a, const scene::WorldTransform& wt) {
         const Vec3 p = wt.GetPosition();
         ZX_LOG_INFO(LogCmd, "  agent {} at ({:.1f}, {:.1f}, {:.1f}): {}, {:.1f} m to go", e.index, p.x, p.y, p.z, NavAgentStatusName(a.status),
@@ -595,11 +598,13 @@ ConCommand CmdCarDrive("car.drive",
                            cars.forcedInput.brake = args.Size() > 2 ? ParseFloat(args[2]).ValueOr(0.0f) : 0.0f;
                        });
 
-ConCommand CmdWaterPreset("water.preset", "Applies a water preset to every Water: water.preset <ocean|lake|pool|storm|tropical>",
+ConCommand CmdWaterPreset("water.preset",
+                           "Applies a water preset to every Water: water.preset <ocean|lake|pool|storm|tropical|river|swamp|arctic>",
                            [](Span<const StringView> args) {
                                if (!Ed() || args.Empty())
                                    return;
-                               static const char* const Names[] = {"custom", "ocean", "lake", "pool", "storm", "tropical"};
+                               static const char* const Names[] = {"custom", "ocean", "lake", "pool", "storm", "tropical",
+                                                                  "river", "swamp", "arctic"};
                                for (u32 i = 0; i < ZX_ARRAY_COUNT(Names); ++i)
                                    if (args[0].EqualsIgnoreCase(Names[i]))
                                        Ed()->world.Query<Water>().Each([&](ecs::Entity, Water& w) { ApplyWaterPreset(w, WaterPreset(i)); });
@@ -1198,6 +1203,8 @@ ConCommand CmdCreate("create", "Creates an object in front of the camera: create
         ed->CreateNavMeshBounds(at);
     else if (kind.EqualsIgnoreCase("navobstacle") || kind.EqualsIgnoreCase("obstacle"))
         ed->CreateNavObstacle(at);
+    else if (kind.EqualsIgnoreCase("navlink") || kind.EqualsIgnoreCase("navmeshlink"))
+        ed->CreateNavLink(at);
     else if (kind.EqualsIgnoreCase("navagent") || kind.EqualsIgnoreCase("agent"))
         ed->CreateNavAgent(at);
     else if (kind.StartsWith("ui."))

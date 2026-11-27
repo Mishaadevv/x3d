@@ -164,3 +164,73 @@ ZX_TEST(Navigation, MovingObstaclesRebuildTheirTiles)
         nav.Tick(w, 1.0f / 60.0f);
     ZX_EXPECT_EQ(nav.RebuildCount(), 3u);
 }
+
+ZX_TEST(Navigation, AgentCrossesAnOffMeshLink)
+{
+    ecs::World w;
+    RegisterEngineComponents();
+    // Two terraces 3 m apart, the gap in between: nothing walks across it.
+    for (const f32 x : {-11.0f, 13.5f}) {
+        const ecs::Entity e = scene::CreateNode(w, "Terrace", Transform(Vec3(x, 2, 0)));
+        Terrain t;
+        t.size = 20.0f;
+        t.resolution = 21;
+        t.hills = false;
+        w.Add(e, move(t));
+    }
+    const ecs::Entity bounds = scene::CreateNode(w, "Nav", Transform(Vec3(0, 2, 0)));
+    NavMeshBounds b;
+    b.size = Vec3(60, 10, 30);
+    w.Add(bounds, b);
+    scene::UpdateWorldTransforms(w);
+    NavigationSystem nav;
+    NavBuildReport report;
+    ZX_REQUIRE(nav.Build(w, nullptr, &report));
+    ZX_EXPECT_EQ(report.volumes, 1u);
+    const Vec3 a(-8, 2, 0), c(10, 2, 0);
+    Array<Vec3> path;
+    bool partial = false;
+    ZX_EXPECT(!nav.FindPath(a, c, path, &partial));
+    ZX_EXPECT(partial);
+
+    // A jump over the gap: agents walk to its edge, are moved across and walk on.
+    const ecs::Entity linkEntity = scene::CreateNode(w, "Jump", Transform(Vec3(-1.0f, 2, 0)));
+    NavMeshLink link;
+    link.start = Vec3(0, 0, 0);
+    link.end = Vec3(5.0f, 0, 0);
+    w.Add(linkEntity, link);
+    scene::UpdateWorldTransforms(w);
+    ZX_REQUIRE(nav.Build(w, nullptr, &report));
+    ZX_EXPECT_EQ(report.links, 1u);
+
+    const ecs::Entity agent = scene::CreateNode(w, "Agent", Transform(a));
+    w.Add(agent, NavMeshAgent{});
+    scene::UpdateWorldTransforms(w);
+    ZX_REQUIRE(nav.SetDestination(w, agent, c));
+    bool crossed = false, overGap = false;
+    f32 lowestOverGap = 100.0f;
+    for (u32 i = 0; i < 60 * 12; ++i) {
+        nav.Tick(w, 1.0f / 60.0f);
+        scene::UpdateWorldTransforms(w);
+        const NavMeshAgent& ag = *w.Get<const NavMeshAgent>(agent);
+        const Vec3 p = w.Get<const Transform>(agent)->position;
+        if (ag.linkProgress >= 0.0f)
+            crossed = true;
+        // The middle of the gap has no floor: only the crossing can put the agent there, and it never sinks.
+        if (p.x > 0.6f && p.x < 3.4f) {
+            overGap = true;
+            lowestOverGap = Min(lowestOverGap, p.y);
+        }
+        if (ag.status == NavAgentStatus::Arrived)
+            break;
+    }
+    ZX_EXPECT(crossed);
+    ZX_EXPECT(overGap);
+    ZX_EXPECT(lowestOverGap > 1.9f); // over the gap, not falling into it
+    const NavMeshAgent& done = *w.Get<const NavMeshAgent>(agent);
+    ZX_EXPECT(done.status == NavAgentStatus::Arrived);
+    const Vec3 p = w.Get<const Transform>(agent)->position;
+    ZX_EXPECT(Distance(Vec2(p.x, p.z), Vec2(c.x, c.z)) < 0.4f);
+    ZX_EXPECT_NEAR(p.y, 2.0f, 0.3f);
+}
+

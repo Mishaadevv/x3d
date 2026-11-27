@@ -34,6 +34,50 @@ ZX_TEST(Water, GatherKeepsTheSurfaceLevel)
     ZX_EXPECT_NEAR(s.windDirection, DegToRad(90.0f), 1e-5f);
 }
 
+ZX_TEST(Water, PresetsAndGatheringCarryTheReactions)
+{
+    // Every kind of water answers the world differently.
+    Water river, swamp, arctic;
+    ApplyWaterPreset(river, WaterPreset::River);
+    ApplyWaterPreset(swamp, WaterPreset::Swamp);
+    ApplyWaterPreset(arctic, WaterPreset::Arctic);
+    ZX_EXPECT_GT(river.currentSpeed, 1.0f);    // a river flows
+    ZX_EXPECT_GT(swamp.turbidity, 2.0f);       // a swamp is murky
+    ZX_EXPECT_GT(swamp.bioluminescence, 0.5f); // and glows after dark
+    ZX_EXPECT_LT(arctic.absorption.x, 1.5f);   // the arctic is clear and mirrors the sky
+    ZX_EXPECT_GT(arctic.skyReflection, 1.0f);
+
+    // The renderer's copy of the surface carries them too.
+    ecs::World world;
+    scene::InstallHierarchyHooks(world);
+    const ecs::Entity e = scene::CreateNode(world, "River", Transform(Vec3(0, 0, 0)));
+    Water w;
+    ApplyWaterPreset(w, WaterPreset::River);
+    w.currentDirection = -90.0f;
+    w.rain = 0.4f;
+    w.bioluminescence = 1.5f;
+    world.Add(e, w);
+    scene::UpdateWorldTransforms(world);
+    Array<render::WaterSurface> surfaces;
+    GatherWater(world, surfaces);
+    ZX_REQUIRE(surfaces.Size() == 1u);
+    const render::WaterSurface& s = surfaces[0];
+    ZX_EXPECT_NEAR(s.currentDirection, DegToRad(-90.0f), 1e-5f);
+    ZX_EXPECT_NEAR(s.rain, 0.4f, 1e-6f);
+    ZX_EXPECT_NEAR(s.bioluminescence, 1.5f, 1e-6f);
+    ZX_EXPECT_NEAR(s.turbidity, w.turbidity, 1e-6f);
+    ZX_EXPECT(s.absorption == w.absorption);
+
+    // And the sea state of a preset is still just its wind and fetch.
+    render::WaterSurface a, b;
+    a.windSpeed = 5.0f;
+    a.fetch = 30.0f;
+    b = a;
+    b.rain = 1.0f;
+    b.turbidity = 3.0f;
+    ZX_EXPECT(render::WaterSpectrumKey(a) == render::WaterSpectrumKey(b));
+}
+
 ZX_TEST(Water, PresetsFillTheSettings)
 {
     ecs::World world;

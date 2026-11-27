@@ -279,3 +279,62 @@ ZX_TEST(Terrain, TilesShadeAlikeAcrossTheirSeam)
     // B's interior stays flat.
     ZX_EXPECT_NEAR(normalX(*db, 2, 20), 0.0f, 1e-3f);
 }
+
+ZX_TEST(Terrain, NaturalHillsAndRimDoNotReadAsASquare)
+{
+    Terrain t;
+    t.size = 200.0f;
+    t.resolution = 129;
+    t.height = 40.0f;
+    t.featureSize = 90.0f;
+    t.flatCenter = 0.0f;
+    t.shapeWarp = 0.0f;
+    t.edge = 0.0f;
+    const u32 n = TerrainSamples(t);
+    Array<f32> plain, warped, rim, nextHeights;
+    GenerateTerrainHeights(t, plain);
+
+    // Domain warp bends the same landscape settings into another shape, and it is part of the shape hash.
+    Terrain bent = t;
+    bent.shapeWarp = 0.5f;
+    GenerateTerrainHeights(bent, warped);
+    ZX_EXPECT(warped != plain);
+    ZX_EXPECT(TerrainShapeHash(bent) != TerrainShapeHash(t));
+
+    // It reads world coordinates, so neighboring tiles still meet at the seam.
+    Terrain next = bent;
+    next.noiseOffset = Vec2(bent.size, 0.0f);
+    GenerateTerrainHeights(next, nextHeights);
+    for (u32 z = 0; z < n; ++z)
+        ZX_EXPECT_NEAR(warped[usize(z) * n + n - 1], nextHeights[usize(z) * n], 1e-3f);
+
+    // Natural rim: the outer band eases down to the ground level of the middle and dips a little below it (no square
+    // wall), while the middle keeps its hills. The dip is edge * 0.15 m.
+    Terrain rimmed = bent;
+    rimmed.edge = 30.0f;
+    GenerateTerrainHeights(rimmed, rim);
+    ZX_EXPECT(rim != warped);
+    ZX_EXPECT(TerrainShapeHash(rimmed) != TerrainShapeHash(bent));
+    const f32 middle = GeneratedTerrainHeight(rimmed, 0.0f, 0.0f);
+    const f32 dip = rimmed.edge * 0.15f;
+    f32 borderDelta = 0.0f, hills = 0.0f;
+    for (u32 i = 0; i < n; ++i) {
+        for (usize border : {usize(i), usize(n - 1) * n + i, usize(i) * n, usize(i) * n + n - 1})
+            borderDelta = Max(borderDelta, Abs(rim[border] - (middle - dip)));
+    }
+    for (f32 v : rim)
+        hills = Max(hills, Abs(v - middle));
+    ZX_EXPECT(borderDelta < 0.01f);
+    ZX_EXPECT(hills > t.height * 0.15f);
+
+    // The footprint the mesh is cut along is an organic outline: the corners fall outside it, the middle and the
+    // middle of every side stay. Open-world tiles (edge = 0) keep the full square.
+    const f32 half = rimmed.size * 0.5f;
+    ZX_EXPECT(TerrainFootprintDistance(rimmed, 0.0f, 0.0f) > half * 0.5f);
+    ZX_EXPECT(TerrainFootprintDistance(rimmed, half - 25.0f, 0.0f) > 0.0f);
+    ZX_EXPECT(TerrainFootprintDistance(rimmed, 0.0f, -half + 25.0f) > 0.0f);
+    ZX_EXPECT(TerrainFootprintDistance(rimmed, half - 0.5f, half - 0.5f) < 0.0f); // corners are cut
+    ZX_EXPECT(TerrainFootprintDistance(rimmed, half + 5.0f, 0.0f) < 0.0f);
+    ZX_EXPECT(TerrainFootprintDistance(bent, half - 0.5f, half - 0.5f) > 0.0f); // a tile keeps its square
+    ZX_EXPECT(TerrainFootprintDistance(bent, half + 5.0f, 0.0f) > 0.0f);
+}

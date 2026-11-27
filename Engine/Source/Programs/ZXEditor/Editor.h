@@ -136,6 +136,7 @@ enum class ProjectTemplate : u8
     FirstPerson,
     ThirdPerson,
     Water,
+    WaterPhysics, // Water + working buoyancy: a harbor basin with floating crates, barrels, a boat
     Physics,     // Physics Playground
     Vehicle,     // Vehicle Playground (soft-body car)
     Empty,       // nothing in the scene
@@ -469,6 +470,7 @@ public:
     void CreateWindZone();
     void CreateNavMeshBounds(Vec3 position);
     void CreateNavObstacle(Vec3 position);
+    void CreateNavLink(Vec3 position); // a 4 m jump forward (drag its end in Details)
     void CreateNavAgent(Vec3 position); // a capsule-like stand-in with a Nav Mesh Agent (pivot at the feet)
     void CreateTerrain(bool flat = false);                     // 200 m terrain under the scene (flat: no hills, to sculpt from scratch)
     void DrawPhysicsDebug();
@@ -577,6 +579,8 @@ private:
     void BuildCoinGame(const Function<ecs::Entity(StringView, BuiltinShape, Vec3, Vec3, StringView, Quat, ecs::Entity)>& shape,
                        const Function<ecs::Entity(StringView, Vec3, Vec3, StringView)>& block);
     void BuildWaterLevel();
+    /// Water Physics template: a harbor basin where buoyancy, drag and splashes are set up and ready to Play.
+    void BuildWaterPhysicsLevel();
     void BuildEraLevel(); // an empty outdoor level: atmosphere and a ground plane (the "Graphics 20xx" templates)
     void BuildPhysicsLevel();
     bool AddAnimatedCharacter(ecs::Entity player);

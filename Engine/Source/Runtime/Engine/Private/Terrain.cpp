@@ -27,7 +27,12 @@ ZX_REFLECT_STRUCT_BEGIN(Terrain)
     ZX_FIELD(octaves, Meta::Range(1, 10), Meta::Tooltip("Layers of ever finer detail"))
     ZX_FIELD(roughness, Meta::Range(0, 1), Meta::Tooltip("How strong the finer layers are"))
     ZX_FIELD(ridges, Meta::Range(0, 1), Meta::Tooltip("0 = rolling hills, 1 = sharp ridged mountains"))
+    ZX_FIELD(shapeWarp, Meta::Range(0, 1), Meta::Tooltip("Bends the hills so they do not repeat along the noise lattice "
+                                                         "(0 = regular, 0.35 = natural ridges); neighbors still meet"))
     ZX_FIELD(flatCenter, Meta::Range(0, 2000), Meta::Units("m"), Meta::Tooltip("Radius of a flat area in the middle (0 = none)"))
+    ZX_FIELD(edge, Meta::Range(0, 2000), Meta::Units("m"), Meta::Tooltip("Meters of a natural rim: the hills ease down to the "
+                                                                       "ground level of the middle before the edge, so the plate does not end in a square wall "
+                                                                       "(0 = hard edge, used by open-world tiles)"))
     ZX_FIELD(noiseOffset, Meta::Units("m"), Meta::Tooltip("Where this tile sits in a larger landscape: tiles with the same settings whose offsets "
                                                           "differ by their size continue each other's hills without seams"))
     ZX_FIELD(material, Meta::AssetType("Material"), Meta::Tooltip("Surface material (M_Terrain in Starter Content: grass, rock on slopes, snow on peaks)"))
@@ -68,6 +73,16 @@ f32 GradientNoise(f32 x, f32 z, u32 seed)
 f32 Shape(const Terrain& t, f32 x, f32 z)
 {
     const u32 seed = u32(t.seed);
+    // Domain warp: two low-frequency fields bend the landscape so ridges wander instead of running along the noise
+    // lattice. It reads world coordinates (the caller adds noiseOffset), so tiles of an open world still meet.
+    const f32 warp = Clamp(t.shapeWarp, 0.0f, 1.0f);
+    if (warp > 0.0f) {
+        const f32 wf = 1.0f / Max(t.featureSize * 1.7f, 0.01f), wa = warp * t.featureSize * 0.5f;
+        const f32 wx = GradientNoise(x * wf, z * wf, seed + 5501u);
+        const f32 wz = GradientNoise(x * wf + 11.3f, z * wf - 5.7f, seed + 7717u);
+        x += wx * wa;
+        z += wz * wa;
+    }
     const f32 f = 1.0f / Max(t.featureSize, 0.01f);
     f32 smooth = 0.0f, ridged = 0.0f, amp = 1.0f, total = 0.0f, freq = f;
     for (i32 o = 0; o < Clamp(t.octaves, 1, 10); ++o) {
@@ -149,6 +164,21 @@ void TerrainSectionBounds(const Array<asset::PackedVertex>& vertices, u32 n, Arr
         }
 }
 
+/// Distance (meters) from a point of the plate to its populated footprint; negative outside. With a natural rim the
+/// footprint is a squircle bent by low-frequency noise instead of the square (see TerrainFootprintDistance).
+f32 FootprintDistance(const Terrain& t, f32 x, f32 z)
+{
+    if (t.edge <= 0.0f)
+        return Infinity;
+    const f32 half = Max(t.size * 0.5f, 0.001f);
+    const f32 nx = Abs(x / half), nz = Abs(z / half);
+    const f32 r = Pow(Pow(nx, 4.0f) + Pow(nz, 4.0f), 0.25f); // squircle: rounded corners, straighter sides
+    // The contour always pulls inward (0.06..0.18 of the half size) so it never runs outside the plate, and its
+    // bumps are noise rather than a lattice.
+    const f32 wobble = 0.06f + (GradientNoise(x * 0.009f + 3.1f, z * 0.009f - 7.4f, u32(t.seed) + 4241u) * 0.5f + 0.5f) * 0.12f;
+    return (1.0f - r - wobble) * half;
+}
+
 /// The render mesh, cooked directly (a regular grid needs no cache optimization): square chunks of cells become
 /// sections with their own bounds, so the renderer culls what is off screen.
 struct TerrainSkirts
@@ -171,6 +201,16 @@ asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h, const A
             out.bounds.Expand(out.vertices[usize(z) * n + x].position);
         }
     const u32 cells = n - 1, chunk = TerrainChunk(n);
+    // The natural rim also shapes the outline: samples outside the footprint are cut away (the heights already ease
+    // down there), so the plate ends in an organic contour. Tiles of an open world keep the full square.
+    const bool cut = t.edge > 0.0f;
+    Array<f32> footprint; // meters inside the outline, per sample (only when cutting)
+    if (cut) {
+        footprint.ResizeUninitialized(usize(n) * n);
+        for (usize i = 0; i < footprint.Size(); ++i)
+            footprint[i] = FootprintDistance(t, out.vertices[i].position.x, out.vertices[i].position.z);
+    }
+    auto inFootprint = [&](u32 i) { return footprint[i] > 0.0f; };
     Array<u32> indices;
     indices.Reserve(usize(cells) * cells * 8);
     // Skirt vertices: a copy of a chunk-border sample hanging below it (hides the cracks between chunks drawn at
@@ -222,13 +262,34 @@ asset::CookedMesh CookTerrainMesh(const Terrain& t, const Array<f32>& h, const A
                 for (usize zi = 0; zi + 1 < zs.Size(); ++zi)
                     for (usize xi = 0; xi + 1 < xs.Size(); ++xi) {
                         const u32 p00 = zs[zi] * n + xs[xi], p10 = zs[zi] * n + xs[xi + 1], p01 = zs[zi + 1] * n + xs[xi], p11 = zs[zi + 1] * n + xs[xi + 1];
-                        // Same diagonal as the physics height field (p00 - p11): what you see is what you collide with.
-                        for (u32 i : {p00, p11, p10, p00, p01, p11})
-                            indices.PushBack(i);
+                        // The two triangles of the quad are cut one by one by their centroid, so the outline of the
+                        // plate follows the organic footprint closely instead of leaving overhangs.
+                        if (!cut || footprint[p00] + footprint[p10] + footprint[p11] > 0.0f)
+                            for (u32 i : {p00, p11, p10})
+                                indices.PushBack(i);
+                        if (!cut || footprint[p00] + footprint[p01] + footprint[p11] > 0.0f)
+                            for (u32 i : {p00, p01, p11})
+                                indices.PushBack(i);
                     }
                 if (lod > 0 || skirtsAtLod0) {
                     // Skirts along the chunk's four edges (both windings: seen from either side).
+                    // A skirt spans every sample of the edge (the LOD step skips samples): it may only hang where the
+                    // whole edge is inside the footprint, or it would dangle in the air past the cut outline.
+                    auto insideRun = [&](u32 a, u32 b) {
+                        if (!cut)
+                            return true;
+                        const i32 ax = i32(a % n), az = i32(a / n), bx = i32(b % n), bz = i32(b / n);
+                        const i32 sx = bx > ax ? 1 : (bx < ax ? -1 : 0), sz = bz > az ? 1 : (bz < az ? -1 : 0);
+                        for (i32 x = ax, z = az;; x += sx, z += sz) {
+                            if (!inFootprint(u32(z) * n + u32(x)))
+                                return false;
+                            if (x == bx && z == bz)
+                                return true;
+                        }
+                    };
                     auto edge = [&](u32 a, u32 b) {
+                        if (!insideRun(a, b))
+                            return;
                         const u32 sa = skirt(a), sb = skirt(b);
                         for (u32 i : {a, b, sb, a, sb, sa, a, sb, b, a, sa, sb})
                             indices.PushBack(i);
@@ -288,12 +349,24 @@ f32 GeneratedHeightLocal(const Terrain& t, f32 px, f32 pz)
         const f32 r = Sqrt(px * px + pz * pz);
         v = Lerp(Shape(t, ox, oz), v, SmoothStep(flat, flat + blend, r));
     }
+    // Natural rim: over the last t.edge meters before the footprint the hills ease down to the ground level of the
+    // middle and dip slightly below it, so the plate blends out instead of ending in a straight square wall. The
+    // footprint itself is an organic contour (FootprintDistance), which is also where the mesh is cut.
+    const f32 edge = Clamp(t.edge, 0.0f, t.size * 0.5f);
+    if (edge > 0.0f) {
+        const f32 base = Shape(t, ox, oz);
+        const f32 dip = Min(edge * 0.15f / Max(t.height, 0.01f), 0.5f); // meters, in normalized height
+        const f32 k = SmoothStep(0.0f, 1.0f, Saturate(FootprintDistance(t, px, pz) / edge));
+        v = Lerp(base - dip * (1.0f - k), v, k);
+    }
     return v * t.height;
 }
 
 } // namespace
 
 f32 GeneratedTerrainHeight(const Terrain& t, f32 localX, f32 localZ) { return GeneratedHeightLocal(t, localX, localZ); }
+
+f32 TerrainFootprintDistance(const Terrain& t, f32 localX, f32 localZ) { return FootprintDistance(t, localX, localZ); }
 
 void GenerateTerrainHeights(const Terrain& t, Array<f32>& heights)
 {
@@ -318,7 +391,9 @@ u64 TerrainShapeHash(const Terrain& t)
     mix(u64(t.octaves));
     mix(bits(t.roughness));
     mix(bits(t.ridges));
+    mix(bits(t.shapeWarp));
     mix(bits(t.flatCenter));
+    mix(bits(t.edge));
     mix(t.hills ? 1u : 0u);
     mix(bits(t.noiseOffset.x));
     mix(bits(t.noiseOffset.y));

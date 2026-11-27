@@ -310,6 +310,9 @@ const TemplateInfo Templates[] = {
     {ProjectTemplate::FirstPerson, "First Person", "A first-person character with mouse look, walking, sprinting and jumping on a small playground.", {}},
     {ProjectTemplate::ThirdPerson, "Third Person", "A visible character with an orbiting follow camera, walking and jumping on a playground.", {}},
     {ProjectTemplate::Water, "Water", "An island in the sea with realistic water: waves, reflections, refraction, foam. Walk around in first person.", {}},
+    {ProjectTemplate::WaterPhysics, "Water Physics",
+     "A harbor basin with working buoyancy: floating crates, barrels and a boat that rock on the waves, splash when they "
+     "hit the water and drift with the current. Ready physics, first person.", {}},
     {ProjectTemplate::Physics, "Physics Playground",
      "Stacks, dominoes, a ramp of balls and rocks, joints (bridge, chain, door, seesaw), raycasts and a physics gun. First person.", {}},
     {ProjectTemplate::Vehicle, "Vehicle Playground",
@@ -434,6 +437,27 @@ void DrawTemplateArt(DrawList& dl, const Rect& r, ProjectTemplate t, f32 s)
         // Island.
         const Vec2 island[] = {at(0.06f, 0.5f), at(0.14f, 0.43f), at(0.27f, 0.44f), at(0.34f, 0.5f)};
         dl.AddConvexPolygon(Span<const Vec2>(island, 4), Hex(0x24382A));
+        break;
+    }
+    case ProjectTemplate::WaterPhysics: {
+        // A basin from above: the quay, the water and what floats on it.
+        dl.AddRect(r, Hex(0x9AA0A6));
+        dl.AddRect(Rect(at(0.12f, 0.16f), at(0.88f, 0.94f)), Hex(0x1B5A78));
+        for (u32 i = 0; i < 4; ++i) {
+            const f32 y = 0.26f + f32(i) * 0.17f;
+            Array<Vec2> pts;
+            for (u32 k = 0; k <= 16; ++k) {
+                const f32 x = 0.14f + 0.72f * f32(k) / 16.0f;
+                pts.PushBack(at(x, y + Sin(f32(k) * 1.1f + f32(i) * 2.0f) * 0.012f));
+            }
+            dl.AddPolyline(pts.View(), Hex(0xBFE8F5, u8(120 - i * 20)), Max(1.0f, 1.2f * s));
+        }
+        // Floating crate, barrel and a boat.
+        dl.AddRect(Rect(at(0.26f, 0.5f), at(0.42f, 0.64f)), Hex(0x8A5A32), ui::CornerRadii(2.0f * s));
+        dl.AddRect(Rect(at(0.28f, 0.54f), at(0.40f, 0.56f)), Hex(0x5E3B1F));
+        dl.AddRect(Rect(at(0.5f, 0.42f), at(0.6f, 0.62f)), Hex(0xA9722F), ui::CornerRadii(w * 0.045f));
+        const Vec2 bow[] = {at(0.66f, 0.66f), at(0.84f, 0.7f), at(0.86f, 0.78f), at(0.66f, 0.76f)};
+        dl.AddConvexPolygon(Span<const Vec2>(bow, 4), Hex(0xE8E8E8));
         break;
     }
     default: break;

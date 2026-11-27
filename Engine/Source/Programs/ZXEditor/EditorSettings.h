@@ -54,6 +54,7 @@ struct EditorSettings
 {
     // Editor.
     f32 uiScale = 1.0f;          // multiplies the system DPI scale
+    bool autoUIScale = true;     // shrink the interface so it fits a window smaller than 1280x720
     bool uiSounds = false;       // feedback sounds (Play / Stop, builds, packaging)
     i32 autosaveMinutes = 0;     // save the open scene every N minutes (0 = off)
     // Viewport.
