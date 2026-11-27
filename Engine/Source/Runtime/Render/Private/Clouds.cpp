@@ -312,8 +312,8 @@ void CloudRenderer::AddPasses(RenderGraph& graph, RGTexture color, RGTexture dep
     p.scale = Clamp(settings.scale, 0.2f, 5.0f);
     p.evolution = Max(settings.evolution, 0.0f);
     p.time = time;
-    p.steps = m_lite ? 32u : 64u;
-    p.lightSteps = m_lite ? 3u : 6u;
+    p.steps = m_lite ? 40u : 64u;
+    p.lightSteps = m_lite ? 6u : 8u;
     p.maxDistance = m_lite ? 35000.0f : 60000.0f;
     p.ambient = Max(settings.ambient, 0.0f);
     p.silverLining = Max(settings.silverLining, 0.0f);

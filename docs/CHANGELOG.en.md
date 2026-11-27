@@ -2,6 +2,15 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
+## 0.18.1 — new clouds: shape, light, sunset (2026-11-27)
+- **Clouds rewritten from scratch** (ADR-121). Density, lighting and the ray march are new; noise generation, the weather map and the render passes are unchanged
+  - Shape: the Perlin-Worley base is eroded by low-frequency Worley (cauliflower mounds instead of smooth blobs); every column has its own top (`top` from noise and type), so crowns are round and no cloud ends on a flat plane; the height profile follows the type - stratus 0..0.5, cumulus 0..0.95, cumulonimbus gets a tower to the top and an anvil under it
+  - Two-scale erosion: fine at the base (torn bottom edges), coarse at the top (puffy domes), both from the same volume at different scales
+  - Light: four orders of multiple scattering (Hillaire 2016) - each less attenuated and more isotropic; normalized Henyey-Greenstein; powder from the optical depth, a silver lining on the sun-side rim, the sky open to the tops and nearly closed at the bases, and warm light bounced into the undersides when the sun is low
+  - Sun march: shorter first step, wider cone reach, 6 steps in the Lite profile instead of 3 (Full: 8)
+  - March: 40 steps in Lite (was 32), shape scale 3 km instead of 4.5 km - smaller, more numerous clouds
+  - Measured on Intel UHD 620 (Lite, 1600x900): `GPU Clouds` 3.5 -> 5.0 ms
+- **Screenshots**: `docs/images/clouds_before.png` (before) and `docs/images/clouds_after.png` (after), `clouds_ground.png` (cumulus from the ground), `clouds_sunset.png` (golden hour)
 ## 0.18.0 — open worlds closed, natural terrain, water as part of the world, the Water Physics template (2026-11-27)
 - **AI: jumps and drops off the navmesh** (ADR-118). The new Nav Mesh Link component sets a pair of points in the entity's local space (bidirectional, with a cost); link ends snap to the nearest polygons when the mesh is built, so a link survives tile rebuilds. Path search walks a link as an ordinary edge (cost = walk to the start + the hop), the corridor is split at links and the hop is reported outwards as a flag, so the funnel never crosses it. The agent walks to the start, is moved along an arc (up) or a straight line (down) with its velocity zeroed, and carries on. Console `create navlink`; links show in Show > Navigation (a jump in the path is magenta) and in `nav.stats`
 - **M18 acceptance**: a 4×4 km OpenWorld sample (`world.create 4 256`) — 256 cells of 256 m, 36 loaded, 16 as HLOD groups; a 25 s flight at 60 m/s: world update 4.16 ms average, 30.1 ms max, **0 frames over 50 ms** (31 frames over 16 ms), 0 debug-layer errors

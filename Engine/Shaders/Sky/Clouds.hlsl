@@ -81,7 +81,7 @@ ZX_PASS_CONSTANTS(CloudParams, g_C);
 
 #define PI 3.14159265
 #define EARTH_RADIUS 6360000.0
-#define SHAPE_SCALE (1.0 / 4500.0) // m -> shape noise tiles (x scale)
+#define SHAPE_SCALE (1.0 / 3000.0) // m -> shape noise tiles (x scale)
 #define DETAIL_SCALE (1.0 / 300.0)
 
 float Remap(float v, float lo, float hi, float newLo, float newHi)
@@ -154,9 +154,14 @@ float4 Weather(float3 p)
 /// heaps in the lower half, cumulonimbus tower to the top.
 float HeightProfile(float h, float type)
 {
-    const float stratus = RemapSat(h, 0.0, 0.05, 0.0, 1.0) * RemapSat(h, 0.10, 0.22, 1.0, 0.0);
-    const float cumulus = RemapSat(h, 0.0, 0.12, 0.0, 1.0) * RemapSat(h, 0.30, 0.65, 1.0, 0.0);
-    const float nimbus = RemapSat(h, 0.0, 0.08, 0.0, 1.0) * RemapSat(h, 0.85, 1.0, 1.0, 0.0);
+    // Stratus (0): a closed deck low in the layer that thins out quickly.
+    const float stratus = RemapSat(h, 0.0, 0.08, 0.0, 1.0) * RemapSat(h, 0.16, 0.5, 1.0, 0.0);
+    // Cumulus (0.5): heaps filled from just above the base, thinning towards the crown.
+    const float cumulus = RemapSat(h, 0.0, 0.06, 0.0, 1.0) * RemapSat(h, 0.35, 0.95, 1.0, 0.25);
+    // Cumulonimbus (1): a tower to the top with an anvil spreading under it.
+    const float tower = RemapSat(h, 0.0, 0.04, 0.0, 1.0) * RemapSat(h, 0.9, 1.0, 1.0, 0.0);
+    const float anvil = RemapSat(h, 0.7, 0.8, 0.0, 1.0) * RemapSat(h, 0.9, 1.0, 1.0, 0.15);
+    const float nimbus = max(tower, anvil * 0.9);
     return type < 0.5 ? lerp(stratus, cumulus, type * 2.0) : lerp(cumulus, nimbus, type * 2.0 - 1.0);
 }
 
@@ -177,26 +182,37 @@ float CloudDensity(float3 p, bool detail, float lod)
     if (profile <= 0.0)
         return 0.0;
     // Drift: tops lean downwind; the shapes churn slowly.
-    const float3 q = float3(p.x, p.y, p.z) + float3(g_C.wind.x, 0.0, g_C.wind.y) * (1.0 + h * 0.15) +
+    const float3 q = float3(p.x, p.y, p.z) + float3(g_C.wind.x, 0.0, g_C.wind.y) * (1.0 + h * 0.35) +
                      float3(0.0, -g_C.time * g_C.evolution, 0.0);
-    const float4 shape = GetTexture3D(g_C.shapeNoise).SampleLevel(g_LinearWrap, q * (SHAPE_SCALE / g_C.scale) * float3(1.0, 1.6, 1.0), lod);
-    const float fbm = shape.g * 0.625 + shape.b * 0.25 + shape.a * 0.125;
-    const float noise = RemapSat(shape.r, fbm - 1.0, 1.0, 0.0, 1.0);
+    const float4 shape = GetTexture3D(g_C.shapeNoise).SampleLevel(g_LinearWrap, q * (SHAPE_SCALE / g_C.scale) * float3(1.0, 1.9, 1.0), lod);
+    // Perlin-Worley eroded by low-frequency Worley: cauliflower billows instead of smooth blobs.
+    const float billow = shape.g * 0.625 + shape.b * 0.25 + shape.a * 0.125;
+    const float noise = RemapSat(shape.r, billow * 0.8, 1.0, 0.0, 1.0);
     // Coverage cuts the noise into clouds (Nubis): more coverage, more of the noise becomes cloud.
-    const float strength = RemapSat(noise * saturate(profile * 4.0), 1.0 - coverage * 0.9, 1.0, 0.0, 1.0);
-    // Domes: the stronger the cloud here, the higher its top reaches (up to the type's ceiling) - no flat slabs.
-    const float ceiling = type < 0.5 ? lerp(0.2, 0.62, type * 2.0) : lerp(0.62, 1.0, type * 2.0 - 1.0);
-    const float top = ceiling * (0.3 + 0.7 * sqrt(strength));
-    const float bottomLift = (1.0 - noise) * 0.06 * ceiling; // bases are not perfectly flat
-    float base = strength * saturate((top - h) / (0.18 * ceiling)) * saturate((h - bottomLift) / 0.04) * profile * saturate(coverage * 1.5);
+    const float strength = RemapSat(noise * saturate(profile * 4.0), 1.0 - coverage * 0.92, 1.0, 0.0, 1.0);
+    // Every column has its own top: strong noise towers up to the type's ceiling, weak parts stay a low puff, so the
+    // crowns are round and no cloud ends on a flat plane.
+    const float ceiling = lerp(0.45, 0.95, saturate(type));
+    const float top = saturate(lerp(0.35, 0.9, noise) * ceiling);
+    const float hn = h / max(top, 0.08);
+    if (hn >= 1.0)
+        return 0.0;
+    // Body of the dome: filled from just above the base, thinning over the crown.
+    const float body = RemapSat(hn, 0.0, 0.15, 0.0, 1.0) * (1.0 - RemapSat(hn, 0.4, 1.0, 0.0, 1.0));
+    float base = strength * body * profile * saturate(coverage * 1.6) * 2.0;
     if (base <= 0.0)
         return 0.0;
-    if (detail && g_C.detail > 0.0 && base < 0.85) { // deep inside a cloud the erosion doesn't show
+    if (detail && g_C.detail > 0.0 && base < 0.9) { // deep inside a cloud the erosion doesn't show
         const float3 dq = q * (DETAIL_SCALE / g_C.scale) + float3(0.0, g_C.time * g_C.evolution * 0.002, 0.0);
         const float3 d = GetTexture3D(g_C.detailNoise).SampleLevel(g_LinearWrap, dq, lod * 1.5).rgb; // far: coarser (no grain)
-        const float dfbm = d.r * 0.625 + d.g * 0.25 + d.b * 0.125;
+        const float fine = d.r * 0.625 + d.g * 0.25 + d.b * 0.125;
+        // A coarser octave of the same volume carves the wide curds out of the smooth base (one fetch of the same
+        // texture at a third of the scale), so the outline breaks up at two sizes instead of one.
+        const float3 c = GetTexture3D(g_C.detailNoise).SampleLevel(g_LinearWrap, dq * 0.33 + 0.5, lod * 1.5).rgb;
+        const float coarse = c.r * 0.625 + c.g * 0.25 + c.b * 0.125;
+        const float curds = lerp(fine, coarse, 0.4);
         // Wispy at the bottom, billowy towards the top.
-        const float erosion = lerp(dfbm, 1.0 - dfbm, saturate(h * 6.0));
+        const float erosion = lerp(curds, 1.0 - curds, saturate(h * 5.0));
         base = RemapSat(base, erosion * g_C.detail, 1.0, 0.0, 1.0);
     }
     return base * g_C.density;
@@ -205,6 +221,9 @@ float CloudDensity(float3 p, bool detail, float lod)
 // --- Lighting ------------------------------------------------------------------------------------------------------------
 
 float HG(float c, float g) { return (1.0 - g * g) / (4.0 * PI * pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5)); }
+
+/// Henyey-Greenstein scaled so that an isotropic lobe (g = 0) is 1: the octaves of the multiple scattering add up.
+float Hg(float c, float g) { return HG(c, g) * 4.0 * PI; }
 
 float Phase(float cosSun, float g)
 {
@@ -230,13 +249,13 @@ float InterleavedNoise(float2 p, uint frame)
 float SunOpticalDepth(float3 p, float jitter, uint steps)
 {
     float depth = 0.0;
-    float stepLen = g_C.thickness * 0.04;
+    float stepLen = g_C.thickness * 0.03;
     float t = stepLen * jitter;
     [loop] for (uint k = 0; k < steps; ++k) {
-        const float s = (k + 1 == steps) ? stepLen * 3.0 : stepLen;
+        const float s = (k + 1 == steps) ? stepLen * 4.0 : stepLen;
         t += s;
         depth += CloudDensity(p + g_C.dirToSun * t, k == 0, 0.5 + float(k) * 0.5) * s;
-        stepLen *= 1.6;
+        stepLen *= 1.55;
     }
     return depth;
 }
@@ -262,7 +281,6 @@ float4 MarchClouds(float3 origin, float3 dir, float maxDistance, float jitter, o
     const uint steps = g_C.steps;
     const float stepLen = max((tExit - tEnter) / float(steps), 25.0);
     const float cosSun = dot(dir, g_C.dirToSun);
-    const float phase = Phase(cosSun, 0.75);
     const float3 sunLight = g_C.sunColor * g_C.albedo;
     float3 inscatter = 0.0;
     float transmittance = 1.0;
@@ -297,21 +315,27 @@ float4 MarchClouds(float3 origin, float3 dir, float maxDistance, float jitter, o
         if (lit < 6 || ((lit % 4) == 0 && lit < 32))
             sunDepth = SunOpticalDepth(pos, jitter, t > 15000.0 ? 2u : g_C.lightSteps);
         ++lit;
-        // Multiple scattering by octaves: each one less attenuated and less forward-peaked (Wrenninge 2013).
+        // Multiple scattering by octaves (Wrenninge 2013 / Hillaire 2016): each order carries less energy, is
+        // attenuated less by the cloud and is more isotropic. Four orders are enough for the soft glow inside a heap.
         float sun = 0.0;
-        float a = 1.0, b = 1.0, c = 1.0;
-        [unroll] for (uint o = 0; o < 3; ++o) {
-            sun += a * exp(-sunDepth * b) * Phase(cosSun, 0.75 * c) * (o == 0 ? g_C.silverLining : 1.0);
-            a *= 0.5;
-            b *= 0.35;
-            c *= 0.5;
+        float a = 1.0, b = 1.0, g = 0.75;
+        [unroll] for (uint o = 0; o < 4; ++o) {
+            sun += a * exp(-sunDepth * b) * Hg(cosSun, g);
+            a *= 0.55;
+            b *= 0.4;
+            g *= 0.5;
         }
-        // Powder: the dark edges of dense cumulus seen away from the sun.
-        const float powder = lerp(1.0 - exp(-sigma * stepLen * 2.0), 1.0, saturate(cosSun * 0.5 + 0.5));
-        // Sunlight scattered many times inside a cloud: the octaves above plus a factor for the energy of the higher
-        // orders (a lit cumulus side is about as bright as a white wall in the sun). Sky light: dimmer at the bottoms.
-        const float3 ambient = g_C.skyColor * g_C.ambient * lerp(0.5, 1.0, pow(h, 0.6)) + g_C.sunColor * (0.02 * saturate(g_C.dirToSun.y)); // + light bounced off the ground
-        float3 scattered = (sunLight * sun * 3.2 * lerp(0.6, 1.0, powder) + ambient * g_C.albedo) * sigma;
+        // Powder: the cores of dense cumulus look darker than their rims when seen away from the sun.
+        const float powderDepth = saturate(sigma * stepLen * 3.0);
+        const float powder = lerp(1.0 - powderDepth, 1.0, saturate(cosSun * 0.5 + 0.5));
+        // Silver lining: light that grazes the edge of the cloud towards the sun is scattered forward strongly.
+        const float lining = g_C.silverLining * pow(saturate(cosSun), 8.0) * (1.0 - saturate(sigma / max(g_C.density, 1e-6) * 1.5));
+        // Sky light: the tops see the whole sky, the bases only what the cloud above lets through; a little sunlight
+        // bounces off the ground into the bottoms.
+        const float skyOpen = lerp(0.25, 1.0, pow(saturate(h), 0.35));
+        const float3 ambient = g_C.skyColor * g_C.ambient * skyOpen +
+                               g_C.sunColor * (0.08 * saturate(g_C.dirToSun.y + 0.25)) * (1.0 - saturate(h * 2.0));
+        float3 scattered = (sunLight * sun * 0.9 * lerp(0.55, 1.0, powder) * (1.0 + lining) + ambient * g_C.albedo) * sigma;
         if (g_C.lightning > 0.0) {
             const float d = length(pos - g_C.lightningPos);
             scattered += float3(0.75, 0.8, 1.0) * g_C.lightning * exp(-d / 900.0) * sigma;

@@ -72,7 +72,10 @@ $shortStage = $fso.GetFolder($stage).ShortPath
 $shortSetup = Join-Path $fso.GetFolder($out).ShortPath (Split-Path -Leaf $setup)
 $p = Start-Process -FilePath (Join-Path $bin "ZXSetup.exe") -ArgumentList "-makeinstaller=$shortStage", "-out=$shortSetup" -Wait -PassThru -NoNewWindow
 if ($p.ExitCode -ne 0 -or -not (Test-Path $setup)) { throw "ZXSetup -makeinstaller failed ($($p.ExitCode)); see %TEMP%\ZeqouX3D-Setup\Logs\Setup.log" }
-Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal
+# Compress-Archive rewrites the whole archive in memory and can stall on a ~120 MB stage: zip the folder directly.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path $stage).Path, $zip,
+    [System.IO.Compression.CompressionLevel]::Optimal, $true)
 
 "{0}  {1:N1} MB" -f $setup, ((Get-Item $setup).Length / 1MB)
 "{0}  {1:N1} MB" -f $zip, ((Get-Item $zip).Length / 1MB)
