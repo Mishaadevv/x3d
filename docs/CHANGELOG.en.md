@@ -2,7 +2,7 @@
 
 The full history is in [CHANGELOG.md](CHANGELOG.md) (Russian); this file has the same entries in English, in the same order. Version scheme up to 1.0: **0.<last closed milestone>.<release within it>**.
 
-## 0.18.0 — open worlds closed, natural terrain, water as part of the world, the Water Physics template (2026-12-02)
+## 0.18.0 — open worlds closed, natural terrain, water as part of the world, the Water Physics template (2026-11-27)
 - **AI: jumps and drops off the navmesh** (ADR-118). The new Nav Mesh Link component sets a pair of points in the entity's local space (bidirectional, with a cost); link ends snap to the nearest polygons when the mesh is built, so a link survives tile rebuilds. Path search walks a link as an ordinary edge (cost = walk to the start + the hop), the corridor is split at links and the hop is reported outwards as a flag, so the funnel never crosses it. The agent walks to the start, is moved along an arc (up) or a straight line (down) with its velocity zeroed, and carries on. Console `create navlink`; links show in Show > Navigation (a jump in the path is magenta) and in `nav.stats`
 - **M18 acceptance**: a 4×4 km OpenWorld sample (`world.create 4 256`) — 256 cells of 256 m, 36 loaded, 16 as HLOD groups; a 25 s flight at 60 m/s: world update 4.16 ms average, 30.1 ms max, **0 frames over 50 ms** (31 frames over 16 ms), 0 debug-layer errors
 - **The terrain no longer reads as an AI square** (ADR-119). Two causes: the plate ended in a straight wall, and the noise sat on a lattice
